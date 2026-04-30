@@ -83,6 +83,11 @@ agent() {
         return 1
     fi
 
+    local USER_ARGS=()
+    if ! docker info 2>/dev/null | grep -qi 'rootless'; then
+        USER_ARGS=(--user "$(id -u):$(id -g)")
+    fi
+
     local PORT_ARGS=()
     local EXTRA_RUN_ARGS=()
     if [[ "$DOCKERFILE" == */Dockerfile.agent ]]; then
@@ -123,7 +128,7 @@ agent() {
     echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
 
     docker run --rm -it \
-        --user "$(id -u):$(id -g)" \
+        "${USER_ARGS[@]}" \
         -v "${GLOBAL_CONFIG_DIR}/claude.json:${CLAUDE_HOME}/.claude.json" \
         -v "${GLOBAL_CONFIG_DIR}/settings.json:${CLAUDE_HOME}/.claude/settings.json" \
         -v "$(pwd):/workspace" \
