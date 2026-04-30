@@ -110,6 +110,8 @@ agent() {
     mkdir -p "$GLOBAL_CONFIG_DIR"
     touch "$GLOBAL_CONFIG_DIR/claude.json"
     touch "$GLOBAL_CONFIG_DIR/settings.json"
+    chmod 600 "$GLOBAL_CONFIG_DIR/claude.json"
+    chmod 600 "$GLOBAL_CONFIG_DIR/settings.json"
 
     local PROJECT_CLAUDE_DIR="$(pwd)/.claude"
     mkdir -p "$PROJECT_CLAUDE_DIR/sessions"
