@@ -38,8 +38,19 @@ create_custom_agent() {
 
 agent-wrap_update() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
-    git -C "$TOOL_DIR" pull --ff-only || return 1
-    echo "Note: run 'rebuild_agent' to rebuild the Docker image with the updated files."
+    local BRANCH BEFORE AFTER
+    BRANCH=$(git -C "$TOOL_DIR" symbolic-ref --short HEAD) || return 1
+    BEFORE=$(git -C "$TOOL_DIR" rev-parse HEAD) || return 1
+    git -C "$TOOL_DIR" pull --ff-only origin "$BRANCH" || return 1
+    AFTER=$(git -C "$TOOL_DIR" rev-parse HEAD) || return 1
+    local y=$'\033[1;33m' r=$'\033[0m'
+    echo ""
+    if [ "$BEFORE" = "$AFTER" ]; then
+        echo "${y}Note:${r} already up to date; no action needed."
+    else
+        echo "${y}Note:${r} restart your shell (or re-source agent-wrap.bashrc) to pick up script changes."
+        echo "${y}Note:${r} run 'rebuild_agent' to rebuild the Docker image with the updated files."
+    fi
 }
 
 rebuild_agent() {
