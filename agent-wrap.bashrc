@@ -117,6 +117,9 @@ agent() {
     touch "$GLOBAL_CONFIG_DIR/settings.json"
     chmod 600 "$GLOBAL_CONFIG_DIR/claude.json"
     chmod 600 "$GLOBAL_CONFIG_DIR/settings.json"
+    if [ ! -f "$GLOBAL_CONFIG_DIR/CLAUDE.md" ]; then
+        cp "$TOOL_DIR/default-CLAUDE.md" "$GLOBAL_CONFIG_DIR/CLAUDE.md"
+    fi
 
     local PROJECT_CLAUDE_DIR="$(pwd)/.claude"
     mkdir -p "$PROJECT_CLAUDE_DIR/sessions"
@@ -131,6 +134,7 @@ agent() {
         "${USER_ARGS[@]}" \
         -v "${GLOBAL_CONFIG_DIR}/claude.json:${CLAUDE_HOME}/.claude.json" \
         -v "${GLOBAL_CONFIG_DIR}/settings.json:${CLAUDE_HOME}/.claude/settings.json" \
+        -v "${GLOBAL_CONFIG_DIR}/CLAUDE.md:${CLAUDE_HOME}/.claude/CLAUDE.md" \
         -v "$(pwd):/workspace" \
         -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
