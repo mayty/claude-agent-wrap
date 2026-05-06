@@ -4,6 +4,8 @@
 
 You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
 
+**Important:** You always run as a non-root user inside the container and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
+
 ## Installing dependencies
 
 Do **not** install dependencies ad-hoc inside the running container (`apt-get install`, `pip install`, `npm install -g`, etc.). Those changes are thrown away as soon as the session ends.
@@ -20,6 +22,8 @@ Project-level (language) dependencies that belong in the project's own manifest 
 ## Per-project customization via `Dockerfile.agent`
 
 `Dockerfile.agent` is not just a place to install packages — it also carries directives that `agent-wrap` reads to customize the runtime. Use them instead of asking the user to change their shell invocation or the global tooling.
+
+**Important:** The working directory must always be `WORKDIR /workspace`. Do not change it — the wrapper mounts the project to `/workspace` and the agent expects to operate from there.
 
 Recognized directives (as special comments in `Dockerfile.agent`):
 
