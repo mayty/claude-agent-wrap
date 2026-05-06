@@ -1,3 +1,4 @@
+<!-- This file has been edited with the assistance of an AI tool. -->
 # Global instructions
 
 ## Environment
@@ -28,6 +29,7 @@ Project-level (language) dependencies that belong in the project's own manifest 
 Recognized directives (as special comments in `Dockerfile.agent`):
 
 - **`# agent-name: <name>`** — required. Tags the built image as `claude-agent-<name>`. Must match `[a-zA-Z0-9_.-]+`. Don't change this casually — renaming it orphans the previously built image.
+- **`# agent-user: <username>`** — sets the container username (default: `ubuntu`). This reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`, and sets `HOME` accordingly. Use this when your custom image creates a different user than the base `ubuntu` user. Make sure the user exists in your `Dockerfile.agent` (e.g., via `useradd` with `ARG HOST_UID`/`ARG HOST_GID`) and that `/home/<username>` is writable by that user.
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens (no shell quoting, so args containing spaces cannot be expressed). Use this when the container needs extra capabilities, devices, or mounts. Examples:
 
   ```dockerfile

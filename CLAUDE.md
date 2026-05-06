@@ -1,3 +1,4 @@
+<!-- This file has been edited with the assistance of an AI tool. -->
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -20,9 +21,13 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 - `AWS_REGION=us-east-1`: Default AWS region
 
 ### Volume Mounts (in agent function)
-- Global config: `~/.claude_config/` → `/tmp/claude-home/.claude/`
-- Project workspace: `$(pwd)` → `/workspace`
-- Session storage: `.claude/sessions/` → `/tmp/claude-home/.claude/projects/-workspace`
+
+The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent-user>` (default `ubuntu`). `HOME` is set to that path so Claude Code finds its config in the usual spot.
+
+- `<wrap-dir>/.claude_config/.claude.json` → `/home/<user>/.claude.json` (global Claude config file)
+- `<wrap-dir>/.claude_config/.claude/` → `/home/<user>/.claude/` (global Claude directory: `CLAUDE.md`, `settings.json`, etc.)
+- `$(pwd)` → `/workspace` (project files)
+- `$(pwd)/.claude/sessions/` → `/home/<user>/.claude/projects/-workspace/` (per-project session history, overlays on top of the global `.claude` mount)
 
 ### Authentication
 The `agent()` function expects credentials in `~/claude_keys.json` with the structure:
@@ -55,7 +60,11 @@ agent [arguments]
 
 ## Per-project customization
 
-A project can provide its own `Dockerfile.agent` at its root to override the base image. The file must start with a `# agent-name: <name>` comment; the built image is tagged `claude-agent-<name>`. Two additional directives are recognized:
+A project can provide its own `Dockerfile.agent` at its root to override the base image. The file must start with a `# agent-name: <name>` comment; the built image is tagged `claude-agent-<name>`. Additional directives are recognized:
+
+### `# agent-user: <username>`
+
+Overrides the in-container username (default `ubuntu`). This changes where the wrapper expects `$HOME` to be inside the container — the global config and project session mounts are rerouted to `/home/<username>/.claude.json` and `/home/<username>/.claude/`. Use this only when the base image has been customized to run as a different user.
 
 ### `# agent-run-args: <flags>`
 
@@ -73,8 +82,28 @@ Security note: these flags are pass-through to `docker run`, so a `Dockerfile.ag
 
 Because the baked-in UID differs per host user, each user on a shared host builds their own image variant under the same tag.
 
+## Keeping `default-CLAUDE.md` in sync
+
+`default-CLAUDE.md` is copied into every consumer project's `.claude_config/.claude/CLAUDE.md` on first `agent` run and is how agents running in *other* projects learn about this wrapper's runtime contract (directives, mounts, installation rules, etc.).
+
+**Whenever you change wrapper behavior that a consumer agent needs to know about, update `default-CLAUDE.md` in the same change.** This includes:
+
+- Adding, renaming, or removing a `Dockerfile.agent` directive (e.g., `# agent-user:`, `# agent-run-args:`, `EXPOSE` handling).
+- Changing mount paths, `HOME`, or other environment assumptions an agent might rely on.
+- Changing the rules around installing dependencies, sudo/root access, or the working directory.
+- Changing the set of files/directories that persist across container restarts.
+
+What does **not** require a `default-CLAUDE.md` update:
+
+- Internal refactors of `agent-wrap.bashrc` that don't change observable behavior.
+- Changes to this repo's own `CLAUDE.md` (which governs editing *this* repo, not consumer projects).
+- Host-side changes invisible inside the container (e.g., how `.claude_config/` is laid out on disk).
+
+`agent-wrap_update` handles propagation: if a user's copy matches the old default, it is replaced automatically; if it's been customized, they get a diff-and-merge prompt. So updating `default-CLAUDE.md` is the only action required on the wrapper side — consumer projects pick up the change on their next `agent-wrap_update`.
+
 ## Notes
 
 - The Docker container runs as the current user (`$(id -u):$(id -g)`) to avoid permission issues
-- Claude home directory is set to `/tmp/claude-home` inside the container
+- `HOME` inside the container is set to `/home/<agent-user>` (default `/home/ubuntu`); global Claude state lives under that path and is mounted from `<wrap-dir>/.claude_config/`
 - The project `.claude` directory is automatically created and git-ignored by the wrapper script
+- On first run after upgrading from the pre-home-dir layout, `agent()` silently migrates `.claude_config/claude.json` → `.claude_config/.claude.json` and `.claude_config/{CLAUDE.md,settings.json}` → `.claude_config/.claude/`

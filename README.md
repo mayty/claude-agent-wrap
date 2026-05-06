@@ -1,3 +1,4 @@
+<!-- This file has been edited with the assistance of an AI tool. -->
 # claude-agent-wrap
 
 A Docker-based wrapper for running the [Claude Code](https://github.com/anthropics/claude-code) CLI against AWS Bedrock. It packages Claude Code into a reproducible container image and exposes two bash functions — `agent` and `rebuild_agent` — that handle volume mounts, credentials, and per-project image customization.
@@ -48,11 +49,23 @@ The wrapper mounts:
 | Host | Container | Purpose |
 | --- | --- | --- |
 | `$(pwd)` | `/workspace` | Project files |
-| `$(pwd)/.claude/sessions` | `/tmp/claude-home/.claude/projects/-workspace` | Per-project session history |
-| `<wrap-dir>/.claude_config/claude.json` | `/tmp/claude-home/.claude.json` | Global Claude config |
-| `<wrap-dir>/.claude_config/settings.json` | `/tmp/claude-home/.claude/settings.json` | Global Claude settings |
+| `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` | Per-project session history (overlays the global `.claude` mount) |
+| `<wrap-dir>/.claude_config/.claude.json` | `/home/<user>/.claude.json` | Global Claude config file |
+| `<wrap-dir>/.claude_config/.claude` | `/home/<user>/.claude` | Global Claude directory (`CLAUDE.md`, `settings.json`, caches, etc.) |
 
-The container runs as your host user (`$(id -u):$(id -g)`). A `.claude/` directory is auto-created in each project and git-ignored.
+The container runs as your host user (`$(id -u):$(id -g)`) with `HOME` pointing at `/home/<user>` (default `/home/ubuntu`). A `.claude/` directory is auto-created in each project and git-ignored.
+
+### Migration note
+
+If you used an earlier version of this wrapper, your `.claude_config/` contained `claude.json`, `CLAUDE.md`, and `settings.json` at the top level. The first `agent` run after upgrading will silently move these into the new home-dir layout:
+
+```
+.claude_config/claude.json    → .claude_config/.claude.json
+.claude_config/CLAUDE.md      → .claude_config/.claude/CLAUDE.md
+.claude_config/settings.json  → .claude_config/.claude/settings.json
+```
+
+No action is required on your part.
 
 ## Per-project customization
 
@@ -75,6 +88,7 @@ The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up 
 `Dockerfile.agent` supports a few wrapper-specific comment directives in addition to normal Dockerfile syntax:
 
 - **`# agent-name: <name>`** (required) — names the image `claude-agent-<name>`. Must match `[a-zA-Z0-9_.-]+`.
+- **`# agent-user: <username>`** — sets the in-container username (default `ubuntu`). The wrapper reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`. Only useful if the base image has been customized to run as a different user.
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; tokens are whitespace-split (no shell quoting). Example:
   ```dockerfile
   # agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN

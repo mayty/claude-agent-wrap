@@ -43,7 +43,7 @@ agent-wrap_update() {
     BRANCH=$(git -C "$TOOL_DIR" symbolic-ref --short HEAD) || return 1
     BEFORE=$(git -C "$TOOL_DIR" rev-parse HEAD) || return 1
 
-    local USER_CLAUDE_MD="$TOOL_DIR/.claude_config/CLAUDE.md"
+    local USER_CLAUDE_MD="$TOOL_DIR/.claude_config/.claude/CLAUDE.md"
     local DEFAULT_CLAUDE_MD="$TOOL_DIR/default-CLAUDE.md"
     local pre_state="missing"
     if [ -f "$USER_CLAUDE_MD" ]; then
@@ -75,11 +75,11 @@ agent-wrap_update() {
             ;;
         matches)
             rm -f "$USER_CLAUDE_MD"
-            echo "${y}Note:${r} default-CLAUDE.md changed and your .claude_config/CLAUDE.md was unmodified; removed it so the next 'agent' run will install the new default."
+            echo "${y}Note:${r} default-CLAUDE.md changed and your .claude_config/.claude/CLAUDE.md was unmodified; removed it so the next 'agent' run will install the new default."
             ;;
         customized)
             echo ""
-            echo "${y}Warning:${r} default-CLAUDE.md changed upstream, but your .claude_config/CLAUDE.md has local customizations and was NOT touched."
+            echo "${y}Warning:${r} default-CLAUDE.md changed upstream, but your .claude_config/.claude/CLAUDE.md has local customizations and was NOT touched."
             echo "To update it manually:"
             echo "  1. Review the upstream change:  git -C \"$TOOL_DIR\" diff $BEFORE $AFTER -- default-CLAUDE.md"
             echo "  2. Compare with your copy:      diff -u \"$USER_CLAUDE_MD\" \"$DEFAULT_CLAUDE_MD\""
@@ -109,7 +109,7 @@ agent() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local GLOBAL_CONFIG_DIR="$TOOL_DIR/.claude_config"
     local SECRETS_FILE="${HOME}/claude_keys.json"
-    local CLAUDE_HOME="/tmp/claude-home"
+    local AGENT_USER="ubuntu"
 
     local RESOLVED
     RESOLVED=$(_agent_resolve_image) || return 1
@@ -136,12 +136,20 @@ agent() {
             PORT_ARGS+=(-p "127.0.0.1:${port}:${token}")
         done
 
+        local user_override
+        user_override=$(grep -E '^#[[:space:]]*agent-user:[[:space:]]*\S+' "$DOCKERFILE" | head -n1 | sed -E 's/^#[[:space:]]*agent-user:[[:space:]]*//')
+        if [ -n "$user_override" ]; then
+            AGENT_USER="$user_override"
+        fi
+
         while IFS= read -r line; do
             # shellcheck disable=SC2206
             EXTRA_RUN_ARGS+=(${line})
         done < <(grep -E '^#[[:space:]]*agent-run-args:[[:space:]]*.*' "$DOCKERFILE" \
                  | sed -E 's/^#[[:space:]]*agent-run-args:[[:space:]]*//')
     fi
+
+    local CLAUDE_HOME="/home/${AGENT_USER}"
 
     if [ -f "$SECRETS_FILE" ]; then
         local CLAUDE_KEY=$(jq -r '.ServiceSpecificCredential.ServiceCredentialSecret' "$SECRETS_FILE")
@@ -150,14 +158,31 @@ agent() {
         return 1
     fi
 
-    mkdir -p "$GLOBAL_CONFIG_DIR"
-    touch "$GLOBAL_CONFIG_DIR/claude.json"
-    touch "$GLOBAL_CONFIG_DIR/settings.json"
-    chmod 600 "$GLOBAL_CONFIG_DIR/claude.json"
-    chmod 600 "$GLOBAL_CONFIG_DIR/settings.json"
-    if [ ! -f "$GLOBAL_CONFIG_DIR/CLAUDE.md" ]; then
-        cp "$TOOL_DIR/default-CLAUDE.md" "$GLOBAL_CONFIG_DIR/CLAUDE.md"
+    mkdir -p "$GLOBAL_CONFIG_DIR/.claude"
+
+    # One-time migration from the pre-home-dir layout:
+    # .claude_config/claude.json   → .claude_config/.claude.json
+    # .claude_config/CLAUDE.md     → .claude_config/.claude/CLAUDE.md
+    # .claude_config/settings.json → .claude_config/.claude/settings.json
+    if [ -f "$GLOBAL_CONFIG_DIR/claude.json" ] && [ ! -e "$GLOBAL_CONFIG_DIR/.claude.json" ]; then
+        mv "$GLOBAL_CONFIG_DIR/claude.json" "$GLOBAL_CONFIG_DIR/.claude.json"
     fi
+    for f in CLAUDE.md settings.json; do
+        if [ -f "$GLOBAL_CONFIG_DIR/$f" ] && [ ! -e "$GLOBAL_CONFIG_DIR/.claude/$f" ]; then
+            mv "$GLOBAL_CONFIG_DIR/$f" "$GLOBAL_CONFIG_DIR/.claude/$f"
+        fi
+    done
+
+    touch "$GLOBAL_CONFIG_DIR/.claude.json"
+    touch "$GLOBAL_CONFIG_DIR/.claude/settings.json"
+    chmod 600 "$GLOBAL_CONFIG_DIR/.claude.json"
+    chmod 600 "$GLOBAL_CONFIG_DIR/.claude/settings.json"
+    if [ ! -f "$GLOBAL_CONFIG_DIR/.claude/CLAUDE.md" ]; then
+        cp "$TOOL_DIR/default-CLAUDE.md" "$GLOBAL_CONFIG_DIR/.claude/CLAUDE.md"
+    fi
+
+    # Pre-create the projects dir inside global .claude so Docker doesn't create it as root
+    mkdir -p "$GLOBAL_CONFIG_DIR/.claude/projects/-workspace"
 
     local PROJECT_CLAUDE_DIR="$(pwd)/.claude"
     mkdir -p "$PROJECT_CLAUDE_DIR/sessions"
@@ -170,13 +195,12 @@ agent() {
 
     docker run --rm -it \
         "${USER_ARGS[@]}" \
-        -v "${GLOBAL_CONFIG_DIR}/claude.json:${CLAUDE_HOME}/.claude.json" \
-        -v "${GLOBAL_CONFIG_DIR}/settings.json:${CLAUDE_HOME}/.claude/settings.json" \
-        -v "${GLOBAL_CONFIG_DIR}/CLAUDE.md:${CLAUDE_HOME}/.claude/CLAUDE.md" \
+        -v "${GLOBAL_CONFIG_DIR}/.claude.json:${CLAUDE_HOME}/.claude.json" \
+        -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
         -v "$(pwd):/workspace" \
         -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
-        -e HOME=${CLAUDE_HOME} \
+        -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \
         "${EXTRA_RUN_ARGS[@]}" \
         "$IMAGE" "$@"
