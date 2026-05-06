@@ -1,3 +1,4 @@
+# This file has been edited with the assistance of an AI tool.
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
 
@@ -41,16 +42,53 @@ agent-wrap_update() {
     local BRANCH BEFORE AFTER
     BRANCH=$(git -C "$TOOL_DIR" symbolic-ref --short HEAD) || return 1
     BEFORE=$(git -C "$TOOL_DIR" rev-parse HEAD) || return 1
+
+    local USER_CLAUDE_MD="$TOOL_DIR/.claude_config/CLAUDE.md"
+    local DEFAULT_CLAUDE_MD="$TOOL_DIR/default-CLAUDE.md"
+    local pre_state="missing"
+    if [ -f "$USER_CLAUDE_MD" ]; then
+        if diff -wB --strip-trailing-cr -q "$USER_CLAUDE_MD" "$DEFAULT_CLAUDE_MD" >/dev/null 2>&1; then
+            pre_state="matches"
+        else
+            pre_state="customized"
+        fi
+    fi
+
     git -C "$TOOL_DIR" pull --ff-only origin "$BRANCH" || return 1
     AFTER=$(git -C "$TOOL_DIR" rev-parse HEAD) || return 1
     local y=$'\033[1;33m' r=$'\033[0m'
     echo ""
     if [ "$BEFORE" = "$AFTER" ]; then
         echo "${y}Note:${r} already up to date; no action needed."
-    else
-        echo "${y}Note:${r} restart your shell (or re-source agent-wrap.bashrc) to pick up script changes."
-        echo "${y}Note:${r} run 'rebuild_agent' to rebuild the Docker image with the updated files."
+        return 0
     fi
+
+    echo "${y}Note:${r} restart your shell (or re-source agent-wrap.bashrc) to pick up script changes."
+    echo "${y}Note:${r} run 'rebuild_agent' to rebuild the Docker image with the updated files."
+
+    if git -C "$TOOL_DIR" diff --quiet "$BEFORE" "$AFTER" -- default-CLAUDE.md; then
+        return 0
+    fi
+
+    case "$pre_state" in
+        missing)
+            ;;
+        matches)
+            rm -f "$USER_CLAUDE_MD"
+            echo "${y}Note:${r} default-CLAUDE.md changed and your .claude_config/CLAUDE.md was unmodified; removed it so the next 'agent' run will install the new default."
+            ;;
+        customized)
+            echo ""
+            echo "${y}Warning:${r} default-CLAUDE.md changed upstream, but your .claude_config/CLAUDE.md has local customizations and was NOT touched."
+            echo "To update it manually:"
+            echo "  1. Review the upstream change:  git -C \"$TOOL_DIR\" diff $BEFORE $AFTER -- default-CLAUDE.md"
+            echo "  2. Compare with your copy:      diff -u \"$USER_CLAUDE_MD\" \"$DEFAULT_CLAUDE_MD\""
+            echo "  3. Either merge the changes into \"$USER_CLAUDE_MD\" by hand,"
+            echo "     or delete it to accept the new default (losing your customizations):"
+            echo "        rm \"$USER_CLAUDE_MD\""
+            echo "     The next 'agent' run will then copy the new default into place."
+            ;;
+    esac
 }
 
 rebuild_agent() {
