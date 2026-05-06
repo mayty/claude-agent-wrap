@@ -106,4 +106,3 @@ What does **not** require a `default-CLAUDE.md` update:
 - The Docker container runs as the current user (`$(id -u):$(id -g)`) to avoid permission issues
 - `HOME` inside the container is set to `/home/<agent-user>` (default `/home/ubuntu`); global Claude state lives under that path and is mounted from `<wrap-dir>/.claude_config/`
 - The project `.claude` directory is automatically created and git-ignored by the wrapper script
-- On first run after upgrading from the pre-home-dir layout, `agent()` silently migrates `.claude_config/claude.json` → `.claude_config/.claude.json` and `.claude_config/{CLAUDE.md,settings.json}` → `.claude_config/.claude/`

@@ -160,19 +160,6 @@ agent() {
 
     mkdir -p "$GLOBAL_CONFIG_DIR/.claude"
 
-    # One-time migration from the pre-home-dir layout:
-    # .claude_config/claude.json   → .claude_config/.claude.json
-    # .claude_config/CLAUDE.md     → .claude_config/.claude/CLAUDE.md
-    # .claude_config/settings.json → .claude_config/.claude/settings.json
-    if [ -f "$GLOBAL_CONFIG_DIR/claude.json" ] && [ ! -e "$GLOBAL_CONFIG_DIR/.claude.json" ]; then
-        mv "$GLOBAL_CONFIG_DIR/claude.json" "$GLOBAL_CONFIG_DIR/.claude.json"
-    fi
-    for f in CLAUDE.md settings.json; do
-        if [ -f "$GLOBAL_CONFIG_DIR/$f" ] && [ ! -e "$GLOBAL_CONFIG_DIR/.claude/$f" ]; then
-            mv "$GLOBAL_CONFIG_DIR/$f" "$GLOBAL_CONFIG_DIR/.claude/$f"
-        fi
-    done
-
     touch "$GLOBAL_CONFIG_DIR/.claude.json"
     touch "$GLOBAL_CONFIG_DIR/.claude/settings.json"
     chmod 600 "$GLOBAL_CONFIG_DIR/.claude.json"

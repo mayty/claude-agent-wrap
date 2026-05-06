@@ -55,18 +55,6 @@ The wrapper mounts:
 
 The container runs as your host user (`$(id -u):$(id -g)`) with `HOME` pointing at `/home/<user>` (default `/home/ubuntu`). A `.claude/` directory is auto-created in each project and git-ignored.
 
-### Migration note
-
-If you used an earlier version of this wrapper, your `.claude_config/` contained `claude.json`, `CLAUDE.md`, and `settings.json` at the top level. The first `agent` run after upgrading will silently move these into the new home-dir layout:
-
-```
-.claude_config/claude.json    → .claude_config/.claude.json
-.claude_config/CLAUDE.md      → .claude_config/.claude/CLAUDE.md
-.claude_config/settings.json  → .claude_config/.claude/settings.json
-```
-
-No action is required on your part.
-
 ## Per-project customization
 
 To layer project-specific tooling on top of the base image, drop a `Dockerfile.agent` at the root of your project. The simplest way is to start from a copy of the base:
