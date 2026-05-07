@@ -9,10 +9,11 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 
 ## Architecture
 
-- **Dockerfile**: Builds an Ubuntu 24.04-based image with Node.js 24.x and Claude Code CLI installed globally. Configured to use AWS Bedrock for Claude API access.
+- **Dockerfile**: Builds an Ubuntu 24.04-based image with Node.js 24.x and Claude Code CLI installed globally. Also bakes in `hadolint` and `crane` for use by the in-container validator. Configured to use AWS Bedrock for Claude API access.
 - **agent-wrap.bashrc**: Provides bash functions to be sourced in your shell:
   - `agent()`: Runs Claude Code in Docker with proper volume mounts and credentials
   - `rebuild_agent()`: Rebuilds the Docker image with --no-cache
+- **validate-dockerfile-agent**: Shell script mounted read-only into every container at `/opt/agent-wrap/validate-dockerfile-agent`. Validates a project's `Dockerfile.agent` before the agent prompts the user to rebuild: runs hadolint, checks wrapper-contract directives, and uses `crane` to probe the base image's `/etc/passwd` from the registry (no Docker daemon) to confirm the expected in-container user actually exists — catching "build succeeds, launch fails" scenarios at write time.
 
 ## Key Configuration
 
@@ -30,6 +31,7 @@ The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent
 - `$(pwd)/.claude/sessions/` → `/home/<user>/.claude/projects/-workspace/` (per-project session history, overlays on top of the global `.claude` mount)
 - `<wrap-dir>/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
 - `<wrap-dir>/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
+- `<wrap-dir>/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
 
 ### Authentication
 The `agent()` function expects credentials in `~/claude_keys.json` with the structure:

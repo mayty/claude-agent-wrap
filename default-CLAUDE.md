@@ -5,7 +5,7 @@
 
 You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
 
-The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image) and `agent-wrap.bashrc` (the launcher, including the `agent`, `rebuild_agent`, and `create_custom_agent` functions). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
+The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image), `agent-wrap.bashrc` (the launcher, including the `agent`, `rebuild_agent`, and `create_custom_agent` functions), and `validate-dockerfile-agent` (a validator script, see below). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
 
 **Important:** You always run as a non-root user inside the container and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 
@@ -45,6 +45,25 @@ Recognized directives (as special comments in `Dockerfile.agent`):
 When a user asks for something that a `docker run` flag would solve (mounting a path, exposing a port, adding a capability, passing a device), add the appropriate directive to `Dockerfile.agent` and prompt them to run `rebuild_agent` — do not tell them to edit `agent-wrap.bashrc` or their shell invocation.
 
 Security note: `agent-run-args` is pass-through to `docker run`, so it can grant `--privileged`, host mounts, and similar. Only add flags you actually need, and flag to the user what you're granting and why.
+
+## Validating `Dockerfile.agent` before rebuild
+
+**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `Dockerfile.agent`, and before you tell the user to run `rebuild_agent`.** The validator catches mistakes that `docker build` alone won't — most importantly, base images that don't contain the user the wrapper will try to use. A build can succeed and still produce an image the wrapper cannot launch (mounts land on a nonexistent `/home/<user>`), so catch these issues up front.
+
+The validator runs three layers of checks:
+
+1. **hadolint** — generic Dockerfile hygiene.
+2. **Wrapper-contract checks** — `# agent-name:` format, `WORKDIR /workspace` preserved, quoted whitespace in `# agent-run-args:`, `ARG HOST_UID`/`ARG HOST_GID` declared if referenced.
+3. **Base-image user probe** — uses `crane` (no Docker daemon needed) to fetch the base image's `/etc/passwd` directly from the registry and confirm the expected in-container user (`# agent-user:` value, or `ubuntu` by default) actually exists there. If it doesn't, the validator lists the non-root users it found in the base so you can pick a valid one.
+
+Usage:
+
+```sh
+/opt/agent-wrap/validate-dockerfile-agent           # validates ./Dockerfile.agent
+/opt/agent-wrap/validate-dockerfile-agent path/to/Dockerfile.agent
+```
+
+Exit codes: `0` pass (warnings allowed), `1` errors, `2` file missing or usage problem. Fix any errors before asking the user to rebuild. If the probe can't reach the registry (offline, distroless/scratch base, auth required), it emits a warning rather than an error — in that case, confirm with the user that the base image contains the expected user.
 
 ## AI attribution
 

@@ -188,6 +188,7 @@ agent() {
         -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
         -v "${TOOL_DIR}/Dockerfile:/opt/agent-wrap/Dockerfile:ro" \
         -v "${TOOL_DIR}/agent-wrap.bashrc:/opt/agent-wrap/agent-wrap.bashrc:ro" \
+        -v "${TOOL_DIR}/validate-dockerfile-agent:/opt/agent-wrap/validate-dockerfile-agent:ro" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
         -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \

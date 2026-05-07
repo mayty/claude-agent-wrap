@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# This file has been created with the assistance of an AI tool.
+#
+# Validates a Dockerfile.agent against the agent-wrap contract BEFORE the
+# user is asked to rebuild. Catches the failure modes that `docker build`
+# cannot surface on its own:
+#
+#   1. hadolint — generic Dockerfile hygiene.
+#   2. Wrapper contract checks — agent-name format, WORKDIR, agent-run-args
+#      quoting, HOST_UID/GID declarations.
+#   3. Base-image user probe — uses `crane` to fetch the base image's
+#      /etc/passwd from the registry (no Docker daemon) and verifies the
+#      expected in-container user actually exists, so a successful build
+#      can't produce an image that fails at launch time.
+#
+# Usage: validate-dockerfile-agent [path/to/Dockerfile.agent]
+#
+# Exit codes:
+#   0 — validation passed (warnings allowed)
+#   1 — validation failed (one or more errors)
+#   2 — usage / file-not-found
+
+set -uo pipefail
+
+DOCKERFILE="${1:-Dockerfile.agent}"
+
+if [ ! -f "$DOCKERFILE" ]; then
+    echo "validate-dockerfile-agent: '$DOCKERFILE' not found" >&2
+    exit 2
+fi
+
+errors=0
+warnings=0
+
+err()  { echo "ERROR: $*" >&2; errors=$((errors+1)); }
+warn() { echo "WARN:  $*" >&2; warnings=$((warnings+1)); }
+info() { echo "INFO:  $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# 1. Generic Dockerfile lint (hadolint)
+# ---------------------------------------------------------------------------
+if command -v hadolint >/dev/null 2>&1; then
+    info "Running hadolint on $DOCKERFILE"
+    # DL3008 (pin apt versions) and DL3013 (pin pip versions) are noisy for
+    # the short-lived per-developer images this wrapper produces.
+    if ! hadolint --ignore DL3008 --ignore DL3013 "$DOCKERFILE"; then
+        warn "hadolint reported issues (above)"
+    fi
+else
+    info "hadolint not installed; skipping generic Dockerfile lint"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Wrapper-contract checks
+# ---------------------------------------------------------------------------
+
+# --- # agent-name: required, matches [a-z0-9_.-]+
+name=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$DOCKERFILE" \
+       | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
+if [ -z "$name" ]; then
+    err "missing '# agent-name: <name>' directive"
+elif ! [[ "$name" =~ ^[a-z0-9_.-]+$ ]]; then
+    err "agent-name '$name' must match [a-z0-9_.-]+ (Docker image names are lowercase)"
+fi
+
+# --- WORKDIR must stay at /workspace (last WORKDIR wins)
+workdir=$(grep -iE '^WORKDIR[[:space:]]+' "$DOCKERFILE" \
+          | tail -n1 | awk '{print $2}')
+if [ -n "$workdir" ] && [ "$workdir" != "/workspace" ]; then
+    err "WORKDIR is '$workdir' but the wrapper mounts the project at /workspace — set 'WORKDIR /workspace'"
+fi
+
+# --- # agent-user: what the wrapper will expect as $HOME inside the container
+declared_user=$(grep -E '^#[[:space:]]*agent-user:[[:space:]]*\S+' "$DOCKERFILE" \
+                | head -n1 | sed -E 's/^#[[:space:]]*agent-user:[[:space:]]*//')
+expected_user="${declared_user:-ubuntu}"
+
+# --- # agent-run-args: quoted whitespace is silently dropped
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    if echo "$line" | grep -qE "'[^']*[[:space:]][^']*'|\"[^\"]*[[:space:]][^\"]*\""; then
+        warn "agent-run-args line contains quoted whitespace: '$line' — the wrapper whitespace-splits tokens, so quoting is ignored and the argument will be split."
+    fi
+done < <(grep -E '^#[[:space:]]*agent-run-args:[[:space:]]*.*' "$DOCKERFILE" \
+         | sed -E 's/^#[[:space:]]*agent-run-args:[[:space:]]*//')
+
+# --- HOST_UID / HOST_GID must be declared if referenced
+if grep -qE '\$\{?HOST_UID\}?' "$DOCKERFILE" \
+   && ! grep -qE '^ARG[[:space:]]+HOST_UID' "$DOCKERFILE"; then
+    warn "HOST_UID is referenced but 'ARG HOST_UID' is not declared — the value will be empty at build time"
+fi
+if grep -qE '\$\{?HOST_GID\}?' "$DOCKERFILE" \
+   && ! grep -qE '^ARG[[:space:]]+HOST_GID' "$DOCKERFILE"; then
+    warn "HOST_GID is referenced but 'ARG HOST_GID' is not declared — the value will be empty at build time"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Base-image user probe
+#
+# Use the *last* FROM (final stage) to determine what /etc/passwd will look
+# like at build start. Always probe — even when the Dockerfile.agent has
+# useradd/adduser steps — because the directive and the useradd target can
+# disagree (e.g. '# agent-user: alice' + 'RUN adduser bob'), and that
+# mismatch produces a broken image that the wrapper still can't launch.
+#
+# Resolution:
+#   - expected user found in base               → pass (info).
+#   - not in base, but a useradd/adduser step
+#     creates it                                → warn (agent should
+#                                                  double-check the
+#                                                  useradd spelling/flags).
+#   - not in base and not created by this file  → error.
+# ---------------------------------------------------------------------------
+base_image=$(grep -iE '^FROM[[:space:]]+' "$DOCKERFILE" \
+             | tail -n1 | awk '{print $2}')
+
+# Extract usernames created by useradd/adduser in this Dockerfile.agent.
+# The name is usually the last non-flag argument to the command, so split
+# each invocation at shell operators (&&, ||, ;) and take $NF. Imperfect,
+# but good enough for the common forms:
+#   useradd -m alice
+#   adduser -D bob
+#   adduser --uid 1000 -h /home/x charlie
+created_users=$(grep -oE '(useradd|adduser)[^&|;]*' "$DOCKERFILE" \
+                | awk '{print $NF}' \
+                | grep -vE '^(-|useradd|adduser)$' \
+                | sort -u)
+expected_is_created=0
+if echo "$created_users" | grep -qxF "$expected_user"; then
+    expected_is_created=1
+fi
+
+if [ -z "$base_image" ]; then
+    err "no FROM directive found"
+elif ! command -v crane >/dev/null 2>&1; then
+    warn "crane not installed; cannot probe base image '$base_image' for user '$expected_user'"
+else
+    info "Probing base image '$base_image' for user '$expected_user' (via crane)"
+    passwd_contents=$(crane export "$base_image" - 2>/dev/null \
+                      | tar -xO --occurrence=1 etc/passwd 2>/dev/null)
+    if [ -z "$passwd_contents" ]; then
+        warn "could not read /etc/passwd from '$base_image' (image may be distroless, scratch-based, or unreachable) — cannot verify user '$expected_user'"
+    elif echo "$passwd_contents" | grep -qE "^${expected_user}:"; then
+        info "user '$expected_user' exists in base image '$base_image'"
+    elif [ "$expected_is_created" = "1" ]; then
+        warn "user '$expected_user' is not in base image '$base_image' but a useradd/adduser step in this Dockerfile.agent appears to create it — double-check the useradd command actually produces a login user named '$expected_user' with a writable /home/$expected_user (the wrapper mounts to that path)."
+    else
+        # Candidate non-root users from /etc/passwd in the base image.
+        base_candidates=$(echo "$passwd_contents" \
+            | awk -F: '$3 >= 1000 && $3 < 65534 {print "    " $1 " (uid " $3 ", from base)"}')
+        # Plus any users this Dockerfile.agent creates but that don't match
+        # the directive — those are likely the intended target.
+        file_candidates=""
+        if [ -n "$created_users" ]; then
+            file_candidates=$(echo "$created_users" \
+                | awk '{print "    " $1 " (created by this Dockerfile.agent)"}')
+        fi
+        candidates="${base_candidates}${base_candidates:+${file_candidates:+$'\n'}}${file_candidates}"
+        msg="user '$expected_user' does NOT exist in base image '$base_image' and is not created by this Dockerfile.agent."
+        if [ -n "$candidates" ]; then
+            msg="$msg Candidate users:
+$candidates
+Either change the base image, add a 'RUN useradd ${expected_user}' step, or set '# agent-user: <one of the above>'."
+        else
+            msg="$msg No non-root users (UID >= 1000) found in the base either — add a 'RUN useradd ${expected_user}' step, or pick a different base image."
+        fi
+        err "$msg"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo
+echo "Declared agent-name:  ${name:-<unset>}"
+echo "Declared agent-user:  ${declared_user:-<unset, defaults to ubuntu>}"
+echo "Base image (FROM):    ${base_image:-<none>}"
+echo "Wrapper expects HOME=/home/${expected_user} inside the container."
+echo
+
+if [ "$errors" -gt 0 ]; then
+    echo "Validation failed: $errors error(s), $warnings warning(s)" >&2
+    exit 1
+fi
+echo "Validation passed${warnings:+ with $warnings warning(s)}"
+exit 0
