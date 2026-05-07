@@ -32,11 +32,10 @@ Recognized directives (as special comments in `Dockerfile.agent`):
 
 - **`# agent-name: <name>`** — required. Tags the built image as `claude-agent-<name>`. Must match `[a-z0-9_.-]+` (Docker image names are lowercase). Don't change this casually — renaming it orphans the previously built image.
 - **`# agent-user: <username>`** — sets the container username (default: `ubuntu`). This reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`, and sets `HOME` accordingly. Use this when your custom image creates a different user than the base `ubuntu` user. Make sure the user exists in your `Dockerfile.agent` (e.g., via `useradd` with `ARG HOST_UID`/`ARG HOST_GID`) and that `/home/<username>` is writable by that user.
-- **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens (no shell quoting, so args containing spaces cannot be expressed). Use this when the container needs extra capabilities, devices, or mounts. Examples:
+- **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens (no shell quoting, so args containing spaces cannot be expressed). Use this when the container needs extra capabilities, devices, or mounts. Example:
 
   ```dockerfile
   # agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN
-  # agent-run-args: -v /var/run/docker.sock:/var/run/docker.sock
   ```
 
 - **`EXPOSE <port>`** — any `EXPOSE` line in `Dockerfile.agent` is automatically published to `127.0.0.1:<port>` on the host. Use this for dev servers, debuggers, etc. — don't ask the user to add `-p` flags manually.
@@ -45,6 +44,18 @@ Recognized directives (as special comments in `Dockerfile.agent`):
 When a user asks for something that a `docker run` flag would solve (mounting a path, exposing a port, adding a capability, passing a device), add the appropriate directive to `Dockerfile.agent` and prompt them to run `rebuild_agent` — do not tell them to edit `agent-wrap.bashrc` or their shell invocation.
 
 Security note: `agent-run-args` is pass-through to `docker run`, so it can grant `--privileged`, host mounts, and similar. Only add flags you actually need, and flag to the user what you're granting and why.
+
+**Forbidden without explicit user request:** do not add `-v /var/run/docker.sock:/var/run/docker.sock` (or any other mount of the host Docker socket) on your own initiative. Access to the host Docker socket is equivalent to unrestricted root on the host — a process in the container can launch privileged containers, bind-mount `/`, and fully compromise the host, defeating the isolation the wrapper is meant to provide. Only add it if the user explicitly asks for Docker-in-Docker / socket access, and before doing so, spell out to them that it grants host-root-equivalent access and confirm they still want it. The same rule applies to other escape-hatch flags like `--privileged`, `--pid=host`, `--network=host`, or bind-mounts of sensitive host paths (`/`, `/etc`, `/root`, `~/.ssh`, cloud credential dirs).
+
+**Strongly recommended: shadow build/cache directories with anonymous volumes.** Because `/workspace` is bind-mounted from the host, anything the container writes under it — `node_modules/`, `.venv/`, `target/`, `dist/`, `__pycache__/`, `.next/`, `.pytest_cache/`, etc. — lands on the host filesystem. That pollutes the host, slows down host-side tools (editors, file watchers, git status), and can cause cross-platform breakage when host and container OS/arch differ (e.g., Linux-built `node_modules` native bindings on a macOS host). Prefer keeping these inside the container by adding anonymous volume mounts via `agent-run-args`:
+
+```dockerfile
+# agent-run-args: -v /workspace/node_modules
+# agent-run-args: -v /workspace/.venv
+# agent-run-args: -v /workspace/target
+```
+
+An anonymous volume (a `-v` flag with only a container path, no host path) shadows that sub-path of the bind mount so writes go into a Docker-managed volume instead of the host `/workspace`. Pick the directories that match the project's build system: `node_modules` for Node, `.venv`/`__pycache__` for Python, `target` for Rust, `build`/`dist` for most bundlers, etc. When you set up or modify a `Dockerfile.agent` for a project, proactively add these for the languages in use.
 
 ## Validating `Dockerfile.agent` before rebuild
 

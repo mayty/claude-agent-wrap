@@ -78,7 +78,7 @@ Extra flags passed through verbatim to `docker run`. Multiple lines are allowed;
 # agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN
 ```
 
-Security note: these flags are pass-through to `docker run`, so a `Dockerfile.agent` can request `--privileged`, host mounts, etc. Review comment lines as well as `RUN` instructions when auditing a third-party `Dockerfile.agent`.
+Security note: these flags are pass-through to `docker run`, so a `Dockerfile.agent` can request `--privileged`, host mounts, etc. Review comment lines as well as `RUN` instructions when auditing a third-party `Dockerfile.agent`. In particular, mounting the host Docker socket (`-v /var/run/docker.sock:/var/run/docker.sock`) gives the container host-root-equivalent access and should never be added by an agent on its own initiative — only when the user has explicitly asked for it and acknowledged the risk. Same goes for other escape-hatch flags (`--privileged`, `--pid=host`, `--network=host`, bind-mounts of `/`, `~/.ssh`, cloud credential dirs, etc.).
 
 ### `HOST_UID` / `HOST_GID` build args
 
