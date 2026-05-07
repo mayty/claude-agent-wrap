@@ -5,7 +5,7 @@
 
 You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
 
-The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image), `agent-wrap.bashrc` (the launcher, including the `agent`, `rebuild_agent`, and `create_custom_agent` functions), and `validate-dockerfile-agent` (a validator script, see below). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
+The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image), `agent-wrap.bashrc` (the launcher, including the `agent`, `rebuild_agent`, and `create_custom_agent` functions), `validate-dockerfile-agent` (a validator script, see below), and `statusline.py` (the default Claude Code status-line script, auto-wired into `settings.json` on first launch — to customize, redefine the `statusLine` key in `settings.json`; deleting the key will cause it to be re-injected on the next launch). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
 
 **Important:** You always run as a non-root user inside the container and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 

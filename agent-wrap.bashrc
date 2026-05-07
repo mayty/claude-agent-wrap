@@ -37,6 +37,24 @@ create_custom_agent() {
     echo "Created $DST with agent-name '$NAME'"
 }
 
+_agent_ensure_statusline() {
+    # Inject a default statusLine entry into settings.json when the key is
+    # absent. If the user removes the key, it is restored on the next launch
+    # (by design — to customize, redefine the key rather than deleting).
+    local SETTINGS="$1"
+    [ -s "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+    if ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
+        # malformed JSON — don't clobber
+        return 0
+    fi
+    if jq -e 'has("statusLine")' "$SETTINGS" >/dev/null; then
+        return 0
+    fi
+    local TMP="${SETTINGS}.tmp"
+    jq '. + {statusLine: {type: "command", command: "/opt/agent-wrap/statusline.py"}}' \
+        "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
+}
+
 agent-wrap_update() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local BRANCH BEFORE AFTER
@@ -164,6 +182,7 @@ agent() {
     touch "$GLOBAL_CONFIG_DIR/.claude/settings.json"
     chmod 600 "$GLOBAL_CONFIG_DIR/.claude.json"
     chmod 600 "$GLOBAL_CONFIG_DIR/.claude/settings.json"
+    _agent_ensure_statusline "$GLOBAL_CONFIG_DIR/.claude/settings.json"
     if [ ! -f "$GLOBAL_CONFIG_DIR/.claude/CLAUDE.md" ]; then
         cp "$TOOL_DIR/default-CLAUDE.md" "$GLOBAL_CONFIG_DIR/.claude/CLAUDE.md"
     fi
@@ -189,6 +208,7 @@ agent() {
         -v "${TOOL_DIR}/Dockerfile:/opt/agent-wrap/Dockerfile:ro" \
         -v "${TOOL_DIR}/agent-wrap.bashrc:/opt/agent-wrap/agent-wrap.bashrc:ro" \
         -v "${TOOL_DIR}/validate-dockerfile-agent:/opt/agent-wrap/validate-dockerfile-agent:ro" \
+        -v "${TOOL_DIR}/statusline.py:/opt/agent-wrap/statusline.py:ro" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
         -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \
