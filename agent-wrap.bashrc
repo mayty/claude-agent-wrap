@@ -9,8 +9,8 @@ _agent_resolve_image() {
             echo "Error: Dockerfile.agent must contain '# agent-name: <name>' comment" >&2
             return 1
         fi
-        if ! [[ "$NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
-            echo "Error: agent-name '$NAME' must match [a-zA-Z0-9_.-]+" >&2
+        if ! [[ "$NAME" =~ ^[a-z0-9_.-]+$ ]]; then
+            echo "Error: agent-name '$NAME' must match [a-z0-9_.-]+ (Docker image names are lowercase)" >&2
             return 1
         fi
         printf '%s\t%s\t%s\n' "claude-agent-$NAME" "$DOCKERFILE" "$(pwd)"
@@ -28,7 +28,7 @@ create_custom_agent() {
         echo "Error: $DST already exists" >&2
         return 1
     fi
-    local NAME=$(basename "$(pwd)" | tr -c 'a-zA-Z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//')
+    local NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//')
     if [ -z "$NAME" ]; then
         echo "Error: could not derive agent-name from directory '$(pwd)'" >&2
         return 1
@@ -186,6 +186,8 @@ agent() {
         -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
         -v "$(pwd):/workspace" \
         -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
+        -v "${TOOL_DIR}/Dockerfile:/opt/agent-wrap/Dockerfile:ro" \
+        -v "${TOOL_DIR}/agent-wrap.bashrc:/opt/agent-wrap/agent-wrap.bashrc:ro" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
         -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \

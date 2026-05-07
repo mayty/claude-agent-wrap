@@ -28,6 +28,8 @@ The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent
 - `<wrap-dir>/.claude_config/.claude/` → `/home/<user>/.claude/` (global Claude directory: `CLAUDE.md`, `settings.json`, etc.)
 - `$(pwd)` → `/workspace` (project files)
 - `$(pwd)/.claude/sessions/` → `/home/<user>/.claude/projects/-workspace/` (per-project session history, overlays on top of the global `.claude` mount)
+- `<wrap-dir>/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
+- `<wrap-dir>/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
 
 ### Authentication
 The `agent()` function expects credentials in `~/claude_keys.json` with the structure:

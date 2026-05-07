@@ -5,6 +5,8 @@
 
 You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
 
+The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image) and `agent-wrap.bashrc` (the launcher, including the `agent`, `rebuild_agent`, and `create_custom_agent` functions). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
+
 **Important:** You always run as a non-root user inside the container and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 
 ## Installing dependencies
@@ -14,7 +16,7 @@ Do **not** install dependencies ad-hoc inside the running container (`apt-get in
 Instead:
 
 - **If `Dockerfile.agent` exists in the project root:** edit it to add the dependency (e.g., add a `RUN apt-get install -y <pkg>` line), then tell the user to run `rebuild_agent` and restart the session.
-- **If there is no `Dockerfile.agent`:** tell the user to run `create_custom_agent` to scaffold one, then edit the newly created file and prompt them to run `rebuild_agent`.
+- **If there is no `Dockerfile.agent`:** create it by copying the canonical base image from `/opt/agent-wrap/Dockerfile` to `/workspace/Dockerfile.agent`, prepend a `# agent-name: <name>` line, then add your `RUN` steps. Derive `<name>` from the project directory (`basename /workspace`), lowercased, with any character outside `[a-z0-9_.-]` replaced by `-` and leading/trailing dashes stripped (Docker image names must be lowercase). Do **not** write `Dockerfile.agent` from scratch — the base image sets up Node, the Claude CLI, `WORKDIR /workspace`, and Bedrock env vars that the wrapper depends on. Once edited, prompt the user to run `rebuild_agent` and restart the session.
 
 Project-level (language) dependencies that belong in the project's own manifest (`package.json`, `requirements.txt`, `go.mod`, `Cargo.toml`, etc.) can be installed normally — those live in `/workspace` and persist.
 
@@ -28,7 +30,7 @@ Project-level (language) dependencies that belong in the project's own manifest 
 
 Recognized directives (as special comments in `Dockerfile.agent`):
 
-- **`# agent-name: <name>`** — required. Tags the built image as `claude-agent-<name>`. Must match `[a-zA-Z0-9_.-]+`. Don't change this casually — renaming it orphans the previously built image.
+- **`# agent-name: <name>`** — required. Tags the built image as `claude-agent-<name>`. Must match `[a-z0-9_.-]+` (Docker image names are lowercase). Don't change this casually — renaming it orphans the previously built image.
 - **`# agent-user: <username>`** — sets the container username (default: `ubuntu`). This reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`, and sets `HOME` accordingly. Use this when your custom image creates a different user than the base `ubuntu` user. Make sure the user exists in your `Dockerfile.agent` (e.g., via `useradd` with `ARG HOST_UID`/`ARG HOST_GID`) and that `/home/<username>` is writable by that user.
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens (no shell quoting, so args containing spaces cannot be expressed). Use this when the container needs extra capabilities, devices, or mounts. Examples:
 
