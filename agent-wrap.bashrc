@@ -1,4 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
+readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
+
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
 
@@ -205,11 +207,13 @@ agent() {
         -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
         -v "$(pwd):/workspace" \
         -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
-        -v "${TOOL_DIR}/Dockerfile:/opt/agent-wrap/Dockerfile:ro" \
-        -v "${TOOL_DIR}/agent-wrap.bashrc:/opt/agent-wrap/agent-wrap.bashrc:ro" \
-        -v "${TOOL_DIR}/validate-dockerfile-agent:/opt/agent-wrap/validate-dockerfile-agent:ro" \
-        -v "${TOOL_DIR}/statusline.py:/opt/agent-wrap/statusline.py:ro" \
+        -v "${TOOL_DIR}/Dockerfile:${AGENT_WRAP_MOUNT}/Dockerfile:ro" \
+        -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
+        -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \
+        -v "${TOOL_DIR}/statusline.py:${AGENT_WRAP_MOUNT}/statusline.py:ro" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
+        -e TERM="${TERM:-xterm-256color}" \
+        -e COLORTERM="${COLORTERM:-truecolor}" \
         -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \
         "${EXTRA_RUN_ARGS[@]}" \
