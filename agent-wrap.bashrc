@@ -57,6 +57,31 @@ _agent_ensure_statusline() {
         "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
 }
 
+_agent_ensure_telegram_hooks() {
+    # Idempotently inject PermissionRequest/Stop/StopFailure hooks that invoke
+    # telegram-notify.sh. Only called when Telegram creds are present so users
+    # who don't opt in don't accumulate dead hook entries.
+    local SETTINGS="$1"
+    [ -s "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+    if ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
+        return 0
+    fi
+    local CMD="/opt/agent-wrap/telegram-notify.sh"
+    local TMP="${SETTINGS}.tmp"
+    jq --arg cmd "$CMD" '
+        def ensure_hook(event; full_cmd):
+            .hooks //= {}
+            | .hooks[event] //= []
+            | if any(.hooks[event][]?; (.hooks // []) | any(.command == full_cmd))
+              then .
+              else .hooks[event] += [{matcher: "", hooks: [{type: "command", command: full_cmd}]}]
+              end;
+        ensure_hook("PermissionRequest"; $cmd)
+        | ensure_hook("Stop"; $cmd + " stop")
+        | ensure_hook("StopFailure"; $cmd + " stopfailure")
+    ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
+}
+
 agent-wrap_update() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local BRANCH BEFORE AFTER
@@ -171,8 +196,17 @@ agent() {
 
     local CLAUDE_HOME="/home/${AGENT_USER}"
 
+    local AGENT_NAME
+    if [ -f "$(pwd)/Dockerfile.agent" ]; then
+        AGENT_NAME=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$(pwd)/Dockerfile.agent" | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
+    else
+        AGENT_NAME=$(basename "$(pwd)")
+    fi
+
     if [ -f "$SECRETS_FILE" ]; then
         local CLAUDE_KEY=$(jq -r '.ServiceSpecificCredential.ServiceCredentialSecret' "$SECRETS_FILE")
+        local TELEGRAM_BOT_TOKEN=$(jq -r '.TelegramBotToken // ""' "$SECRETS_FILE")
+        local TELEGRAM_CHAT_ID=$(jq -r '.TelegramChatId // ""' "$SECRETS_FILE")
     else
         echo "File ${SECRETS_FILE} not found"
         return 1
@@ -185,6 +219,9 @@ agent() {
     chmod 600 "$GLOBAL_CONFIG_DIR/.claude.json"
     chmod 600 "$GLOBAL_CONFIG_DIR/.claude/settings.json"
     _agent_ensure_statusline "$GLOBAL_CONFIG_DIR/.claude/settings.json"
+    if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+        _agent_ensure_telegram_hooks "$GLOBAL_CONFIG_DIR/.claude/settings.json"
+    fi
     if [ ! -f "$GLOBAL_CONFIG_DIR/.claude/CLAUDE.md" ]; then
         cp "$TOOL_DIR/default-CLAUDE.md" "$GLOBAL_CONFIG_DIR/.claude/CLAUDE.md"
     fi
@@ -211,7 +248,12 @@ agent() {
         -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
         -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \
         -v "${TOOL_DIR}/statusline.py:${AGENT_WRAP_MOUNT}/statusline.py:ro" \
+        -v "${TOOL_DIR}/telegram-notify.sh:${AGENT_WRAP_MOUNT}/telegram-notify.sh:ro" \
+        -v "${TOOL_DIR}/md_to_html.js:${AGENT_WRAP_MOUNT}/md_to_html.js:ro" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
+        -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
+        -e TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
+        -e AGENT_NAME="${AGENT_NAME}" \
         -e TERM="${TERM:-xterm-256color}" \
         -e COLORTERM="${COLORTERM:-truecolor}" \
         -e HOME="${CLAUDE_HOME}" \

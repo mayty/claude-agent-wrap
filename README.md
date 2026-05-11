@@ -19,6 +19,7 @@ Running Claude Code in a container isolates the tool from your host system, pins
     }
   }
   ```
+- (Optional) Telegram credentials for permission-request and stop notifications (see [Telegram notifications](#telegram-notifications))
 
 ## Setup
 
@@ -54,6 +55,38 @@ The wrapper mounts:
 | `<wrap-dir>/.claude_config/.claude` | `/home/<user>/.claude` | Global Claude directory (`CLAUDE.md`, `settings.json`, caches, etc.) |
 
 The container runs as your host user (`$(id -u):$(id -g)`) with `HOME` pointing at `/home/<user>` (default `/home/ubuntu`). A `.claude/` directory is auto-created in each project and git-ignored.
+
+## Telegram notifications
+
+Claude Code can send you a Telegram message when it asks for permission to run a tool, finishes a response, or hits an API error. Useful if you step away mid-session.
+
+### Setup
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and note the bot token.
+2. Send a message to your bot, then get your chat ID:
+   ```bash
+   curl -s "https://api.telegram.org/bot<BOT_TOKEN>/getUpdates" | jq '.result[-1].message.chat.id'
+   ```
+3. Add both to `~/claude_keys.json`:
+   ```json
+   {
+     "ServiceSpecificCredential": {
+       "ServiceCredentialSecret": "your-aws-bearer-token"
+     },
+     "TelegramBotToken": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+     "TelegramChatId": "123456789"
+   }
+   ```
+
+On the next `agent` launch, the wrapper idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and forwards the credentials as env vars into the container. No `rebuild_agent` needed — the script and its Markdown→HTML converter are bind-mounted live.
+
+### How it works
+
+- **`PermissionRequest` hook** — fires when Claude asks to use a tool. Sends a tool-specific message (shell command with syntax highlighting for `Bash`, file paths for `Write`/`Edit`/`Read`, etc.).
+- **`Stop` hook** — fires when Claude finishes its response. Sends the last assistant text (non-thinking content only).
+- **`StopFailure` hook** — fires when the turn ends on an API error.
+
+The hooks only fire if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in the container environment. The script returns `{}` and exits 0 on every path, so it never blocks Claude — even if the Telegram API is unreachable.
 
 ## Per-project customization
 
@@ -112,8 +145,14 @@ The bearer token is injected at runtime as `AWS_BEARER_TOKEN_BEDROCK`, read from
 
 ```
 .
-├── Dockerfile           # Base image: Ubuntu 24.04 + Node 24 + Claude Code CLI
-├── agent-wrap.bashrc    # Shell functions: agent, rebuild_agent, create_custom_agent
-├── CLAUDE.md            # Guidance for Claude Code when editing this repo
-└── .claude_config/      # Global Claude config (git-ignored, auto-created)
+├── Dockerfile                   # Base image: Ubuntu 24.04 + Node 24 + Claude Code CLI + hadolint + crane
+├── agent-wrap.bashrc            # Shell functions: agent, rebuild_agent, create_custom_agent, agent-wrap_update
+├── validate-dockerfile-agent    # Pre-build validator (hadolint, contract checks, crane user probe)
+├── statusline.py                # Status bar script (model/cost, context %/update notice)
+├── telegram-notify.sh           # PermissionRequest / Stop / StopFailure Telegram notifications
+├── md_to_html.js                # Markdown → Telegram-HTML converter used by telegram-notify.sh
+├── default-CLAUDE.md            # Default instructions (copied into consumer projects' global config)
+├── CLAUDE.md                    # Repo-level guidance (for editing this project)
+├── README.md
+└── .claude_config/              # Global Claude config (git-ignored, auto-created)
 ```

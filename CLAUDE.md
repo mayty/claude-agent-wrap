@@ -15,6 +15,8 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
   - `rebuild_agent()`: Rebuilds the Docker image with --no-cache
 - **validate-dockerfile-agent**: Shell script mounted read-only into every container at `/opt/agent-wrap/validate-dockerfile-agent`. Validates a project's `Dockerfile.agent` before the agent prompts the user to rebuild: runs hadolint, checks wrapper-contract directives, and uses `crane` to probe the base image's `/etc/passwd` from the registry (no Docker daemon) to confirm the expected in-container user actually exists — catching "build succeeds, launch fails" scenarios at write time.
 - **statusline.py**: Python script mounted read-only at `/opt/agent-wrap/statusline.py` and wired into the user's `settings.json` as the `statusLine` command on first launch. Renders a two-row status line (model/effort/cost on row 1, context-usage %/update-available notice on row 2). If the user removes the `statusLine` key from their `settings.json`, the wrapper re-injects it on the next launch — to customize, redefine the key instead of deleting it.
+- **telegram-notify.sh**: Bash script mounted read-only at `/opt/agent-wrap/telegram-notify.sh` and invoked by `PermissionRequest`, `Stop`, and `StopFailure` hooks when Telegram credentials are present in `~/claude_keys.json`. Sends a Telegram message when Claude asks for permission, finishes responding, or hits an API error. Hook entries are idempotently injected into `settings.json` by `_agent_ensure_telegram_hooks()` on each `agent()` launch when creds are configured.
+- **md_to_html.js**: Node script mounted read-only at `/opt/agent-wrap/md_to_html.js` and invoked by `telegram-notify.sh` to convert Markdown into Telegram's subset of HTML (bold/italic/code/links/strikethrough + `<pre>` with optional language tag for code blocks).
 
 ## Key Configuration
 
@@ -34,6 +36,8 @@ The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent
 - `<wrap-dir>/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
 - `<wrap-dir>/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
 - `<wrap-dir>/statusline.py` → `/opt/agent-wrap/statusline.py` (read-only; the default Claude Code status-line script, invoked via `settings.json`)
+- `<wrap-dir>/telegram-notify.sh` → `/opt/agent-wrap/telegram-notify.sh` (read-only; Telegram notification script invoked by hooks)
+- `<wrap-dir>/md_to_html.js` → `/opt/agent-wrap/md_to_html.js` (read-only; Markdown→Telegram-HTML converter used by `telegram-notify.sh`)
 
 ### Authentication
 The `agent()` function expects credentials in `~/claude_keys.json` with the structure:
@@ -41,9 +45,13 @@ The `agent()` function expects credentials in `~/claude_keys.json` with the stru
 {
   "ServiceSpecificCredential": {
     "ServiceCredentialSecret": "your-aws-bearer-token"
-  }
+  },
+  "TelegramBotToken": "123456:ABC-DEF...",
+  "TelegramChatId": "123456789"
 }
 ```
+
+`TelegramBotToken` and `TelegramChatId` are optional. If both are present, the wrapper forwards them as env vars into the container and injects `PermissionRequest` / `Stop` / `StopFailure` hooks into `settings.json` so Telegram notifications fire. If either is missing, no hooks are injected and no env vars are set (the script would no-op anyway).
 
 ## Common Commands
 
