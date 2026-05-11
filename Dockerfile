@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     git \
+    jq \
+    file \
     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -34,5 +36,6 @@ RUN git config --system --add safe.directory /workspace
 
 ENV CLAUDE_CODE_USE_BEDROCK=1
 ENV AWS_REGION=us-east-1
+ENV DISABLE_AUTOUPDATER=1
 
 ENTRYPOINT ["claude"]
