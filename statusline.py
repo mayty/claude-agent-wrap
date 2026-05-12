@@ -28,8 +28,9 @@ REFRESH_AFTER_SECONDS = 6 * 3600
 NPM_PACKAGE = "@anthropic-ai/claude-code"
 # Claude renders the statusline inside a padded slot narrower than the raw
 # terminal — if we right-align to the true column count, the left side
-# overflows and gets truncated with an ellipsis. Reserve a safety margin.
-WIDTH_MARGIN = 4
+# overflows and gets truncated with an ellipsis. The slot width is not
+# exposed in the input JSON, so reserve a conservative margin.
+WIDTH_MARGIN = 6
 
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
