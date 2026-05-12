@@ -195,6 +195,89 @@ ${prompt_html}"
 <code>$url_esc</code>"
             fi
             ;;
+        ExitPlanMode)
+            # ExitPlanMode tool_input has no summary/label field — only
+            # `plan` (markdown), `planFilePath`, and optional `allowedPrompts`.
+            # The plan body is rendered as-is via md→HTML (headers become
+            # bold/underline/italic), and allowedPrompts are listed when present.
+            local perms_line plan_md plan_html
+            perms_line=$(echo "$HOOK_STDIN" | node -e "
+                var d=require('fs').readFileSync('/dev/stdin','utf8');
+                var j=JSON.parse(d);
+                var ap=(j.tool_input||{}).allowedPrompts||[];
+                function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+                if(Array.isArray(ap) && ap.length){
+                    process.stdout.write(ap.map(function(p){
+                        return '<code>'+esc(p.tool||'')+'</code>: '+esc(p.prompt||'');
+                    }).join(', '));
+                }
+            " 2>/dev/null || true)
+            plan_md=$(echo "$HOOK_STDIN" | node -e "
+                var d=require('fs').readFileSync('/dev/stdin','utf8');
+                var j=JSON.parse(d);
+                var plan=(j.tool_input||{}).plan||'';
+                // Truncate BEFORE md→HTML so we don't orphan tags. Telegram
+                // caps at 4096; 3500 leaves headroom for header, permissions
+                // line, agent-name line, and md→HTML tag expansion.
+                if(plan.length>3500) plan=plan.substring(0,3500)+'\n\n…';
+                process.stdout.write(plan);
+            " 2>/dev/null || true)
+            if [ -n "$plan_md" ]; then
+                plan_html=$(md_to_html "$plan_md")
+            else
+                plan_html=""
+            fi
+            {
+                printf '📋 <b>Plan ready for review</b>'
+                if [ -n "$perms_line" ]; then
+                    printf '\n\nPermissions: %s' "$perms_line"
+                fi
+                if [ -n "$plan_html" ]; then
+                    printf '\n\n%s' "$plan_html"
+                fi
+            }
+            ;;
+        AskUserQuestion)
+            local body
+            body=$(echo "$HOOK_STDIN" | node -e "
+                var d=require('fs').readFileSync('/dev/stdin','utf8');
+                var j=JSON.parse(d);
+                var qs=(j.tool_input||{}).questions||[];
+                function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+                var LIMIT=3800;
+                function render(withDesc){
+                    return qs.map(function(q,i){
+                        var head='<b>Q'+(i+1)+': '+esc(q.header||'')+'</b>';
+                        var quest=esc(q.question||'');
+                        var opts=(q.options||[]).map(function(o,k){
+                            var letter=String.fromCharCode(97+k);
+                            var line=letter+') <b>'+esc(o.label||'')+'</b>';
+                            if(withDesc && o.description){
+                                line+=' — '+esc(o.description);
+                            }
+                            return line;
+                        }).join('\n');
+                        return head+'\n'+quest+(opts?'\n\n'+opts:'');
+                    }).join('\n\n');
+                }
+                var out=render(true);
+                if(out.length>LIMIT) out=render(false);
+                if(out.length>LIMIT){
+                    out=out.substring(0,LIMIT-1)+'…';
+                    var opens=(out.match(/<b>/g)||[]).length;
+                    var closes=(out.match(/<\/b>/g)||[]).length;
+                    while(closes++<opens) out+='</b>';
+                }
+                console.log(out);
+            " 2>/dev/null || true)
+            if [ -n "$body" ]; then
+                echo "❓ <b>Input needed</b>
+
+${body}"
+            else
+                echo "❓ <b>Input needed</b>"
+            fi
+            ;;
         *)
             # MCP or custom tools: dump the full tool_input as a code block
             local input_json
@@ -202,9 +285,11 @@ ${prompt_html}"
                 var d=require('fs').readFileSync('/dev/stdin','utf8');
                 var j=JSON.parse(d);
                 var ti=j.tool_input||{};
-                // Pretty-print but truncate at 500 chars
+                // Pretty-print but truncate at 3800 chars (Telegram hard cap
+                // is 4096; leave headroom for the header, agent-name line, and
+                // HTML-escape expansion).
                 var s=JSON.stringify(ti,null,2);
-                if(s.length>500) s=s.substring(0,500)+'…';
+                if(s.length>3800) s=s.substring(0,3800)+'…';
                 console.log(s);
             " 2>/dev/null || true)
             if [ -n "$input_json" ] && [ "$input_json" != "{}" ]; then
