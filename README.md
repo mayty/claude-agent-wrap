@@ -134,10 +134,11 @@ The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up 
 
 ## Environment
 
-Two env vars are baked into the base image:
+The `agent()` function injects these env vars on each `docker run` (not baked into the image, so overriding them doesn't require a rebuild):
 
 - `CLAUDE_CODE_USE_BEDROCK=1` — routes Claude Code through AWS Bedrock.
-- `AWS_REGION=us-east-1` — default Bedrock region. Override in a `Dockerfile.agent` if needed.
+- `AWS_REGION=us-east-1` — default Bedrock region.
+- `DISABLE_AUTOUPDATER=1` — disables the Claude Code in-container auto-updater.
 
 The bearer token is injected at runtime as `AWS_BEARER_TOKEN_BEDROCK`, read from `~/claude_keys.json`.
 

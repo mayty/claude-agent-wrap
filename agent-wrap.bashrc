@@ -251,6 +251,9 @@ agent() {
         -v "${TOOL_DIR}/telegram-notify.sh:${AGENT_WRAP_MOUNT}/telegram-notify.sh:ro" \
         -v "${TOOL_DIR}/md_to_html.js:${AGENT_WRAP_MOUNT}/md_to_html.js:ro" \
         -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
+        -e CLAUDE_CODE_USE_BEDROCK=1 \
+        -e AWS_REGION=us-east-1 \
+        -e DISABLE_AUTOUPDATER=1 \
         -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
         -e TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
         -e AGENT_NAME="${AGENT_NAME}" \

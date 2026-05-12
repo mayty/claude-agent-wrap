@@ -34,8 +34,4 @@ RUN curl -fsSL -o /usr/local/bin/hadolint \
 WORKDIR /workspace
 RUN git config --system --add safe.directory /workspace
 
-ENV CLAUDE_CODE_USE_BEDROCK=1
-ENV AWS_REGION=us-east-1
-ENV DISABLE_AUTOUPDATER=1
-
 ENTRYPOINT ["claude"]

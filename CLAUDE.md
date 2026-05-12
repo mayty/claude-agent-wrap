@@ -20,9 +20,12 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 
 ## Key Configuration
 
-### Environment Variables (in Dockerfile)
+### Environment Variables (set by `agent()` at `docker run` time)
 - `CLAUDE_CODE_USE_BEDROCK=1`: Enables AWS Bedrock integration
 - `AWS_REGION=us-east-1`: Default AWS region
+- `DISABLE_AUTOUPDATER=1`: Disables the Claude Code in-container auto-updater
+
+These are injected via `-e` on each launch rather than baked into the image so users can override them (e.g., point at a different region) without rebuilding.
 
 ### Volume Mounts (in agent function)
 
