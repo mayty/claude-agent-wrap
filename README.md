@@ -5,7 +5,7 @@ A Docker-based wrapper for running the [Claude Code](https://github.com/anthropi
 
 ## Why
 
-Running Claude Code in a container isolates the tool from your host system, pins its dependencies, and lets different projects layer their own runtime requirements on top of a shared base image. The wrapper also routes the CLI through AWS Bedrock instead of the Anthropic API, so auth is an AWS bearer token rather than an Anthropic API key.
+Running Claude Code in a container isolates the tool from your host system, pins its dependencies, and lets each project override the base image with its own `Dockerfile.agent` to supply project-specific runtime requirements. The wrapper also routes the CLI through AWS Bedrock instead of the Anthropic API, so auth is an AWS bearer token rather than an Anthropic API key.
 
 ## Requirements
 
@@ -19,7 +19,16 @@ Running Claude Code in a container isolates the tool from your host system, pins
     }
   }
   ```
-- (Optional) Telegram credentials for permission-request and stop notifications (see [Telegram notifications](#telegram-notifications))
+- (Optional) Telegram credentials for permission-request and stop notifications, added to the same `~/claude_keys.json` (see [Telegram notifications](#telegram-notifications) for how to obtain them):
+  ```json
+  {
+    "ServiceSpecificCredential": {
+      "ServiceCredentialSecret": "your-aws-bearer-token"
+    },
+    "TelegramBotToken": "your-telegram-bot-token",
+    "TelegramChatId": "your-telegram-chat-id"
+  }
+  ```
 
 ## Setup
 
@@ -50,9 +59,12 @@ The wrapper mounts:
 | Host | Container | Purpose |
 | --- | --- | --- |
 | `$(pwd)` | `/workspace` | Project files |
-| `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` | Per-project session history (overlays the global `.claude` mount) |
 | `<wrap-dir>/.claude_config/.claude.json` | `/home/<user>/.claude.json` | Global Claude config file |
 | `<wrap-dir>/.claude_config/.claude` | `/home/<user>/.claude` | Global Claude directory (`CLAUDE.md`, `settings.json`, caches, etc.) |
+| `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` | Per-project session history (overlays the global `.claude` mount) |
+| `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}` | `/home/<user>/.claude/<same>` | Per-project state overlays (plans, todos, tasks, shell snapshots, session env, file history, paste cache) |
+
+The wrapper also bind-mounts its own source files read-only under `/opt/agent-wrap/` so the in-container agent can inspect and invoke them (the validator, status line, Telegram script, etc.).
 
 The container runs as your host user (`$(id -u):$(id -g)`) with `HOME` pointing at `/home/<user>` (default `/home/ubuntu`). A `.claude/` directory is auto-created in each project and git-ignored.
 
@@ -63,18 +75,15 @@ Claude Code can send you a Telegram message when it asks for permission to run a
 ### Setup
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and note the bot token.
-2. Send a message to your bot, then get your chat ID:
-   ```bash
-   curl -s "https://api.telegram.org/bot<BOT_TOKEN>/getUpdates" | jq '.result[-1].message.chat.id'
-   ```
+2. Get your chat ID by messaging [@userinfobot](https://t.me/userinfobot) — it replies with your numeric ID.
 3. Add both to `~/claude_keys.json`:
    ```json
    {
      "ServiceSpecificCredential": {
        "ServiceCredentialSecret": "your-aws-bearer-token"
      },
-     "TelegramBotToken": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-     "TelegramChatId": "123456789"
+     "TelegramBotToken": "11111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "TelegramChatId": "22222222"
    }
    ```
 
@@ -108,7 +117,7 @@ The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up 
 
 `Dockerfile.agent` supports a few wrapper-specific comment directives in addition to normal Dockerfile syntax:
 
-- **`# agent-name: <name>`** (required) — names the image `claude-agent-<name>`. Must match `[a-zA-Z0-9_.-]+`.
+- **`# agent-name: <name>`** (required) — names the image `claude-agent-<name>`. Must match `[a-z0-9_.-]+` (Docker image names are lowercase).
 - **`# agent-user: <username>`** — sets the in-container username (default `ubuntu`). The wrapper reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`. Only useful if the base image has been customized to run as a different user.
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; tokens are whitespace-split (no shell quoting). Example:
   ```dockerfile
@@ -131,6 +140,7 @@ The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up 
 | `agent [args...]` | Run Claude Code in a container against the resolved image for the current directory. |
 | `rebuild_agent` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. |
 | `create_custom_agent` | Scaffold a `Dockerfile.agent` in the current directory based on the base `Dockerfile`. |
+| `agent-wrap_update` | Pull the latest wrapper source; if `default-CLAUDE.md` changed, replace the user's copy when unmodified or warn when customized. |
 
 ## Environment
 
@@ -141,6 +151,8 @@ The `agent()` function injects these env vars on each `docker run` (not baked in
 - `DISABLE_AUTOUPDATER=1` — disables the Claude Code in-container auto-updater.
 
 The bearer token is injected at runtime as `AWS_BEARER_TOKEN_BEDROCK`, read from `~/claude_keys.json`.
+
+If both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, they are forwarded into the container as `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and consumed by the notification hooks. Missing either one skips the forwarding entirely.
 
 ## Layout
 

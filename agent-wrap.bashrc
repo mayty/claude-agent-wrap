@@ -230,7 +230,15 @@ agent() {
     mkdir -p "$GLOBAL_CONFIG_DIR/.claude/projects/-workspace"
 
     local PROJECT_CLAUDE_DIR="$(pwd)/.claude"
-    mkdir -p "$PROJECT_CLAUDE_DIR/sessions"
+    mkdir -p \
+        "$PROJECT_CLAUDE_DIR/sessions" \
+        "$PROJECT_CLAUDE_DIR/plans" \
+        "$PROJECT_CLAUDE_DIR/todos" \
+        "$PROJECT_CLAUDE_DIR/tasks" \
+        "$PROJECT_CLAUDE_DIR/shell-snapshots" \
+        "$PROJECT_CLAUDE_DIR/session-env" \
+        "$PROJECT_CLAUDE_DIR/file-history" \
+        "$PROJECT_CLAUDE_DIR/paste-cache"
 
     if [ ! -f "$PROJECT_CLAUDE_DIR/.gitignore" ]; then
         echo '*' > "$PROJECT_CLAUDE_DIR/.gitignore"
@@ -244,6 +252,13 @@ agent() {
         -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
         -v "$(pwd):/workspace" \
         -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
+        -v "$(pwd)/.claude/plans:${CLAUDE_HOME}/.claude/plans" \
+        -v "$(pwd)/.claude/todos:${CLAUDE_HOME}/.claude/todos" \
+        -v "$(pwd)/.claude/tasks:${CLAUDE_HOME}/.claude/tasks" \
+        -v "$(pwd)/.claude/shell-snapshots:${CLAUDE_HOME}/.claude/shell-snapshots" \
+        -v "$(pwd)/.claude/session-env:${CLAUDE_HOME}/.claude/session-env" \
+        -v "$(pwd)/.claude/file-history:${CLAUDE_HOME}/.claude/file-history" \
+        -v "$(pwd)/.claude/paste-cache:${CLAUDE_HOME}/.claude/paste-cache" \
         -v "${TOOL_DIR}/Dockerfile:${AGENT_WRAP_MOUNT}/Dockerfile:ro" \
         -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
         -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \

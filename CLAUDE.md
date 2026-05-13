@@ -35,6 +35,7 @@ The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent
 - `<wrap-dir>/.claude_config/.claude/` → `/home/<user>/.claude/` (global Claude directory: `CLAUDE.md`, `settings.json`, etc.)
 - `$(pwd)` → `/workspace` (project files)
 - `$(pwd)/.claude/sessions/` → `/home/<user>/.claude/projects/-workspace/` (per-project session history, overlays on top of the global `.claude` mount)
+- `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}/` → `/home/<user>/.claude/<same>/` (per-project overlays for plan-mode files, TodoWrite/TaskCreate state, task definitions, shell snapshots, session env, file-edit history, and paste cache)
 - `<wrap-dir>/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
 - `<wrap-dir>/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
 - `<wrap-dir>/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
