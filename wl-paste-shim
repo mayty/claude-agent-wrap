@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# This file has been created with the assistance of an AI tool.
+#
+# wl-paste shim: WSLg surfaces Windows clipboard images as image/bmp only.
+# Most callers (Claude Code's Ctrl+V, etc.) ask for image/png and don't fall
+# back. This shim transparently presents BMP-only clipboard content as PNG by
+# converting on the fly. Other types pass through to the real wl-paste.
+
+set -uo pipefail
+
+REAL=/usr/bin/wl-paste
+
+list_types=0
+want_png=0
+prev=""
+for arg in "$@"; do
+    case "$arg" in
+        --list-types|-l) list_types=1 ;;
+        --type=image/png) want_png=1 ;;
+    esac
+    case "$prev" in
+        --type|-t) [ "$arg" = "image/png" ] && want_png=1 ;;
+    esac
+    prev="$arg"
+done
+
+types=$("$REAL" --list-types 2>/dev/null || true)
+has_png=0; has_bmp=0
+grep -qx 'image/png' <<<"$types" && has_png=1
+grep -qx 'image/bmp' <<<"$types" && has_bmp=1
+
+if [ "$list_types" = 1 ]; then
+    [ -n "$types" ] && echo "$types"
+    if [ "$has_bmp" = 1 ] && [ "$has_png" = 0 ]; then
+        echo 'image/png'
+    fi
+    exit 0
+fi
+
+if [ "$want_png" = 1 ] && [ "$has_png" = 0 ] && [ "$has_bmp" = 1 ]; then
+    "$REAL" --type image/bmp | convert bmp:- png:-
+    exit "${PIPESTATUS[0]}"
+fi
+
+exec "$REAL" "$@"

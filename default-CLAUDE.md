@@ -11,6 +11,8 @@ The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerf
 
 **Important:** You always run as a non-root user inside the container and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 
+**Clipboard:** the base image ships `wl-clipboard` and `xclip`, and on WSL2 + WSLg hosts the wrapper auto-mounts `/mnt/wslg` and forwards `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`. Claude Code's `Ctrl+V` for Windows-clipboard images works out of the box — do not add clipboard packages or WSLg mounts to a `Dockerfile.agent`.
+
 ## Installing dependencies
 
 Do **not** install dependencies ad-hoc inside the running container (`apt-get install`, `pip install`, `npm install -g`, etc.). Those changes are thrown away as soon as the session ends.

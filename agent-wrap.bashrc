@@ -244,6 +244,18 @@ agent() {
         echo '*' > "$PROJECT_CLAUDE_DIR/.gitignore"
     fi
 
+    local WSLG_ARGS=()
+    if [ -d /mnt/wslg ]; then
+        WSLG_ARGS+=(
+            -v /mnt/wslg:/mnt/wslg
+            -v /mnt/wslg/.X11-unix:/tmp/.X11-unix
+            -v "${TOOL_DIR}/wl-paste-shim:/usr/local/bin/wl-paste:ro"
+            -e DISPLAY
+            -e WAYLAND_DISPLAY
+            -e XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir
+        )
+    fi
+
     echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
 
     docker run --rm -it \
@@ -276,6 +288,7 @@ agent() {
         -e COLORTERM="${COLORTERM:-truecolor}" \
         -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \
+        "${WSLG_ARGS[@]}" \
         "${EXTRA_RUN_ARGS[@]}" \
         "$IMAGE" "$@"
 }
