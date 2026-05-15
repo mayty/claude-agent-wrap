@@ -154,6 +154,20 @@ The bearer token is injected at runtime as `AWS_BEARER_TOKEN_BEDROCK`, read from
 
 If both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, they are forwarded into the container as `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and consumed by the notification hooks. Missing either one skips the forwarding entirely.
 
+### `AGENT_USE_HOST_NETWORK` (WSL workaround)
+
+Setting `AGENT_USE_HOST_NETWORK=1` (or any non-empty value other than `0`/`false`/`no`) makes `agent` launch the container with `--network host`. The switch is honored only on WSL hosts (detected via `microsoft` in `/proc/version`); on macOS or native Linux it is ignored with a note.
+
+Use this when you run multiple WSL2 distros that each have their own `dockerd`. All WSL2 distros share a single Linux kernel, so the two daemons fight over the kernel's iptables tables — specifically, the second daemon to start installs Docker's standard ruleset on `iptables-legacy`, which flips the legacy `FORWARD` chain policy from `ACCEPT` to `DROP`. Reply traffic to the first distro's existing containers then gets dropped before it reaches `docker0`. Symptom: parent shell stays online, but containers lose all outbound TCP (DNS UDP still works); recovery requires `wsl --shutdown`. Relaunching the container does not help, because the broken state is upstream of `docker0`.
+
+`--network host` puts the agent in the WSL distro's namespace directly, sidestepping the bridge and the FORWARD chain entirely.
+
+Trade-offs:
+
+- The container loses network isolation from the WSL distro — services bind on the distro's interfaces, not on `docker0`.
+- `EXPOSE` port mappings become meaningless and are skipped with a warning. Make in-container services bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
+- If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+
 ## Layout
 
 ```

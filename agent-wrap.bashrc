@@ -194,6 +194,34 @@ agent() {
                  | sed -E 's/^#[[:space:]]*agent-run-args:[[:space:]]*//')
     fi
 
+    local HOST_NET_ARGS=()
+    local use_host_net=""
+    case "${AGENT_USE_HOST_NETWORK:-}" in
+        ""|0|false|FALSE|no|NO) ;;
+        *) use_host_net=1 ;;
+    esac
+    if [ -n "$use_host_net" ]; then
+        if ! grep -qi microsoft /proc/version 2>/dev/null; then
+            echo "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts." >&2
+        else
+            local has_network=""
+            for arg in "${EXTRA_RUN_ARGS[@]}"; do
+                case "$arg" in
+                    --network|--network=*|--net|--net=*) has_network=1; break ;;
+                esac
+            done
+            if [ -n "$has_network" ]; then
+                echo "Warning: AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already specifies --network via agent-run-args." >&2
+            else
+                HOST_NET_ARGS=(--network host)
+                if [ "${#PORT_ARGS[@]}" -gt 0 ]; then
+                    echo "Warning: AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings (${PORT_ARGS[*]}) skipped. Services bind on the WSL distro's interfaces directly; ensure they listen on 127.0.0.1 to avoid LAN exposure." >&2
+                    PORT_ARGS=()
+                fi
+            fi
+        fi
+    fi
+
     local CLAUDE_HOME="/home/${AGENT_USER}"
 
     local AGENT_NAME
@@ -289,6 +317,7 @@ agent() {
         -e HOME="${CLAUDE_HOME}" \
         "${PORT_ARGS[@]}" \
         "${WSLG_ARGS[@]}" \
+        "${HOST_NET_ARGS[@]}" \
         "${EXTRA_RUN_ARGS[@]}" \
         "$IMAGE" "$@"
 }

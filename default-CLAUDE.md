@@ -42,7 +42,7 @@ Recognized directives (as special comments in `Dockerfile.agent`):
   # agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN
   ```
 
-- **`EXPOSE <port>`** — any `EXPOSE` line in `Dockerfile.agent` is automatically published to `127.0.0.1:<port>` on the host. Use this for dev servers, debuggers, etc. — don't ask the user to add `-p` flags manually.
+- **`EXPOSE <port>`** — any `EXPOSE` line in `Dockerfile.agent` is automatically published to `127.0.0.1:<port>` on the host. Use this for dev servers, debuggers, etc. — don't ask the user to add `-p` flags manually. Exception: when the user has set `AGENT_USE_HOST_NETWORK=1` on a WSL host, the wrapper launches the container with `--network host` and skips all `EXPOSE` port mappings (with a warning). In that mode, in-container services bind directly on the WSL distro's interfaces, so make sure they listen on `127.0.0.1` rather than `0.0.0.0` to avoid LAN exposure.
 - **`ARG HOST_UID` / `ARG HOST_GID`** — `rebuild_agent` always passes the host user's UID/GID as build args. Declare these in `Dockerfile.agent` if you need them at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory baked into the image).
 
 When a user asks for something that a `docker run` flag would solve (mounting a path, exposing a port, adding a capability, passing a device), add the appropriate directive to `Dockerfile.agent` and prompt them to run `rebuild_agent` — do not tell them to edit `agent-wrap.bashrc` or their shell invocation.

@@ -30,6 +30,18 @@ These are injected via `-e` on each launch rather than baked into the image so u
 
 When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent()` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
 
+### `AGENT_USE_HOST_NETWORK` (WSL workaround)
+
+Setting `AGENT_USE_HOST_NETWORK=1` (or any non-empty value other than `0`/`false`/`no`) makes `agent()` launch the container with `--network host`. The switch is honored only on WSL hosts (detected via `microsoft` in `/proc/version`); on macOS or native Linux it is ignored with a note.
+
+Use this when running multiple WSL2 distros that each run their own `dockerd`. The two daemons share one kernel and fight over `iptables-legacy` rules — the second daemon's startup flips the legacy `FORWARD` policy to `DROP`, stranding the first distro's containers (parent shell stays online; only forwarded/routed traffic dies). `--network host` puts the agent in the WSL distro's namespace directly, sidestepping the bridge and FORWARD chain entirely.
+
+Trade-offs:
+
+- The container loses network isolation from the WSL distro — services bind on the distro's interfaces (e.g. `eth6`), not on `docker0`.
+- `EXPOSE` port mappings become meaningless and are skipped with a warning. In-container services should bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
+- If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+
 ### Volume Mounts (in agent function)
 
 The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent-user>` (default `ubuntu`). `HOME` is set to that path so Claude Code finds its config in the usual spot.
