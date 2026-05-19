@@ -178,7 +178,7 @@ t = t.replace(/~~(.+?)~~/g, (_, inner) => {
 // Hard line breaks ("  \n") are intentionally collapsed to a space too —
 // assistant output doesn't emit them.
 t = t.split(/\n{2,}/).map(para => {
-    return para.replace(/[ \t]*\n[ \t]*(?![-*+]\s|\d+\.\s)/g, ' ');
+    return para.replace(/[ \t]*\n[ \t]*(?![ \t]*[-*+]\s|[ \t]*\d+\.\s)/g, ' ');
 }).join('\n\n');
 
 // 8. Escape remaining text
