@@ -99,19 +99,32 @@ The hooks only fire if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in th
 
 ## Per-project customization
 
-To layer project-specific tooling on top of the base image, drop a `Dockerfile.agent` at the root of your project. The simplest way is to start from a copy of the base:
+To layer project-specific tooling on top of the base image, drop a `Dockerfile.agent` at the root of your project. The simplest way is to scaffold a thin stub that inherits from the base image:
 
 ```bash
-create_custom_agent   # copies Dockerfile → ./Dockerfile.agent, with a header
+create_custom_agent   # writes a ./Dockerfile.agent with `FROM claude-agent`
 ```
 
-Then rebuild from inside that project:
+The generated stub looks like:
+
+```dockerfile
+# agent-name: <derived-from-dirname>
+FROM claude-agent
+
+# Add project-specific RUN steps here.
+```
+
+Add your project-specific `RUN` steps below the `FROM`, then rebuild from inside that project:
 
 ```bash
 rebuild_agent
 ```
 
-The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up automatically whenever you invoke it from that directory.
+The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up automatically whenever you invoke it from that directory. The base toolchain (Node, Claude CLI, hadolint, crane, clipboard tooling, `WORKDIR /workspace`, `ENTRYPOINT ["claude"]`) is inherited from `claude-agent`, so there's no need to redeclare it.
+
+If the base `claude-agent` image hasn't been built yet on this host, run `rebuild_agent --full` once — it builds the base first, then the project image.
+
+**Backwards compatibility:** existing projects whose `Dockerfile.agent` starts with `FROM ubuntu:24.04` (or any other non-`claude-agent` base) keep working as-is; `rebuild_agent` will print a one-line note suggesting migration but does not change behavior. To migrate, replace the body with `FROM claude-agent` plus your project-specific additions.
 
 ### Recognized directives
 
@@ -138,8 +151,8 @@ The resulting image is tagged `claude-agent-<name>` and `agent` will pick it up 
 | Function | Purpose |
 | --- | --- |
 | `agent [args...]` | Run Claude Code in a container against the resolved image for the current directory. |
-| `rebuild_agent` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. |
-| `create_custom_agent` | Scaffold a `Dockerfile.agent` in the current directory based on the base `Dockerfile`. |
+| `rebuild_agent [--full]` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. With `--full`, rebuild the base `claude-agent` image first, then the project image. |
+| `create_custom_agent` | Scaffold a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory. |
 | `agent-wrap_update` | Pull the latest wrapper source; if `default-CLAUDE.md` changed, replace the user's copy when unmodified or warn when customized. |
 
 ## Environment

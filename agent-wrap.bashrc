@@ -22,8 +22,6 @@ _agent_resolve_image() {
 }
 
 create_custom_agent() {
-    local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
-    local SRC="$TOOL_DIR/Dockerfile"
     local DST="$(pwd)/Dockerfile.agent"
 
     if [ -e "$DST" ]; then
@@ -35,8 +33,14 @@ create_custom_agent() {
         echo "Error: could not derive agent-name from directory '$(pwd)'" >&2
         return 1
     fi
-    { echo "# agent-name: $NAME"; echo; cat "$SRC"; } > "$DST"
-    echo "Created $DST with agent-name '$NAME'"
+    cat > "$DST" <<EOF
+# agent-name: $NAME
+# This file has been created with the assistance of an AI tool.
+FROM claude-agent
+
+# Add project-specific RUN steps here.
+EOF
+    echo "Created $DST with agent-name '$NAME' (FROM claude-agent)"
 }
 
 _agent_ensure_statusline() {
@@ -137,10 +141,54 @@ agent-wrap_update() {
 }
 
 rebuild_agent() {
+    local FULL=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --full) FULL=1; shift ;;
+            -h|--help)
+                echo "Usage: rebuild_agent [--full]"
+                echo "  --full  Rebuild the base 'claude-agent' image first, then the project image."
+                return 0 ;;
+            *)
+                echo "Error: unknown argument '$1' (expected --full)" >&2
+                return 1 ;;
+        esac
+    done
+
+    local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local RESOLVED
     RESOLVED=$(_agent_resolve_image) || return 1
     local IMAGE DOCKERFILE CONTEXT
     IFS=$'\t' read -r IMAGE DOCKERFILE CONTEXT <<< "$RESOLVED"
+
+    if [ "$FULL" = "1" ]; then
+        echo "--- Building base claude-agent from $TOOL_DIR/Dockerfile ---"
+        docker build --no-cache \
+            --build-arg HOST_UID="$(id -u)" \
+            --build-arg HOST_GID="$(id -g)" \
+            -f "$TOOL_DIR/Dockerfile" -t "claude-agent" "$TOOL_DIR" || return 1
+
+        if [ "$IMAGE" = "claude-agent" ]; then
+            echo "--- No Dockerfile.agent in $(pwd); base build is the only build needed ---"
+            docker images --filter "reference=$IMAGE"
+            return 0
+        fi
+    fi
+
+    if [ "$FULL" = "0" ] && [ "$IMAGE" != "claude-agent" ]; then
+        local from_line
+        from_line=$(grep -iE '^FROM[[:space:]]+' "$DOCKERFILE" | tail -n1 | awk '{print $2}')
+        if [[ "$from_line" =~ ^claude-agent(:.*)?$ ]] \
+           && ! docker image inspect claude-agent >/dev/null 2>&1; then
+            echo "Error: '$DOCKERFILE' uses 'FROM claude-agent' but the base image is not built." >&2
+            echo "       Run 'rebuild_agent --full' to build the base first." >&2
+            return 1
+        fi
+        if [ -n "$from_line" ] && ! [[ "$from_line" =~ ^claude-agent(:.*)?$ ]]; then
+            local y=$'\033[1;33m' r=$'\033[0m'
+            echo "${y}Note:${r} '$DOCKERFILE' inherits from '$from_line' rather than 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse the base toolchain." >&2
+        fi
+    fi
 
     echo "--- Building $IMAGE from $DOCKERFILE ---"
     docker build --no-cache \

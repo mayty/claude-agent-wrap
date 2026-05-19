@@ -20,7 +20,16 @@ Do **not** install dependencies ad-hoc inside the running container (`apt-get in
 Instead:
 
 - **If `Dockerfile.agent` exists in the project root:** edit it to add the dependency (e.g., add a `RUN apt-get install -y <pkg>` line), then tell the user to run `rebuild_agent` and restart the session.
-- **If there is no `Dockerfile.agent`:** create it by copying the canonical base image from `/opt/agent-wrap/Dockerfile` to `/workspace/Dockerfile.agent`, prepend a `# agent-name: <name>` line, then add your `RUN` steps. Derive `<name>` from the project directory (`basename /workspace`), lowercased, with any character outside `[a-z0-9_.-]` replaced by `-` and leading/trailing dashes stripped (Docker image names must be lowercase). Do **not** write `Dockerfile.agent` from scratch — the base image sets up Node, the Claude CLI, and `WORKDIR /workspace` that the wrapper depends on. Once edited, prompt the user to run `rebuild_agent` and restart the session.
+- **If there is no `Dockerfile.agent`:** create one with `FROM claude-agent` (the locally built base image). Prepend `# agent-name: <name>` derived from the project directory (`basename /workspace`), lowercased, with any character outside `[a-z0-9_.-]` replaced by `-` and leading/trailing dashes stripped (Docker image names must be lowercase). The base provides Node, the Claude CLI, hadolint, crane, clipboard tooling, `WORKDIR /workspace`, and `ENTRYPOINT ["claude"]` — your `Dockerfile.agent` only adds project-specific `RUN` steps on top. Do **not** copy the contents of `/opt/agent-wrap/Dockerfile` into your `Dockerfile.agent`; layer on `claude-agent` instead so the toolchain isn't duplicated. Minimal template:
+
+  ```dockerfile
+  # agent-name: <name>
+  FROM claude-agent
+
+  # project-specific RUN steps here
+  ```
+
+Once edited, run `/opt/agent-wrap/validate-dockerfile-agent` and prompt the user to run `rebuild_agent`. If `claude-agent` hasn't been built yet on this host, the user needs `rebuild_agent --full` (which builds the base first, then the project image).
 
 Project-level (language) dependencies that belong in the project's own manifest (`package.json`, `requirements.txt`, `go.mod`, `Cargo.toml`, etc.) can be installed normally — those live in `/workspace` and persist.
 
@@ -30,7 +39,7 @@ Project-level (language) dependencies that belong in the project's own manifest 
 
 `Dockerfile.agent` is not just a place to install packages — it also carries directives that `agent-wrap` reads to customize the runtime. Use them instead of asking the user to change their shell invocation or the global tooling.
 
-**Important:** The working directory must always be `WORKDIR /workspace`. Do not change it — the wrapper mounts the project to `/workspace` and the agent expects to operate from there.
+**Important:** The working directory must remain `WORKDIR /workspace` — the wrapper mounts the project there and the agent expects to operate from it. With `FROM claude-agent`, `/workspace` is inherited from the base, so you don't need to redeclare `WORKDIR` unless you intentionally change it. Do not change it.
 
 Recognized directives (as special comments in `Dockerfile.agent`):
 
