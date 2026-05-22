@@ -61,6 +61,20 @@ _agent_ensure_statusline() {
         "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
 }
 
+_agent_record_project() {
+    # Append $(pwd) to the project registry if not already present. The
+    # registry is a flat list of absolute paths used by `agent_usage` to
+    # discover where the user has been launching `agent`. Failures are
+    # non-fatal — the agent launch must not depend on this.
+    local TOOL_DIR="$1"
+    local DIR="$TOOL_DIR/.agent-launches"
+    local FILE="$DIR/projects.txt"
+    mkdir -p "$DIR" 2>/dev/null || return 0
+    touch "$FILE" 2>/dev/null || return 0
+    local CWD="$(pwd)"
+    grep -Fxq "$CWD" "$FILE" 2>/dev/null || echo "$CWD" >> "$FILE" 2>/dev/null || true
+}
+
 _agent_ensure_telegram_hooks() {
     # Idempotently inject PermissionRequest/Stop/StopFailure hooks that invoke
     # telegram-notify.sh. Only called when Telegram creds are present so users
@@ -198,6 +212,22 @@ rebuild_agent() {
     docker images --filter "reference=$IMAGE"
 }
 
+agent_usage() {
+    local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
+    local REG="$TOOL_DIR/.agent-launches/projects.txt"
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Error: python3 is required on the host to run agent_usage." >&2
+        return 1
+    fi
+    if [ ! -f "$REG" ]; then
+        echo "agent_usage: no projects recorded yet — launch 'agent' once to register a project." >&2
+        return 0
+    fi
+    python3 "$TOOL_DIR/agent_usage.py" \
+        --cache "$TOOL_DIR/.agent-launches/pricing.json" \
+        "$@" "$REG"
+}
+
 agent() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local GLOBAL_CONFIG_DIR="$TOOL_DIR/.claude_config"
@@ -331,6 +361,8 @@ agent() {
             -e XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir
         )
     fi
+
+    _agent_record_project "$TOOL_DIR"
 
     echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
 

@@ -1,1 +1,3 @@
 .claude_config
+.agent-launches/
+*.pyc

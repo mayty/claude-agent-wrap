@@ -63,6 +63,7 @@ The wrapper mounts:
 | `<wrap-dir>/.claude_config/.claude` | `/home/<user>/.claude` | Global Claude directory (`CLAUDE.md`, `settings.json`, caches, etc.) |
 | `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` | Per-project session history (overlays the global `.claude` mount) |
 | `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}` | `/home/<user>/.claude/<same>` | Per-project state overlays (plans, todos, tasks, shell snapshots, session env, file history, paste cache) |
+| `/mnt/wslg`, `/mnt/wslg/.X11-unix`, `<wrap-dir>/wl-paste-shim` | `/mnt/wslg`, `/tmp/.X11-unix`, `/usr/local/bin/wl-paste` | WSL2 + WSLg only — Wayland/X11 sockets and the `wl-paste` shim that surfaces Windows-clipboard images as PNG. See [Clipboard / WSLg](#clipboard--wslg). |
 
 The wrapper also bind-mounts its own source files read-only under `/opt/agent-wrap/` so the in-container agent can inspect and invoke them (the validator, status line, Telegram script, etc.).
 
@@ -96,6 +97,18 @@ On the next `agent` launch, the wrapper idempotently injects three hook entries 
 - **`StopFailure` hook** — fires when the turn ends on an API error.
 
 The hooks only fire if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in the container environment. The script returns `{}` and exits 0 on every path, so it never blocks Claude — even if the Telegram API is unreachable.
+
+## Clipboard / WSLg
+
+On WSL2 hosts with WSLg enabled (detected via `[ -d /mnt/wslg ]`), `agent` automatically wires the container into the host's clipboard and display sockets so Claude Code's `Ctrl+V` paste of Windows-clipboard images works out of the box. Specifically, the wrapper:
+
+- bind-mounts `/mnt/wslg` and `/mnt/wslg/.X11-unix` (the latter at `/tmp/.X11-unix`, the conventional X11 socket path),
+- forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir`, and
+- bind-mounts `wl-paste-shim` over `/usr/local/bin/wl-paste` so it shadows the real binary via PATH order.
+
+The shim is needed because WSLg advertises Windows-clipboard images as `image/bmp` only, while Claude Code's paste handler asks for `image/png`. The shim intercepts `--list-types` (advertises `image/png` when only BMP is on the clipboard) and `--type image/png` (fetches BMP and pipes through ImageMagick's `convert bmp:- png:-`), and falls through to the real `wl-paste` for everything else.
+
+On macOS or native Linux hosts the entire block is a no-op.
 
 ## Per-project customization
 
@@ -153,6 +166,7 @@ If the base `claude-agent` image hasn't been built yet on this host, run `rebuil
 | `agent [args...]` | Run Claude Code in a container against the resolved image for the current directory. |
 | `rebuild_agent [--full]` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. With `--full`, rebuild the base `claude-agent` image first, then the project image. |
 | `create_custom_agent` | Scaffold a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory. |
+| `agent_usage [--days N] [--region LABEL] [--refresh]` | Aggregate token usage and estimated USD cost across every project where you've launched `agent` (tracked in `<wrap-dir>/.agent-launches/projects.txt`). Runs on the host — only the host can see every project's session data, since each container only mounts one project at a time. Pricing is fetched from AWS's Bedrock pricing pages and cached for 7 days. |
 | `agent-wrap_update` | Pull the latest wrapper source; if `default-CLAUDE.md` changed, replace the user's copy when unmodified or warn when customized. |
 
 ## Environment
@@ -162,10 +176,15 @@ The `agent()` function injects these env vars on each `docker run` (not baked in
 - `CLAUDE_CODE_USE_BEDROCK=1` — routes Claude Code through AWS Bedrock.
 - `AWS_REGION=us-east-1` — default Bedrock region.
 - `DISABLE_AUTOUPDATER=1` — disables the Claude Code in-container auto-updater.
+- `AGENT_NAME` — derived from `# agent-name:` (or the project directory name when no `Dockerfile.agent` exists); available to in-container scripts that want to identify the agent.
+- `HOME` — set to `/home/<agent-user>` so Claude Code finds its config in the usual spot.
+- `TERM`, `COLORTERM` — forwarded from the host shell so terminal colors render correctly.
 
 The bearer token is injected at runtime as `AWS_BEARER_TOKEN_BEDROCK`, read from `~/claude_keys.json`.
 
 If both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, they are forwarded into the container as `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and consumed by the notification hooks. Missing either one skips the forwarding entirely.
+
+On WSL2 + WSLg hosts (when `/mnt/wslg` exists), `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell and `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. See [Clipboard / WSLg](#clipboard--wslg).
 
 ### `AGENT_USE_HOST_NETWORK` (WSL workaround)
 
@@ -185,14 +204,17 @@ Trade-offs:
 
 ```
 .
-├── Dockerfile                   # Base image: Ubuntu 24.04 + Node 24 + Claude Code CLI + hadolint + crane
-├── agent-wrap.bashrc            # Shell functions: agent, rebuild_agent, create_custom_agent, agent-wrap_update
+├── Dockerfile                   # Base image: Ubuntu 24.04 + Node 24 + Claude Code CLI + hadolint + crane + clipboard tooling
+├── agent-wrap.bashrc            # Shell functions: agent, rebuild_agent, create_custom_agent, agent_usage, agent-wrap_update
 ├── validate-dockerfile-agent    # Pre-build validator (hadolint, contract checks, crane user probe)
 ├── statusline.py                # Status bar script (model/cost, context %/update notice)
 ├── telegram-notify.sh           # PermissionRequest / Stop / StopFailure Telegram notifications
 ├── md_to_html.js                # Markdown → Telegram-HTML converter used by telegram-notify.sh
+├── agent_usage.py               # Host-side usage/cost aggregator invoked by agent_usage (Bedrock pricing fetched + cached)
+├── wl-paste-shim                # WSLg clipboard shim: surfaces Windows-clipboard BMP images as PNG via ImageMagick
 ├── default-CLAUDE.md            # Default instructions (copied into consumer projects' global config)
 ├── CLAUDE.md                    # Repo-level guidance (for editing this project)
 ├── README.md
-└── .claude_config/              # Global Claude config (git-ignored, auto-created)
+├── .claude_config/              # Global Claude config (git-ignored, auto-created)
+└── .agent-launches/             # Project registry (projects.txt) and Bedrock pricing cache used by agent_usage (git-ignored, auto-created)
 ```
