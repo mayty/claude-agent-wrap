@@ -43,7 +43,7 @@ PRICING_SCHEMAS = {
     5: ("in", "out", "cw_5m", "cw_1h", "cr"),
 }
 
-DIM = "\033[2m"
+DIM = "\033[90m"
 YELLOW = "\033[1;33m"
 RESET = "\033[0m"
 
@@ -378,11 +378,12 @@ class Node:
 
 
 class DisplayRow:
-    __slots__ = ("label", "is_structural", "sessions", "bucket", "last_ts", "cost_str")
+    __slots__ = ("label", "prefix_len", "is_structural", "sessions", "bucket", "last_ts", "cost_str")
 
     def __init__(
         self,
         label: str,
+        prefix_len: int,
         is_structural: bool,
         sessions: int,
         bucket: Bucket,
@@ -390,6 +391,7 @@ class DisplayRow:
         cost_str: str,
     ) -> None:
         self.label = label
+        self.prefix_len = prefix_len
         self.is_structural = is_structural
         self.sessions = sessions
         self.bucket = bucket
@@ -513,6 +515,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
             is_last = (i == len(ordered) - 1)
             connector = "└" if is_last else "├"
             prefix = "".join("│" if cont else " " for cont in ancestors_continue) + connector
+            prefix_len = len(prefix)
 
             label = prefix + child.name
             if child.children:
@@ -525,6 +528,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
                 cost_str = fmt_cost(r["cost"])
                 out.append(DisplayRow(
                     label=label,
+                    prefix_len=prefix_len,
                     is_structural=False,
                     sessions=r["sessions"],
                     bucket=r["total"],
@@ -537,6 +541,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
                 )
                 out.append(DisplayRow(
                     label=label,
+                    prefix_len=prefix_len,
                     is_structural=True,
                     sessions=child.subtree_sessions,
                     bucket=child.subtree_bucket,
@@ -635,25 +640,47 @@ def render(
     prices: dict,
     days_window: int,
 ) -> str:
-    # The three tables share the trailing six numeric columns
-    # (MSGS, INPUT, OUTPUT, CACHE-W, CACHE-R, COST). We compute one set
-    # of widths for those across all three so numbers line up vertically.
+    # Two stacked tables: "Total" (all-time per-model + per-project tree) and
+    # "Recent" (per-model + per-day, both restricted to the days_window). Each
+    # table has internal sections separated by a `├─┼─┤` divider; widths of
+    # the trailing six numeric columns are shared across both tables so the
+    # numbers line up vertically.
     SHARED_HEADERS = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
     SHARED_ALIGNS = [">", ">", ">", ">", ">", ">"]
     N_SHARED = len(SHARED_HEADERS)
 
-    # === Main table (per-project, rendered as a path tree) ===
-    main_headers = ["PROJECT", "SESSIONS", "LAST LAUNCH", *SHARED_HEADERS]
-    main_aligns = ["<", ">", "<", *SHARED_ALIGNS]
-    main_table: list[list[str]] = [main_headers]
+    DIV = "__div__"
+
+    # === Total table: models (all-time) + project tree ===
+    total_headers = ["MODEL / PROJECT", "SESSIONS", "LAST LAUNCH", *SHARED_HEADERS]
+    total_aligns = ["<", ">", "<", *SHARED_ALIGNS]
+    total_body: list = []
+
+    if totals_by_model:
+        ordered = sorted(
+            totals_by_model.items(),
+            key=lambda kv: (cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0),
+            reverse=True,
+        )
+        for model, b in ordered:
+            c = cost_for(model, b.usage_dict(), prices)
+            total_body.append(([
+                model, "", "",
+                fmt_count(b.msgs),
+                fmt_count(b.in_),
+                fmt_count(b.out),
+                fmt_count(b.cw),
+                fmt_count(b.cr),
+                fmt_cost(c),
+            ], "", 0))
+        total_body.append(DIV)
 
     tree_root = build_project_tree(rows)
     display_rows = flatten_tree(tree_root)
 
-    # The synthetic root row ("/") carries the grand-total subtree
-    # aggregates, so it doubles as the totals line — no separate TOTAL
-    # row is needed.
-    main_table.append([
+    # The synthetic root row ("/") carries the grand-total subtree aggregates,
+    # so it doubles as the project-section totals line.
+    total_body.append(([
         "/",
         str(tree_root.subtree_sessions),
         fmt_ts(tree_root.subtree_last_ts),
@@ -665,13 +692,10 @@ def render(
         fmt_cost(tree_root.subtree_known_cost) + (
             "+?" if tree_root.subtree_unknown else ""
         ),
-    ])
-    structural_body_idx: set[int] = {len(main_table) - 1}
-
+    ], DIM, 0))
     for dr in display_rows:
-        if dr.is_structural:
-            structural_body_idx.add(len(main_table))
-        main_table.append([
+        style = DIM if dr.is_structural else ""
+        total_body.append(([
             dr.label,
             str(dr.sessions),
             fmt_ts(dr.last_ts),
@@ -681,22 +705,36 @@ def render(
             fmt_count(dr.bucket.cw),
             fmt_count(dr.bucket.cr),
             dr.cost_str,
-        ])
+        ], style, dr.prefix_len))
 
-    # === By-model table ===
-    by_model_headers = ["MODEL", *SHARED_HEADERS]
-    by_model_aligns = ["<", *SHARED_ALIGNS]
-    by_model_table: list[list[str]] = []
-    if totals_by_model:
+    # === Recent table: models (in window) + per-day (in window) + TOTAL ===
+    recent_headers = ["MODEL / DATE", *SHARED_HEADERS]
+    recent_aligns = ["<", *SHARED_ALIGNS]
+    recent_body: list = []
+
+    dated = {d: m for d, m in totals_by_day_by_model.items() if d != "?"}
+    all_days_sorted = sorted(dated.keys(), reverse=True) if dated else []
+    if dated and days_window > 0:
+        cutoff = (datetime.now().astimezone().date()
+                  - timedelta(days=days_window - 1)).isoformat()
+        shown_days = [d for d in all_days_sorted if d >= cutoff]
+    else:
+        shown_days = all_days_sorted
+
+    recent_models: dict[str, Bucket] = defaultdict(Bucket)
+    for d in shown_days:
+        for model, b in dated[d].items():
+            recent_models[model].merge(b)
+
+    if recent_models:
         ordered = sorted(
-            totals_by_model.items(),
+            recent_models.items(),
             key=lambda kv: (cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0),
             reverse=True,
         )
-        by_model_table.append(by_model_headers)
         for model, b in ordered:
             c = cost_for(model, b.usage_dict(), prices)
-            by_model_table.append([
+            recent_body.append(([
                 model,
                 fmt_count(b.msgs),
                 fmt_count(b.in_),
@@ -704,141 +742,166 @@ def render(
                 fmt_count(b.cw),
                 fmt_count(b.cr),
                 fmt_cost(c),
-            ])
+            ], "", 0))
 
-    # === By-day table ===
-    by_day_headers = ["DATE", *SHARED_HEADERS]
-    by_day_aligns = ["<", *SHARED_ALIGNS]
-    by_day_table: list[list[str]] = []
     by_day_truncation_note = ""
+    if shown_days:
+        if recent_body:
+            recent_body.append(DIV)
 
-    dated = {d: m for d, m in totals_by_day_by_model.items() if d != "?"}
-    if dated:
-        all_days_sorted = sorted(dated.keys(), reverse=True)
-        if days_window > 0:
-            cutoff = (datetime.now().astimezone().date()
-                      - timedelta(days=days_window - 1)).isoformat()
-            shown_days = [d for d in all_days_sorted if d >= cutoff]
-        else:
-            shown_days = all_days_sorted
-
-        if shown_days:
-            day_rows: list[tuple[str, Bucket, float | None]] = []
-            for d in shown_days:
-                day_total = Bucket()
-                day_cost: float = 0.0
-                day_unknown = False
-                for model, b in dated[d].items():
-                    day_total.merge(b)
-                    c = cost_for(model, b.usage_dict(), prices)
-                    if c is None:
-                        day_unknown = True
-                    else:
-                        day_cost += c
-                day_rows.append((d, day_total, None if day_unknown else day_cost))
-
-            total_b = Bucket()
-            total_cost: float = 0.0
-            total_unknown = False
-            for _, b, c in day_rows:
-                total_b.merge(b)
+        day_rows_data: list[tuple[str, Bucket, float | None]] = []
+        for d in shown_days:
+            day_total = Bucket()
+            day_cost: float = 0.0
+            day_unknown = False
+            for model, b in dated[d].items():
+                day_total.merge(b)
+                c = cost_for(model, b.usage_dict(), prices)
                 if c is None:
-                    total_unknown = True
+                    day_unknown = True
                 else:
-                    total_cost += c
+                    day_cost += c
+            day_rows_data.append((d, day_total, None if day_unknown else day_cost))
 
-            by_day_table.append(by_day_headers)
-            for d, b, c in reversed(day_rows):
-                cost_str = (fmt_cost(c) if c is not None
-                            else fmt_cost(sum(  # show known portion + ?
-                                cost_for(m, bb.usage_dict(), prices) or 0.0
-                                for m, bb in dated[d].items()
-                            )) + "+?")
-                by_day_table.append([
-                    d,
-                    fmt_count(b.msgs),
-                    fmt_count(b.in_),
-                    fmt_count(b.out),
-                    fmt_count(b.cw),
-                    fmt_count(b.cr),
-                    cost_str,
-                ])
-            by_day_table.append([
-                "TOTAL",
-                fmt_count(total_b.msgs),
-                fmt_count(total_b.in_),
-                fmt_count(total_b.out),
-                fmt_count(total_b.cw),
-                fmt_count(total_b.cr),
-                fmt_cost(total_cost) + ("+?" if total_unknown else ""),
-            ])
+        total_b = Bucket()
+        total_cost: float = 0.0
+        total_unknown = False
+        for _, b, c in day_rows_data:
+            total_b.merge(b)
+            if c is None:
+                total_unknown = True
+            else:
+                total_cost += c
 
-            if days_window > 0 and len(shown_days) < len(all_days_sorted):
-                by_day_truncation_note = (
-                    f"  (showing last {len(shown_days)} of "
-                    f"{len(all_days_sorted)} days with activity; "
-                    f"use --days 0 to widen)"
-                )
+        for d, b, c in reversed(day_rows_data):
+            cost_str = (fmt_cost(c) if c is not None
+                        else fmt_cost(sum(  # show known portion + ?
+                            cost_for(m, bb.usage_dict(), prices) or 0.0
+                            for m, bb in dated[d].items()
+                        )) + "+?")
+            recent_body.append(([
+                d,
+                fmt_count(b.msgs),
+                fmt_count(b.in_),
+                fmt_count(b.out),
+                fmt_count(b.cw),
+                fmt_count(b.cr),
+                cost_str,
+            ], "", 0))
+
+        recent_body.append(DIV)
+        recent_body.append(([
+            "TOTAL",
+            fmt_count(total_b.msgs),
+            fmt_count(total_b.in_),
+            fmt_count(total_b.out),
+            fmt_count(total_b.cw),
+            fmt_count(total_b.cr),
+            fmt_cost(total_cost) + ("+?" if total_unknown else ""),
+        ], YELLOW, 0))
+        n_days = len(shown_days)
+        recent_body.append(([
+            "DAILY AVG",
+            fmt_count(total_b.msgs // n_days),
+            fmt_count(total_b.in_ // n_days),
+            fmt_count(total_b.out // n_days),
+            fmt_count(total_b.cw // n_days),
+            fmt_count(total_b.cr // n_days),
+            fmt_cost(total_cost / n_days) + ("+?" if total_unknown else ""),
+        ], YELLOW, 0))
+
+        if days_window > 0 and len(shown_days) < len(all_days_sorted):
+            by_day_truncation_note = (
+                f"  (showing last {len(shown_days)} of "
+                f"{len(all_days_sorted)} days with activity; "
+                f"use --days 0 to widen)"
+            )
 
     # === Shared widths for the trailing six numeric columns ===
     shared_widths = [0] * N_SHARED
-    for table, leading in (
-        (main_table, 3),
-        (by_model_table, 1),
-        (by_day_table, 1),
+    for headers, body, leading in (
+        (total_headers, total_body, 3),
+        (recent_headers, recent_body, 1),
     ):
-        for row in table:
+        for j in range(N_SHARED):
+            shared_widths[j] = max(shared_widths[j], len(headers[leading + j]))
+        for item in body:
+            if item == DIV:
+                continue
+            cells, _, _ = item
             for j in range(N_SHARED):
-                cell_len = len(row[leading + j])
-                if cell_len > shared_widths[j]:
-                    shared_widths[j] = cell_len
+                shared_widths[j] = max(shared_widths[j], len(cells[leading + j]))
 
-    def widths_for(table: list[list[str]], leading: int) -> list[int]:
-        leading_widths = [
-            max(len(row[j]) for row in table) for j in range(leading)
-        ]
+    def widths_for(headers: list[str], body: list, leading: int) -> list[int]:
+        leading_widths = [len(headers[j]) for j in range(leading)]
+        for item in body:
+            if item == DIV:
+                continue
+            cells, _, _ = item
+            for j in range(leading):
+                if len(cells[j]) > leading_widths[j]:
+                    leading_widths[j] = len(cells[j])
         return leading_widths + shared_widths
 
     def render_row(
-        row: list[str], aligns: list[str], widths: list[int], style: str = ""
+        cells: list[str],
+        aligns: list[str],
+        widths: list[int],
+        style: str = "",
+        prefix_len: int = 0,
     ) -> str:
-        parts = [f"{cell:{aligns[i]}{widths[i]}}" for i, cell in enumerate(row)]
-        s = "  ".join(parts)
-        return color(s, style) if style else s
+        parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
+        if style:
+            if prefix_len:
+                # Keep tree glyphs (`├`, `└`, `│`) at the row's default color;
+                # only style the content after the prefix.
+                first = parts[0]
+                # the cell starts after the leading space
+                head = first[: 1 + prefix_len]
+                tail = first[1 + prefix_len :]
+                parts[0] = head + color(tail, style)
+                parts[1:] = [color(p, style) for p in parts[1:]]
+            else:
+                parts = [color(p, style) for p in parts]
+        sep = color("│", DIM)
+        return sep + sep.join(parts) + sep
 
-    def hr(widths: list[int]) -> str:
-        return color("─" * (sum(widths) + 2 * (len(widths) - 1)), DIM)
+    def make_border(widths: list[int], left: str, mid: str, right: str) -> str:
+        parts = ["─" * (w + 2) for w in widths]
+        return color(left + mid.join(parts) + right, DIM)
+
+    def render_table(
+        title: str,
+        headers: list[str],
+        aligns: list[str],
+        body: list,
+        leading: int,
+    ) -> list[str]:
+        widths = widths_for(headers, body, leading)
+        out = [color(title, DIM)]
+        out.append(make_border(widths, "┌", "┬", "┐"))
+        out.append(render_row(headers, aligns, widths, DIM))
+        out.append(make_border(widths, "├", "┼", "┤"))
+        for item in body:
+            if item == DIV:
+                out.append(make_border(widths, "├", "┼", "┤"))
+            else:
+                cells, style, prefix_len = item
+                out.append(render_row(cells, aligns, widths, style, prefix_len))
+        out.append(make_border(widths, "└", "┴", "┘"))
+        return out
 
     lines: list[str] = []
-
-    # Main table: header, then the tree body. Structural rows (`/`,
-    # `home/`, `mm-builder/`, …) are dimmed so the eye lands on the
-    # project rows that correspond to launched projects.
-    main_widths = widths_for(main_table, 3)
-    lines.append(render_row(main_table[0], main_aligns, main_widths, DIM))
-    for i, row in enumerate(main_table[1:], start=1):
-        style = DIM if i in structural_body_idx else ""
-        lines.append(render_row(row, main_aligns, main_widths, style))
-
-    # By-model table: header + body, no TOTAL row.
-    if by_model_table:
-        by_model_widths = widths_for(by_model_table, 1)
+    lines.extend(render_table("Total:", total_headers, total_aligns, total_body, 3))
+    if recent_body:
+        recent_title = (
+            "Recent:" if days_window == 0
+            else f"Recent (last {days_window} days):"
+        )
         lines.append("")
-        lines.append(color("By model:", DIM))
-        lines.append(render_row(by_model_table[0], by_model_aligns, by_model_widths, DIM))
-        for row in by_model_table[1:]:
-            lines.append(render_row(row, by_model_aligns, by_model_widths))
-
-    # By-day table: header, body, dim rule, yellow TOTAL, optional note.
-    if by_day_table:
-        by_day_widths = widths_for(by_day_table, 1)
-        lines.append("")
-        lines.append(color("By day:", DIM))
-        lines.append(render_row(by_day_table[0], by_day_aligns, by_day_widths, DIM))
-        for row in by_day_table[1:-1]:
-            lines.append(render_row(row, by_day_aligns, by_day_widths))
-        lines.append(hr(by_day_widths))
-        lines.append(render_row(by_day_table[-1], by_day_aligns, by_day_widths, YELLOW))
+        lines.extend(render_table(
+            recent_title, recent_headers, recent_aligns, recent_body, 1
+        ))
         if by_day_truncation_note:
             lines.append(color(by_day_truncation_note, DIM))
 
