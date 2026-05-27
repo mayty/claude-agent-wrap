@@ -54,6 +54,12 @@ From any project directory, run:
 agent [claude-code-args...]
 ```
 
+If a `Dockerfile.agent` exists in the current directory but you want to run against the base `claude-agent` image for this launch (e.g., to bypass a broken project image or compare behavior), pass `--base`:
+
+```bash
+agent --base [claude-code-args...]
+```
+
 The wrapper mounts:
 
 | Host | Container | Purpose |
@@ -163,7 +169,7 @@ If the base `claude-agent` image hasn't been built yet on this host, run `rebuil
 
 | Function | Purpose |
 | --- | --- |
-| `agent [args...]` | Run Claude Code in a container against the resolved image for the current directory. |
+| `agent [--base] [args...]` | Run Claude Code in a container against the resolved image for the current directory. With `--base`, ignore any `Dockerfile.agent` in the current directory and launch the base `claude-agent` image instead (project-specific `EXPOSE`, `agent-user`, and `agent-run-args` directives are skipped). |
 | `rebuild_agent [--full]` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. With `--full`, rebuild the base `claude-agent` image first, then the project image. |
 | `create_custom_agent` | Scaffold a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory. |
 | `agent_usage [--days N] [--region LABEL] [--refresh]` | Aggregate token usage and estimated USD cost across every project where you've launched `agent` (tracked in `<wrap-dir>/.agent-launches/projects.txt`). Runs on the host — only the host can see every project's session data, since each container only mounts one project at a time. Pricing is fetched from AWS's Bedrock pricing pages and cached for 7 days. |

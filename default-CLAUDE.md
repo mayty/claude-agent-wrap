@@ -3,7 +3,7 @@
 
 ## Environment
 
-You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
+You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist. The user can also launch with `agent --base` to bypass a project's `Dockerfile.agent` and run against the base image — mention this if they hit a broken or stale project image.
 
 Within the Claude home directory (`$HOME/.claude/`), most paths (`settings.json`, `CLAUDE.md`, `themes/`, `cache/`, `history.jsonl`, etc.) are backed by a *shared* global mount on the host, so they persist across every project. A specific set of subdirectories is instead overlaid with a *per-project* mount rooted at `$(pwd)/.claude/<subdir>/` on the host — currently: `projects/-workspace/` (session history, mounted from `$(pwd)/.claude/sessions/`), `plans/`, `todos/`, `tasks/`, `shell-snapshots/`, `session-env/`, `file-history/`, and `paste-cache/`. Content you write under those paths is visible only within this project, not in other projects' agent sessions. Don't rely on finding another project's plans or todos by reading `~/.claude/plans/` — they won't be there.
 

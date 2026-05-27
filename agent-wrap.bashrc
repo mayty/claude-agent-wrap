@@ -3,8 +3,12 @@ readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
 
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
+    local USE_BASE=0
+    if [ "${1:-}" = "--base" ]; then
+        USE_BASE=1
+    fi
 
-    if [ -f "$(pwd)/Dockerfile.agent" ]; then
+    if [ "$USE_BASE" = "0" ] && [ -f "$(pwd)/Dockerfile.agent" ]; then
         local DOCKERFILE="$(pwd)/Dockerfile.agent"
         local NAME=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$DOCKERFILE" | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
         if [ -z "$NAME" ]; then
@@ -234,13 +238,32 @@ agent() {
     local SECRETS_FILE="${HOME}/claude_keys.json"
     local AGENT_USER="ubuntu"
 
+    local USE_BASE=0
+    local CLAUDE_ARGS=()
+    local arg
+    for arg in "$@"; do
+        if [ "$arg" = "--base" ]; then
+            USE_BASE=1
+        else
+            CLAUDE_ARGS+=("$arg")
+        fi
+    done
+
     local RESOLVED
-    RESOLVED=$(_agent_resolve_image) || return 1
+    if [ "$USE_BASE" = "1" ]; then
+        RESOLVED=$(_agent_resolve_image --base) || return 1
+    else
+        RESOLVED=$(_agent_resolve_image) || return 1
+    fi
     local IMAGE DOCKERFILE CONTEXT
     IFS=$'\t' read -r IMAGE DOCKERFILE CONTEXT <<< "$RESOLVED"
 
     if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        echo "Error: Image '$IMAGE' not found. Run 'rebuild_agent' in this directory to build it." >&2
+        if [ "$USE_BASE" = "1" ]; then
+            echo "Error: Base image '$IMAGE' not found. Run 'rebuild_agent --full' to build it." >&2
+        else
+            echo "Error: Image '$IMAGE' not found. Run 'rebuild_agent' in this directory to build it." >&2
+        fi
         return 1
     fi
 
@@ -303,7 +326,7 @@ agent() {
     local CLAUDE_HOME="/home/${AGENT_USER}"
 
     local AGENT_NAME
-    if [ -f "$(pwd)/Dockerfile.agent" ]; then
+    if [ "$USE_BASE" = "0" ] && [ -f "$(pwd)/Dockerfile.agent" ]; then
         AGENT_NAME=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$(pwd)/Dockerfile.agent" | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
     else
         AGENT_NAME=$(basename "$(pwd)")
@@ -399,5 +422,5 @@ agent() {
         "${WSLG_ARGS[@]}" \
         "${HOST_NET_ARGS[@]}" \
         "${EXTRA_RUN_ARGS[@]}" \
-        "$IMAGE" "$@"
+        "$IMAGE" "${CLAUDE_ARGS[@]}"
 }
