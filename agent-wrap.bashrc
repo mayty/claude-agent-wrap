@@ -1,5 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
-readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
+if [ -z "${AGENT_WRAP_MOUNT:-}" ]; then
+    readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
+fi
 
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
@@ -104,6 +106,42 @@ _agent_ensure_telegram_hooks() {
     ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
 }
 
+_agent_check_for_updates() {
+    # Best-effort upstream check: if the wrap-dir is behind origin/<branch>,
+    # prompt the user to update. On accept, pull and re-source this file in
+    # the parent shell, then return 1 to tell the caller to abort the
+    # original command. Any error path (no network, detached HEAD, non-git
+    # wrap-dir, fetch failure, etc.) returns 0 so the original command runs.
+    case "${CLAUDE_AGENT_SKIP_UPDATE_CHECK:-}" in
+        ""|0|false|FALSE|no|NO) ;;
+        *) return 0 ;;
+    esac
+    local TOOL_DIR
+    TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)" || return 0
+    git -C "$TOOL_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    local BRANCH
+    BRANCH=$(git -C "$TOOL_DIR" symbolic-ref --short HEAD 2>/dev/null) || return 0
+    timeout 10s git -C "$TOOL_DIR" fetch --quiet origin "$BRANCH" >/dev/null 2>&1 || return 0
+    local BEHIND
+    BEHIND=$(git -C "$TOOL_DIR" rev-list --count "HEAD..origin/$BRANCH" 2>/dev/null) || return 0
+    if [ -z "$BEHIND" ] || [ "$BEHIND" = "0" ]; then
+        return 0
+    fi
+    local y=$'\033[1;33m' r=$'\033[0m'
+    echo "${y}Note:${r} agent-wrap is $BEHIND commit(s) behind origin/$BRANCH."
+    local ans
+    read -r -p "Update agent-wrap now? [y/N] " ans
+    case "$ans" in
+        y|Y)
+            agent-wrap_update || return 0
+            # shellcheck disable=SC1091
+            source "$TOOL_DIR/agent-wrap.bashrc"
+            return 1
+            ;;
+        *) return 0 ;;
+    esac
+}
+
 agent-wrap_update() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local BRANCH BEFORE AFTER
@@ -172,6 +210,10 @@ rebuild_agent() {
                 return 1 ;;
         esac
     done
+
+    if ! _agent_check_for_updates; then
+        return 0
+    fi
 
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local RESOLVED
@@ -248,6 +290,10 @@ agent() {
             CLAUDE_ARGS+=("$arg")
         fi
     done
+
+    if ! _agent_check_for_updates; then
+        return 0
+    fi
 
     local RESOLVED
     if [ "$USE_BASE" = "1" ]; then

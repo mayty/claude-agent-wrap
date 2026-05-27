@@ -45,6 +45,14 @@ Trade-offs:
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. In-container services should bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
 - If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
 
+### `CLAUDE_AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
+
+`agent()` and `rebuild_agent()` perform a best-effort upstream check on every invocation: `git fetch` against the wrap-dir's tracking branch, and if `HEAD` is behind, prompt the user `Update agent-wrap now? [y/N]`. On accept, the wrapper runs `agent-wrap_update`, re-sources `agent-wrap.bashrc` in the parent shell, and returns without launching/rebuilding — the user re-runs the original command afterwards (per the spec, an accepted update intentionally does not chain into the original action). Decline with `n`/Enter and the original command runs as usual.
+
+Set `CLAUDE_AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. Any unexpected condition — non-git wrap-dir, detached HEAD, `git fetch` failure or 10s timeout — also silently skips the check, so a flaky network never blocks a launch.
+
+Other wrap functions (`agent_usage`, `create_custom_agent`, `agent-wrap_update` itself) do not perform the check.
+
 ### Volume Mounts (in agent function)
 
 The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent-user>` (default `ubuntu`). `HOME` is set to that path so Claude Code finds its config in the usual spot.

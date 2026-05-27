@@ -169,8 +169,8 @@ If the base `claude-agent` image hasn't been built yet on this host, run `rebuil
 
 | Function | Purpose |
 | --- | --- |
-| `agent [--base] [args...]` | Run Claude Code in a container against the resolved image for the current directory. With `--base`, ignore any `Dockerfile.agent` in the current directory and launch the base `claude-agent` image instead (project-specific `EXPOSE`, `agent-user`, and `agent-run-args` directives are skipped). |
-| `rebuild_agent [--full]` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. With `--full`, rebuild the base `claude-agent` image first, then the project image. |
+| `agent [--base] [args...]` | Run Claude Code in a container against the resolved image for the current directory. With `--base`, ignore any `Dockerfile.agent` in the current directory and launch the base `claude-agent` image instead (project-specific `EXPOSE`, `agent-user`, and `agent-run-args` directives are skipped). On every invocation, performs a best-effort upstream check and prompts to pull if the wrap-dir is behind (see [`CLAUDE_AGENT_SKIP_UPDATE_CHECK`](#claude_agent_skip_update_check-auto-update-opt-out)). |
+| `rebuild_agent [--full]` | Rebuild the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID`. With `--full`, rebuild the base `claude-agent` image first, then the project image. Same upstream-update check as `agent` runs first. |
 | `create_custom_agent` | Scaffold a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory. |
 | `agent_usage [--days N] [--region LABEL] [--refresh]` | Aggregate token usage and estimated USD cost across every project where you've launched `agent` (tracked in `<wrap-dir>/.agent-launches/projects.txt`). Runs on the host — only the host can see every project's session data, since each container only mounts one project at a time. Pricing is fetched from AWS's Bedrock pricing pages and cached for 7 days. |
 | `agent-wrap_update` | Pull the latest wrapper source; if `default-CLAUDE.md` changed, replace the user's copy when unmodified or warn when customized. |
@@ -205,6 +205,14 @@ Trade-offs:
 - The container loses network isolation from the WSL distro — services bind on the distro's interfaces, not on `docker0`.
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. Make in-container services bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
 - If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+
+### `CLAUDE_AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
+
+`agent` and `rebuild_agent` run a best-effort upstream check on every invocation: a `git fetch` against the wrap-dir's tracking branch, then — if `HEAD` is behind — a `Update agent-wrap now? [y/N]` prompt. On `y`, the wrapper runs `agent-wrap_update`, re-sources `agent-wrap.bashrc` in the parent shell so the new function definitions take effect immediately, and returns without launching the container or rebuilding the image; re-run your original command afterwards. On `n` (or Enter), the original command proceeds unchanged.
+
+Set `CLAUDE_AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. The check is also auto-skipped on any error path — non-git wrap-dir, detached HEAD, fetch failure, or 10-second fetch timeout — so a flaky or offline network never blocks a launch.
+
+Other wrap functions (`agent_usage`, `create_custom_agent`, and `agent-wrap_update` itself) do not perform the check.
 
 ## Layout
 
