@@ -3,6 +3,12 @@ if [ -z "${AGENT_WRAP_MOUNT:-}" ]; then
     readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
 fi
 
+# Source the LiteLLM sidecar lifecycle. Kept in a separate file so forks can
+# override the proxy implementation without conflicting with upstream changes
+# to the launcher itself. Public contract documented at the top of that file.
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)/litellm/litellm-sidecar.sh"
+
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local USE_BASE=0
@@ -375,17 +381,20 @@ agent() {
     if [ "$USE_BASE" = "0" ] && [ -f "$(pwd)/Dockerfile.agent" ]; then
         AGENT_NAME=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$(pwd)/Dockerfile.agent" | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
     else
-        AGENT_NAME=$(basename "$(pwd)")
+        AGENT_NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//')
+        [ -z "$AGENT_NAME" ] && AGENT_NAME="agent"
     fi
 
     if [ -f "$SECRETS_FILE" ]; then
-        local CLAUDE_KEY=$(jq -r '.ServiceSpecificCredential.ServiceCredentialSecret' "$SECRETS_FILE")
         local TELEGRAM_BOT_TOKEN=$(jq -r '.TelegramBotToken // ""' "$SECRETS_FILE")
         local TELEGRAM_CHAT_ID=$(jq -r '.TelegramChatId // ""' "$SECRETS_FILE")
     else
         echo "File ${SECRETS_FILE} not found"
         return 1
     fi
+
+    local AGENT_INSTANCE_ID
+    AGENT_INSTANCE_ID="${AGENT_NAME}-$(cat /proc/sys/kernel/random/uuid)"
 
     mkdir -p "$GLOBAL_CONFIG_DIR/.claude"
 
@@ -433,40 +442,61 @@ agent() {
 
     _agent_record_project "$TOOL_DIR"
 
-    echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
+    echo "--- Agent instance: $AGENT_INSTANCE_ID ---"
 
-    docker run --rm -it \
-        "${USER_ARGS[@]}" \
-        -v "${GLOBAL_CONFIG_DIR}/.claude.json:${CLAUDE_HOME}/.claude.json" \
-        -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
-        -v "$(pwd):/workspace" \
-        -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
-        -v "$(pwd)/.claude/plans:${CLAUDE_HOME}/.claude/plans" \
-        -v "$(pwd)/.claude/todos:${CLAUDE_HOME}/.claude/todos" \
-        -v "$(pwd)/.claude/tasks:${CLAUDE_HOME}/.claude/tasks" \
-        -v "$(pwd)/.claude/shell-snapshots:${CLAUDE_HOME}/.claude/shell-snapshots" \
-        -v "$(pwd)/.claude/session-env:${CLAUDE_HOME}/.claude/session-env" \
-        -v "$(pwd)/.claude/file-history:${CLAUDE_HOME}/.claude/file-history" \
-        -v "$(pwd)/.claude/paste-cache:${CLAUDE_HOME}/.claude/paste-cache" \
-        -v "${TOOL_DIR}/Dockerfile:${AGENT_WRAP_MOUNT}/Dockerfile:ro" \
-        -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
-        -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \
-        -v "${TOOL_DIR}/statusline.py:${AGENT_WRAP_MOUNT}/statusline.py:ro" \
-        -v "${TOOL_DIR}/telegram-notify.sh:${AGENT_WRAP_MOUNT}/telegram-notify.sh:ro" \
-        -v "${TOOL_DIR}/md_to_html.js:${AGENT_WRAP_MOUNT}/md_to_html.js:ro" \
-        -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
-        -e CLAUDE_CODE_USE_BEDROCK=1 \
-        -e AWS_REGION=us-east-1 \
-        -e DISABLE_AUTOUPDATER=1 \
-        -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
-        -e TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
-        -e AGENT_NAME="${AGENT_NAME}" \
-        -e TERM="${TERM:-xterm-256color}" \
-        -e COLORTERM="${COLORTERM:-truecolor}" \
-        -e HOME="${CLAUDE_HOME}" \
-        "${PORT_ARGS[@]}" \
-        "${WSLG_ARGS[@]}" \
-        "${HOST_NET_ARGS[@]}" \
-        "${EXTRA_RUN_ARGS[@]}" \
-        "$IMAGE" "${CLAUDE_ARGS[@]}"
+    (
+        trap '_litellm_sidecar_release "$TOOL_DIR" "$AGENT_INSTANCE_ID"' EXIT
+
+        if ! _litellm_sidecar_ensure "$TOOL_DIR" "$use_host_net" "$AGENT_INSTANCE_ID"; then
+            echo "Error: failed to start LiteLLM sidecar; aborting." >&2
+            exit 1
+        fi
+
+        local LABEL_ARGS=()
+        local _line
+        while IFS= read -r _line; do
+            [ -n "$_line" ] && LABEL_ARGS+=("$_line")
+        done < <(_litellm_sidecar_label_args "$AGENT_INSTANCE_ID")
+
+        echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
+
+        docker run --rm -it \
+            "${USER_ARGS[@]}" \
+            -v "${GLOBAL_CONFIG_DIR}/.claude.json:${CLAUDE_HOME}/.claude.json" \
+            -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
+            -v "$(pwd):/workspace" \
+            -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
+            -v "$(pwd)/.claude/plans:${CLAUDE_HOME}/.claude/plans" \
+            -v "$(pwd)/.claude/todos:${CLAUDE_HOME}/.claude/todos" \
+            -v "$(pwd)/.claude/tasks:${CLAUDE_HOME}/.claude/tasks" \
+            -v "$(pwd)/.claude/shell-snapshots:${CLAUDE_HOME}/.claude/shell-snapshots" \
+            -v "$(pwd)/.claude/session-env:${CLAUDE_HOME}/.claude/session-env" \
+            -v "$(pwd)/.claude/file-history:${CLAUDE_HOME}/.claude/file-history" \
+            -v "$(pwd)/.claude/paste-cache:${CLAUDE_HOME}/.claude/paste-cache" \
+            -v "${TOOL_DIR}/Dockerfile:${AGENT_WRAP_MOUNT}/Dockerfile:ro" \
+            -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
+            -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \
+            -v "${TOOL_DIR}/statusline.py:${AGENT_WRAP_MOUNT}/statusline.py:ro" \
+            -v "${TOOL_DIR}/telegram-notify.sh:${AGENT_WRAP_MOUNT}/telegram-notify.sh:ro" \
+            -v "${TOOL_DIR}/md_to_html.js:${AGENT_WRAP_MOUNT}/md_to_html.js:ro" \
+            -e AWS_BEARER_TOKEN_BEDROCK="${LITELLM_BEARER_TOKEN}" \
+            -e ANTHROPIC_BEDROCK_BASE_URL="${LITELLM_BASE_URL}" \
+            -e CLAUDE_CODE_USE_BEDROCK=1 \
+            -e AWS_REGION=us-east-1 \
+            -e DISABLE_AUTOUPDATER=1 \
+            -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
+            -e TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
+            -e AGENT_NAME="${AGENT_NAME}" \
+            -e AGENT_INSTANCE_ID="${AGENT_INSTANCE_ID}" \
+            -e TERM="${TERM:-xterm-256color}" \
+            -e COLORTERM="${COLORTERM:-truecolor}" \
+            -e HOME="${CLAUDE_HOME}" \
+            "${LABEL_ARGS[@]}" \
+            "${LITELLM_EXTRA_RUN_ARGS[@]}" \
+            "${PORT_ARGS[@]}" \
+            "${WSLG_ARGS[@]}" \
+            "${HOST_NET_ARGS[@]}" \
+            "${EXTRA_RUN_ARGS[@]}" \
+            "$IMAGE" "${CLAUDE_ARGS[@]}"
+    )
 }

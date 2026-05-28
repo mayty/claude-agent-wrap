@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repository provides a Docker-based wrapper for running Claude Code CLI through AWS Bedrock. It packages Claude Code into a container and provides bash functions for easy invocation.
+This repository provides a Docker-based wrapper for running Claude Code CLI through AWS Bedrock. It packages Claude Code into a container and provides bash functions for easy invocation. Model traffic is routed through a shared LiteLLM sidecar container so observability (Langfuse, etc.) can be layered in without touching Claude Code itself.
 
 ## Architecture
 
@@ -21,15 +21,24 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 - **telegram-notify.sh**: Bash script mounted read-only at `/opt/agent-wrap/telegram-notify.sh` and invoked by `PermissionRequest`, `Stop`, and `StopFailure` hooks when Telegram credentials are present in `~/claude_keys.json`. Sends a Telegram message when Claude asks for permission, finishes responding, or hits an API error. Hook entries are idempotently injected into `settings.json` by `_agent_ensure_telegram_hooks()` on each `agent()` launch when creds are configured.
 - **md_to_html.js**: Node script mounted read-only at `/opt/agent-wrap/md_to_html.js` and invoked by `telegram-notify.sh` to convert Markdown into Telegram's subset of HTML (bold/italic/code/links/strikethrough + `<pre>` with optional language tag for code blocks).
 - **wl-paste-shim**: Bash shim mounted read-only at `/usr/local/bin/wl-paste` (only when `/mnt/wslg` exists on the host) so it shadows the real `/usr/bin/wl-paste` via PATH order. WSLg advertises Windows clipboard images as `image/bmp` only, but Claude Code's `Ctrl+V` paste handler asks for `image/png` and doesn't fall back. The shim intercepts `--list-types` (advertises `image/png` when only BMP is on clipboard) and `--type image/png` (fetches BMP and pipes through `convert bmp:- png:-`), and falls through to the real binary for everything else.
+- **litellm/litellm-sidecar.sh**: Host-side bash file sourced by `agent-wrap.bashrc`. Owns the LiteLLM sidecar lifecycle (lazy start, healthcheck-based readiness wait, refcount, shutdown) under a `flock`. Reads the user's Bedrock key from `${HOME}/claude_keys.json` itself — the launcher doesn't pass it in. Public contract is three functions — `_litellm_sidecar_ensure`, `_litellm_sidecar_release`, `_litellm_sidecar_label_args` — and three output globals — `LITELLM_BASE_URL`, `LITELLM_BEARER_TOKEN`, `LITELLM_EXTRA_RUN_ARGS`. Intentionally extracted into its own file so forks can override the proxy implementation without conflicting on upstream syncs to `agent-wrap.bashrc`. The image is pinned to `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb…` (constant near the top of the file). The proxy's master key lives only in the running sidecar's env: minted in memory on first start, recovered via `docker inspect` on subsequent launches that find the sidecar already running. Refcount lives at `<wrap-dir>/.agent-launches/litellm.refcount`. Not mounted into the claude-agent container — host-side only.
+- **litellm/config.yaml**: LiteLLM proxy config, mounted read-only into the *sidecar* container (not into claude-agent). Phase-1 config is a one-liner: `master_key: os.environ/LITELLM_MASTER_KEY`. No `model_list` — `/bedrock/*` passthrough doesn't require one. A commented-out Langfuse callback block is present as a placeholder for the next change.
 
 ## Key Configuration
 
 ### Environment Variables (set by `agent()` at `docker run` time)
-- `CLAUDE_CODE_USE_BEDROCK=1`: Enables AWS Bedrock integration
-- `AWS_REGION=us-east-1`: Default AWS region
+- `CLAUDE_CODE_USE_BEDROCK=1`: Enables AWS Bedrock integration in Claude Code
+- `AWS_REGION=us-east-1`: Default AWS region (kept for parity; the sidecar is the one that actually talks to Bedrock)
+- `AWS_BEARER_TOKEN_BEDROCK`: the **LiteLLM sidecar's master key**, not the user's AWS bearer token. The user's actual Bedrock key goes only to the sidecar.
+- `ANTHROPIC_BEDROCK_BASE_URL`: `http://host.docker.internal:14000/bedrock` in normal mode, `http://127.0.0.1:14000/bedrock` in `AGENT_USE_HOST_NETWORK=1` mode. Points Claude Code at the sidecar's Bedrock passthrough endpoint.
+- `AGENT_INSTANCE_ID`: per-launch identifier of the form `<agent-name>-<uuid>` (where `<agent-name>` is derived from the `# agent-name:` directive or a sanitized `basename $(pwd)`). Also applied as the `agent-wrap.instance-id` Docker label and as the container name (`claude-agent-<AGENT_INSTANCE_ID>`).
 - `DISABLE_AUTOUPDATER=1`: Disables the Claude Code in-container auto-updater
 
 These are injected via `-e` on each launch rather than baked into the image so users can override them (e.g., point at a different region) without rebuilding.
+
+### `AGENT_LITELLM_HOST_PORT` (sidecar host port override)
+
+The shared LiteLLM sidecar publishes its API on `127.0.0.1:14000` by default. Override the host port by exporting `AGENT_LITELLM_HOST_PORT=<port>` before running `agent`. The override is read on first launch (when the sidecar is started); subsequent launches reuse the running sidecar's port. To change the port mid-flight, exit all running agents and re-launch.
 
 When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent()` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
 
@@ -88,7 +97,23 @@ The `agent()` function expects credentials in `~/claude_keys.json` with the stru
 }
 ```
 
+`ServiceCredentialSecret` is the user's AWS Bedrock bearer token. It is passed only to the LiteLLM sidecar (as `AWS_BEARER_TOKEN_BEDROCK` on the sidecar container); claude-agent never sees it. Inside claude-agent, `AWS_BEARER_TOKEN_BEDROCK` is the proxy's auto-generated master key — the boundary between Claude Code and the proxy is bearer-on-Bearer, not SigV4.
+
 `TelegramBotToken` and `TelegramChatId` are optional. If both are present, the wrapper forwards them as env vars into the container and injects `PermissionRequest` / `Stop` / `StopFailure` hooks into `settings.json` so Telegram notifications fire. If either is missing, no hooks are injected and no env vars are set (the script would no-op anyway).
+
+### LiteLLM sidecar lifecycle
+
+A single shared `agent-wrap-litellm` Docker container fronts AWS Bedrock for every claude-agent launch on this host. It is **not** built by `rebuild_agent`; the wrapper pulls a pinned upstream image directly. Lifecycle:
+
+- **Lazy start**: the first `agent` launch starts the sidecar (under `flock` on `<wrap-dir>/.agent-launches/litellm.lock`) with a Docker `--health-cmd` that hits `/health/liveliness` from inside the container, and waits up to ~20 s for `.State.Health.Status` to flip to `healthy`.
+- **Refcount**: each running claude-agent registers its `AGENT_INSTANCE_ID` in `<wrap-dir>/.agent-launches/litellm.refcount`. Parallel agents share the one sidecar.
+- **Refcount-based stop**: when the last agent exits and the refcount file is empty, the sidecar is stopped. Stale entries (from killed launches) are reconciled against `docker ps --filter label=agent-wrap.role=claude-agent` on every release.
+- **Master key**: minted in memory on first start and passed to the sidecar via `-e LITELLM_MASTER_KEY=…`. Subsequent launches that find the sidecar already running recover it via `docker inspect` rather than reading from disk. Consequence: a manual `docker stop`/`restart` of the sidecar mints a fresh key on its next start, which would 401 any in-flight agents holding the old one — but `--rm` plus the refcount-driven stop already imply teardown of those agents, so this matches the actual fault model.
+- **Failure mode**: any failure during `_litellm_sidecar_ensure` aborts the agent launch loudly and dumps the sidecar's recent logs. There is no fallback to direct Bedrock — that would mask a misconfigured proxy.
+
+To bump the LiteLLM version, change the `_LITELLM_IMAGE` constant at the top of `litellm/litellm-sidecar.sh` (tag + digest) and, if any of the lifecycle behavior changed in upstream, update this file accordingly.
+
+`litellm/litellm-sidecar.sh` is the override-friendly file: forks that swap the proxy implementation should fork *only* that file. The contract with `agent-wrap.bashrc` is the three public functions (`_litellm_sidecar_ensure`, `_litellm_sidecar_release`, `_litellm_sidecar_label_args`) plus the three output globals (`LITELLM_BASE_URL`, `LITELLM_BEARER_TOKEN`, `LITELLM_EXTRA_RUN_ARGS`). Renaming any of those breaks the launcher; everything else is internal.
 
 ## Common Commands
 
