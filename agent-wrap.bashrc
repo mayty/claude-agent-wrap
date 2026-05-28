@@ -347,6 +347,23 @@ agent() {
                  | sed -E 's/^#[[:space:]]*agent-run-args:[[:space:]]*//')
     fi
 
+    # Extract any project-supplied --network from agent-run-args. The sidecar
+    # needs to know it so it can attach itself to that network and become
+    # reachable from the agent by container name.
+    local AGENT_NETWORK=""
+    local i=0
+    while [ "$i" -lt "${#EXTRA_RUN_ARGS[@]}" ]; do
+        case "${EXTRA_RUN_ARGS[$i]}" in
+            --network|--net)
+                AGENT_NETWORK="${EXTRA_RUN_ARGS[$((i+1))]}"
+                ;;
+            --network=*|--net=*)
+                AGENT_NETWORK="${EXTRA_RUN_ARGS[$i]#*=}"
+                ;;
+        esac
+        i=$((i+1))
+    done
+
     local HOST_NET_ARGS=()
     local use_host_net=""
     case "${AGENT_USE_HOST_NETWORK:-}" in
@@ -356,21 +373,15 @@ agent() {
     if [ -n "$use_host_net" ]; then
         if ! grep -qi microsoft /proc/version 2>/dev/null; then
             echo "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts." >&2
+            use_host_net=""
+        elif [ -n "$AGENT_NETWORK" ]; then
+            echo "Warning: AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already specifies --network via agent-run-args." >&2
+            use_host_net=""
         else
-            local has_network=""
-            for arg in "${EXTRA_RUN_ARGS[@]}"; do
-                case "$arg" in
-                    --network|--network=*|--net|--net=*) has_network=1; break ;;
-                esac
-            done
-            if [ -n "$has_network" ]; then
-                echo "Warning: AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already specifies --network via agent-run-args." >&2
-            else
-                HOST_NET_ARGS=(--network host)
-                if [ "${#PORT_ARGS[@]}" -gt 0 ]; then
-                    echo "Warning: AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings (${PORT_ARGS[*]}) skipped. Services bind on the WSL distro's interfaces directly; ensure they listen on 127.0.0.1 to avoid LAN exposure." >&2
-                    PORT_ARGS=()
-                fi
+            HOST_NET_ARGS=(--network host)
+            if [ "${#PORT_ARGS[@]}" -gt 0 ]; then
+                echo "Warning: AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings (${PORT_ARGS[*]}) skipped. Services bind on the WSL distro's interfaces directly; ensure they listen on 127.0.0.1 to avoid LAN exposure." >&2
+                PORT_ARGS=()
             fi
         fi
     fi
@@ -447,7 +458,7 @@ agent() {
     (
         trap '_litellm_sidecar_release "$TOOL_DIR" "$AGENT_INSTANCE_ID"' EXIT
 
-        if ! _litellm_sidecar_ensure "$TOOL_DIR" "$use_host_net" "$AGENT_INSTANCE_ID"; then
+        if ! _litellm_sidecar_ensure "$TOOL_DIR" "$use_host_net" "$AGENT_INSTANCE_ID" "$AGENT_NETWORK"; then
             echo "Error: failed to start LiteLLM sidecar; aborting." >&2
             exit 1
         fi

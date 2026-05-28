@@ -30,17 +30,21 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 - `CLAUDE_CODE_USE_BEDROCK=1`: Enables AWS Bedrock integration in Claude Code
 - `AWS_REGION=us-east-1`: Default AWS region (kept for parity; the sidecar is the one that actually talks to Bedrock)
 - `AWS_BEARER_TOKEN_BEDROCK`: the **LiteLLM sidecar's master key**, not the user's AWS bearer token. The user's actual Bedrock key goes only to the sidecar.
-- `ANTHROPIC_BEDROCK_BASE_URL`: `http://host.docker.internal:14000/bedrock` in normal mode, `http://127.0.0.1:14000/bedrock` in `AGENT_USE_HOST_NETWORK=1` mode. Points Claude Code at the sidecar's Bedrock passthrough endpoint.
+- `ANTHROPIC_BEDROCK_BASE_URL`: `http://agent-wrap-litellm:4000/bedrock` (the sidecar's container name on the shared user-defined Docker network `agent-wrap-net`). In `AGENT_USE_HOST_NETWORK=1` mode the agent runs in the host namespace, so the same hostname is mapped to the sidecar's bridge IP via an injected `--add-host` entry. Points Claude Code at the sidecar's Bedrock passthrough endpoint.
 - `AGENT_INSTANCE_ID`: per-launch identifier of the form `<agent-name>-<uuid>` (where `<agent-name>` is derived from the `# agent-name:` directive or a sanitized `basename $(pwd)`). Also applied as the `agent-wrap.instance-id` Docker label and as the container name (`claude-agent-<AGENT_INSTANCE_ID>`).
 - `DISABLE_AUTOUPDATER=1`: Disables the Claude Code in-container auto-updater
 
 These are injected via `-e` on each launch rather than baked into the image so users can override them (e.g., point at a different region) without rebuilding.
 
-### `AGENT_LITELLM_HOST_PORT` (sidecar host port override)
+### Sidecar networking
 
-The shared LiteLLM sidecar publishes its API on `0.0.0.0:14000` by default so claude-agent containers on any user-defined network can reach it via `host.docker.internal`. Override the host port by exporting `AGENT_LITELLM_HOST_PORT=<port>` before running `agent`. The override is read on first launch (when the sidecar is started); subsequent launches reuse the running sidecar's port. To change the port mid-flight, exit all running agents and re-launch.
+The sidecar lives on a Docker user-defined bridge named `agent-wrap-net` (created on demand by `_litellm_sidecar_ensure`). It is not published on a host port — agents reach it directly over Docker networks:
 
-The proxy is protected by a random Bearer token (`LITELLM_MASTER_KEY`, minted in memory on first start), so binding on all interfaces does not grant unauthenticated Bedrock access. On WSL2 the port is only reachable from the WSL distro's interface (Windows host NAT hides it from the LAN); on a native Linux host it is reachable from the LAN, so deploy on a trusted network or override `AGENT_LITELLM_HOST_PORT` and firewall accordingly.
+- **Default-network agent** (no `--network` in `agent-run-args`): `_litellm_sidecar_ensure` returns `LITELLM_EXTRA_RUN_ARGS=(--network agent-wrap-net)` so the agent joins the same network and resolves `agent-wrap-litellm` by container DNS.
+- **Custom-network agent** (`Dockerfile.agent` declares `--network myproj` via `agent-run-args`): the launcher parses the network name out of the args and passes it to `_litellm_sidecar_ensure`, which `docker network connect`s the sidecar to that network so the same container-name URL resolves on the project's network.
+- **`AGENT_USE_HOST_NETWORK=1`**: the agent runs in the host network namespace where Docker DNS isn't available; `_litellm_sidecar_ensure` resolves the sidecar's `agent-wrap-net` IP via `docker inspect` and injects `--add-host agent-wrap-litellm:<ip>` so the same URL resolves.
+
+This sidesteps the FORWARD=DROP scenario triggered by parallel WSL2 distros' dockerds fighting over iptables-legacy rules — agent traffic to the sidecar stays inside the bridge it's already on rather than flowing through the host's FORWARD chain.
 
 When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent()` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
 
@@ -107,7 +111,8 @@ The `agent()` function expects credentials in `~/claude_keys.json` with the stru
 
 A single shared `agent-wrap-litellm` Docker container fronts AWS Bedrock for every claude-agent launch on this host. It is **not** built by `rebuild_agent`; the wrapper pulls a pinned upstream image directly. Lifecycle:
 
-- **Lazy start**: the first `agent` launch starts the sidecar (under `flock` on `<wrap-dir>/.agent-launches/litellm.lock`) with a Docker `--health-cmd` that hits `/health/liveliness` from inside the container, and waits up to ~20 s for `.State.Health.Status` to flip to `healthy`.
+- **Lazy start**: the first `agent` launch creates the user-defined `agent-wrap-net` bridge (idempotent) and starts the sidecar attached to it (under `flock` on `<wrap-dir>/.agent-launches/litellm.lock`) with a Docker `--health-cmd` that hits `/health/liveliness` from inside the container, and waits up to ~20 s for `.State.Health.Status` to flip to `healthy`. The sidecar publishes no host port — agents reach it over the shared bridge.
+- **Network attach (per-launch)**: if the agent will run on a project-supplied network (`--network X` in `agent-run-args`), `_litellm_sidecar_ensure` `docker network connect`s the sidecar to that network on the agent's launch so the agent reaches `agent-wrap-litellm` by container DNS without leaving its own bridge.
 - **Refcount**: each running claude-agent registers its `AGENT_INSTANCE_ID` in `<wrap-dir>/.agent-launches/litellm.refcount`. Parallel agents share the one sidecar.
 - **Refcount-based stop**: when the last agent exits and the refcount file is empty, the sidecar is stopped. Stale entries (from killed launches) are reconciled against `docker ps --filter label=agent-wrap.role=claude-agent` on every release.
 - **Master key**: minted in memory on first start and passed to the sidecar via `-e LITELLM_MASTER_KEY=…`. Subsequent launches that find the sidecar already running recover it via `docker inspect` rather than reading from disk. Consequence: a manual `docker stop`/`restart` of the sidecar mints a fresh key on its next start, which would 401 any in-flight agents holding the old one — but `--rm` plus the refcount-driven stop already imply teardown of those agents, so this matches the actual fault model.

@@ -6,13 +6,20 @@
 # pin, point at a hosted LiteLLM, etc. To keep upstream syncs clean, the public
 # contract is intentionally narrow:
 #
-#   _litellm_sidecar_ensure   TOOL_DIR USE_HOST_NET INSTANCE_ID
+#   _litellm_sidecar_ensure   TOOL_DIR USE_HOST_NET INSTANCE_ID AGENT_NETWORK
 #       Starts/reuses the shared sidecar; registers INSTANCE_ID in the
 #       refcount; sets these output globals for the caller:
 #         LITELLM_BASE_URL       — Claude Code's ANTHROPIC_BEDROCK_BASE_URL
 #         LITELLM_BEARER_TOKEN   — Claude Code's AWS_BEARER_TOKEN_BEDROCK
 #         LITELLM_EXTRA_RUN_ARGS — array; flags to splice into `docker run`
 #       Returns non-zero on any failure (no silent fallback).
+#
+#       AGENT_NETWORK is the user-defined Docker network the agent will run on
+#       (empty string for default). When non-empty and not "host"/"none", the
+#       sidecar is attached to that network so the agent can resolve it by
+#       container name without traversing the host FORWARD chain. When empty,
+#       the launcher should add `--network agent-wrap-net` to the agent's
+#       run args (the sidecar is always on that network).
 #
 #       The Bedrock key is read inline from
 #       ${HOME}/claude_keys.json (.ServiceSpecificCredential.ServiceCredentialSecret).
@@ -45,6 +52,12 @@
 readonly _LITELLM_IMAGE="ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
 
 readonly _LITELLM_CONTAINER="agent-wrap-litellm"
+# Sidecar's primary user-defined network. Created on demand. Default-network
+# agents are launched on this same network so they can reach the sidecar by
+# container name without traversing the host's FORWARD chain (which a parallel
+# WSL distro may have set to DROP). Agents on a project-supplied custom
+# network instead get the sidecar attached to their network at launch time.
+readonly _LITELLM_NETWORK="agent-wrap-net"
 readonly _LITELLM_INTERNAL_PORT=4000
 readonly _LITELLM_HEALTH_TIMEOUT_SEC=60
 # Must exceed _LITELLM_HEALTH_TIMEOUT_SEC: parallel launches may queue behind a
@@ -60,7 +73,7 @@ __litellm_config_file()  { printf '%s/litellm/config.yaml\n' "$1"; }
 # ---------- Public: ensure ----------
 
 _litellm_sidecar_ensure() {
-    local TOOL_DIR="$1" USE_HOST_NET="$2" INSTANCE_ID="$3"
+    local TOOL_DIR="$1" USE_HOST_NET="$2" INSTANCE_ID="$3" AGENT_NETWORK="${4:-}"
     if [ -z "$TOOL_DIR" ] || [ -z "$INSTANCE_ID" ]; then
         echo "litellm-sidecar: ensure() requires TOOL_DIR, USE_HOST_NET, INSTANCE_ID" >&2
         return 2
@@ -94,12 +107,14 @@ _litellm_sidecar_ensure() {
         return 1
     fi
 
-    local STATE_DIR HOST_PORT MASTER_KEY
+    local STATE_DIR MASTER_KEY
     STATE_DIR="$(__litellm_state_dir "$TOOL_DIR")"
-    HOST_PORT="${AGENT_LITELLM_HOST_PORT:-14000}"
     mkdir -p "$STATE_DIR" || return 1
 
-    # Acquire the lock for the duration of (start-if-needed + register).
+    # Acquire the lock for the duration of (start-if-needed + register +
+    # cross-network attach). Attaching the sidecar to a project's custom
+    # network must also be serialized — otherwise two parallel launches on
+    # the same network race `docker network connect`.
     local LOCK_FILE
     LOCK_FILE="$(__litellm_lock_file "$TOOL_DIR")"
     exec 9>"$LOCK_FILE" || return 1
@@ -109,13 +124,26 @@ _litellm_sidecar_ensure() {
         return 1
     fi
 
+    if ! __litellm_ensure_network; then
+        flock -u 9; exec 9>&-; return 1
+    fi
+
+    # Migration safety net: an older sidecar started before this network
+    # refactor won't be attached to agent-wrap-net. Reuse-as-is would leave
+    # agents unable to resolve `agent-wrap-litellm`. Force a restart so the
+    # new connectivity model takes effect.
+    if __litellm_is_running && ! __litellm_is_on_network "$_LITELLM_NETWORK"; then
+        echo "litellm-sidecar: existing sidecar predates agent-wrap-net; restarting" >&2
+        docker stop "$_LITELLM_CONTAINER" >/dev/null 2>&1 || true
+    fi
+
     if __litellm_is_running; then
         MASTER_KEY="$(__litellm_recover_master_key)" || {
             flock -u 9; exec 9>&-; return 1; }
     else
         MASTER_KEY="$(__litellm_generate_master_key)" || {
             flock -u 9; exec 9>&-; return 1; }
-        if ! __litellm_start "$TOOL_DIR" "$BEDROCK_KEY" "$MASTER_KEY" "$HOST_PORT"; then
+        if ! __litellm_start "$TOOL_DIR" "$BEDROCK_KEY" "$MASTER_KEY"; then
             flock -u 9; exec 9>&-; return 1
         fi
         if ! __litellm_health_poll; then
@@ -127,18 +155,46 @@ _litellm_sidecar_ensure() {
         fi
     fi
 
+    # If the agent will run on a project-supplied network, attach the sidecar
+    # to it so the agent can resolve `agent-wrap-litellm` by name without
+    # crossing the host FORWARD chain. Skip for the magic networks "host" /
+    # "none" (incompatible with `docker network connect`) and for our own
+    # network (already attached at start time).
+    if [ -n "$AGENT_NETWORK" ] \
+       && [ "$AGENT_NETWORK" != "host" ] \
+       && [ "$AGENT_NETWORK" != "none" ] \
+       && [ "$AGENT_NETWORK" != "$_LITELLM_NETWORK" ]; then
+        if ! __litellm_attach_to_network "$AGENT_NETWORK"; then
+            flock -u 9; exec 9>&-; return 1
+        fi
+    fi
+
     __litellm_register_instance "$TOOL_DIR" "$INSTANCE_ID"
 
     flock -u 9
     exec 9>&-
 
     LITELLM_BEARER_TOKEN="$MASTER_KEY"
+    LITELLM_BASE_URL="http://${_LITELLM_CONTAINER}:${_LITELLM_INTERNAL_PORT}/bedrock"
     if [ -n "$USE_HOST_NET" ]; then
-        LITELLM_BASE_URL="http://127.0.0.1:${HOST_PORT}/bedrock"
-        LITELLM_EXTRA_RUN_ARGS=()
+        # Host-network agent: it sees the sidecar via the host's docker0/
+        # agent-wrap-net bridge IPs but DNS-by-name doesn't work outside a
+        # user-defined network. Resolve once via `docker inspect` and add a
+        # /etc/hosts entry into the agent container so the same URL resolves.
+        local SIDECAR_IP
+        SIDECAR_IP=$(__litellm_sidecar_ip_on_network "$_LITELLM_NETWORK") || true
+        if [ -z "$SIDECAR_IP" ]; then
+            echo "litellm-sidecar: unable to resolve sidecar IP on $_LITELLM_NETWORK" >&2
+            return 1
+        fi
+        LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
+    elif [ -z "$AGENT_NETWORK" ]; then
+        # Default-bridge agent: put it on agent-wrap-net so DNS-by-name works.
+        LITELLM_EXTRA_RUN_ARGS=(--network "$_LITELLM_NETWORK")
     else
-        LITELLM_BASE_URL="http://host.docker.internal:${HOST_PORT}/bedrock"
-        LITELLM_EXTRA_RUN_ARGS=(--add-host "host.docker.internal:host-gateway")
+        # Project-supplied network: sidecar was just attached above; agent
+        # will use its existing --network from agent-run-args.
+        LITELLM_EXTRA_RUN_ARGS=()
     fi
     return 0
 }
@@ -218,8 +274,16 @@ __litellm_is_running() {
     [ "$STATUS" = "true" ]
 }
 
+__litellm_is_on_network() {
+    local NETWORK="$1"
+    local NETWORKS
+    NETWORKS=$(docker inspect "$_LITELLM_CONTAINER" \
+        --format '{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}' 2>/dev/null) || return 1
+    printf '%s\n' "$NETWORKS" | grep -Fxq "$NETWORK"
+}
+
 __litellm_start() {
-    local TOOL_DIR="$1" BEDROCK_KEY="$2" MASTER_KEY="$3" HOST_PORT="$4"
+    local TOOL_DIR="$1" BEDROCK_KEY="$2" MASTER_KEY="$3"
     local CONFIG_FILE
     CONFIG_FILE="$(__litellm_config_file "$TOOL_DIR")"
     if [ ! -r "$CONFIG_FILE" ]; then
@@ -241,9 +305,13 @@ __litellm_start() {
     local HEALTH_CMD
     HEALTH_CMD='python3 -c "import urllib.request; urllib.request.urlopen('"'"'http://127.0.0.1:'"${_LITELLM_INTERNAL_PORT}"'/health/liveliness'"'"', timeout=2).read()"'
 
+    # No -p publish: agents reach the sidecar over agent-wrap-net (or a
+    # network the sidecar is later attached to), not via host port forwarding.
+    # Skipping the publish sidesteps the FORWARD=DROP scenario triggered by
+    # parallel WSL distros' dockerds fighting over iptables-legacy rules.
     docker run -d --rm \
         --name "$_LITELLM_CONTAINER" \
-        -p "${HOST_PORT}:${_LITELLM_INTERNAL_PORT}" \
+        --network "$_LITELLM_NETWORK" \
         --health-cmd "$HEALTH_CMD" \
         --health-interval=30s \
         --health-retries=3 \
@@ -257,6 +325,49 @@ __litellm_start() {
         "$_LITELLM_IMAGE" \
         --config /etc/litellm/config.yaml --port "$_LITELLM_INTERNAL_PORT" \
         >/dev/null
+}
+
+# Idempotently create the user-defined bridge the sidecar lives on. Driver
+# bridge gives us container-name DNS resolution (which the default `bridge`
+# does not), and a dedicated network keeps stray default-bridge containers
+# off the proxy.
+__litellm_ensure_network() {
+    if docker network inspect "$_LITELLM_NETWORK" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! docker network create "$_LITELLM_NETWORK" >/dev/null 2>&1; then
+        echo "litellm-sidecar: failed to create docker network $_LITELLM_NETWORK" >&2
+        return 1
+    fi
+}
+
+# Connect the sidecar to NETWORK if it isn't already. Used to make the
+# sidecar reachable from agents that run on a project-supplied network
+# (`--network X` in agent-run-args).
+__litellm_attach_to_network() {
+    local NETWORK="$1"
+    if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+        echo "litellm-sidecar: network '$NETWORK' (from agent-run-args) does not exist" >&2
+        return 1
+    fi
+    local CONNECTED
+    CONNECTED=$(docker inspect "$_LITELLM_CONTAINER" \
+        --format '{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}' 2>/dev/null) || return 1
+    if printf '%s\n' "$CONNECTED" | grep -Fxq "$NETWORK"; then
+        return 0
+    fi
+    if ! docker network connect "$NETWORK" "$_LITELLM_CONTAINER" >/dev/null 2>&1; then
+        echo "litellm-sidecar: failed to attach $_LITELLM_CONTAINER to network '$NETWORK'" >&2
+        return 1
+    fi
+}
+
+# Print the sidecar's IP address on NETWORK. Used when the agent runs in the
+# host network namespace and can't use docker DNS.
+__litellm_sidecar_ip_on_network() {
+    local NETWORK="$1"
+    docker inspect "$_LITELLM_CONTAINER" \
+        --format "{{with index .NetworkSettings.Networks \"$NETWORK\"}}{{.IPAddress}}{{end}}" 2>/dev/null
 }
 
 __litellm_health_poll() {
