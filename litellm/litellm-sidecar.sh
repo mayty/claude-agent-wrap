@@ -59,10 +59,10 @@ readonly _LITELLM_CONTAINER="agent-wrap-litellm"
 # network instead get the sidecar attached to their network at launch time.
 readonly _LITELLM_NETWORK="agent-wrap-net"
 readonly _LITELLM_INTERNAL_PORT=4000
-readonly _LITELLM_HEALTH_TIMEOUT_SEC=60
+readonly _LITELLM_HEALTH_TIMEOUT_SEC=90
 # Must exceed _LITELLM_HEALTH_TIMEOUT_SEC: parallel launches may queue behind a
 # peer that is currently in the start-and-wait-for-health critical section.
-readonly _LITELLM_LOCK_TIMEOUT_SEC=90
+readonly _LITELLM_LOCK_TIMEOUT_SEC=120
 
 # Per-tool-dir state (paths derived from $TOOL_DIR; not constants).
 __litellm_state_dir()    { printf '%s/.agent-launches\n' "$1"; }
