@@ -38,7 +38,9 @@ These are injected via `-e` on each launch rather than baked into the image so u
 
 ### `AGENT_LITELLM_HOST_PORT` (sidecar host port override)
 
-The shared LiteLLM sidecar publishes its API on `127.0.0.1:14000` by default. Override the host port by exporting `AGENT_LITELLM_HOST_PORT=<port>` before running `agent`. The override is read on first launch (when the sidecar is started); subsequent launches reuse the running sidecar's port. To change the port mid-flight, exit all running agents and re-launch.
+The shared LiteLLM sidecar publishes its API on `0.0.0.0:14000` by default so claude-agent containers on any user-defined network can reach it via `host.docker.internal`. Override the host port by exporting `AGENT_LITELLM_HOST_PORT=<port>` before running `agent`. The override is read on first launch (when the sidecar is started); subsequent launches reuse the running sidecar's port. To change the port mid-flight, exit all running agents and re-launch.
+
+The proxy is protected by a random Bearer token (`LITELLM_MASTER_KEY`, minted in memory on first start), so binding on all interfaces does not grant unauthenticated Bedrock access. On WSL2 the port is only reachable from the WSL distro's interface (Windows host NAT hides it from the LAN); on a native Linux host it is reachable from the LAN, so deploy on a trusted network or override `AGENT_LITELLM_HOST_PORT` and firewall accordingly.
 
 When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent()` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
 

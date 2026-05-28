@@ -46,10 +46,10 @@ readonly _LITELLM_IMAGE="ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79c
 
 readonly _LITELLM_CONTAINER="agent-wrap-litellm"
 readonly _LITELLM_INTERNAL_PORT=4000
-readonly _LITELLM_HEALTH_TIMEOUT_SEC=20
+readonly _LITELLM_HEALTH_TIMEOUT_SEC=60
 # Must exceed _LITELLM_HEALTH_TIMEOUT_SEC: parallel launches may queue behind a
 # peer that is currently in the start-and-wait-for-health critical section.
-readonly _LITELLM_LOCK_TIMEOUT_SEC=30
+readonly _LITELLM_LOCK_TIMEOUT_SEC=90
 
 # Per-tool-dir state (paths derived from $TOOL_DIR; not constants).
 __litellm_state_dir()    { printf '%s/.agent-launches\n' "$1"; }
@@ -243,12 +243,12 @@ __litellm_start() {
 
     docker run -d --rm \
         --name "$_LITELLM_CONTAINER" \
-        -p "127.0.0.1:${HOST_PORT}:${_LITELLM_INTERNAL_PORT}" \
+        -p "${HOST_PORT}:${_LITELLM_INTERNAL_PORT}" \
         --health-cmd "$HEALTH_CMD" \
         --health-interval=30s \
         --health-retries=3 \
         --health-timeout=2s \
-        --health-start-period=30s \
+        --health-start-period=${_LITELLM_HEALTH_TIMEOUT_SEC}s \
         --health-start-interval=100ms \
         -e AWS_REGION_NAME=us-east-1 \
         -e AWS_BEARER_TOKEN_BEDROCK="$BEDROCK_KEY" \
