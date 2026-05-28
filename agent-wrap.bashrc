@@ -33,6 +33,12 @@ _agent_resolve_image() {
     fi
 }
 
+_agent_sanitize_name() {
+    # Lowercase, replace anything outside [a-z0-9_.-] with `-`, strip leading/
+    # trailing dashes. Output suitable as a Docker image-name suffix.
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//'
+}
+
 create_custom_agent() {
     local DST="$(pwd)/Dockerfile.agent"
 
@@ -40,7 +46,8 @@ create_custom_agent() {
         echo "Error: $DST already exists" >&2
         return 1
     fi
-    local NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//')
+    local NAME
+    NAME=$(_agent_sanitize_name "$(basename "$(pwd)")")
     if [ -z "$NAME" ]; then
         echo "Error: could not derive agent-name from directory '$(pwd)'" >&2
         return 1
@@ -351,8 +358,8 @@ agent() {
     # needs to know it so it can attach itself to that network and become
     # reachable from the agent by container name.
     local AGENT_NETWORK=""
-    local i=0
-    while [ "$i" -lt "${#EXTRA_RUN_ARGS[@]}" ]; do
+    local i
+    for ((i=0; i<${#EXTRA_RUN_ARGS[@]}; i++)); do
         case "${EXTRA_RUN_ARGS[$i]}" in
             --network|--net)
                 AGENT_NETWORK="${EXTRA_RUN_ARGS[$((i+1))]}"
@@ -361,7 +368,6 @@ agent() {
                 AGENT_NETWORK="${EXTRA_RUN_ARGS[$i]#*=}"
                 ;;
         esac
-        i=$((i+1))
     done
 
     local HOST_NET_ARGS=()
@@ -392,7 +398,7 @@ agent() {
     if [ "$USE_BASE" = "0" ] && [ -f "$(pwd)/Dockerfile.agent" ]; then
         AGENT_NAME=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$(pwd)/Dockerfile.agent" | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
     else
-        AGENT_NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//')
+        AGENT_NAME=$(_agent_sanitize_name "$(basename "$(pwd)")")
         [ -z "$AGENT_NAME" ] && AGENT_NAME="agent"
     fi
 
@@ -404,8 +410,9 @@ agent() {
         return 1
     fi
 
-    local AGENT_INSTANCE_ID
-    AGENT_INSTANCE_ID="${AGENT_NAME}-$(cat /proc/sys/kernel/random/uuid)"
+    local AGENT_INSTANCE_ID _instance_uuid
+    _instance_uuid=$(_agent_uuid) || return 1
+    AGENT_INSTANCE_ID="${AGENT_NAME}-${_instance_uuid}"
 
     mkdir -p "$GLOBAL_CONFIG_DIR/.claude"
 

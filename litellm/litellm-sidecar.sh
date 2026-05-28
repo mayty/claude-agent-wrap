@@ -70,12 +70,25 @@ __litellm_lock_file()    { printf '%s/.agent-launches/litellm.lock\n' "$1"; }
 __litellm_refcount_file(){ printf '%s/.agent-launches/litellm.refcount\n' "$1"; }
 __litellm_config_file()  { printf '%s/litellm/config.yaml\n' "$1"; }
 
+# Wrapper-wide UUID source. Linux exposes one in /proc cheaply; macOS doesn't,
+# so fall back to uuidgen. Output is lowercase-hex with dashes.
+_agent_uuid() {
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen >/dev/null 2>&1; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        echo "agent-wrap: no UUID source (need /proc/sys/kernel/random/uuid or uuidgen)" >&2
+        return 1
+    fi
+}
+
 # ---------- Public: ensure ----------
 
 _litellm_sidecar_ensure() {
     local TOOL_DIR="$1" USE_HOST_NET="$2" INSTANCE_ID="$3" AGENT_NETWORK="${4:-}"
     if [ -z "$TOOL_DIR" ] || [ -z "$INSTANCE_ID" ]; then
-        echo "litellm-sidecar: ensure() requires TOOL_DIR, USE_HOST_NET, INSTANCE_ID" >&2
+        echo "litellm-sidecar: ensure() requires TOOL_DIR and INSTANCE_ID" >&2
         return 2
     fi
     if ! command -v docker >/dev/null 2>&1; then
@@ -84,26 +97,6 @@ _litellm_sidecar_ensure() {
     fi
     if ! command -v flock >/dev/null 2>&1; then
         echo "litellm-sidecar: flock not found on host" >&2
-        return 1
-    fi
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "litellm-sidecar: jq not found on host (used to parse claude_keys.json)" >&2
-        return 1
-    fi
-
-    local SECRETS_FILE="${HOME}/claude_keys.json"
-    if [ ! -f "$SECRETS_FILE" ]; then
-        echo "litellm-sidecar: $SECRETS_FILE not found" >&2
-        return 1
-    fi
-    if ! jq -e . "$SECRETS_FILE" >/dev/null 2>&1; then
-        echo "litellm-sidecar: $SECRETS_FILE is not valid JSON" >&2
-        return 1
-    fi
-    local BEDROCK_KEY
-    BEDROCK_KEY=$(jq -r '.ServiceSpecificCredential.ServiceCredentialSecret // empty' "$SECRETS_FILE")
-    if [ -z "$BEDROCK_KEY" ]; then
-        echo "litellm-sidecar: .ServiceSpecificCredential.ServiceCredentialSecret missing or empty in $SECRETS_FILE" >&2
         return 1
     fi
 
@@ -125,62 +118,105 @@ _litellm_sidecar_ensure() {
     fi
 
     if ! __litellm_ensure_network; then
-        flock -u 9; exec 9>&-; return 1
+        exec 9>&-; return 1
     fi
 
-    # Migration safety net: an older sidecar started before this network
-    # refactor won't be attached to agent-wrap-net. Reuse-as-is would leave
+    local AGENT_IN_HOST_NETNS=""
+    if [ -n "$USE_HOST_NET" ] || [ "$AGENT_NETWORK" = "host" ]; then
+        AGENT_IN_HOST_NETNS=1
+    fi
+
+    # Migration safety net: a sidecar from before the agent-wrap-net refactor
+    # won't be on agent-wrap-net or in the host netns. Reuse-as-is would leave
     # agents unable to resolve `agent-wrap-litellm`. Force a restart so the
-    # new connectivity model takes effect.
-    if __litellm_is_running && ! __litellm_is_on_network "$_LITELLM_NETWORK"; then
+    # current connectivity model takes effect. (host-net is also accepted
+    # because AGENT_USE_HOST_NETWORK now puts the sidecar there too.)
+    if __litellm_is_running \
+       && ! __litellm_is_on_network "$_LITELLM_NETWORK" \
+       && ! __litellm_is_on_network "host"; then
         echo "litellm-sidecar: existing sidecar predates agent-wrap-net; restarting" >&2
         docker stop "$_LITELLM_CONTAINER" >/dev/null 2>&1 || true
     fi
 
+    local SIDECAR_MODE
     if __litellm_is_running; then
+        # First-launch-wins: inherit whatever mode the running sidecar is in.
+        # A current launch's USE_HOST_NET only takes effect on cold start.
+        if __litellm_is_on_network "host"; then
+            SIDECAR_MODE="host"
+        else
+            SIDECAR_MODE="bridge"
+        fi
         MASTER_KEY="$(__litellm_recover_master_key)" || {
-            flock -u 9; exec 9>&-; return 1; }
+            exec 9>&-; return 1; }
     else
+        if [ -n "$USE_HOST_NET" ]; then
+            SIDECAR_MODE="host"
+        else
+            SIDECAR_MODE="bridge"
+        fi
+        # Cold start: read the AWS Bedrock key. Skipped on the reuse path —
+        # the running sidecar already holds it and a missing/invalid secrets
+        # file shouldn't block agents that don't need it.
+        local BEDROCK_KEY
+        if ! BEDROCK_KEY=$(__litellm_read_bedrock_key); then
+            exec 9>&-; return 1
+        fi
         MASTER_KEY="$(__litellm_generate_master_key)" || {
-            flock -u 9; exec 9>&-; return 1; }
-        if ! __litellm_start "$TOOL_DIR" "$BEDROCK_KEY" "$MASTER_KEY"; then
-            flock -u 9; exec 9>&-; return 1
+            exec 9>&-; return 1; }
+        if ! __litellm_start "$TOOL_DIR" "$BEDROCK_KEY" "$MASTER_KEY" "$SIDECAR_MODE"; then
+            exec 9>&-; return 1
         fi
         if ! __litellm_health_poll; then
             echo "litellm-sidecar: health check failed; recent logs:" >&2
             docker logs --tail 50 "$_LITELLM_CONTAINER" >&2 2>&1 || true
             docker stop "$_LITELLM_CONTAINER" >/dev/null 2>&1 || true
-            flock -u 9; exec 9>&-
+            exec 9>&-
             return 1
         fi
     fi
 
     # If the agent will run on a project-supplied network, attach the sidecar
     # to it so the agent can resolve `agent-wrap-litellm` by name without
-    # crossing the host FORWARD chain. Skip for the magic networks "host" /
-    # "none" (incompatible with `docker network connect`) and for our own
-    # network (already attached at start time).
-    if [ -n "$AGENT_NETWORK" ] \
+    # crossing the host FORWARD chain. Skip for:
+    #   - magic networks "host"/"none" (incompatible with `docker network connect`),
+    #   - our own network (already attached at start time),
+    #   - host-mode sidecars (cannot be attached to user-defined networks at
+    #     all; the agent will reach it via host-gateway instead).
+    if [ "$SIDECAR_MODE" != "host" ] \
+       && [ -n "$AGENT_NETWORK" ] \
        && [ "$AGENT_NETWORK" != "host" ] \
        && [ "$AGENT_NETWORK" != "none" ] \
        && [ "$AGENT_NETWORK" != "$_LITELLM_NETWORK" ]; then
         if ! __litellm_attach_to_network "$AGENT_NETWORK"; then
-            flock -u 9; exec 9>&-; return 1
+            exec 9>&-; return 1
         fi
     fi
 
     __litellm_register_instance "$TOOL_DIR" "$INSTANCE_ID"
 
-    flock -u 9
     exec 9>&-
 
     LITELLM_BEARER_TOKEN="$MASTER_KEY"
     LITELLM_BASE_URL="http://${_LITELLM_CONTAINER}:${_LITELLM_INTERNAL_PORT}/bedrock"
-    if [ -n "$USE_HOST_NET" ]; then
-        # Host-network agent: it sees the sidecar via the host's docker0/
-        # agent-wrap-net bridge IPs but DNS-by-name doesn't work outside a
-        # user-defined network. Resolve once via `docker inspect` and add a
-        # /etc/hosts entry into the agent container so the same URL resolves.
+
+    # Connectivity matrix (sidecar mode × agent's own netns):
+    #   host    + agent in host netns  → both share the host stack; 127.0.0.1
+    #   host    + agent in some bridge → agent reaches host via host-gateway
+    #                                    (Docker 20.10+ magic name)
+    #   bridge  + agent in host netns  → resolve sidecar's bridge IP via
+    #                                    docker inspect and inject it
+    #   bridge  + default-network agent → join agent to agent-wrap-net so DNS
+    #                                    resolution works by container name
+    #   bridge  + custom-network agent → sidecar attached above; agent keeps
+    #                                    its own --network
+    if [ "$SIDECAR_MODE" = "host" ]; then
+        if [ -n "$AGENT_IN_HOST_NETNS" ]; then
+            LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:127.0.0.1")
+        else
+            LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:host-gateway")
+        fi
+    elif [ -n "$AGENT_IN_HOST_NETNS" ]; then
         local SIDECAR_IP
         SIDECAR_IP=$(__litellm_sidecar_ip_on_network "$_LITELLM_NETWORK") || true
         if [ -z "$SIDECAR_IP" ]; then
@@ -189,11 +225,8 @@ _litellm_sidecar_ensure() {
         fi
         LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
     elif [ -z "$AGENT_NETWORK" ]; then
-        # Default-bridge agent: put it on agent-wrap-net so DNS-by-name works.
         LITELLM_EXTRA_RUN_ARGS=(--network "$_LITELLM_NETWORK")
     else
-        # Project-supplied network: sidecar was just attached above; agent
-        # will use its existing --network from agent-run-args.
         LITELLM_EXTRA_RUN_ARGS=()
     fi
     return 0
@@ -226,7 +259,6 @@ _litellm_sidecar_release() {
         fi
     fi
 
-    flock -u 9
     exec 9>&-
     return 0
 }
@@ -244,8 +276,34 @@ _litellm_sidecar_label_args() {
 
 __litellm_generate_master_key() {
     local UUID
-    UUID=$(cat /proc/sys/kernel/random/uuid) || return 1
+    UUID=$(_agent_uuid) || return 1
     printf 'sk-aw-%s' "${UUID//-/}"
+}
+
+# Read the AWS Bedrock key from ~/claude_keys.json. Only called on the cold
+# start path where the key is actually consumed; reuse paths recover the
+# proxy's master key from `docker inspect` instead.
+__litellm_read_bedrock_key() {
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "litellm-sidecar: jq not found on host (used to parse claude_keys.json)" >&2
+        return 1
+    fi
+    local SECRETS_FILE="${HOME}/claude_keys.json"
+    if [ ! -f "$SECRETS_FILE" ]; then
+        echo "litellm-sidecar: $SECRETS_FILE not found" >&2
+        return 1
+    fi
+    if ! jq -e . "$SECRETS_FILE" >/dev/null 2>&1; then
+        echo "litellm-sidecar: $SECRETS_FILE is not valid JSON" >&2
+        return 1
+    fi
+    local KEY
+    KEY=$(jq -r '.ServiceSpecificCredential.ServiceCredentialSecret // empty' "$SECRETS_FILE")
+    if [ -z "$KEY" ]; then
+        echo "litellm-sidecar: .ServiceSpecificCredential.ServiceCredentialSecret missing or empty in $SECRETS_FILE" >&2
+        return 1
+    fi
+    printf '%s' "$KEY"
 }
 
 # Recover the master key from the running sidecar's env. Called only when
@@ -283,7 +341,7 @@ __litellm_is_on_network() {
 }
 
 __litellm_start() {
-    local TOOL_DIR="$1" BEDROCK_KEY="$2" MASTER_KEY="$3"
+    local TOOL_DIR="$1" BEDROCK_KEY="$2" MASTER_KEY="$3" SIDECAR_MODE="${4:-bridge}"
     local CONFIG_FILE
     CONFIG_FILE="$(__litellm_config_file "$TOOL_DIR")"
     if [ ! -r "$CONFIG_FILE" ]; then
@@ -305,13 +363,29 @@ __litellm_start() {
     local HEALTH_CMD
     HEALTH_CMD='python3 -c "import urllib.request; urllib.request.urlopen('"'"'http://127.0.0.1:'"${_LITELLM_INTERNAL_PORT}"'/health/liveliness'"'"', timeout=2).read()"'
 
+    local NETWORK
+    if [ "$SIDECAR_MODE" = "host" ]; then
+        # AGENT_USE_HOST_NETWORK extends to the sidecar so its own outbound
+        # Bedrock traffic also escapes the bridge / FORWARD chain. Caveat:
+        # the sidecar binds the WSL distro's port 4000 — health-poll catches
+        # the failure cleanly if anything else is already listening there.
+        NETWORK="host"
+    else
+        NETWORK="$_LITELLM_NETWORK"
+    fi
+
     # No -p publish: agents reach the sidecar over agent-wrap-net (or a
     # network the sidecar is later attached to), not via host port forwarding.
     # Skipping the publish sidesteps the FORWARD=DROP scenario triggered by
     # parallel WSL distros' dockerds fighting over iptables-legacy rules.
+    #
+    # AWS_REGION_NAME is pinned to us-east-1 here — this is the *sidecar's*
+    # upstream Bedrock region, not the agent's. The host's AWS_REGION env var
+    # does NOT repoint it; fork this line (and the agent's AWS_REGION default
+    # in agent-wrap.bashrc) together if you need a different region.
     docker run -d --rm \
         --name "$_LITELLM_CONTAINER" \
-        --network "$_LITELLM_NETWORK" \
+        --network "$NETWORK" \
         --health-cmd "$HEALTH_CMD" \
         --health-interval=30s \
         --health-retries=3 \
@@ -371,6 +445,9 @@ __litellm_sidecar_ip_on_network() {
 }
 
 __litellm_health_poll() {
+    # Deadline is in integer seconds ($SECONDS) but the loop body sleeps 0.5s,
+    # so the spinner advances about twice per displayed second. Cosmetic — the
+    # health check itself is bounded by _LITELLM_HEALTH_TIMEOUT_SEC.
     local START=$SECONDS
     local DEADLINE=$(( SECONDS + _LITELLM_HEALTH_TIMEOUT_SEC ))
     local STATUS LAST=""

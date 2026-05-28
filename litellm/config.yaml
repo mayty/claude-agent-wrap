@@ -15,20 +15,6 @@
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
-  # Custom passthrough for the Bedrock control plane. Claude Code calls
-  # GET /bedrock/inference-profiles?type=SYSTEM_DEFINED at startup to
-  # populate its model picker; LiteLLM's built-in /bedrock/* runtime
-  # handler only knows /model/<id>/invoke* shapes and 400s on this URL.
-  # We shim it through to the real Bedrock control-plane endpoint and
-  # swap the inbound LiteLLM bearer for the AWS bearer token configured
-  # on the sidecar.
-  pass_through_endpoints:
-    - path: "/bedrock/inference-profiles"
-      target: "https://bedrock.us-east-1.amazonaws.com/inference-profiles"
-      include_subpath: true
-      headers:
-        Authorization: "Bearer os.environ/AWS_BEARER_TOKEN_BEDROCK"
-
 # Wildcard route so any Bedrock model ID (including inference profiles like
 # `us.anthropic.claude-opus-4-7`) resolves through /bedrock/model/<id>/invoke*
 # without enumerating each model. `aws_region_name` falls through to the

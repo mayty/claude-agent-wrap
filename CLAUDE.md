@@ -28,9 +28,9 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 
 ### Environment Variables (set by `agent()` at `docker run` time)
 - `CLAUDE_CODE_USE_BEDROCK=1`: Enables AWS Bedrock integration in Claude Code
-- `AWS_REGION=us-east-1`: Default AWS region (kept for parity; the sidecar is the one that actually talks to Bedrock)
+- `AWS_REGION=us-east-1`: Default AWS region (kept for parity; the sidecar is the one that actually talks to Bedrock). Overriding this on the host does **not** repoint the sidecar's upstream Bedrock region — that's separately pinned at `AWS_REGION_NAME=us-east-1` inside `litellm/litellm-sidecar.sh::__litellm_start`. To target a different region, fork both spots together.
 - `AWS_BEARER_TOKEN_BEDROCK`: the **LiteLLM sidecar's master key**, not the user's AWS bearer token. The user's actual Bedrock key goes only to the sidecar.
-- `ANTHROPIC_BEDROCK_BASE_URL`: `http://agent-wrap-litellm:4000/bedrock` (the sidecar's container name on the shared user-defined Docker network `agent-wrap-net`). In `AGENT_USE_HOST_NETWORK=1` mode the agent runs in the host namespace, so the same hostname is mapped to the sidecar's bridge IP via an injected `--add-host` entry. Points Claude Code at the sidecar's Bedrock passthrough endpoint.
+- `ANTHROPIC_BEDROCK_BASE_URL`: `http://agent-wrap-litellm:4000/bedrock` (the sidecar's container name on the shared user-defined Docker network `agent-wrap-net`). When the agent runs in the host network namespace (`AGENT_USE_HOST_NETWORK=1` or `--network host` in `agent-run-args`), the same hostname is resolved via an injected `--add-host` entry — pointing at `127.0.0.1` if the sidecar is also in host mode, otherwise at the sidecar's bridge IP or the host gateway depending on the running mode. Points Claude Code at the sidecar's Bedrock passthrough endpoint.
 - `AGENT_INSTANCE_ID`: per-launch identifier of the form `<agent-name>-<uuid>` (where `<agent-name>` is derived from the `# agent-name:` directive or a sanitized `basename $(pwd)`). Also applied as the `agent-wrap.instance-id` Docker label and as the container name (`claude-agent-<AGENT_INSTANCE_ID>`).
 - `DISABLE_AUTOUPDATER=1`: Disables the Claude Code in-container auto-updater
 
@@ -42,9 +42,10 @@ The sidecar lives on a Docker user-defined bridge named `agent-wrap-net` (create
 
 - **Default-network agent** (no `--network` in `agent-run-args`): `_litellm_sidecar_ensure` returns `LITELLM_EXTRA_RUN_ARGS=(--network agent-wrap-net)` so the agent joins the same network and resolves `agent-wrap-litellm` by container DNS.
 - **Custom-network agent** (`Dockerfile.agent` declares `--network myproj` via `agent-run-args`): the launcher parses the network name out of the args and passes it to `_litellm_sidecar_ensure`, which `docker network connect`s the sidecar to that network so the same container-name URL resolves on the project's network.
-- **`AGENT_USE_HOST_NETWORK=1`**: the agent runs in the host network namespace where Docker DNS isn't available; `_litellm_sidecar_ensure` resolves the sidecar's `agent-wrap-net` IP via `docker inspect` and injects `--add-host agent-wrap-litellm:<ip>` so the same URL resolves.
+- **`AGENT_USE_HOST_NETWORK=1`**: the agent runs in the host network namespace, and `_litellm_sidecar_ensure` also launches the **sidecar** with `--network host` so the proxy's own outbound Bedrock traffic escapes the bridge / FORWARD chain (otherwise the flag would only fix half the path). The agent reaches the sidecar via `--add-host agent-wrap-litellm:127.0.0.1`. Mode is decided at cold-start time and is **first-launch-wins**: a later launch without the flag inherits the running mode rather than fighting it. The sidecar binds the WSL distro's port 4000 in this mode — health-poll catches the failure cleanly if anything else is already listening there.
+- **Cross-mode reuse** (bridge-mode agent finds a host-mode sidecar already running, or vice versa): the launcher adapts. A bridge-mode agent reaching a host-mode sidecar uses `--add-host agent-wrap-litellm:host-gateway` (Docker 20.10+'s magic resolver for the host's IP from inside a bridge container).
 
-This sidesteps the FORWARD=DROP scenario triggered by parallel WSL2 distros' dockerds fighting over iptables-legacy rules — agent traffic to the sidecar stays inside the bridge it's already on rather than flowing through the host's FORWARD chain.
+This sidesteps the FORWARD=DROP scenario triggered by parallel WSL2 distros' dockerds fighting over iptables-legacy rules — agent traffic to the sidecar (and the sidecar's traffic to Bedrock, in host mode) stays inside the namespace it's already on rather than flowing through the host's FORWARD chain.
 
 When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent()` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
 
@@ -59,6 +60,7 @@ Trade-offs:
 - The container loses network isolation from the WSL distro — services bind on the distro's interfaces (e.g. `eth6`), not on `docker0`.
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. In-container services should bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
 - If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+- The flag also extends to the LiteLLM sidecar — when set on the **cold-start** launch, the sidecar is launched with `--network host` and binds the WSL distro's port 4000. First-launch-wins: subsequent launches without the flag adapt to the running sidecar's mode rather than restarting it. To switch a running sidecar's mode, stop it (`docker stop agent-wrap-litellm`) and start the next launch with the desired flag value.
 
 ### `CLAUDE_AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
 
