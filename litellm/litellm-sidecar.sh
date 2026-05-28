@@ -371,45 +371,52 @@ __litellm_sidecar_ip_on_network() {
 }
 
 __litellm_health_poll() {
+    local START=$SECONDS
     local DEADLINE=$(( SECONDS + _LITELLM_HEALTH_TIMEOUT_SEC ))
     local STATUS LAST=""
     local TTY=0
     [ -t 2 ] && TTY=1
+    local SPINNER=('|' '/' '-' '\')
+    local FRAME=0
     while [ "$SECONDS" -lt "$DEADLINE" ]; do
         STATUS=$(docker inspect "$_LITELLM_CONTAINER" \
-            --format='{{.State.Health.Status}}' 2>/dev/null) || { __litellm_health_progress_end "$TTY" "fail"; return 1; }
-        if [ -n "$STATUS" ] && [ "$STATUS" != "$LAST" ]; then
-            __litellm_health_progress "$TTY" "$STATUS"
+            --format='{{.State.Health.Status}}' 2>/dev/null) || { __litellm_health_progress_end "$TTY" "fail" "$(( SECONDS - START ))"; return 1; }
+        if [ "$TTY" = "1" ]; then
+            __litellm_health_progress_tty "$STATUS" "$(( SECONDS - START ))" "${SPINNER[FRAME]}"
+            FRAME=$(( (FRAME + 1) % ${#SPINNER[@]} ))
+        elif [ -n "$STATUS" ] && [ "$STATUS" != "$LAST" ]; then
+            __litellm_health_progress_log "$STATUS"
             LAST="$STATUS"
         fi
         case "$STATUS" in
-            healthy)   __litellm_health_progress_end "$TTY" "ok";   return 0 ;;
-            unhealthy) __litellm_health_progress_end "$TTY" "fail"; return 1 ;;
+            healthy)   __litellm_health_progress_end "$TTY" "ok"   "$(( SECONDS - START ))"; return 0 ;;
+            unhealthy) __litellm_health_progress_end "$TTY" "fail" "$(( SECONDS - START ))"; return 1 ;;
         esac
         if ! __litellm_is_running; then
-            __litellm_health_progress_end "$TTY" "fail"
+            __litellm_health_progress_end "$TTY" "fail" "$(( SECONDS - START ))"
             return 1
         fi
         sleep 0.5
     done
-    __litellm_health_progress_end "$TTY" "fail"
+    __litellm_health_progress_end "$TTY" "fail" "$(( SECONDS - START ))"
     return 1
 }
 
-__litellm_health_progress() {
-    local TTY="$1" STATUS="$2"
-    if [ "$TTY" = "1" ]; then
-        printf '\r\033[2Klitellm-sidecar: waiting for healthy [%s]' "$STATUS" >&2
-    else
-        printf 'litellm-sidecar: %s\n' "$STATUS" >&2
-    fi
+__litellm_health_progress_tty() {
+    local STATUS="$1" ELAPSED="$2" SPIN="$3"
+    printf '\r\033[2Klitellm-sidecar: %s waiting for healthy [%s] (%ss)' \
+        "$SPIN" "${STATUS:-?}" "$ELAPSED" >&2
+}
+
+__litellm_health_progress_log() {
+    printf 'litellm-sidecar: %s\n' "$1" >&2
 }
 
 __litellm_health_progress_end() {
-    local TTY="$1" RESULT="$2"
+    local TTY="$1" RESULT="$2" ELAPSED="${3:-0}"
     if [ "$TTY" = "1" ]; then
         case "$RESULT" in
-            ok)   printf '\r\033[2Klitellm-sidecar: ready\n' >&2 ;;
+            ok)   printf '\r\033[2Klitellm-sidecar: ready (%ss)\n' "$ELAPSED" >&2 ;;
             fail) printf '\n' >&2 ;;
         esac
     fi
