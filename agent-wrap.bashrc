@@ -492,6 +492,9 @@ agent() {
     local PROJECT_CLAUDE_DIR="$(pwd)/.claude"
     mkdir -p \
         "$PROJECT_CLAUDE_DIR/sessions" \
+        "$PROJECT_CLAUDE_DIR/session-state" \
+        "$PROJECT_CLAUDE_DIR/daemon" \
+        "$PROJECT_CLAUDE_DIR/jobs" \
         "$PROJECT_CLAUDE_DIR/plans" \
         "$PROJECT_CLAUDE_DIR/todos" \
         "$PROJECT_CLAUDE_DIR/tasks" \
@@ -499,6 +502,12 @@ agent() {
         "$PROJECT_CLAUDE_DIR/session-env" \
         "$PROJECT_CLAUDE_DIR/file-history" \
         "$PROJECT_CLAUDE_DIR/paste-cache"
+
+    touch \
+        "$PROJECT_CLAUDE_DIR/daemon.lock" \
+        "$PROJECT_CLAUDE_DIR/daemon.log" \
+        "$PROJECT_CLAUDE_DIR/daemon.status.json" \
+        "$PROJECT_CLAUDE_DIR/history.jsonl"
 
     if [ ! -f "$PROJECT_CLAUDE_DIR/.gitignore" ]; then
         echo '*' > "$PROJECT_CLAUDE_DIR/.gitignore"
@@ -542,6 +551,13 @@ agent() {
             -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
             -v "$(pwd):/workspace" \
             -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
+            -v "$(pwd)/.claude/session-state:${CLAUDE_HOME}/.claude/sessions" \
+            -v "$(pwd)/.claude/daemon:${CLAUDE_HOME}/.claude/daemon" \
+            -v "$(pwd)/.claude/jobs:${CLAUDE_HOME}/.claude/jobs" \
+            -v "$(pwd)/.claude/daemon.lock:${CLAUDE_HOME}/.claude/daemon.lock" \
+            -v "$(pwd)/.claude/daemon.log:${CLAUDE_HOME}/.claude/daemon.log" \
+            -v "$(pwd)/.claude/daemon.status.json:${CLAUDE_HOME}/.claude/daemon.status.json" \
+            -v "$(pwd)/.claude/history.jsonl:${CLAUDE_HOME}/.claude/history.jsonl" \
             -v "$(pwd)/.claude/plans:${CLAUDE_HOME}/.claude/plans" \
             -v "$(pwd)/.claude/todos:${CLAUDE_HOME}/.claude/todos" \
             -v "$(pwd)/.claude/tasks:${CLAUDE_HOME}/.claude/tasks" \

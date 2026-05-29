@@ -67,7 +67,10 @@ The wrapper mounts:
 | `$(pwd)` | `/workspace` | Project files |
 | `<wrap-dir>/.claude_config/.claude.json` | `/home/<user>/.claude.json` | Global Claude config file |
 | `<wrap-dir>/.claude_config/.claude` | `/home/<user>/.claude` | Global Claude directory (`CLAUDE.md`, `settings.json`, caches, etc.) |
-| `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` | Per-project session history (overlays the global `.claude` mount) |
+| `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` | Per-project session transcripts (overlays the global `.claude` mount) |
+| `$(pwd)/.claude/session-state` | `/home/<user>/.claude/sessions` | Per-project live-session registry (pid, sessionId, cwd, status — distinct from transcripts) |
+| `$(pwd)/.claude/{daemon,jobs}` | `/home/<user>/.claude/{daemon,jobs}` | Per-project supervisor/worker roster and bg-job state |
+| `$(pwd)/.claude/{daemon.lock,daemon.log,daemon.status.json,history.jsonl}` | `/home/<user>/.claude/<same>` | Per-project daemon lock/log/status files and shell-prompt history |
 | `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}` | `/home/<user>/.claude/<same>` | Per-project state overlays (plans, todos, tasks, shell snapshots, session env, file history, paste cache) |
 | `/mnt/wslg`, `/mnt/wslg/.X11-unix`, `<wrap-dir>/wl-paste-shim` | `/mnt/wslg`, `/tmp/.X11-unix`, `/usr/local/bin/wl-paste` | WSL2 + WSLg only — Wayland/X11 sockets and the `wl-paste` shim that surfaces Windows-clipboard images as PNG. See [Clipboard / WSLg](#clipboard--wslg). |
 
