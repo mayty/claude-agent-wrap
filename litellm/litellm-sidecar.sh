@@ -8,10 +8,14 @@
 #
 #   _litellm_sidecar_ensure   TOOL_DIR USE_HOST_NET INSTANCE_ID AGENT_NETWORK
 #       Starts/reuses the shared sidecar; registers INSTANCE_ID in the
-#       refcount; sets these output globals for the caller:
-#         LITELLM_BASE_URL       — Claude Code's ANTHROPIC_BEDROCK_BASE_URL
-#         LITELLM_BEARER_TOKEN   — Claude Code's AWS_BEARER_TOKEN_BEDROCK
-#         LITELLM_EXTRA_RUN_ARGS — array; flags to splice into `docker run`
+#       refcount; sets one output global for the caller:
+#         LITELLM_EXTRA_RUN_ARGS — array; flags to splice into the agent's
+#                                  `docker run`. Carries both the proxy-binding
+#                                  -e env vars Claude Code expects (i.e.
+#                                  AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_BEDROCK_BASE_URL,
+#                                  CLAUDE_CODE_USE_BEDROCK, AWS_REGION) and the
+#                                  network/--add-host flags needed to reach the
+#                                  sidecar from the agent's network namespace.
 #       Returns non-zero on any failure (no silent fallback).
 #
 #       AGENT_NETWORK is the user-defined Docker network the agent will run on
@@ -43,8 +47,8 @@
 # can already `docker exec` into the container, so disk persistence wasn't
 # adding a security boundary.
 #
-# Renaming any of the above (or the LITELLM_* output globals) breaks
-# agent-wrap.bashrc — change both files together if you must.
+# Renaming any of the above (or the LITELLM_EXTRA_RUN_ARGS output global)
+# breaks agent-wrap.bashrc — change both files together if you must.
 
 # ---------- Constants (most-likely-to-be-forked knobs) ----------
 
@@ -197,8 +201,18 @@ _litellm_sidecar_ensure() {
 
     exec 9>&-
 
-    LITELLM_BEARER_TOKEN="$MASTER_KEY"
-    LITELLM_BASE_URL="http://${_LITELLM_CONTAINER}:${_LITELLM_INTERNAL_PORT}/bedrock"
+    local BASE_URL="http://${_LITELLM_CONTAINER}:${_LITELLM_INTERNAL_PORT}/bedrock"
+
+    # Proxy-binding env vars Claude Code reads. Bundled into the agent's
+    # --network/--add-host flags below so the launcher splices a single array.
+    # AWS_REGION is pinned to match AWS_REGION_NAME in __litellm_start; fork
+    # both together to target a different region.
+    local AGENT_ENV_ARGS=(
+        -e "AWS_BEARER_TOKEN_BEDROCK=${MASTER_KEY}"
+        -e "ANTHROPIC_BEDROCK_BASE_URL=${BASE_URL}"
+        -e CLAUDE_CODE_USE_BEDROCK=1
+        -e AWS_REGION=us-east-1
+    )
 
     # Connectivity matrix (sidecar mode × agent's own netns):
     #   host    + agent in host netns  → both share the host stack; 127.0.0.1
@@ -212,9 +226,9 @@ _litellm_sidecar_ensure() {
     #                                    its own --network
     if [ "$SIDECAR_MODE" = "host" ]; then
         if [ -n "$AGENT_IN_HOST_NETNS" ]; then
-            LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:127.0.0.1")
+            LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:127.0.0.1")
         else
-            LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:host-gateway")
+            LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:host-gateway")
         fi
     elif [ -n "$AGENT_IN_HOST_NETNS" ]; then
         local SIDECAR_IP
@@ -223,11 +237,11 @@ _litellm_sidecar_ensure() {
             echo "litellm-sidecar: unable to resolve sidecar IP on $_LITELLM_NETWORK" >&2
             return 1
         fi
-        LITELLM_EXTRA_RUN_ARGS=(--add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
+        LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
     elif [ -z "$AGENT_NETWORK" ]; then
-        LITELLM_EXTRA_RUN_ARGS=(--network "$_LITELLM_NETWORK")
+        LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --network "$_LITELLM_NETWORK")
     else
-        LITELLM_EXTRA_RUN_ARGS=()
+        LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}")
     fi
     return 0
 }
@@ -379,10 +393,11 @@ __litellm_start() {
     # Skipping the publish sidesteps the FORWARD=DROP scenario triggered by
     # parallel WSL distros' dockerds fighting over iptables-legacy rules.
     #
-    # AWS_REGION_NAME is pinned to us-east-1 here — this is the *sidecar's*
-    # upstream Bedrock region, not the agent's. The host's AWS_REGION env var
-    # does NOT repoint it; fork this line (and the agent's AWS_REGION default
-    # in agent-wrap.bashrc) together if you need a different region.
+    # AWS_REGION_NAME is pinned to us-east-1 here — this is the sidecar's
+    # upstream Bedrock region. The host's AWS_REGION env var does NOT repoint
+    # it; to target a different region, fork this line together with the
+    # AWS_REGION value in AGENT_ENV_ARGS above (Claude Code expects the two
+    # to agree).
     docker run -d --rm \
         --name "$_LITELLM_CONTAINER" \
         --network "$NETWORK" \
