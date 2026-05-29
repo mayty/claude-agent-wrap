@@ -27,7 +27,7 @@ model_list:
 # litellm_settings:
 #   callbacks: ["langfuse"]
 #   # Env vars consumed by the langfuse callback (pass into the sidecar
-#   # container via -e flags from litellm-sidecar.sh):
+#   # container via -e flags from providers/litellm-bedrock/provider.sh):
 #   #   LANGFUSE_PUBLIC_KEY
 #   #   LANGFUSE_SECRET_KEY
 #   #   LANGFUSE_HOST

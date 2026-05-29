@@ -13,6 +13,15 @@ fi
 {
     _agent_wrap_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     : "${AGENT_PROVIDER:=litellm-bedrock}"
+    # Reject path-traversal and other names that wouldn't be a valid
+    # subdirectory under providers/. A simple charset check catches both
+    # accidental typos (e.g. trailing whitespace, `foo bar`) and the
+    # `../something` shape that would otherwise resolve outside the tree.
+    if ! [[ "$AGENT_PROVIDER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "agent-wrap: invalid AGENT_PROVIDER='${AGENT_PROVIDER}' — must match [a-zA-Z0-9_-]+" >&2
+        unset _agent_wrap_dir
+        return 1 2>/dev/null || exit 1
+    fi
     _agent_provider_file="${_agent_wrap_dir}/providers/${AGENT_PROVIDER}/provider.sh"
     if [ ! -r "$_agent_provider_file" ]; then
         echo "agent-wrap: provider '${AGENT_PROVIDER}' not found at ${_agent_provider_file}" >&2
@@ -364,6 +373,13 @@ agent() {
         USER_ARGS=(--user "$(id -u):$(id -g)")
     fi
 
+    # Shadow any user-exported PROVIDER_EXTRA_RUN_ARGS for the duration of
+    # this launch. The provider's _provider_ensure is contractually expected
+    # to populate this array, but a third-party provider that succeeds without
+    # writing it would otherwise inherit whatever the user happened to have in
+    # their shell — splicing those flags into the agent's `docker run`.
+    local PROVIDER_EXTRA_RUN_ARGS=()
+
     local PORT_ARGS=()
     local EXTRA_RUN_ARGS=()
     if [[ "$DOCKERFILE" == */Dockerfile.agent ]]; then
@@ -389,7 +405,10 @@ agent() {
 
     # Extract any project-supplied --network from agent-run-args. The sidecar
     # needs to know it so it can attach itself to that network and become
-    # reachable from the agent by container name.
+    # reachable from the agent by container name. First occurrence wins —
+    # docker itself errors on duplicate --network flags, so a malformed
+    # Dockerfile.agent surfaces via docker's diagnostic rather than us
+    # silently picking the wrong one.
     local AGENT_NETWORK=""
     local i
     for ((i=0; i<${#EXTRA_RUN_ARGS[@]}; i++)); do
@@ -400,9 +419,11 @@ agent() {
                     return 1
                 fi
                 AGENT_NETWORK="${EXTRA_RUN_ARGS[$((i+1))]}"
+                break
                 ;;
             --network=*|--net=*)
                 AGENT_NETWORK="${EXTRA_RUN_ARGS[$i]#*=}"
+                break
                 ;;
         esac
     done

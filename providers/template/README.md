@@ -69,7 +69,7 @@ agent-wrap.instance-id=myproj-abc123
 claude-agent-myproj-abc123
 ```
 
-The launcher reads the lines into an array and splices them into `docker run`.
+The launcher reads the lines into an array and splices them into `docker run`. Each non-empty line becomes one `docker run` argument verbatim — do not emit values containing whitespace or embedded newlines (split them across multiple lines if you need to).
 
 ## State and file layout
 

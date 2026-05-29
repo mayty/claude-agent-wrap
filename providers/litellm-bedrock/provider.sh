@@ -56,22 +56,28 @@
 # global) breaks agent-wrap.bashrc — change both files together if you must.
 
 # ---------- Constants (most-likely-to-be-forked knobs) ----------
+#
+# Plain assignments rather than `readonly` so the file is safe to re-source —
+# `_agent_check_for_updates` re-sources `agent-wrap.bashrc` (which re-sources
+# this file) after a successful upstream update, and `readonly` would emit
+# noisy errors and silently reject any bumped value (e.g., a new image digest)
+# until the user opened a fresh shell.
 
 # Image pin: tag for readability + digest for reproducibility.
-readonly _LITELLM_IMAGE="ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
+_LITELLM_IMAGE="ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
 
-readonly _LITELLM_CONTAINER="agent-wrap-litellm"
+_LITELLM_CONTAINER="agent-wrap-litellm"
 # Sidecar's primary user-defined network. Created on demand. Default-network
 # agents are launched on this same network so they can reach the sidecar by
 # container name without traversing the host's FORWARD chain (which a parallel
 # WSL distro may have set to DROP). Agents on a project-supplied custom
 # network instead get the sidecar attached to their network at launch time.
-readonly _LITELLM_NETWORK="agent-wrap-net"
-readonly _LITELLM_INTERNAL_PORT=4000
-readonly _LITELLM_HEALTH_TIMEOUT_SEC=90
+_LITELLM_NETWORK="agent-wrap-net"
+_LITELLM_INTERNAL_PORT=4000
+_LITELLM_HEALTH_TIMEOUT_SEC=90
 # Must exceed _LITELLM_HEALTH_TIMEOUT_SEC: parallel launches may queue behind a
 # peer that is currently in the start-and-wait-for-health critical section.
-readonly _LITELLM_LOCK_TIMEOUT_SEC=120
+_LITELLM_LOCK_TIMEOUT_SEC=120
 
 # Per-tool-dir state (paths derived from $TOOL_DIR; not constants). $TOOL_DIR
 # is wrapper-level state — the launcher's directory, where refcount/lock files
@@ -242,10 +248,15 @@ _provider_ensure() {
             PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:host-gateway")
         fi
     elif [ -n "$AGENT_IN_HOST_NETNS" ]; then
-        local SIDECAR_IP
-        SIDECAR_IP=$(__litellm_sidecar_ip_on_network "$_LITELLM_NETWORK") || true
+        local SIDECAR_IP IP_RC
+        SIDECAR_IP=$(__litellm_sidecar_ip_on_network "$_LITELLM_NETWORK")
+        IP_RC=$?
+        if [ "$IP_RC" -ne 0 ]; then
+            echo "litellm-sidecar: docker inspect failed querying sidecar on $_LITELLM_NETWORK — sidecar may have stopped between is_running and IP query" >&2
+            return 1
+        fi
         if [ -z "$SIDECAR_IP" ]; then
-            echo "litellm-sidecar: unable to resolve sidecar IP on $_LITELLM_NETWORK" >&2
+            echo "litellm-sidecar: sidecar has no IP on $_LITELLM_NETWORK — was it disconnected from the network?" >&2
             return 1
         fi
         PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
@@ -336,16 +347,22 @@ __litellm_read_bedrock_key() {
 # (which shouldn't happen — every start passes -e LITELLM_MASTER_KEY=...), we
 # bail loudly rather than silently mint a new key, since that would 401 every
 # in-flight agent already holding the existing key.
+#
+# The full env dump (including the user's real AWS_BEARER_TOKEN_BEDROCK) is
+# kept on a pipe between docker and sed/head — never bound to a shell variable
+# in this process — so it cannot leak via `bash -x`, `set -x`, or any future
+# diagnostic that prints local state. Same reason we don't check PIPESTATUS
+# here: that would require running the pipeline at the parent-shell level,
+# which exposes the env dump to `set -x`. The empty-KEY guard below catches
+# both "docker inspect failed" and "key absent" — distinguishing them isn't
+# worth the leak risk.
 __litellm_recover_master_key() {
-    local ENV_DUMP KEY
-    ENV_DUMP=$(docker inspect "$_LITELLM_CONTAINER" \
-        --format='{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null) || {
-        echo "litellm-sidecar: docker inspect failed while recovering master key" >&2
-        return 1
-    }
-    KEY=$(printf '%s\n' "$ENV_DUMP" | sed -n 's/^LITELLM_MASTER_KEY=//p' | head -n1)
+    local KEY
+    KEY=$(docker inspect "$_LITELLM_CONTAINER" \
+        --format='{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | sed -n 's/^LITELLM_MASTER_KEY=//p' | head -n1)
     if [ -z "$KEY" ]; then
-        echo "litellm-sidecar: LITELLM_MASTER_KEY not present in $_LITELLM_CONTAINER env; aborting" >&2
+        echo "litellm-sidecar: LITELLM_MASTER_KEY not recoverable from $_LITELLM_CONTAINER (container gone or env line absent); aborting" >&2
         return 1
     fi
     printf '%s' "$KEY"
