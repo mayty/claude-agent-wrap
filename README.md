@@ -1,11 +1,11 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # claude-agent-wrap
 
-A Docker-based wrapper for running the [Claude Code](https://github.com/anthropics/claude-code) CLI against AWS Bedrock. It packages Claude Code into a reproducible container image and exposes two bash functions — `agent` and `rebuild_agent` — that handle volume mounts, credentials, and per-project image customization.
+A Docker-based wrapper for running the [Claude Code](https://github.com/anthropics/claude-code) CLI against AWS Bedrock. It packages Claude Code into a reproducible container image and exposes two bash functions — `agent` and `rebuild_agent` — that handle volume mounts, credentials, and per-project image customization. Model traffic is routed through a shared [LiteLLM](https://github.com/BerriAI/litellm) sidecar container that fronts AWS Bedrock — see [LiteLLM sidecar](#litellm-sidecar).
 
 ## Why
 
-Running Claude Code in a container isolates the tool from your host system, pins its dependencies, and lets each project override the base image with its own `Dockerfile.agent` to supply project-specific runtime requirements. The wrapper also routes the CLI through AWS Bedrock instead of the Anthropic API, so auth is an AWS bearer token rather than an Anthropic API key.
+Running Claude Code in a container isolates the tool from your host system, pins its dependencies, and lets each project override the base image with its own `Dockerfile.agent` to supply project-specific runtime requirements. The wrapper also routes the CLI through AWS Bedrock instead of the Anthropic API, so auth is an AWS bearer token rather than an Anthropic API key. A single shared LiteLLM proxy container sits between Claude Code and Bedrock so the user's Bedrock token never enters the agent container.
 
 ## Requirements
 
@@ -104,6 +104,36 @@ On the next `agent` launch, the wrapper idempotently injects three hook entries 
 
 The hooks only fire if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in the container environment. The script returns `{}` and exits 0 on every path, so it never blocks Claude — even if the Telegram API is unreachable.
 
+## LiteLLM sidecar
+
+A single shared `agent-wrap-litellm` container fronts AWS Bedrock for every `agent` launch on this host. Claude Code talks to the sidecar; the sidecar talks to Bedrock. This is the auth and traffic boundary every agent on the host shares.
+
+### What it is
+
+- A pinned upstream LiteLLM image (tag + digest in `providers/litellm-bedrock/provider.sh`) — **not** built by `rebuild_agent`; the wrapper pulls it directly.
+- Started lazily on the first `agent` launch (under `flock`), waited on via Docker's built-in healthcheck, and stopped automatically when the last `agent` exits. State (lock file, refcount of running agents) lives under `<wrap-dir>/.agent-launches/`.
+- Parallel `agent` launches share the one sidecar — each registers its `AGENT_INSTANCE_ID` in the refcount file.
+
+### Auth boundary
+
+The user's AWS Bedrock bearer token (`ServiceCredentialSecret` in `~/claude_keys.json`) is read by the sidecar script and passed only to the sidecar container. The agent container never sees it. Inside the agent, `AWS_BEARER_TOKEN_BEDROCK` is the **proxy's auto-generated master key**, not the AWS token — Claude Code presents it as a Bearer token to the sidecar in place of an AWS SigV4 header.
+
+The master key is minted in memory on first start and recovered via `docker inspect` on subsequent launches that find the sidecar already running. It is never written to disk.
+
+### Networking
+
+The sidecar lives on a Docker user-defined bridge named `agent-wrap-net` (created on demand). It is not published on a host port — agents reach it directly over Docker networks:
+
+- **Default agent**: joins `agent-wrap-net` and resolves the sidecar by container name (`agent-wrap-litellm`).
+- **Custom-network agent** (`Dockerfile.agent` declares `--network myproj` via `# agent-run-args:`): the sidecar is `docker network connect`'d to that network at launch so the same container-name URL still resolves.
+- **`AGENT_USE_HOST_NETWORK=1`**: the agent **and** the sidecar both run with `--network host`, so the proxy's outbound Bedrock traffic also escapes the bridge / FORWARD chain. Mode is decided at the sidecar's cold start and is **first-launch-wins**: a later launch without the flag inherits the running mode rather than fighting it. To switch a running sidecar's mode, stop it (`docker stop agent-wrap-litellm`) and re-launch with the desired flag value.
+
+### Customizing
+
+- `providers/litellm-bedrock/provider.sh` — image pin, lifecycle (start, healthcheck-wait, refcount, shutdown). Forks that swap the proxy implementation should drop in a new `providers/<name>/provider.sh` and select it via `AGENT_PROVIDER=<name>`; its public contract with `agent-wrap.bashrc` is intentionally narrow so upstream syncs stay clean.
+- `providers/litellm-bedrock/config.yaml` — LiteLLM proxy config. Phase-1 setup is a Bedrock passthrough wildcard (`bedrock/*`) plus the master-key binding.
+- `providers/template/` — copy this directory to `providers/<your-name>/` when adding a new provider. Carries failing stubs of the three contract functions plus a README documenting the lifecycle.
+
 ## Clipboard / WSLg
 
 On WSL2 hosts with WSLg enabled (detected via `[ -d /mnt/wslg ]`), `agent` automatically wires the container into the host's clipboard and display sockets so Claude Code's `Ctrl+V` paste of Windows-clipboard images works out of the box. Specifically, the wrapper:
@@ -180,17 +210,36 @@ If the base `claude-agent` image hasn't been built yet on this host, run `rebuil
 The `agent()` function injects these env vars on each `docker run` (not baked into the image, so overriding them doesn't require a rebuild):
 
 - `CLAUDE_CODE_USE_BEDROCK=1` — routes Claude Code through AWS Bedrock.
-- `AWS_REGION=us-east-1` — default Bedrock region.
+- `AWS_REGION=us-east-1` — kept for parity with Claude Code's expectations. The agent doesn't reach Bedrock directly; the **sidecar** does, and pins its own upstream region in `providers/litellm-bedrock/provider.sh`. Overriding this on the host does not repoint the sidecar.
+- `AWS_BEARER_TOKEN_BEDROCK` — the **LiteLLM sidecar's master key** (auto-generated per cold-start), not the user's AWS bearer token. Claude Code presents it to the sidecar as a Bearer token; the sidecar uses its own credentials to reach Bedrock.
+- `ANTHROPIC_BEDROCK_BASE_URL` — `http://agent-wrap-litellm:4000/bedrock`. Points Claude Code at the sidecar's Bedrock passthrough.
+- `AGENT_INSTANCE_ID` — per-launch identifier of the form `<agent-name>-<uuid>`. Also applied as the container name (`claude-agent-<AGENT_INSTANCE_ID>`) and as the `agent-wrap.instance-id` Docker label, so `docker ps` and the sidecar refcount can identify each launch.
 - `DISABLE_AUTOUPDATER=1` — disables the Claude Code in-container auto-updater.
 - `AGENT_NAME` — derived from `# agent-name:` (or the project directory name when no `Dockerfile.agent` exists); available to in-container scripts that want to identify the agent.
 - `HOME` — set to `/home/<agent-user>` so Claude Code finds its config in the usual spot.
 - `TERM`, `COLORTERM` — forwarded from the host shell so terminal colors render correctly.
 
-The bearer token is injected at runtime as `AWS_BEARER_TOKEN_BEDROCK`, read from `~/claude_keys.json`.
+The user's AWS Bedrock bearer token is read from `~/claude_keys.json` and passed only to the LiteLLM sidecar; the agent container receives the proxy's auto-generated master key under the same `AWS_BEARER_TOKEN_BEDROCK` env var name. See [LiteLLM sidecar](#litellm-sidecar).
 
 If both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, they are forwarded into the container as `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and consumed by the notification hooks. Missing either one skips the forwarding entirely.
 
 On WSL2 + WSLg hosts (when `/mnt/wslg` exists), `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell and `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. See [Clipboard / WSLg](#clipboard--wslg).
+
+### `AGENT_PROVIDER` (model-routing backend)
+
+`agent-wrap.bashrc` sources exactly one provider plugin per session, selected by `AGENT_PROVIDER`. Each provider lives in `providers/<name>/provider.sh` and implements three functions plus one output array — see [`providers/template/README.md`](providers/template/README.md) for the contract. The default is `litellm-bedrock`, preserving historical behavior.
+
+```sh
+# Use the default LiteLLM-Bedrock provider (no var needed)
+agent
+
+# Or pick a different one — the launcher fails fast and lists available
+# providers if the directory doesn't exist.
+AGENT_PROVIDER=my-direct-anthropic source agent-wrap.bashrc
+agent
+```
+
+Providers are auto-discovered by globbing `providers/*/provider.sh` — drop in a new directory and it shows up in the error message above without any registry edits.
 
 ### `AGENT_USE_HOST_NETWORK` (WSL workaround)
 
@@ -205,6 +254,7 @@ Trade-offs:
 - The container loses network isolation from the WSL distro — services bind on the distro's interfaces, not on `docker0`.
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. Make in-container services bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
 - If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+- The flag also extends to the LiteLLM sidecar — when set on the **cold-start** launch, the sidecar is launched with `--network host` and binds the WSL distro's port 4000. First-launch-wins: subsequent launches without the flag adapt to the running sidecar's mode rather than restarting it. To switch a running sidecar's mode, stop it (`docker stop agent-wrap-litellm`) and start the next launch with the desired flag value.
 
 ### `CLAUDE_AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
 
@@ -226,9 +276,16 @@ Other wrap functions (`agent_usage`, `create_custom_agent`, and `agent-wrap_upda
 ├── md_to_html.js                # Markdown → Telegram-HTML converter used by telegram-notify.sh
 ├── agent_usage.py               # Host-side usage/cost aggregator invoked by agent_usage (Bedrock pricing fetched + cached)
 ├── wl-paste-shim                # WSLg clipboard shim: surfaces Windows-clipboard BMP images as PNG via ImageMagick
+├── providers/                   # Provider plugin tree — one subdirectory per model-routing backend; selected by AGENT_PROVIDER env var (default: litellm-bedrock)
+│   ├── template/
+│   │   ├── provider.sh          # Failing stubs of the three contract functions; copy this dir to add a new provider
+│   │   └── README.md            # Provider contract docs: function args, lifecycle, output array, file layout
+│   └── litellm-bedrock/
+│       ├── provider.sh          # Default provider: LiteLLM sidecar lifecycle (lazy start, healthcheck wait, refcount, shutdown). Image pinned by tag+digest.
+│       └── config.yaml          # LiteLLM proxy config (Bedrock /bedrock/* passthrough, master-key auth)
 ├── default-CLAUDE.md            # Default instructions (copied into consumer projects' global config)
 ├── CLAUDE.md                    # Repo-level guidance (for editing this project)
 ├── README.md
 ├── .claude_config/              # Global Claude config (git-ignored, auto-created)
-└── .agent-launches/             # Project registry (projects.txt) and Bedrock pricing cache used by agent_usage (git-ignored, auto-created)
+└── .agent-launches/             # Project registry (projects.txt), Bedrock pricing cache, and LiteLLM sidecar state (litellm.lock, litellm.refcount) (git-ignored, auto-created)
 ```

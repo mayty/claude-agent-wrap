@@ -3,6 +3,39 @@ if [ -z "${AGENT_WRAP_MOUNT:-}" ]; then
     readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
 fi
 
+# Source the model-routing provider plugin. Each provider lives in its own
+# subdirectory under providers/ and exposes a narrow contract (3 functions +
+# 1 output array) documented in providers/template/. Selection is by
+# AGENT_PROVIDER env var; default `litellm-bedrock` preserves historical
+# behavior. Forks that swap the proxy implementation should drop in their own
+# providers/<name>/ directory rather than editing the launcher.
+# shellcheck disable=SC1091
+{
+    _agent_wrap_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
+    : "${AGENT_PROVIDER:=litellm-bedrock}"
+    # Reject path-traversal and other names that wouldn't be a valid
+    # subdirectory under providers/. A simple charset check catches both
+    # accidental typos (e.g. trailing whitespace, `foo bar`) and the
+    # `../something` shape that would otherwise resolve outside the tree.
+    if ! [[ "$AGENT_PROVIDER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "agent-wrap: invalid AGENT_PROVIDER='${AGENT_PROVIDER}' — must match [a-zA-Z0-9_-]+" >&2
+        unset _agent_wrap_dir
+        return 1 2>/dev/null || exit 1
+    fi
+    _agent_provider_file="${_agent_wrap_dir}/providers/${AGENT_PROVIDER}/provider.sh"
+    if [ ! -r "$_agent_provider_file" ]; then
+        echo "agent-wrap: provider '${AGENT_PROVIDER}' not found at ${_agent_provider_file}" >&2
+        echo "Available providers:" >&2
+        for _d in "${_agent_wrap_dir}/providers"/*/; do
+            [ -r "${_d}provider.sh" ] && echo "  - $(basename "$_d")" >&2
+        done
+        unset _agent_wrap_dir _agent_provider_file _d
+        return 1 2>/dev/null || exit 1
+    fi
+    source "$_agent_provider_file"
+    unset _agent_wrap_dir _agent_provider_file _d
+}
+
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
     local USE_BASE=0
@@ -27,6 +60,27 @@ _agent_resolve_image() {
     fi
 }
 
+_agent_sanitize_name() {
+    # Lowercase, replace anything outside [a-z0-9_.-] with `-`, strip leading/
+    # trailing dashes. Output suitable as a Docker image-name suffix.
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//'
+}
+
+# Wrapper-wide UUID source. Linux exposes one in /proc cheaply; macOS doesn't,
+# so fall back to uuidgen. Output is lowercase-hex with dashes. Lives in the
+# launcher (not a provider) because every launch needs it to mint
+# AGENT_INSTANCE_ID before any provider hook runs.
+_agent_uuid() {
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen >/dev/null 2>&1; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        echo "agent-wrap: no UUID source (need /proc/sys/kernel/random/uuid or uuidgen)" >&2
+        return 1
+    fi
+}
+
 create_custom_agent() {
     local DST="$(pwd)/Dockerfile.agent"
 
@@ -34,7 +88,8 @@ create_custom_agent() {
         echo "Error: $DST already exists" >&2
         return 1
     fi
-    local NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//')
+    local NAME
+    NAME=$(_agent_sanitize_name "$(basename "$(pwd)")")
     if [ -z "$NAME" ]; then
         echo "Error: could not derive agent-name from directory '$(pwd)'" >&2
         return 1
@@ -318,6 +373,13 @@ agent() {
         USER_ARGS=(--user "$(id -u):$(id -g)")
     fi
 
+    # Shadow any user-exported PROVIDER_EXTRA_RUN_ARGS for the duration of
+    # this launch. The provider's _provider_ensure is contractually expected
+    # to populate this array, but a third-party provider that succeeds without
+    # writing it would otherwise inherit whatever the user happened to have in
+    # their shell — splicing those flags into the agent's `docker run`.
+    local PROVIDER_EXTRA_RUN_ARGS=()
+
     local PORT_ARGS=()
     local EXTRA_RUN_ARGS=()
     if [[ "$DOCKERFILE" == */Dockerfile.agent ]]; then
@@ -341,6 +403,31 @@ agent() {
                  | sed -E 's/^#[[:space:]]*agent-run-args:[[:space:]]*//')
     fi
 
+    # Extract any project-supplied --network from agent-run-args. The sidecar
+    # needs to know it so it can attach itself to that network and become
+    # reachable from the agent by container name. First occurrence wins —
+    # docker itself errors on duplicate --network flags, so a malformed
+    # Dockerfile.agent surfaces via docker's diagnostic rather than us
+    # silently picking the wrong one.
+    local AGENT_NETWORK=""
+    local i
+    for ((i=0; i<${#EXTRA_RUN_ARGS[@]}; i++)); do
+        case "${EXTRA_RUN_ARGS[$i]}" in
+            --network|--net)
+                if [ $((i+1)) -ge "${#EXTRA_RUN_ARGS[@]}" ]; then
+                    echo "Error: '${EXTRA_RUN_ARGS[$i]}' in agent-run-args is missing a value (in $(pwd)/Dockerfile.agent)" >&2
+                    return 1
+                fi
+                AGENT_NETWORK="${EXTRA_RUN_ARGS[$((i+1))]}"
+                break
+                ;;
+            --network=*|--net=*)
+                AGENT_NETWORK="${EXTRA_RUN_ARGS[$i]#*=}"
+                break
+                ;;
+        esac
+    done
+
     local HOST_NET_ARGS=()
     local use_host_net=""
     case "${AGENT_USE_HOST_NETWORK:-}" in
@@ -350,21 +437,15 @@ agent() {
     if [ -n "$use_host_net" ]; then
         if ! grep -qi microsoft /proc/version 2>/dev/null; then
             echo "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts." >&2
+            use_host_net=""
+        elif [ -n "$AGENT_NETWORK" ]; then
+            echo "Warning: AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already specifies --network via agent-run-args." >&2
+            use_host_net=""
         else
-            local has_network=""
-            for arg in "${EXTRA_RUN_ARGS[@]}"; do
-                case "$arg" in
-                    --network|--network=*|--net|--net=*) has_network=1; break ;;
-                esac
-            done
-            if [ -n "$has_network" ]; then
-                echo "Warning: AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already specifies --network via agent-run-args." >&2
-            else
-                HOST_NET_ARGS=(--network host)
-                if [ "${#PORT_ARGS[@]}" -gt 0 ]; then
-                    echo "Warning: AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings (${PORT_ARGS[*]}) skipped. Services bind on the WSL distro's interfaces directly; ensure they listen on 127.0.0.1 to avoid LAN exposure." >&2
-                    PORT_ARGS=()
-                fi
+            HOST_NET_ARGS=(--network host)
+            if [ "${#PORT_ARGS[@]}" -gt 0 ]; then
+                echo "Warning: AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings (${PORT_ARGS[*]}) skipped. Services bind on the WSL distro's interfaces directly; ensure they listen on 127.0.0.1 to avoid LAN exposure." >&2
+                PORT_ARGS=()
             fi
         fi
     fi
@@ -375,17 +456,21 @@ agent() {
     if [ "$USE_BASE" = "0" ] && [ -f "$(pwd)/Dockerfile.agent" ]; then
         AGENT_NAME=$(grep -oE '^#[[:space:]]*agent-name:[[:space:]]*\S+' "$(pwd)/Dockerfile.agent" | head -n1 | sed -E 's/^#[[:space:]]*agent-name:[[:space:]]*//')
     else
-        AGENT_NAME=$(basename "$(pwd)")
+        AGENT_NAME=$(_agent_sanitize_name "$(basename "$(pwd)")")
+        [ -z "$AGENT_NAME" ] && AGENT_NAME="agent"
     fi
 
     if [ -f "$SECRETS_FILE" ]; then
-        local CLAUDE_KEY=$(jq -r '.ServiceSpecificCredential.ServiceCredentialSecret' "$SECRETS_FILE")
         local TELEGRAM_BOT_TOKEN=$(jq -r '.TelegramBotToken // ""' "$SECRETS_FILE")
         local TELEGRAM_CHAT_ID=$(jq -r '.TelegramChatId // ""' "$SECRETS_FILE")
     else
         echo "File ${SECRETS_FILE} not found"
         return 1
     fi
+
+    local AGENT_INSTANCE_ID _instance_uuid
+    _instance_uuid=$(_agent_uuid) || return 1
+    AGENT_INSTANCE_ID="${AGENT_NAME}-${_instance_uuid}"
 
     mkdir -p "$GLOBAL_CONFIG_DIR/.claude"
 
@@ -433,40 +518,57 @@ agent() {
 
     _agent_record_project "$TOOL_DIR"
 
-    echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
+    echo "--- Agent instance: $AGENT_INSTANCE_ID ---"
 
-    docker run --rm -it \
-        "${USER_ARGS[@]}" \
-        -v "${GLOBAL_CONFIG_DIR}/.claude.json:${CLAUDE_HOME}/.claude.json" \
-        -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
-        -v "$(pwd):/workspace" \
-        -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
-        -v "$(pwd)/.claude/plans:${CLAUDE_HOME}/.claude/plans" \
-        -v "$(pwd)/.claude/todos:${CLAUDE_HOME}/.claude/todos" \
-        -v "$(pwd)/.claude/tasks:${CLAUDE_HOME}/.claude/tasks" \
-        -v "$(pwd)/.claude/shell-snapshots:${CLAUDE_HOME}/.claude/shell-snapshots" \
-        -v "$(pwd)/.claude/session-env:${CLAUDE_HOME}/.claude/session-env" \
-        -v "$(pwd)/.claude/file-history:${CLAUDE_HOME}/.claude/file-history" \
-        -v "$(pwd)/.claude/paste-cache:${CLAUDE_HOME}/.claude/paste-cache" \
-        -v "${TOOL_DIR}/Dockerfile:${AGENT_WRAP_MOUNT}/Dockerfile:ro" \
-        -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
-        -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \
-        -v "${TOOL_DIR}/statusline.py:${AGENT_WRAP_MOUNT}/statusline.py:ro" \
-        -v "${TOOL_DIR}/telegram-notify.sh:${AGENT_WRAP_MOUNT}/telegram-notify.sh:ro" \
-        -v "${TOOL_DIR}/md_to_html.js:${AGENT_WRAP_MOUNT}/md_to_html.js:ro" \
-        -e AWS_BEARER_TOKEN_BEDROCK="${CLAUDE_KEY}" \
-        -e CLAUDE_CODE_USE_BEDROCK=1 \
-        -e AWS_REGION=us-east-1 \
-        -e DISABLE_AUTOUPDATER=1 \
-        -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
-        -e TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
-        -e AGENT_NAME="${AGENT_NAME}" \
-        -e TERM="${TERM:-xterm-256color}" \
-        -e COLORTERM="${COLORTERM:-truecolor}" \
-        -e HOME="${CLAUDE_HOME}" \
-        "${PORT_ARGS[@]}" \
-        "${WSLG_ARGS[@]}" \
-        "${HOST_NET_ARGS[@]}" \
-        "${EXTRA_RUN_ARGS[@]}" \
-        "$IMAGE" "${CLAUDE_ARGS[@]}"
+    (
+        trap '_provider_release "$TOOL_DIR" "$AGENT_INSTANCE_ID"' EXIT
+
+        if ! _provider_ensure "$TOOL_DIR" "$use_host_net" "$AGENT_INSTANCE_ID" "$AGENT_NETWORK"; then
+            echo "Error: failed to start provider '${AGENT_PROVIDER}'; aborting." >&2
+            exit 1
+        fi
+
+        local LABEL_ARGS=()
+        local _line
+        while IFS= read -r _line; do
+            [ -n "$_line" ] && LABEL_ARGS+=("$_line")
+        done < <(_provider_label_args "$AGENT_INSTANCE_ID")
+
+        echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
+
+        docker run --rm -it \
+            "${USER_ARGS[@]}" \
+            -v "${GLOBAL_CONFIG_DIR}/.claude.json:${CLAUDE_HOME}/.claude.json" \
+            -v "${GLOBAL_CONFIG_DIR}/.claude:${CLAUDE_HOME}/.claude" \
+            -v "$(pwd):/workspace" \
+            -v "$(pwd)/.claude/sessions:${CLAUDE_HOME}/.claude/projects/-workspace" \
+            -v "$(pwd)/.claude/plans:${CLAUDE_HOME}/.claude/plans" \
+            -v "$(pwd)/.claude/todos:${CLAUDE_HOME}/.claude/todos" \
+            -v "$(pwd)/.claude/tasks:${CLAUDE_HOME}/.claude/tasks" \
+            -v "$(pwd)/.claude/shell-snapshots:${CLAUDE_HOME}/.claude/shell-snapshots" \
+            -v "$(pwd)/.claude/session-env:${CLAUDE_HOME}/.claude/session-env" \
+            -v "$(pwd)/.claude/file-history:${CLAUDE_HOME}/.claude/file-history" \
+            -v "$(pwd)/.claude/paste-cache:${CLAUDE_HOME}/.claude/paste-cache" \
+            -v "${TOOL_DIR}/Dockerfile:${AGENT_WRAP_MOUNT}/Dockerfile:ro" \
+            -v "${TOOL_DIR}/agent-wrap.bashrc:${AGENT_WRAP_MOUNT}/agent-wrap.bashrc:ro" \
+            -v "${TOOL_DIR}/validate-dockerfile-agent:${AGENT_WRAP_MOUNT}/validate-dockerfile-agent:ro" \
+            -v "${TOOL_DIR}/statusline.py:${AGENT_WRAP_MOUNT}/statusline.py:ro" \
+            -v "${TOOL_DIR}/telegram-notify.sh:${AGENT_WRAP_MOUNT}/telegram-notify.sh:ro" \
+            -v "${TOOL_DIR}/md_to_html.js:${AGENT_WRAP_MOUNT}/md_to_html.js:ro" \
+            -e DISABLE_AUTOUPDATER=1 \
+            -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
+            -e TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
+            -e AGENT_NAME="${AGENT_NAME}" \
+            -e AGENT_INSTANCE_ID="${AGENT_INSTANCE_ID}" \
+            -e TERM="${TERM:-xterm-256color}" \
+            -e COLORTERM="${COLORTERM:-truecolor}" \
+            -e HOME="${CLAUDE_HOME}" \
+            "${LABEL_ARGS[@]}" \
+            "${PROVIDER_EXTRA_RUN_ARGS[@]}" \
+            "${PORT_ARGS[@]}" \
+            "${WSLG_ARGS[@]}" \
+            "${HOST_NET_ARGS[@]}" \
+            "${EXTRA_RUN_ARGS[@]}" \
+            "$IMAGE" "${CLAUDE_ARGS[@]}"
+    )
 }

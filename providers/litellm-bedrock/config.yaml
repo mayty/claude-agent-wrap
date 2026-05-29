@@ -1,0 +1,33 @@
+# This file has been created with the assistance of an AI tool.
+#
+# LiteLLM proxy config for the agent-wrap shared sidecar.
+#
+# Phase 1: Bedrock passthrough only. Claude Code already speaks the Bedrock
+# Runtime protocol; we forward /bedrock/* verbatim. The proxy authenticates the
+# inbound request against ${LITELLM_MASTER_KEY} (presented as a Bearer token in
+# place of the SigV4 header) and uses its own AWS_REGION_NAME and
+# AWS_BEARER_TOKEN_BEDROCK env vars to reach Bedrock upstream.
+#
+# Phase 2 (Langfuse) will only need to flip on the callback below and pass
+# LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST into the sidecar
+# container. No structural change here.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+# Wildcard route so any Bedrock model ID (including inference profiles like
+# `us.anthropic.claude-opus-4-7`) resolves through /bedrock/model/<id>/invoke*
+# without enumerating each model. `aws_region_name` falls through to the
+# AWS_REGION_NAME env var set on the sidecar container.
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "bedrock/*"
+
+# litellm_settings:
+#   callbacks: ["langfuse"]
+#   # Env vars consumed by the langfuse callback (pass into the sidecar
+#   # container via -e flags from providers/litellm-bedrock/provider.sh):
+#   #   LANGFUSE_PUBLIC_KEY
+#   #   LANGFUSE_SECRET_KEY
+#   #   LANGFUSE_HOST
