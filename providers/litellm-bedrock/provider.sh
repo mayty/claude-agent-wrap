@@ -88,19 +88,6 @@ __litellm_config_file()  {
     printf '%s/config.yaml\n' "$provider_dir"
 }
 
-# Wrapper-wide UUID source. Linux exposes one in /proc cheaply; macOS doesn't,
-# so fall back to uuidgen. Output is lowercase-hex with dashes.
-_agent_uuid() {
-    if [ -r /proc/sys/kernel/random/uuid ]; then
-        cat /proc/sys/kernel/random/uuid
-    elif command -v uuidgen >/dev/null 2>&1; then
-        uuidgen | tr '[:upper:]' '[:lower:]'
-    else
-        echo "agent-wrap: no UUID source (need /proc/sys/kernel/random/uuid or uuidgen)" >&2
-        return 1
-    fi
-}
-
 # ---------- Public: ensure ----------
 
 _provider_ensure() {
@@ -136,6 +123,16 @@ _provider_ensure() {
     fi
 
     if ! __litellm_ensure_network; then
+        exec 9>&-; return 1
+    fi
+
+    # Docker's built-in `bridge` network has no embedded DNS resolver, so an
+    # agent on it can't resolve `agent-wrap-litellm` by container name. Refuse
+    # the launch loudly rather than letting it fail later with an opaque
+    # name-lookup error from inside the agent.
+    if [ "$AGENT_NETWORK" = "bridge" ]; then
+        echo "litellm-sidecar: --network bridge is not supported (Docker's default bridge has no embedded DNS)." >&2
+        echo "  Use a user-defined network (\`docker network create <name>\`) or remove --network from agent-run-args to use agent-wrap-net." >&2
         exec 9>&-; return 1
     fi
 
@@ -385,9 +382,9 @@ __litellm_start() {
     fi
 
     # Healthcheck runs inside the container. The base image has python3 but
-    # not curl/wget/nc, so urllib.request is the only stdlib option. Bound the
-    # whole startup wait by retries*interval (~20s) so a wedged check can't
-    # hang the launcher.
+    # not curl/wget/nc, so urllib.request is the only stdlib option. The whole
+    # startup wait is bounded by _LITELLM_HEALTH_TIMEOUT_SEC (host-side, in
+    # __litellm_health_poll) so a wedged check can't hang the launcher.
     local HEALTH_CMD
     HEALTH_CMD='python3 -c "import urllib.request; urllib.request.urlopen('"'"'http://127.0.0.1:'"${_LITELLM_INTERNAL_PORT}"'/health/liveliness'"'"', timeout=2).read()"'
 

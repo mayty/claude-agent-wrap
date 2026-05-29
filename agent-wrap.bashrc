@@ -57,6 +57,21 @@ _agent_sanitize_name() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/-+$//; s/^-+//'
 }
 
+# Wrapper-wide UUID source. Linux exposes one in /proc cheaply; macOS doesn't,
+# so fall back to uuidgen. Output is lowercase-hex with dashes. Lives in the
+# launcher (not a provider) because every launch needs it to mint
+# AGENT_INSTANCE_ID before any provider hook runs.
+_agent_uuid() {
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen >/dev/null 2>&1; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        echo "agent-wrap: no UUID source (need /proc/sys/kernel/random/uuid or uuidgen)" >&2
+        return 1
+    fi
+}
+
 create_custom_agent() {
     local DST="$(pwd)/Dockerfile.agent"
 
@@ -380,6 +395,10 @@ agent() {
     for ((i=0; i<${#EXTRA_RUN_ARGS[@]}; i++)); do
         case "${EXTRA_RUN_ARGS[$i]}" in
             --network|--net)
+                if [ $((i+1)) -ge "${#EXTRA_RUN_ARGS[@]}" ]; then
+                    echo "Error: '${EXTRA_RUN_ARGS[$i]}' in agent-run-args is missing a value (in $(pwd)/Dockerfile.agent)" >&2
+                    return 1
+                fi
                 AGENT_NETWORK="${EXTRA_RUN_ARGS[$((i+1))]}"
                 ;;
             --network=*|--net=*)
