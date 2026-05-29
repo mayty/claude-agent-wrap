@@ -64,6 +64,8 @@ if [ -z "$name" ]; then
     err "missing '# agent-name: <name>' directive"
 elif ! [[ "$name" =~ ^[a-z0-9_.-]+$ ]]; then
     err "agent-name '$name' must match [a-z0-9_.-]+ (Docker image names are lowercase)"
+elif [ "$name" = "workspace" ]; then
+    err "agent-name 'workspace' is the in-container mount path, not a project name — set this to the host project directory name (available inside the container as \$AGENT_NAME)"
 fi
 
 # --- WORKDIR must stay at /workspace (last WORKDIR wins)
