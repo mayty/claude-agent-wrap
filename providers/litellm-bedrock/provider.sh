@@ -1,21 +1,26 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 #
-# LiteLLM sidecar lifecycle for agent-wrap.
+# Provider plugin: LiteLLM-Bedrock sidecar.
 #
-# Forks override this file to swap the proxy implementation, change the image
-# pin, point at a hosted LiteLLM, etc. To keep upstream syncs clean, the public
-# contract is intentionally narrow:
+# This file is the entry point for the `litellm-bedrock` provider — selected
+# by the launcher when `AGENT_PROVIDER=litellm-bedrock` (the default). It owns
+# the lifecycle of a shared LiteLLM container that fronts AWS Bedrock for
+# every agent on the host.
 #
-#   _litellm_sidecar_ensure   TOOL_DIR USE_HOST_NET INSTANCE_ID AGENT_NETWORK
+# Implements the provider contract documented in `providers/template/`. To
+# swap providers, copy that template into `providers/<your-name>/` and select
+# it via `AGENT_PROVIDER=<your-name>`.
+#
+#   _provider_ensure   TOOL_DIR USE_HOST_NET INSTANCE_ID AGENT_NETWORK
 #       Starts/reuses the shared sidecar; registers INSTANCE_ID in the
 #       refcount; sets one output global for the caller:
-#         LITELLM_EXTRA_RUN_ARGS — array; flags to splice into the agent's
-#                                  `docker run`. Carries both the proxy-binding
-#                                  -e env vars Claude Code expects (i.e.
-#                                  AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_BEDROCK_BASE_URL,
-#                                  CLAUDE_CODE_USE_BEDROCK, AWS_REGION) and the
-#                                  network/--add-host flags needed to reach the
-#                                  sidecar from the agent's network namespace.
+#         PROVIDER_EXTRA_RUN_ARGS — array; flags to splice into the agent's
+#                                   `docker run`. Carries both the proxy-binding
+#                                   -e env vars Claude Code expects (i.e.
+#                                   AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_BEDROCK_BASE_URL,
+#                                   CLAUDE_CODE_USE_BEDROCK, AWS_REGION) and the
+#                                   network/--add-host flags needed to reach the
+#                                   sidecar from the agent's network namespace.
 #       Returns non-zero on any failure (no silent fallback).
 #
 #       AGENT_NETWORK is the user-defined Docker network the agent will run on
@@ -30,11 +35,11 @@
 #       Forks pointing at a hosted LiteLLM can ignore that file entirely —
 #       just rewrite this function to skip the read.
 #
-#   _litellm_sidecar_release  TOOL_DIR INSTANCE_ID
+#   _provider_release  TOOL_DIR INSTANCE_ID
 #       Removes INSTANCE_ID from the refcount; stops the sidecar if no
 #       instances remain. Idempotent and never fails the calling shell.
 #
-#   _litellm_sidecar_label_args  INSTANCE_ID
+#   _provider_label_args  INSTANCE_ID
 #       Pure function. Prints `--label`/`--name` flags for the agent's
 #       `docker run`. Centralized so renaming the label only edits this file.
 #
@@ -47,8 +52,8 @@
 # can already `docker exec` into the container, so disk persistence wasn't
 # adding a security boundary.
 #
-# Renaming any of the above (or the LITELLM_EXTRA_RUN_ARGS output global)
-# breaks agent-wrap.bashrc — change both files together if you must.
+# Renaming any of the public functions (or the PROVIDER_EXTRA_RUN_ARGS output
+# global) breaks agent-wrap.bashrc — change both files together if you must.
 
 # ---------- Constants (most-likely-to-be-forked knobs) ----------
 
@@ -68,11 +73,20 @@ readonly _LITELLM_HEALTH_TIMEOUT_SEC=90
 # peer that is currently in the start-and-wait-for-health critical section.
 readonly _LITELLM_LOCK_TIMEOUT_SEC=120
 
-# Per-tool-dir state (paths derived from $TOOL_DIR; not constants).
+# Per-tool-dir state (paths derived from $TOOL_DIR; not constants). $TOOL_DIR
+# is wrapper-level state — the launcher's directory, where refcount/lock files
+# live alongside other agent-wrap bookkeeping.
 __litellm_state_dir()    { printf '%s/.agent-launches\n' "$1"; }
 __litellm_lock_file()    { printf '%s/.agent-launches/litellm.lock\n' "$1"; }
 __litellm_refcount_file(){ printf '%s/.agent-launches/litellm.refcount\n' "$1"; }
-__litellm_config_file()  { printf '%s/litellm/config.yaml\n' "$1"; }
+
+# Config file lives next to this provider, not under $TOOL_DIR. Resolve at call
+# time from BASH_SOURCE so the launcher doesn't need to know the layout.
+__litellm_config_file()  {
+    local provider_dir
+    provider_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    printf '%s/config.yaml\n' "$provider_dir"
+}
 
 # Wrapper-wide UUID source. Linux exposes one in /proc cheaply; macOS doesn't,
 # so fall back to uuidgen. Output is lowercase-hex with dashes.
@@ -89,7 +103,7 @@ _agent_uuid() {
 
 # ---------- Public: ensure ----------
 
-_litellm_sidecar_ensure() {
+_provider_ensure() {
     local TOOL_DIR="$1" USE_HOST_NET="$2" INSTANCE_ID="$3" AGENT_NETWORK="${4:-}"
     if [ -z "$TOOL_DIR" ] || [ -z "$INSTANCE_ID" ]; then
         echo "litellm-sidecar: ensure() requires TOOL_DIR and INSTANCE_ID" >&2
@@ -168,7 +182,7 @@ _litellm_sidecar_ensure() {
         fi
         MASTER_KEY="$(__litellm_generate_master_key)" || {
             exec 9>&-; return 1; }
-        if ! __litellm_start "$TOOL_DIR" "$BEDROCK_KEY" "$MASTER_KEY" "$SIDECAR_MODE"; then
+        if ! __litellm_start "$BEDROCK_KEY" "$MASTER_KEY" "$SIDECAR_MODE"; then
             exec 9>&-; return 1
         fi
         if ! __litellm_health_poll; then
@@ -226,9 +240,9 @@ _litellm_sidecar_ensure() {
     #                                    its own --network
     if [ "$SIDECAR_MODE" = "host" ]; then
         if [ -n "$AGENT_IN_HOST_NETNS" ]; then
-            LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:127.0.0.1")
+            PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:127.0.0.1")
         else
-            LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:host-gateway")
+            PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:host-gateway")
         fi
     elif [ -n "$AGENT_IN_HOST_NETNS" ]; then
         local SIDECAR_IP
@@ -237,18 +251,18 @@ _litellm_sidecar_ensure() {
             echo "litellm-sidecar: unable to resolve sidecar IP on $_LITELLM_NETWORK" >&2
             return 1
         fi
-        LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
+        PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --add-host "${_LITELLM_CONTAINER}:${SIDECAR_IP}")
     elif [ -z "$AGENT_NETWORK" ]; then
-        LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --network "$_LITELLM_NETWORK")
+        PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}" --network "$_LITELLM_NETWORK")
     else
-        LITELLM_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}")
+        PROVIDER_EXTRA_RUN_ARGS=("${AGENT_ENV_ARGS[@]}")
     fi
     return 0
 }
 
 # ---------- Public: release ----------
 
-_litellm_sidecar_release() {
+_provider_release() {
     local TOOL_DIR="$1" INSTANCE_ID="$2"
     [ -n "$TOOL_DIR" ] && [ -n "$INSTANCE_ID" ] || return 0
     command -v docker >/dev/null 2>&1 || return 0
@@ -279,7 +293,7 @@ _litellm_sidecar_release() {
 
 # ---------- Public: label_args ----------
 
-_litellm_sidecar_label_args() {
+_provider_label_args() {
     local INSTANCE_ID="$1"
     [ -n "$INSTANCE_ID" ] || return 0
     printf -- '--label\nagent-wrap.role=claude-agent\n--label\nagent-wrap.instance-id=%s\n--name\nclaude-agent-%s\n' \
@@ -355,9 +369,9 @@ __litellm_is_on_network() {
 }
 
 __litellm_start() {
-    local TOOL_DIR="$1" BEDROCK_KEY="$2" MASTER_KEY="$3" SIDECAR_MODE="${4:-bridge}"
+    local BEDROCK_KEY="$1" MASTER_KEY="$2" SIDECAR_MODE="${3:-bridge}"
     local CONFIG_FILE
-    CONFIG_FILE="$(__litellm_config_file "$TOOL_DIR")"
+    CONFIG_FILE="$(__litellm_config_file)"
     if [ ! -r "$CONFIG_FILE" ]; then
         echo "litellm-sidecar: config not found at $CONFIG_FILE" >&2
         return 1
@@ -410,7 +424,7 @@ __litellm_start() {
         -e AWS_REGION_NAME=us-east-1 \
         -e AWS_BEARER_TOKEN_BEDROCK="$BEDROCK_KEY" \
         -e LITELLM_MASTER_KEY="$MASTER_KEY" \
-        -v "$(__litellm_config_file "$TOOL_DIR"):/etc/litellm/config.yaml:ro" \
+        -v "$(__litellm_config_file):/etc/litellm/config.yaml:ro" \
         "$_LITELLM_IMAGE" \
         --config /etc/litellm/config.yaml --port "$_LITELLM_INTERNAL_PORT" \
         >/dev/null

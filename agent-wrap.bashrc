@@ -3,11 +3,29 @@ if [ -z "${AGENT_WRAP_MOUNT:-}" ]; then
     readonly AGENT_WRAP_MOUNT="/opt/agent-wrap"
 fi
 
-# Source the LiteLLM sidecar lifecycle. Kept in a separate file so forks can
-# override the proxy implementation without conflicting with upstream changes
-# to the launcher itself. Public contract documented at the top of that file.
+# Source the model-routing provider plugin. Each provider lives in its own
+# subdirectory under providers/ and exposes a narrow contract (3 functions +
+# 1 output array) documented in providers/template/. Selection is by
+# AGENT_PROVIDER env var; default `litellm-bedrock` preserves historical
+# behavior. Forks that swap the proxy implementation should drop in their own
+# providers/<name>/ directory rather than editing the launcher.
 # shellcheck disable=SC1091
-source "$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)/litellm/litellm-sidecar.sh"
+{
+    _agent_wrap_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
+    : "${AGENT_PROVIDER:=litellm-bedrock}"
+    _agent_provider_file="${_agent_wrap_dir}/providers/${AGENT_PROVIDER}/provider.sh"
+    if [ ! -r "$_agent_provider_file" ]; then
+        echo "agent-wrap: provider '${AGENT_PROVIDER}' not found at ${_agent_provider_file}" >&2
+        echo "Available providers:" >&2
+        for _d in "${_agent_wrap_dir}/providers"/*/; do
+            [ -r "${_d}provider.sh" ] && echo "  - $(basename "$_d")" >&2
+        done
+        unset _agent_wrap_dir _agent_provider_file _d
+        return 1 2>/dev/null || exit 1
+    fi
+    source "$_agent_provider_file"
+    unset _agent_wrap_dir _agent_provider_file _d
+}
 
 _agent_resolve_image() {
     local TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
@@ -463,10 +481,10 @@ agent() {
     echo "--- Agent instance: $AGENT_INSTANCE_ID ---"
 
     (
-        trap '_litellm_sidecar_release "$TOOL_DIR" "$AGENT_INSTANCE_ID"' EXIT
+        trap '_provider_release "$TOOL_DIR" "$AGENT_INSTANCE_ID"' EXIT
 
-        if ! _litellm_sidecar_ensure "$TOOL_DIR" "$use_host_net" "$AGENT_INSTANCE_ID" "$AGENT_NETWORK"; then
-            echo "Error: failed to start LiteLLM sidecar; aborting." >&2
+        if ! _provider_ensure "$TOOL_DIR" "$use_host_net" "$AGENT_INSTANCE_ID" "$AGENT_NETWORK"; then
+            echo "Error: failed to start provider '${AGENT_PROVIDER}'; aborting." >&2
             exit 1
         fi
 
@@ -474,7 +492,7 @@ agent() {
         local _line
         while IFS= read -r _line; do
             [ -n "$_line" ] && LABEL_ARGS+=("$_line")
-        done < <(_litellm_sidecar_label_args "$AGENT_INSTANCE_ID")
+        done < <(_provider_label_args "$AGENT_INSTANCE_ID")
 
         echo "--- Launching Claude (Image: $IMAGE, Config: $GLOBAL_CONFIG_DIR) ---"
 
@@ -506,7 +524,7 @@ agent() {
             -e COLORTERM="${COLORTERM:-truecolor}" \
             -e HOME="${CLAUDE_HOME}" \
             "${LABEL_ARGS[@]}" \
-            "${LITELLM_EXTRA_RUN_ARGS[@]}" \
+            "${PROVIDER_EXTRA_RUN_ARGS[@]}" \
             "${PORT_ARGS[@]}" \
             "${WSLG_ARGS[@]}" \
             "${HOST_NET_ARGS[@]}" \

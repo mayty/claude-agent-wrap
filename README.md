@@ -110,7 +110,7 @@ A single shared `agent-wrap-litellm` container fronts AWS Bedrock for every `age
 
 ### What it is
 
-- A pinned upstream LiteLLM image (tag + digest in `litellm/litellm-sidecar.sh`) — **not** built by `rebuild_agent`; the wrapper pulls it directly.
+- A pinned upstream LiteLLM image (tag + digest in `providers/litellm-bedrock/provider.sh`) — **not** built by `rebuild_agent`; the wrapper pulls it directly.
 - Started lazily on the first `agent` launch (under `flock`), waited on via Docker's built-in healthcheck, and stopped automatically when the last `agent` exits. State (lock file, refcount of running agents) lives under `<wrap-dir>/.agent-launches/`.
 - Parallel `agent` launches share the one sidecar — each registers its `AGENT_INSTANCE_ID` in the refcount file.
 
@@ -130,8 +130,9 @@ The sidecar lives on a Docker user-defined bridge named `agent-wrap-net` (create
 
 ### Customizing
 
-- `litellm/litellm-sidecar.sh` — image pin, lifecycle (start, healthcheck-wait, refcount, shutdown). Forks that swap the proxy implementation should override **only** this file; its public contract with `agent-wrap.bashrc` is intentionally narrow so upstream syncs stay clean.
-- `litellm/config.yaml` — LiteLLM proxy config. Phase-1 setup is a Bedrock passthrough wildcard (`bedrock/*`) plus the master-key binding.
+- `providers/litellm-bedrock/provider.sh` — image pin, lifecycle (start, healthcheck-wait, refcount, shutdown). Forks that swap the proxy implementation should drop in a new `providers/<name>/provider.sh` and select it via `AGENT_PROVIDER=<name>`; its public contract with `agent-wrap.bashrc` is intentionally narrow so upstream syncs stay clean.
+- `providers/litellm-bedrock/config.yaml` — LiteLLM proxy config. Phase-1 setup is a Bedrock passthrough wildcard (`bedrock/*`) plus the master-key binding.
+- `providers/template/` — copy this directory to `providers/<your-name>/` when adding a new provider. Carries failing stubs of the three contract functions plus a README documenting the lifecycle.
 
 ## Clipboard / WSLg
 
@@ -209,7 +210,7 @@ If the base `claude-agent` image hasn't been built yet on this host, run `rebuil
 The `agent()` function injects these env vars on each `docker run` (not baked into the image, so overriding them doesn't require a rebuild):
 
 - `CLAUDE_CODE_USE_BEDROCK=1` — routes Claude Code through AWS Bedrock.
-- `AWS_REGION=us-east-1` — kept for parity with Claude Code's expectations. The agent doesn't reach Bedrock directly; the **sidecar** does, and pins its own upstream region in `litellm/litellm-sidecar.sh`. Overriding this on the host does not repoint the sidecar.
+- `AWS_REGION=us-east-1` — kept for parity with Claude Code's expectations. The agent doesn't reach Bedrock directly; the **sidecar** does, and pins its own upstream region in `providers/litellm-bedrock/provider.sh`. Overriding this on the host does not repoint the sidecar.
 - `AWS_BEARER_TOKEN_BEDROCK` — the **LiteLLM sidecar's master key** (auto-generated per cold-start), not the user's AWS bearer token. Claude Code presents it to the sidecar as a Bearer token; the sidecar uses its own credentials to reach Bedrock.
 - `ANTHROPIC_BEDROCK_BASE_URL` — `http://agent-wrap-litellm:4000/bedrock`. Points Claude Code at the sidecar's Bedrock passthrough.
 - `AGENT_INSTANCE_ID` — per-launch identifier of the form `<agent-name>-<uuid>`. Also applied as the container name (`claude-agent-<AGENT_INSTANCE_ID>`) and as the `agent-wrap.instance-id` Docker label, so `docker ps` and the sidecar refcount can identify each launch.
@@ -223,6 +224,22 @@ The user's AWS Bedrock bearer token is read from `~/claude_keys.json` and passed
 If both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, they are forwarded into the container as `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and consumed by the notification hooks. Missing either one skips the forwarding entirely.
 
 On WSL2 + WSLg hosts (when `/mnt/wslg` exists), `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell and `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. See [Clipboard / WSLg](#clipboard--wslg).
+
+### `AGENT_PROVIDER` (model-routing backend)
+
+`agent-wrap.bashrc` sources exactly one provider plugin per session, selected by `AGENT_PROVIDER`. Each provider lives in `providers/<name>/provider.sh` and implements three functions plus one output array — see [`providers/template/README.md`](providers/template/README.md) for the contract. The default is `litellm-bedrock`, preserving historical behavior.
+
+```sh
+# Use the default LiteLLM-Bedrock provider (no var needed)
+agent
+
+# Or pick a different one — the launcher fails fast and lists available
+# providers if the directory doesn't exist.
+AGENT_PROVIDER=my-direct-anthropic source agent-wrap.bashrc
+agent
+```
+
+Providers are auto-discovered by globbing `providers/*/provider.sh` — drop in a new directory and it shows up in the error message above without any registry edits.
 
 ### `AGENT_USE_HOST_NETWORK` (WSL workaround)
 
@@ -259,9 +276,13 @@ Other wrap functions (`agent_usage`, `create_custom_agent`, and `agent-wrap_upda
 ├── md_to_html.js                # Markdown → Telegram-HTML converter used by telegram-notify.sh
 ├── agent_usage.py               # Host-side usage/cost aggregator invoked by agent_usage (Bedrock pricing fetched + cached)
 ├── wl-paste-shim                # WSLg clipboard shim: surfaces Windows-clipboard BMP images as PNG via ImageMagick
-├── litellm/
-│   ├── litellm-sidecar.sh       # Sidecar lifecycle (lazy start, healthcheck wait, refcount, shutdown). Image pinned by tag+digest. Override-friendly seam for forks.
-│   └── config.yaml              # LiteLLM proxy config (Bedrock /bedrock/* passthrough, master-key auth)
+├── providers/                   # Provider plugin tree — one subdirectory per model-routing backend; selected by AGENT_PROVIDER env var (default: litellm-bedrock)
+│   ├── template/
+│   │   ├── provider.sh          # Failing stubs of the three contract functions; copy this dir to add a new provider
+│   │   └── README.md            # Provider contract docs: function args, lifecycle, output array, file layout
+│   └── litellm-bedrock/
+│       ├── provider.sh          # Default provider: LiteLLM sidecar lifecycle (lazy start, healthcheck wait, refcount, shutdown). Image pinned by tag+digest.
+│       └── config.yaml          # LiteLLM proxy config (Bedrock /bedrock/* passthrough, master-key auth)
 ├── default-CLAUDE.md            # Default instructions (copied into consumer projects' global config)
 ├── CLAUDE.md                    # Repo-level guidance (for editing this project)
 ├── README.md
