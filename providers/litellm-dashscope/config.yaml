@@ -1,0 +1,40 @@
+# This file has been created with the assistance of an AI tool.
+#
+# LiteLLM proxy config for the agent-wrap shared sidecar.
+#
+# DashScope (Alibaba Cloud) passthrough. The proxy authenticates the inbound
+# request against ${LITELLM_MASTER_KEY} and uses its own DASHSCOPE_API_KEY
+# and DASHSCOPE_API_BASE env vars to reach DashScope upstream.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  disable_spend_logs: true
+
+model_list:
+  - model_name: "*opus*"
+    litellm_params:
+      model: "anthropic/qwen3.7-max"
+      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  - model_name: "*sonnet*"
+    litellm_params:
+      model: "anthropic/qwen3.6-plus"
+      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  - model_name: "*haiku*"
+    litellm_params:
+      model: "anthropic/qwen3.6-flash"
+      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  - model_name: "*"
+    litellm_params:
+      model: "anthropic/qwen3.6-flash"
+      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+litellm_settings:
+  drop_params: true
+#   callbacks: ["langfuse"]
