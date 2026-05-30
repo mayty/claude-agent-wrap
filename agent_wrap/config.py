@@ -35,7 +35,9 @@ def _save_json(path: Path, data: dict) -> None:
 def ensure_statusline(settings_path: Path) -> None:
     """Idempotently inject statusLine key into settings.json.
 
-    If the key is absent, adds it pointing to /opt/agent-wrap/statusline.py.
+    If the key is absent, adds it pointing to statusline.py run via
+    python3 (so the script's execute bit is not required).  An existing
+    bare-path entry is migrated in place.
     If the file is empty or missing, creates it with {}.
     If the JSON is malformed, does nothing (don't clobber user's file).
     """
@@ -47,12 +49,21 @@ def ensure_statusline(settings_path: Path) -> None:
     if data is None:
         return  # malformed JSON — don't clobber
 
+    wanted = "python3 /opt/agent-wrap/statusline.py"
+
+    # Migrate old bare-path entry.
+    sl = data.get("statusLine")
+    if isinstance(sl, dict) and sl.get("command") == "/opt/agent-wrap/statusline.py":
+        sl["command"] = wanted
+        _save_json(settings_path, data)
+        return
+
     if "statusLine" in data:
         return
 
     data["statusLine"] = {
         "type": "command",
-        "command": "/opt/agent-wrap/statusline.py",
+        "command": wanted,
     }
     _save_json(settings_path, data)
 
@@ -77,7 +88,9 @@ def _ensure_hook(data: dict, event: str, command: str) -> None:
 def ensure_telegram_hooks(settings_path: Path) -> None:
     """Idempotently inject PermissionRequest/Stop/StopFailure hooks.
 
-    Each hook runs /opt/agent-wrap/telegram-notify.sh.
+    Each hook runs telegram-notify.sh via ``bash`` so the script's
+    execute bit is not required.  Old bare-path entries (no ``bash``
+    prefix) are migrated in place to avoid duplicates.
     If the file is empty or missing, creates it with {}.
     If the JSON is malformed, does nothing.
     """
@@ -89,7 +102,16 @@ def ensure_telegram_hooks(settings_path: Path) -> None:
     if data is None:
         return
 
-    cmd = "/opt/agent-wrap/telegram-notify.sh"
+    # Migrate old bare-path entries to bash-prefixed form.
+    old_bare = "/opt/agent-wrap/telegram-notify.sh"
+    for event in list(data.get("hooks", {})):
+        for entry in data["hooks"].get(event, []):
+            for hook in entry.get("hooks", []):
+                cmd = hook.get("command", "")
+                if cmd == old_bare or cmd.startswith(old_bare + " "):
+                    hook["command"] = "bash " + cmd
+
+    cmd = "bash /opt/agent-wrap/telegram-notify.sh"
     _ensure_hook(data, "PermissionRequest", cmd)
     _ensure_hook(data, "Stop", f"{cmd} stop")
     _ensure_hook(data, "StopFailure", f"{cmd} stopfailure")
