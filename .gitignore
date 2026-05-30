@@ -6,3 +6,5 @@ agent_wrap/providers/*/lock
 agent_wrap/providers/*/refcount
 .pytest_cache/
 .ruff_cache/
+*.egg-info
+.coverage

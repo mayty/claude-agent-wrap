@@ -6,7 +6,7 @@
 .PHONY: test lint lintcheck format format-check typecheck check
 
 test:
-	python3 -m pytest
+	python3 -m pytest --cov=agent_wrap
 
 lint:
 	python3 -m ruff check --fix .
