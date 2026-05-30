@@ -7,7 +7,8 @@ from abc import ABC, abstractmethod
 
 
 class Provider(ABC):
-    """Abstract base class for model-routing providers.
+    """
+    Abstract base class for model-routing providers.
 
     Each provider manages a backend (e.g., a LiteLLM sidecar) that fronts
     the actual model API. The launcher calls ensure() before docker run,
@@ -21,6 +22,7 @@ class Provider(ABC):
     @abstractmethod
     def ensure(
         self,
+        *,
         use_host_net: bool,
         instance_id: str,
         agent_network: str | None,

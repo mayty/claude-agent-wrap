@@ -10,11 +10,11 @@ import sys
 from pathlib import Path
 
 from agent_wrap.docker_utils import image_exists
-from agent_wrap.utils import resolve_image
+from agent_wrap.utils import ResolvedImage, resolve_image
 
 
-def run(args: list[str], tool_dir: Path) -> int:
-    """Execute the `rebuild` subcommand."""
+def _parse_rebuild_args(args: list[str]) -> tuple[bool, bool]:
+    """Parse rebuild arguments. Returns (full, abort) — abort if --help was printed."""
     full = False
     for arg in args:
         if arg == "--full":
@@ -22,16 +22,79 @@ def run(args: list[str], tool_dir: Path) -> int:
         elif arg in ("-h", "--help"):
             print("Usage: rebuild_agent [--full]")
             print("  --full  Rebuild the base 'claude-agent' image first, then the project image.")
-            return 0
+            return full, True
         else:
             print(f"Error: unknown argument '{arg}' (expected --full)", file=sys.stderr)
-            return 1
+            return full, True
+    return full, False
+
+
+def _docker_build(dockerfile: Path, image: str, context: Path, uid: str, gid: str) -> int:
+    """Run a docker build and return the exit code."""
+    result = subprocess.run(
+        [
+            "docker",
+            "build",
+            "--no-cache",
+            "--build-arg",
+            f"HOST_UID={uid}",
+            "--build-arg",
+            f"HOST_GID={gid}",
+            "-f",
+            str(dockerfile),
+            "-t",
+            image,
+            str(context),
+        ]
+    )
+    return result.returncode
+
+
+def _check_from_line(resolved: ResolvedImage) -> bool:
+    """Validate FROM line of Dockerfile.agent. Returns False on error."""
+    from_line = ""
+    with open(resolved.dockerfile) as f:
+        for line in f:
+            if m := re.match(r"^[Ff][Rr][Oo][Mm]\s+(\S+)", line):
+                from_line = m.group(1)
+
+    if re.match(r"^claude-agent(:.*)?$", from_line) and not image_exists("claude-agent"):
+        print(
+            f"Error: '{resolved.dockerfile}' uses 'FROM claude-agent' but the "
+            f"base image is not built.",
+            file=sys.stderr,
+        )
+        print("       Run 'rebuild_agent --full' to build the base first.", file=sys.stderr)
+        return False
+
+    if from_line and not re.match(r"^claude-agent(:.*)?$", from_line):
+        print(
+            f"\033[1;33mNote:\033[0m '{resolved.dockerfile}' inherits from "
+            f"'{from_line}' rather than 'claude-agent'. Consider migrating to "
+            f"'FROM claude-agent' to reuse the base toolchain.",
+            file=sys.stderr,
+        )
+
+    return True
+
+
+def run(args: list[str], tool_dir: Path) -> int:
+    """Execute the `rebuild` subcommand."""
+    full, abort = _parse_rebuild_args(args)
+    if abort:
+        return 1 if args and args[0] not in ("-h", "--help") else 0
 
     # Check for updates
     from agent_wrap.commands.update import check as check_updates
+
     if check_updates(tool_dir):
         return 0
 
+    return _do_rebuild(tool_dir, full=full)
+
+
+def _do_rebuild(tool_dir: Path, *, full: bool) -> int:
+    """Perform the actual rebuild. Returns exit code."""
     try:
         resolved = resolve_image(tool_dir)
     except SystemExit as e:
@@ -43,58 +106,22 @@ def run(args: list[str], tool_dir: Path) -> int:
 
     if full:
         print(f"--- Building base claude-agent from {tool_dir}/Dockerfile ---")
-        result = subprocess.run([
-            "docker", "build", "--no-cache",
-            "--build-arg", f"HOST_UID={uid}",
-            "--build-arg", f"HOST_GID={gid}",
-            "-f", str(tool_dir / "Dockerfile"),
-            "-t", "claude-agent",
-            str(tool_dir),
-        ])
-        if result.returncode != 0:
-            return result.returncode
+        rc = _docker_build(tool_dir / "Dockerfile", "claude-agent", tool_dir, uid, gid)
+        if rc != 0:
+            return rc
 
         if resolved.image == "claude-agent":
-            print(f"--- No Dockerfile.agent in {Path.cwd()}; base build is the only build needed ---")
+            print(
+                f"--- No Dockerfile.agent in {Path.cwd()}; base build is the only build needed ---"
+            )
             subprocess.run(["docker", "images", "--filter", f"reference={resolved.image}"])
             return 0
 
-    if not full and resolved.image != "claude-agent":
-        # Check FROM line
-        from_line = ""
-        with open(resolved.dockerfile) as f:
-            for line in f:
-                if m := re.match(r"^[Ff][Rr][Oo][Mm]\s+(\S+)", line):
-                    from_line = m.group(1)
-
-        if re.match(r"^claude-agent(:.*)?$", from_line) and not image_exists("claude-agent"):
-            print(
-                f"Error: '{resolved.dockerfile}' uses 'FROM claude-agent' but the "
-                f"base image is not built.",
-                file=sys.stderr,
-            )
-            print("       Run 'rebuild_agent --full' to build the base first.", file=sys.stderr)
-            return 1
-
-        if from_line and not re.match(r"^claude-agent(:.*)?$", from_line):
-            print(
-                f"\033[1;33mNote:\033[0m '{resolved.dockerfile}' inherits from "
-                f"'{from_line}' rather than 'claude-agent'. Consider migrating to "
-                f"'FROM claude-agent' to reuse the base toolchain.",
-                file=sys.stderr,
-            )
+    if not full and resolved.image != "claude-agent" and not _check_from_line(resolved):
+        return 1
 
     print(f"--- Building {resolved.image} from {resolved.dockerfile} ---")
-    result = subprocess.run([
-        "docker", "build", "--no-cache",
-        "--build-arg", f"HOST_UID={uid}",
-        "--build-arg", f"HOST_GID={gid}",
-        "-f", str(resolved.dockerfile),
-        "-t", resolved.image,
-        str(resolved.context),
-    ])
-    if result.returncode != 0:
-        return result.returncode
-
-    subprocess.run(["docker", "images", "--filter", f"reference={resolved.image}"])
-    return 0
+    rc = _docker_build(resolved.dockerfile, resolved.image, resolved.context, uid, gid)
+    if rc == 0:
+        subprocess.run(["docker", "images", "--filter", f"reference={resolved.image}"])
+    return rc

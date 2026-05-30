@@ -1,5 +1,6 @@
 # This file has been created with the assistance of an AI tool.
-"""Shared LiteLLM sidecar provider base.
+"""
+Shared LiteLLM sidecar provider base.
 
 Implements the full sidecar lifecycle: lazy start, health polling, refcounting,
 network-mode detection, master key minting/recovery, and the connectivity
@@ -17,7 +18,7 @@ import sys
 import time
 from abc import abstractmethod
 from pathlib import Path
-from typing import ClassVar, IO
+from typing import IO, ClassVar
 
 from agent_wrap.providers.base import Provider
 from agent_wrap.utils import generate_uuid
@@ -35,7 +36,8 @@ def _docker(*args: str, capture: bool = True, check: bool = False) -> tuple[str,
             timeout=30,
         )
         if check and result.returncode != 0:
-            raise RuntimeError(f"docker {' '.join(args)} failed: {result.stderr}")
+            msg = f"docker {' '.join(args)} failed: {result.stderr}"
+            raise RuntimeError(msg)
         return result.stdout.strip(), result.returncode
     except subprocess.TimeoutExpired:
         return "", 1
@@ -44,7 +46,8 @@ def _docker(*args: str, capture: bool = True, check: bool = False) -> tuple[str,
 
 
 class LiteLLMProvider(Provider):
-    """Base class for LiteLLM-backed providers.
+    """
+    Base class for LiteLLM-backed providers.
 
     Manages a shared sidecar container that fronts the model API. Subclasses
     specify which API (Bedrock, Dashscope, etc.) by overriding class attributes
@@ -102,7 +105,8 @@ class LiteLLMProvider(Provider):
         provider_dir = Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
         config = provider_dir / "config.yaml"
         if not config.exists():
-            raise SystemExit(f"litellm-sidecar: config not found at {config}")
+            msg = f"litellm-sidecar: config not found at {config}"
+            raise SystemExit(msg)
         return config
 
     def _state_dir(self) -> Path:
@@ -113,62 +117,28 @@ class LiteLLMProvider(Provider):
 
     def ensure(
         self,
+        *,
         use_host_net: bool,
         instance_id: str,
         agent_network: str | None,
     ) -> None:
-        state_dir = self._state_dir()
-
-        lock_path = state_dir / self.lock_file
-        self._lock_file = open(lock_path, "w")
-        deadline = time.monotonic() + self.lock_timeout_sec
-        acquired = False
-        while time.monotonic() < deadline:
-            try:
-                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except OSError:
-                time.sleep(0.1)
-        if not acquired:
-            raise SystemExit(f"litellm-sidecar: timed out waiting for lock {lock_path}")
+        self._acquire_lock()
 
         try:
             self._ensure_network()
 
             if agent_network == "bridge":
-                raise SystemExit(
+                msg = (
                     "litellm-sidecar: --network bridge is not supported "
                     "(Docker's default bridge has no embedded DNS).\n"
                     "  Use a user-defined network (`docker network create <name>`) "
                     "or remove --network from agent-run-args to use agent-wrap-net."
                 )
+                raise SystemExit(msg)
 
             agent_in_host_netns = bool(use_host_net) or agent_network == "host"
 
-            # Migration: sidecar from before agent-wrap-net refactor
-            if (
-                self._is_running()
-                and not self._is_on_network(self.network_name)
-                and not self._is_on_network("host")
-            ):
-                print("litellm-sidecar: existing sidecar predates agent-wrap-net; restarting", file=sys.stderr)
-                _docker("stop", self.container_name)
-
-            if self._is_running():
-                # First-launch-wins: inherit running mode
-                sidecar_mode = "host" if self._is_on_network("host") else "bridge"
-                self._master_key = self._recover_master_key()
-            else:
-                sidecar_mode = "host" if use_host_net else "bridge"
-                secret_key = self.read_secret_key(self._load_secrets())
-                self._master_key = self._generate_master_key()
-                self._start(secret_key, self._master_key, sidecar_mode)
-                if not self._health_poll():
-                    print("litellm-sidecar: health check failed; recent logs:", file=sys.stderr)
-                    _docker("logs", "--tail", "50", self.container_name)
-                    _docker("stop", self.container_name)
-                    raise SystemExit(1)
+            sidecar_mode = self._ensure_sidecar(use_host_net=use_host_net)
 
             # Attach sidecar to agent's custom network if needed
             if (
@@ -179,35 +149,93 @@ class LiteLLMProvider(Provider):
                 self._attach_to_network(agent_network)
 
             self._register_instance(instance_id)
-
-            # Build agent-side env vars
-            base_url = f"http://{self.container_name}:{self.internal_port}"
-            agent_env = self.get_agent_env(self._master_key, base_url)
-            env_args: list[str] = []
-            for key, value in agent_env.items():
-                env_args.extend(["-e", f"{key}={value}"])
-
-            # Connectivity matrix
-            if sidecar_mode == "host":
-                if agent_in_host_netns:
-                    self._run_args = [*env_args, "--add-host", f"{self.container_name}:127.0.0.1"]
-                else:
-                    self._run_args = [*env_args, "--add-host", f"{self.container_name}:host-gateway"]
-            elif agent_in_host_netns:
-                sidecar_ip = self._sidecar_ip_on_network(self.network_name)
-                if not sidecar_ip:
-                    raise SystemExit(
-                        f"litellm-sidecar: sidecar has no IP on {self.network_name} "
-                        "— was it disconnected from the network?"
-                    )
-                self._run_args = [*env_args, "--add-host", f"{self.container_name}:{sidecar_ip}"]
-            elif not agent_network:
-                self._run_args = [*env_args, "--network", self.network_name]
-            else:
-                self._run_args = [*env_args]
+            self._run_args = self._build_connectivity_args(
+                sidecar_mode, agent_in_host_netns=agent_in_host_netns, agent_network=agent_network
+            )
         finally:
             if self._lock_file is not None:
                 fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _acquire_lock(self) -> None:
+        """Acquire the flock on the lock file, waiting up to lock_timeout_sec."""
+        lock_path = self._state_dir() / self.lock_file
+        self._lock_file = open(lock_path, "w")  # noqa: SIM115
+        deadline = time.monotonic() + self.lock_timeout_sec
+        acquired = False
+        while time.monotonic() < deadline:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                time.sleep(0.1)
+        if not acquired:
+            msg = f"litellm-sidecar: timed out waiting for lock {lock_path}"
+            raise SystemExit(msg)
+
+    def _ensure_sidecar(self, *, use_host_net: bool) -> str:
+        """Ensure the sidecar is running. Returns the sidecar's network mode."""
+        # Migration: sidecar from before agent-wrap-net refactor
+        if (
+            self._is_running()
+            and not self._is_on_network(self.network_name)
+            and not self._is_on_network("host")
+        ):
+            print(
+                "litellm-sidecar: existing sidecar predates agent-wrap-net; restarting",
+                file=sys.stderr,
+            )
+            _docker("stop", self.container_name)
+
+        if self._is_running():
+            # First-launch-wins: inherit running mode
+            sidecar_mode = "host" if self._is_on_network("host") else "bridge"
+            self._master_key = self._recover_master_key()
+        else:
+            sidecar_mode = "host" if use_host_net else "bridge"
+            secret_key = self.read_secret_key(self._load_secrets())
+            self._master_key = self._generate_master_key()
+            self._start(secret_key, self._master_key, sidecar_mode)
+            if not self._health_poll():
+                print("litellm-sidecar: health check failed; recent logs:", file=sys.stderr)
+                _docker("logs", "--tail", "50", self.container_name)
+                _docker("stop", self.container_name)
+                raise SystemExit(1)
+
+        return sidecar_mode
+
+    def _build_connectivity_args(
+        self,
+        sidecar_mode: str,
+        *,
+        agent_in_host_netns: bool,
+        agent_network: str | None,
+    ) -> list[str]:
+        """Build env var flags and connectivity args for the agent container."""
+        base_url = f"http://{self.container_name}:{self.internal_port}"
+        agent_env = self.get_agent_env(self._master_key, base_url)
+        env_args: list[str] = []
+        for key, value in agent_env.items():
+            env_args.extend(["-e", f"{key}={value}"])
+
+        if sidecar_mode == "host":
+            if agent_in_host_netns:
+                return [*env_args, "--add-host", f"{self.container_name}:127.0.0.1"]
+            return [*env_args, "--add-host", f"{self.container_name}:host-gateway"]
+
+        if agent_in_host_netns:
+            sidecar_ip = self._sidecar_ip_on_network(self.network_name)
+            if not sidecar_ip:
+                msg = (
+                    f"litellm-sidecar: sidecar has no IP on {self.network_name} "
+                    "— was it disconnected from the network?"
+                )
+                raise SystemExit(msg)
+            return [*env_args, "--add-host", f"{self.container_name}:{sidecar_ip}"]
+
+        if not agent_network:
+            return [*env_args, "--network", self.network_name]
+        return [*env_args]
 
     # --- Public: release ---
 
@@ -219,7 +247,7 @@ class LiteLLMProvider(Provider):
         if not lock_path.exists():
             return
 
-        lock_file = open(lock_path, "w")
+        lock_file = open(lock_path, "w")  # noqa: SIM115
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         except OSError:
@@ -243,9 +271,12 @@ class LiteLLMProvider(Provider):
         if not instance_id:
             return []
         return [
-            "--label", "agent-wrap.role=claude-agent",
-            "--label", f"agent-wrap.instance-id={instance_id}",
-            "--name", f"claude-agent-{instance_id}",
+            "--label",
+            "agent-wrap.role=claude-agent",
+            "--label",
+            f"agent-wrap.instance-id={instance_id}",
+            "--name",
+            f"claude-agent-{instance_id}",
         ]
 
     # --- Internal helpers ---
@@ -257,44 +288,53 @@ class LiteLLMProvider(Provider):
     def _load_secrets(self) -> dict:
         secrets_path = Path.home() / "claude_keys.json"
         if not secrets_path.exists():
-            raise SystemExit(f"litellm-sidecar: {secrets_path} not found")
+            msg = f"litellm-sidecar: {secrets_path} not found"
+            raise SystemExit(msg)
         try:
             return json.loads(secrets_path.read_text())
         except json.JSONDecodeError:
-            raise SystemExit(f"litellm-sidecar: {secrets_path} is not valid JSON")
+            msg = f"litellm-sidecar: {secrets_path} is not valid JSON"
+            raise SystemExit(msg) from None
 
     def _recover_master_key(self) -> str:
         stdout, rc = _docker(
-            "inspect", self.container_name,
+            "inspect",
+            self.container_name,
             "--format={{range .Config.Env}}{{println .}}{{end}}",
         )
         if rc != 0:
-            raise SystemExit(
+            msg = (
                 f"litellm-sidecar: LITELLM_MASTER_KEY not recoverable from "
                 f"{self.container_name} (container gone); aborting"
             )
+            raise SystemExit(msg)
         for line in stdout.splitlines():
             if line.startswith("LITELLM_MASTER_KEY="):
                 key = line.removeprefix("LITELLM_MASTER_KEY=")
                 if key:
                     return key
-        raise SystemExit(
+        msg = (
             f"litellm-sidecar: LITELLM_MASTER_KEY not recoverable from "
             f"{self.container_name} (env line absent); aborting"
         )
+        raise SystemExit(msg)
 
     def _is_running(self) -> bool:
         stdout, rc = _docker(
-            "container", "inspect",
-            "-f", "{{.State.Running}}",
+            "container",
+            "inspect",
+            "-f",
+            "{{.State.Running}}",
             self.container_name,
         )
         return rc == 0 and stdout.strip() == "true"
 
     def _is_on_network(self, network: str) -> bool:
         stdout, rc = _docker(
-            "inspect", self.container_name,
-            "--format", "{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}",
+            "inspect",
+            self.container_name,
+            "--format",
+            "{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}",
         )
         if rc != 0:
             return False
@@ -306,7 +346,8 @@ class LiteLLMProvider(Provider):
             return
         _, rc = _docker("network", "create", self.network_name)
         if rc != 0:
-            raise SystemExit(f"litellm-sidecar: failed to create docker network {self.network_name}")
+            msg = f"litellm-sidecar: failed to create docker network {self.network_name}"
+            raise SystemExit(msg)
 
     def _start(self, secret_key: str, master_key: str, sidecar_mode: str) -> None:
         config_path = self._config_path()
@@ -332,25 +373,34 @@ class LiteLLMProvider(Provider):
         env_flags.extend(["-e", f"LITELLM_MASTER_KEY={master_key}"])
 
         cmd = [
-            "run", "-d", "--rm",
-            "--name", self.container_name,
-            "--network", network,
-            "--health-cmd", health_cmd,
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            self.container_name,
+            "--network",
+            network,
+            "--health-cmd",
+            health_cmd,
             "--health-interval=30s",
             "--health-retries=3",
             "--health-timeout=2s",
             f"--health-start-period={self.health_timeout_sec}s",
             "--health-start-interval=100ms",
             *env_flags,
-            "-v", f"{config_path}:/etc/litellm/config.yaml:ro",
+            "-v",
+            f"{config_path}:/etc/litellm/config.yaml:ro",
             self.image,
-            "--config", "/etc/litellm/config.yaml",
-            "--port", str(self.internal_port),
+            "--config",
+            "/etc/litellm/config.yaml",
+            "--port",
+            str(self.internal_port),
             *self.get_sidecar_cmd_args(),
         ]
         _, rc = _docker(*cmd)
         if rc != 0:
-            raise SystemExit(f"litellm-sidecar: failed to start {self.container_name}")
+            msg = f"litellm-sidecar: failed to start {self.container_name}"
+            raise SystemExit(msg)
 
     def _health_poll(self) -> bool:
         deadline = time.monotonic() + self.health_timeout_sec
@@ -362,11 +412,12 @@ class LiteLLMProvider(Provider):
 
         while time.monotonic() < deadline:
             stdout, rc = _docker(
-                "inspect", self.container_name,
+                "inspect",
+                self.container_name,
                 "--format={{.State.Health.Status}}",
             )
             if rc != 0:
-                self._health_end(is_tty, False, time.monotonic() - start)
+                self._health_end(is_tty=is_tty, success=False, elapsed=time.monotonic() - start)
                 return False
 
             status = stdout.strip()
@@ -376,7 +427,8 @@ class LiteLLMProvider(Provider):
                 print(
                     f"\r\033[2Klitellm-sidecar: {spinner[frame]} waiting for "
                     f"healthy [{status or '?'}] ({elapsed}s)",
-                    end="", file=sys.stderr,
+                    end="",
+                    file=sys.stderr,
                 )
                 frame = (frame + 1) % len(spinner)
             elif status and status != last_status:
@@ -384,19 +436,19 @@ class LiteLLMProvider(Provider):
                 last_status = status
 
             if status == "healthy":
-                self._health_end(is_tty, True, time.monotonic() - start)
+                self._health_end(is_tty=is_tty, success=True, elapsed=time.monotonic() - start)
                 return True
             if status == "unhealthy" or not self._is_running():
-                self._health_end(is_tty, False, time.monotonic() - start)
+                self._health_end(is_tty=is_tty, success=False, elapsed=time.monotonic() - start)
                 return False
 
             time.sleep(0.5)
 
-        self._health_end(is_tty, False, time.monotonic() - start)
+        self._health_end(is_tty=is_tty, success=False, elapsed=time.monotonic() - start)
         return False
 
     @staticmethod
-    def _health_end(is_tty: bool, success: bool, elapsed: float) -> None:
+    def _health_end(*, is_tty: bool, success: bool, elapsed: float) -> None:
         if is_tty:
             if success:
                 print(f"\r\033[2Klitellm-sidecar: ready ({int(elapsed)}s)", file=sys.stderr)
@@ -406,9 +458,8 @@ class LiteLLMProvider(Provider):
     def _attach_to_network(self, network: str) -> None:
         _, rc = _docker("network", "inspect", network)
         if rc != 0:
-            raise SystemExit(
-                f"litellm-sidecar: network '{network}' (from agent-run-args) does not exist"
-            )
+            msg = f"litellm-sidecar: network '{network}' (from agent-run-args) does not exist"
+            raise SystemExit(msg)
 
         # Check if already connected
         if self._is_on_network(network):
@@ -416,15 +467,18 @@ class LiteLLMProvider(Provider):
 
         _, rc = _docker("network", "connect", network, self.container_name)
         if rc != 0:
-            raise SystemExit(
-                f"litellm-sidecar: failed to attach {self.container_name} to network '{network}'"
-            )
+            msg = f"litellm-sidecar: failed to attach {self.container_name} to network '{network}'"
+            raise SystemExit(msg)
 
     def _sidecar_ip_on_network(self, network: str) -> str:
+        fmt = (
+            f'{{{{with index .NetworkSettings.Networks "{network}"}}}}{{{{.IPAddress}}}}{{{{end}}}}'
+        )
         stdout, rc = _docker(
-            "inspect", self.container_name,
+            "inspect",
+            self.container_name,
             "--format",
-            f'{{{{with index .NetworkSettings.Networks "{network}"}}}}{{{{.IPAddress}}}}{{{{end}}}}',
+            fmt,
         )
         return stdout.strip() if rc == 0 else ""
 
@@ -443,7 +497,7 @@ class LiteLLMProvider(Provider):
         path = self._refcount_path()
         if not path.exists():
             return
-        lines = [l for l in path.read_text().splitlines() if l != instance_id]
+        lines = [ln for ln in path.read_text().splitlines() if ln != instance_id]
         path.write_text("\n".join(lines) + "\n" if lines else "")
 
     def _has_active_instances(self) -> bool:
@@ -457,14 +511,16 @@ class LiteLLMProvider(Provider):
         path = self._refcount_path()
         if not path.exists():
             return
-        entries = [l for l in path.read_text().splitlines() if l.strip()]
+        entries = [ln for ln in path.read_text().splitlines() if ln.strip()]
         if not entries:
             return
 
         stdout, rc = _docker(
             "ps",
-            "--filter", "label=agent-wrap.role=claude-agent",
-            "--format", '{{.Label "agent-wrap.instance-id"}}',
+            "--filter",
+            "label=agent-wrap.role=claude-agent",
+            "--format",
+            '{{.Label "agent-wrap.instance-id"}}',
         )
         if rc != 0:
             return

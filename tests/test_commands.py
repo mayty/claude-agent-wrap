@@ -1,60 +1,57 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap.commands."""
 
-import unittest
+from __future__ import annotations
 
 from agent_wrap.commands.agent import _extract_network, _is_truthy
 
 
-class TestExtractNetwork(unittest.TestCase):
+class TestExtractNetwork:
     def test_no_network(self):
-        self.assertIsNone(_extract_network([]))
-        self.assertIsNone(_extract_network(["--device", "/dev/fuse"]))
+        assert _extract_network([]) is None
+        assert _extract_network(["--device", "/dev/fuse"]) is None
 
     def test_separate_flag(self):
-        self.assertEqual(_extract_network(["--network", "mynet"]), "mynet")
+        assert _extract_network(["--network", "mynet"]) == "mynet"
 
     def test_equals_syntax(self):
-        self.assertEqual(_extract_network(["--network=mynet"]), "mynet")
+        assert _extract_network(["--network=mynet"]) == "mynet"
 
     def test_net_alias(self):
-        self.assertEqual(_extract_network(["--net", "mynet"]), "mynet")
-        self.assertEqual(_extract_network(["--net=mynet"]), "mynet")
+        assert _extract_network(["--net", "mynet"]) == "mynet"
+        assert _extract_network(["--net=mynet"]) == "mynet"
 
     def test_first_occurrence_wins(self):
-        self.assertEqual(
-            _extract_network(["--network", "first", "--network", "second"]),
-            "first",
-        )
+        assert _extract_network(["--network", "first", "--network", "second"]) == "first"
 
     def test_missing_value(self):
-        self.assertIsNone(_extract_network(["--network"]))
+        assert _extract_network(["--network"]) is None
 
     def test_among_other_flags(self):
         args = ["--device", "/dev/fuse", "--network", "mynet", "--cap-add", "SYS_ADMIN"]
-        self.assertEqual(_extract_network(args), "mynet")
+        assert _extract_network(args) == "mynet"
 
 
-class TestIsTruthy(unittest.TestCase):
+class TestIsTruthy:
     def test_empty_is_false(self):
-        self.assertFalse(_is_truthy(""))
+        assert not _is_truthy("")
 
     def test_zero_is_false(self):
-        self.assertFalse(_is_truthy("0"))
+        assert not _is_truthy("0")
 
     def test_false_is_false(self):
-        self.assertFalse(_is_truthy("false"))
-        self.assertFalse(_is_truthy("FALSE"))
+        assert not _is_truthy("false")
+        assert not _is_truthy("FALSE")
 
     def test_no_is_false(self):
-        self.assertFalse(_is_truthy("no"))
-        self.assertFalse(_is_truthy("NO"))
+        assert not _is_truthy("no")
+        assert not _is_truthy("NO")
 
     def test_one_is_true(self):
-        self.assertTrue(_is_truthy("1"))
+        assert _is_truthy("1")
 
     def test_yes_is_true(self):
-        self.assertTrue(_is_truthy("yes"))
+        assert _is_truthy("yes")
 
     def test_any_string_is_true(self):
-        self.assertTrue(_is_truthy("hello"))
+        assert _is_truthy("hello")

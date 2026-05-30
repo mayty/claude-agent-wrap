@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # This file has been created with the assistance of an AI tool.
-"""Claude Code statusline.
+"""
+Claude Code statusline.
 
 Layout (two rows, right segment flush to the terminal edge):
 
@@ -9,6 +10,7 @@ Layout (two rows, right segment flush to the terminal edge):
 
 Colors on context %: green <10, yellow 10-19, red >=20 or >200k tokens.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -38,6 +40,9 @@ RED = "\033[31m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
+CONTEXT_RED_THRESHOLD = 20
+CONTEXT_YELLOW_THRESHOLD = 10
+
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
@@ -55,7 +60,7 @@ def terminal_cols(default: int = 120) -> int:
             _, cols, _, _ = struct.unpack("hhhh", packed)
             if cols > 0:
                 return cols
-    except Exception:
+    except Exception:  # noqa: S110 -- statusline must never crash the parent
         pass
     cols = shutil.get_terminal_size(fallback=(default, 24)).columns
     return cols if cols > 0 else default
@@ -65,23 +70,20 @@ def right_align(left: str, right: str, width: int) -> str:
     if not right:
         return left
     gap = width - visible_len(left) - visible_len(right)
-    if gap < 1:
-        gap = 1
+    gap = max(gap, 1)
     return f"{left}{' ' * gap}{right}"
 
 
 def latest_version(current: str) -> str | None:
-    """Return the latest published version if newer than ``current``.
+    """
+    Return the latest published version if newer than ``current``.
 
     Refreshes a cache file in the background so the statusline never blocks on
     the network — the value shown reflects the previous refresh.
     """
     try:
         CACHE.parent.mkdir(parents=True, exist_ok=True)
-        stale = (
-            not CACHE.exists()
-            or (time.time() - CACHE.stat().st_mtime) > REFRESH_AFTER_SECONDS
-        )
+        stale = not CACHE.exists() or (time.time() - CACHE.stat().st_mtime) > REFRESH_AFTER_SECONDS
         if stale:
             subprocess.Popen(
                 ["sh", "-c", f"npm view {NPM_PACKAGE} version > {CACHE} 2>/dev/null"],
@@ -94,7 +96,7 @@ def latest_version(current: str) -> str | None:
             latest = CACHE.read_text().strip()
             if latest and latest != current:
                 return latest
-    except Exception:
+    except Exception:  # noqa: S110 -- statusline must never crash the parent
         pass
     return None
 
@@ -105,9 +107,9 @@ def context_segment(data: dict) -> str:
     exceeds_200k = bool(data.get("exceeds_200k_tokens"))
     if used is None:
         return f"{DIM}context —{RESET}"
-    if used >= 20 or exceeds_200k:
+    if used >= CONTEXT_RED_THRESHOLD or exceeds_200k:
         color = RED
-    elif used >= 10:
+    elif used >= CONTEXT_YELLOW_THRESHOLD:
         color = YELLOW
     else:
         color = GREEN

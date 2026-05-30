@@ -1,0 +1,20 @@
+# agent-name: agent-wrap
+# This file has been created with the assistance of an AI tool.
+
+# Shadow build/cache directories so they stay inside the container and
+# do not pollute the host /workspace bind-mount.
+
+FROM claude-agent
+
+# Install Python dev dependencies for linting, testing, and type checking.
+RUN apt-get update \
+    && apt-get install -y \
+    python3 \
+    python3-pip \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml /tmp/agent-wrap/
+
+RUN pip install --no-cache-dir --break-system-packages '/tmp/agent-wrap[dev]' \
+    && rm -rf /tmp/agent-wrap

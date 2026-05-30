@@ -1,0 +1,140 @@
+# This file has been created with the assistance of an AI tool.
+
+[project]
+name = "agent-wrap"
+version = "0.0.0"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+    "ruff>=0.9.0,<1",
+    "pyrefly>=0.15.0,<1",
+]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+
+# ---------------------------------------------------------------------------
+# ruff (linter + formatter)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = [".", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # Conflicts with formatter
+    "W191",
+    "E111",
+    "E114",
+    "E117",
+    "D206",
+    "D300",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "COM812",
+    "COM819",
+    "ISC001",
+    "ISC002",
+
+    # Type annotations handled by pyrefly
+    "ANN",
+
+    # Docstring style -- formatter handles
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D107",
+    "D400",
+    "D415",
+    "D203",
+    "D205",
+    "D212",
+
+    # Line length handled by formatter
+    "E501",
+
+    # Shebang check
+    "EXE002",
+
+    # TODO tracking
+    "FIX002",
+    "TD002",
+    "TD003",
+
+    # `import` should be at the top-level of a file
+    "PLC0415",
+
+    # Key in dict style
+    "SIM118",
+
+    # Use of `assert` detected -- allowed project-wide
+    "S101",
+
+    # --- Project-specific ---
+
+    # CLI tool -- print is the primary output mechanism
+    "T201",
+
+    # subprocess calls to docker/git are core functionality; inputs are controlled
+    "S603",
+    "S607",
+    "PLW1510",
+
+    # open() needed for fd-based APIs (fcntl.flock)
+    "PTH123",
+
+    # Scripts invoked via `python3 script.py`, not direct execution
+    "EXE001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ARG",     # unused args in test fixtures are fine
+    "PLR2004", # magic values in test assertions
+]
+"statusline.py" = [
+    "BLE001", # broad except Exception -- statusline must never crash
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent_wrap"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# pyrefly (Meta's type checker)
+# ---------------------------------------------------------------------------
+[tool.pyrefly]
+project_includes = [
+    "agent_wrap",
+    "main.py",
+    "statusline.py",
+    "tests",
+]
+project_excludes = [
+    "__pycache__",
+    ".pytest_cache",
+]
+python_version = "3.10"

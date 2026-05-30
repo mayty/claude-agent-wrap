@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib
 import inspect
-import pkgutil
 from pathlib import Path
 
 from .base import Provider
@@ -25,17 +24,14 @@ def _discover_providers() -> dict[str, type[Provider]]:
             continue
         mod = importlib.import_module(f".{item.name}.provider", package=__package__)
         for _attr_name, obj in inspect.getmembers(mod, inspect.isclass):
-            if (
-                issubclass(obj, Provider)
-                and not inspect.isabstract(obj)
-                and hasattr(obj, "name")
-            ):
+            if issubclass(obj, Provider) and not inspect.isabstract(obj) and hasattr(obj, "name"):
                 registry[obj.name] = obj
     return registry
 
 
 def get_provider(name: str | None = None) -> Provider:
-    """Resolve and instantiate a provider by name.
+    """
+    Resolve and instantiate a provider by name.
 
     Falls back to the AGENT_PROVIDER env var, then to "litellm-bedrock".
     """
@@ -46,5 +42,6 @@ def get_provider(name: str | None = None) -> Provider:
     cls = registry.get(resolved)
     if cls is None:
         available = ", ".join(sorted(registry.keys())) or "(none found)"
-        raise SystemExit(f"Unknown provider: {resolved}\nAvailable: {available}")
+        msg = f"Unknown provider: {resolved}\nAvailable: {available}"
+        raise SystemExit(msg)
     return cls()

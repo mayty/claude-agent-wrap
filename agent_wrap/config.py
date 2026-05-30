@@ -1,5 +1,6 @@
 # This file has been created with the assistance of an AI tool.
-"""Configuration file manipulation for agent-wrap.
+"""
+Configuration file manipulation for agent-wrap.
 
 Replaces the bash _agent_ensure_statusline, _agent_ensure_telegram_hooks,
 _agent_record_project, and related config-prep helpers. Uses stdlib json
@@ -9,7 +10,6 @@ instead of jq.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from pathlib import Path
 
@@ -33,7 +33,8 @@ def _save_json(path: Path, data: dict) -> None:
 
 
 def ensure_statusline(settings_path: Path) -> None:
-    """Idempotently inject statusLine key into settings.json.
+    """
+    Idempotently inject statusLine key into settings.json.
 
     If the key is absent, adds it pointing to statusline.py run via
     python3 (so the script's execute bit is not required).  An existing
@@ -79,14 +80,17 @@ def _ensure_hook(data: dict, event: str, command: str) -> None:
             if hook.get("command") == command:
                 return
 
-    event_hooks.append({
-        "matcher": "",
-        "hooks": [{"type": "command", "command": command}],
-    })
+    event_hooks.append(
+        {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": command}],
+        }
+    )
 
 
 def ensure_telegram_hooks(settings_path: Path) -> None:
-    """Idempotently inject PermissionRequest/Stop/StopFailure hooks.
+    """
+    Idempotently inject PermissionRequest/Stop/StopFailure hooks.
 
     Each hook runs telegram-notify.sh via ``bash`` so the script's
     execute bit is not required.  Old bare-path entries (no ``bash``
@@ -131,7 +135,8 @@ def prepare_global_config(
     telegram_bot_token: str = "",
     telegram_chat_id: str = "",
 ) -> None:
-    """Prepare the global config directory for agent launch.
+    """
+    Prepare the global config directory for agent launch.
 
     Creates the directory structure, secures config files, injects
     statusline and telegram hooks, and copies default-CLAUDE.md.
@@ -141,14 +146,10 @@ def prepare_global_config(
 
     # Create and secure config files
     for name in (".claude.json", "settings.json"):
-        path = global_config_dir / ".claude" / name if name != ".claude.json" else global_config_dir / name
-        if name == ".claude.json":
-            path = global_config_dir / name
-        else:
-            path = claude_dir / name
+        path = global_config_dir / name if name == ".claude.json" else claude_dir / name
         if not path.exists():
             path.touch()
-        os.chmod(path, 0o600)
+        path.chmod(0o600)
 
     settings_path = claude_dir / "settings.json"
     ensure_statusline(settings_path)
@@ -191,7 +192,8 @@ def prepare_project_dirs(project_dir: Path) -> None:
 
 
 def record_project(tool_dir: Path) -> None:
-    """Append cwd to the project registry if not already present.
+    """
+    Append cwd to the project registry if not already present.
 
     Failures are non-fatal — the agent launch must not depend on this.
     """

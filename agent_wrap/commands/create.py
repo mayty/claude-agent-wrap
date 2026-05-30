@@ -9,7 +9,7 @@ from pathlib import Path
 from agent_wrap.utils import sanitize_name
 
 
-def run(args: list[str], tool_dir: Path) -> int:
+def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001
     """Execute the `create` subcommand."""
     dst = Path.cwd() / "Dockerfile.agent"
 

@@ -20,15 +20,17 @@ class BedrockProvider(LiteLLMProvider):
         try:
             key = secrets["ServiceSpecificCredential"]["ServiceCredentialSecret"]
         except (KeyError, TypeError):
-            raise SystemExit(
+            msg = (
                 "litellm-sidecar: .ServiceSpecificCredential.ServiceCredentialSecret "
                 "missing or empty in ~/claude_keys.json"
             )
+            raise SystemExit(msg) from None
         if not key:
-            raise SystemExit(
+            msg = (
                 "litellm-sidecar: .ServiceSpecificCredential.ServiceCredentialSecret "
                 "missing or empty in ~/claude_keys.json"
             )
+            raise SystemExit(msg)
         return key
 
     def get_sidecar_env(self, secrets: dict) -> dict[str, str]:

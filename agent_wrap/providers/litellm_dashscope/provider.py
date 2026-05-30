@@ -19,9 +19,8 @@ class DashscopeProvider(LiteLLMProvider):
     def read_secret_key(self, secrets: dict) -> str:
         key = secrets.get("DashScopeAPIKey", "")
         if not key:
-            raise SystemExit(
-                "litellm-sidecar: .DashScopeAPIKey missing or empty in ~/claude_keys.json"
-            )
+            msg = "litellm-sidecar: .DashScopeAPIKey missing or empty in ~/claude_keys.json"
+            raise SystemExit(msg)
         return key
 
     def get_sidecar_env(self, secrets: dict) -> dict[str, str]:

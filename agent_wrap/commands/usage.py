@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def run(args: list[str], tool_dir: Path) -> int:
-    """Execute the `usage` subcommand.
+    """
+    Execute the `usage` subcommand.
 
     Delegates to agent_usage.py with the correct cache and project-registry paths.
     """

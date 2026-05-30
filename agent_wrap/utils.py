@@ -10,7 +10,8 @@ from pathlib import Path
 
 
 def sanitize_name(name: str) -> str:
-    """Normalize a string to be a valid Docker image-name suffix.
+    """
+    Normalize a string to be a valid Docker image-name suffix.
 
     Lowercases everything, replaces non-[a-z0-9_.-] characters with '-',
     and strips leading/trailing dashes.
@@ -21,7 +22,8 @@ def sanitize_name(name: str) -> str:
 
 
 def generate_uuid() -> str:
-    """Generate a lowercase-hex UUID with dashes.
+    """
+    Generate a lowercase-hex UUID with dashes.
 
     Uses /proc/sys/kernel/random/uuid on Linux (cheap kernel-side entropy),
     falls back to Python's uuid4.
@@ -45,25 +47,27 @@ class DockerfileAgentInfo:
 
 
 def parse_dockerfile_agent(dockerfile_path: Path) -> DockerfileAgentInfo:
-    """Extract EXPOSE, agent-user, and agent-run-args directives from a Dockerfile.agent.
+    """
+    Extract EXPOSE, agent-user, and agent-run-args directives from a Dockerfile.agent.
 
     Args:
         dockerfile_path: Path to the Dockerfile.agent file.
 
     Returns:
         DockerfileAgentInfo with parsed directives.
+
     """
     info = DockerfileAgentInfo()
 
     with open(dockerfile_path) as f:
-        for line in f:
-            line = line.strip()
+        for raw_line in f:
+            line = raw_line.strip()
 
-            # Parse # agent-user: <username>
+            # Handle agent-user directive
             if match := re.match(r"^#\s*agent-user:\s*(\S+)", line):
                 info.agent_user = match.group(1)
 
-            # Parse # agent-run-args: <flags>
+            # Handle agent-run-args directive
             elif match := re.match(r"^#\s*agent-run-args:\s*(.+)", line):
                 # Whitespace-split into tokens (no shell quoting)
                 info.extra_run_args.extend(match.group(1).split())
@@ -87,8 +91,9 @@ class ResolvedImage:
     context: Path
 
 
-def resolve_image(tool_dir: Path, use_base: bool = False) -> ResolvedImage:
-    """Determine which Docker image to use, its Dockerfile, and build context.
+def resolve_image(tool_dir: Path, *, use_base: bool = False) -> ResolvedImage:
+    """
+    Determine which Docker image to use, its Dockerfile, and build context.
 
     Args:
         tool_dir: Path to the agent-wrap tool directory.
@@ -100,6 +105,7 @@ def resolve_image(tool_dir: Path, use_base: bool = False) -> ResolvedImage:
     Raises:
         SystemExit: If Dockerfile.agent exists but is missing the required
             '# agent-name:' comment or has an invalid name.
+
     """
     cwd = Path.cwd()
     dockerfile_agent = cwd / "Dockerfile.agent"
@@ -112,10 +118,11 @@ def resolve_image(tool_dir: Path, use_base: bool = False) -> ResolvedImage:
                     name = match.group(1)
                     # Validate name format
                     if not re.match(r"^[a-z0-9_.\-]+$", name):
-                        raise SystemExit(
+                        msg = (
                             f"Error: agent-name '{name}' must match [a-z0-9_.-]+ "
                             f"(Docker image names are lowercase)"
                         )
+                        raise SystemExit(msg)
                     return ResolvedImage(
                         image=f"claude-agent-{name}",
                         dockerfile=dockerfile_agent,
@@ -123,9 +130,8 @@ def resolve_image(tool_dir: Path, use_base: bool = False) -> ResolvedImage:
                     )
 
         # If we get here, no agent-name was found
-        raise SystemExit(
-            "Error: Dockerfile.agent must contain '# agent-name: <name>' comment"
-        )
+        msg = "Error: Dockerfile.agent must contain '# agent-name: <name>' comment"
+        raise SystemExit(msg)
 
     # Default: use base claude-agent image
     return ResolvedImage(
