@@ -16,7 +16,7 @@ dev = [
 # pytest
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["agent_wrap"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -32,7 +32,7 @@ addopts = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-src = [".", "tests"]
+src = ["."]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -108,7 +108,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = [
+"**/tests/**" = [
     "ARG",     # unused args in test fixtures are fine
     "PLR2004", # magic values in test assertions
 ]
@@ -131,7 +131,6 @@ project_includes = [
     "agent_wrap",
     "main.py",
     "statusline.py",
-    "tests",
 ]
 project_excludes = [
     "__pycache__",
