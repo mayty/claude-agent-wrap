@@ -1082,14 +1082,24 @@ _USAGE_TEXT = (
 
 
 @dataclass
-class _UsageArgs:
+class _UsageArgsBuilder:
     """Parsed CLI arguments for agent_usage."""
 
     cache_path: Path | None = None
     region_label: str = DEFAULT_REGION_LABEL
     refresh: bool = False
     days_window: int = 30
-    registry_path: Path | None = None
+
+
+@dataclass
+class _UsageArgs:
+    """Parsed CLI arguments for agent_usage."""
+
+    registry_path: Path
+    cache_path: Path | None = None
+    region_label: str = DEFAULT_REGION_LABEL
+    refresh: bool = False
+    days_window: int = 30
 
 
 def _parse_days(value: str) -> int | None:
@@ -1107,7 +1117,7 @@ def _parse_days(value: str) -> int | None:
 
 def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
     """Parse CLI arguments. Returns None if help was printed or an error occurred."""
-    parsed = _UsageArgs()
+    parsed = _UsageArgsBuilder()
     positional: list[str] = []
     i = 0
     while i < len(args):
@@ -1150,8 +1160,10 @@ def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
         print(f"agent_usage: registry not found at {reg}", file=sys.stderr)
         return None
 
-    parsed.registry_path = reg
-    return parsed
+    return _UsageArgs(
+        registry_path=reg,
+        **parsed.__dict__,
+    )
 
 
 def _collect_project_rows(
@@ -1200,7 +1212,7 @@ def main(argv: list[str]) -> int:
     if parsed is None:
         return 1 if args and args[0] not in ("-h", "--help") else 0
 
-    projects = load_projects(parsed.registry_path)  # type: ignore[arg-type]
+    projects = load_projects(parsed.registry_path)
     if not projects:
         print(
             "agent_usage: no projects recorded yet — launch `agent` once to register a project.",

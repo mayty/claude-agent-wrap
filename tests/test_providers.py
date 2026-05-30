@@ -12,6 +12,13 @@ from agent_wrap.providers.base import Provider
 from agent_wrap.providers.litellm_common import LiteLLMProvider
 
 
+def get_litellm_provider(name: str | None = None) -> LiteLLMProvider:
+    provider = get_provider(name)
+    assert provider is not None
+    assert isinstance(provider, LiteLLMProvider)
+    return provider
+
+
 class TestProviderDiscovery:
     def test_discovers_bedrock(self):
         registry = _discover_providers()
@@ -64,22 +71,22 @@ class TestProviderInterface:
         assert inspect.isabstract(LiteLLMProvider)
 
 
-class TestProviderAttributes:
+class TestLiteLLMProviderAttributes:
     def test_bedrock_lock_file(self):
-        p = get_provider("litellm-bedrock")
-        assert p.lock_file == "lock"  # pyrefly: ignore[missing-attribute]
+        p = get_litellm_provider("litellm-bedrock")
+        assert p.lock_file == "lock"
 
     def test_dashscope_lock_file(self):
-        p = get_provider("litellm-dashscope")
-        assert p.lock_file == "lock"  # pyrefly: ignore[missing-attribute]
+        p = get_litellm_provider("litellm-dashscope")
+        assert p.lock_file == "lock"
 
     def test_bedrock_master_key_prefix(self):
-        p = get_provider("litellm-bedrock")
-        assert p.master_key_prefix == "sk-aw-"  # pyrefly: ignore[missing-attribute]
+        p = get_litellm_provider("litellm-bedrock")
+        assert p.master_key_prefix == "sk-aw-"
 
     def test_dashscope_master_key_prefix(self):
-        p = get_provider("litellm-dashscope")
-        assert p.master_key_prefix == "sk-ds-"  # pyrefly: ignore[missing-attribute]
+        p = get_litellm_provider("litellm-dashscope")
+        assert p.master_key_prefix == "sk-ds-"
 
 
 class TestLabelArgs:
