@@ -1,12 +1,12 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/commands/create.py."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
+import pytest_mock
 
 from agent_wrap.commands.create import run as create_run
 
@@ -33,12 +33,15 @@ def test_refuses_if_already_exists(
 
 
 def test_empty_sanitized_name_returns_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    mocker: pytest_mock.MockFixture,
 ) -> None:
     dir_with_bad_name = tmp_path / "---"
     dir_with_bad_name.mkdir()
     monkeypatch.chdir(dir_with_bad_name)
-    with patch("pathlib.Path.cwd", return_value=dir_with_bad_name):
-        rc = create_run([], tmp_path)
+    mocker.patch("pathlib.Path.cwd", return_value=dir_with_bad_name)
+    rc = create_run([], tmp_path)
     assert rc == 1
     assert "could not derive agent-name" in capsys.readouterr().err

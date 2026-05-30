@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,12 +11,12 @@ import pytest
 from agent_wrap.utils import (
     generate_uuid,
     parse_dockerfile_agent,
+    resolve_image,
     sanitize_name,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 
 def test_lowercase():
@@ -64,44 +65,37 @@ def test_unique():
     assert generate_uuid() != generate_uuid()
 
 
-@pytest.fixture
-def write_temp(tmp_path: Path) -> Callable[[str], Path]:
-    """Write content to a temporary file and return its path."""
-
-    def _write(content: str) -> Path:
-        p = tmp_path / "Dockerfile.agent"
-        p.write_text(content)
-        return p
-
-    return _write
+# --- parse_dockerfile_agent ---
 
 
-def test_agent_user(write_temp: Callable[[str], Path]):
-    p = write_temp("# agent-name: test\n# agent-user: customuser\nFROM claude-agent\n")
+def test_agent_user(write_dockerfile: Callable[[str], Path]):
+    p = write_dockerfile("# agent-name: test\n# agent-user: customuser\nFROM claude-agent\n")
     info = parse_dockerfile_agent(p)
     assert info.agent_user == "customuser"
 
 
-def test_default_agent_user(write_temp: Callable[[str], Path]):
-    p = write_temp("# agent-name: test\nFROM claude-agent\n")
+def test_default_agent_user(write_dockerfile: Callable[[str], Path]):
+    p = write_dockerfile("# agent-name: test\nFROM claude-agent\n")
     info = parse_dockerfile_agent(p)
     assert info.agent_user == "ubuntu"
 
 
-def test_expose_ports(write_temp: Callable[[str], Path]):
-    p = write_temp("FROM claude-agent\nEXPOSE 8080 3000/tcp\n")
+def test_expose_ports(write_dockerfile: Callable[[str], Path]):
+    p = write_dockerfile("FROM claude-agent\nEXPOSE 8080 3000/tcp\n")
     info = parse_dockerfile_agent(p)
     assert info.expose_ports == ["8080", "3000"]
 
 
-def test_agent_run_args(write_temp: Callable[[str], Path]):
-    p = write_temp("FROM claude-agent\n# agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN\n")
+def test_agent_run_args(write_dockerfile: Callable[[str], Path]):
+    p = write_dockerfile(
+        "FROM claude-agent\n# agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN\n"
+    )
     info = parse_dockerfile_agent(p)
     assert info.extra_run_args == ["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN"]
 
 
-def test_multiple_run_args_lines(write_temp: Callable[[str], Path]):
-    p = write_temp(
+def test_multiple_run_args_lines(write_dockerfile: Callable[[str], Path]):
+    p = write_dockerfile(
         "FROM claude-agent\n"
         "# agent-run-args: --device /dev/fuse\n"
         "# agent-run-args: --cap-add SYS_ADMIN\n"
@@ -110,9 +104,63 @@ def test_multiple_run_args_lines(write_temp: Callable[[str], Path]):
     assert info.extra_run_args == ["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN"]
 
 
-def test_empty_dockerfile(write_temp: Callable[[str], Path]):
-    p = write_temp("FROM claude-agent\n")
+def test_empty_dockerfile(write_dockerfile: Callable[[str], Path]):
+    p = write_dockerfile("FROM claude-agent\n")
     info = parse_dockerfile_agent(p)
     assert info.agent_user == "ubuntu"
     assert info.expose_ports == []
     assert info.extra_run_args == []
+
+
+def test_parse_nonexistent_file():
+    with pytest.raises(FileNotFoundError):
+        parse_dockerfile_agent(Path("/nonexistent/Dockerfile.agent"))
+
+
+# --- resolve_image ---
+
+
+def test_resolve_base_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = resolve_image(tmp_path, use_base=True)
+    assert result.image == "claude-agent"
+    assert result.dockerfile == tmp_path / "Dockerfile"
+    assert result.context == tmp_path
+
+
+def test_resolve_with_dockerfile_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: myproj\nFROM claude-agent\n")
+    result = resolve_image(tmp_path, use_base=False)
+    assert result.image == "claude-agent-myproj"
+    assert result.dockerfile == tmp_path / "Dockerfile.agent"
+    assert result.context == tmp_path
+
+
+def test_resolve_base_ignores_dockerfile_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: myproj\nFROM claude-agent\n")
+    result = resolve_image(tmp_path, use_base=True)
+    assert result.image == "claude-agent"
+
+
+def test_resolve_no_agent_name_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("FROM claude-agent\n")
+    with pytest.raises(SystemExit, match="must contain '# agent-name:"):
+        resolve_image(tmp_path, use_base=False)
+
+
+def test_resolve_invalid_agent_name_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: UPPER CASE\nFROM claude-agent\n")
+    with pytest.raises(SystemExit, match="must match"):
+        resolve_image(tmp_path, use_base=False)
+
+
+def test_resolve_no_dockerfile_uses_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = resolve_image(tmp_path, use_base=False)
+    assert result.image == "claude-agent"

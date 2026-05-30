@@ -11,12 +11,18 @@ import pytest
 from agent_wrap.commands.usage import (
     Bucket,
     _parse_usage_args,
+    _process_record,
     build_project_tree,
     cost_for,
     flatten_tree,
+    fmt_cost,
+    fmt_count,
+    load_prices,
     load_projects,
     normalize_model,
+    render,
     run,
+    scan_project,
 )
 
 # --- normalize_model ---
@@ -382,7 +388,12 @@ def test_multiple_projects():
     ]
     root = build_project_tree(rows)
     display = flatten_tree(root)
-    assert len(display) >= 2
+    # Two projects sharing /home/user/ prefix → structural parent + 2 project rows = 3
+    assert len(display) == 3
+    structural = [d for d in display if d.is_structural]
+    assert len(structural) == 1  # the shared /home/user/ parent
+    projects = [d for d in display if not d.is_structural]
+    assert len(projects) == 2
 
 
 def test_missing_project():
@@ -401,16 +412,366 @@ def test_missing_project():
     assert "(missing)" in display[0].label
 
 
-# --- import smoke tests ---
+# --- fmt_count / fmt_cost ---
 
 
-def test_run_exists():
-    from agent_wrap.commands.usage import run
-
-    assert callable(run)
+def test_fmt_count_under_thousand():
+    assert fmt_count(999) == "999"
 
 
-def test_no_sys_modules_leak():
-    import sys
+def test_fmt_count_thousand():
+    assert fmt_count(1_000) == "1.0K"
 
-    assert "agent_usage" not in sys.modules
+
+def test_fmt_count_million():
+    assert fmt_count(1_000_000) == "1.00M"
+
+
+def test_fmt_count_billion():
+    assert fmt_count(1_000_000_000) == "1.00G"
+
+
+def test_fmt_count_mid_range():
+    assert fmt_count(5_432) == "5.4K"
+
+
+def test_fmt_cost_none():
+    assert fmt_cost(None) == "?"
+
+
+def test_fmt_cost_zero():
+    assert fmt_cost(0.0) == "$0.00"
+
+
+def test_fmt_cost_positive():
+    assert fmt_cost(10.5) == "$10.50"
+
+
+# --- normalize_model edge cases ---
+
+
+def test_normalize_model_no_tier():
+    assert normalize_model("claude-") is None
+
+
+def test_normalize_model_no_version():
+    assert normalize_model("claude-opus") is None
+
+
+# --- _process_record ---
+
+
+def test_process_record_non_assistant():
+    buckets: dict = {}
+    seen: set = set()
+    rec = {
+        "type": "user",
+        "message": {"usage": {"input_tokens": 100}},
+        "timestamp": "2025-01-01T00:00:00Z",
+    }
+    ts = _process_record(rec, seen, buckets)
+    assert ts is not None
+    assert len(buckets) == 0  # no bucket added for non-assistant
+
+
+def test_process_record_empty_usage():
+    buckets: dict = {}
+    seen: set = set()
+    rec = {"type": "assistant", "message": {"usage": None}, "timestamp": "2025-01-01T00:00:00Z"}
+    ts = _process_record(rec, seen, buckets)
+    assert ts is not None
+    assert len(buckets) == 0
+
+
+def test_process_record_duplicate_msg_id():
+    from collections import defaultdict
+
+    buckets: dict = defaultdict(lambda: defaultdict(Bucket))
+    seen: set = set()
+    rec = {
+        "type": "assistant",
+        "message": {
+            "id": "msg_123",
+            "model": "claude-sonnet-4-5",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        },
+        "timestamp": "2025-01-01T00:00:00Z",
+    }
+    _process_record(rec, seen, buckets)
+    assert "msg_123" in seen
+    assert buckets["2025-01-01"]["claude-sonnet-4-5"].in_ == 100
+    # Duplicate should be skipped
+    rec2 = dict(rec)
+    _process_record(rec2, seen, buckets)
+    assert buckets["2025-01-01"]["claude-sonnet-4-5"].in_ == 100  # unchanged
+
+
+# --- scan_project ---
+
+
+def test_scan_project_basic(tmp_path: Path):
+    sessions = tmp_path / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "session1.jsonl").write_text(
+        '{"type":"assistant","message":{"id":"m1","model":"claude-sonnet-4-5","usage":{"input_tokens":100,"output_tokens":50}},"timestamp":"2025-01-15T10:00:00Z"}\n'
+    )
+    sessions, last_ts, buckets, exists = scan_project(tmp_path, set())
+    assert sessions == 1
+    assert exists is True
+    assert last_ts is not None
+    assert "2025-01-15" in buckets
+    assert buckets["2025-01-15"]["claude-sonnet-4-5"].in_ == 100
+
+
+def test_scan_project_dedup_across_files(tmp_path: Path):
+    sessions = tmp_path / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    # Same message.id in two files (simulates resume/fork)
+    line = '{"type":"assistant","message":{"id":"m_dup","model":"claude-sonnet-4-5","usage":{"input_tokens":200,"output_tokens":100}},"timestamp":"2025-01-15T10:00:00Z"}\n'
+    (sessions / "s1.jsonl").write_text(line)
+    (sessions / "s2.jsonl").write_text(line)
+    seen: set = set()
+    _s1, _, b1, _ = scan_project(tmp_path, seen)
+    assert "m_dup" in seen
+    assert b1["2025-01-15"]["claude-sonnet-4-5"].msgs == 1  # only counted once
+
+
+def test_scan_project_malformed_jsonl(tmp_path: Path):
+    sessions = tmp_path / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "bad.jsonl").write_text("not json\n{also bad\n")
+    sessions, _last_ts, _buckets, exists = scan_project(tmp_path, set())
+    assert sessions == 1
+    assert exists is True
+    assert len(_buckets) == 0  # no valid records
+
+
+def test_scan_project_unreadable_file(tmp_path: Path, mocker):
+    """Unreadable JSONL file (OSError during open) is gracefully skipped."""
+    sessions = tmp_path / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    good_file = sessions / "good.jsonl"
+    good_file.write_text(
+        '{"type":"assistant","message":{"id":"m1","model":"claude-sonnet-4-5","usage":{"input_tokens":50}},"timestamp":"2025-01-15T10:00:00Z"}\n'
+    )
+    bad_file = sessions / "bad.jsonl"
+    bad_file.touch()
+    # Make file unreadable
+    bad_file.chmod(0o000)
+    sessions_count, _last_ts, _buckets, exists = scan_project(tmp_path, set())
+    # Should still count the good file
+    assert sessions_count == 2  # both files exist as session files
+    assert exists is True
+    # Restore permissions so cleanup works
+    bad_file.chmod(0o644)
+
+
+def test_scan_project_missing_sessions_dir(tmp_path: Path):
+    sessions, last_ts, buckets, exists = scan_project(tmp_path, set())
+    assert sessions == 0
+    assert last_ts is None
+    assert buckets == {}
+    assert exists is False
+
+
+# --- load_prices ---
+
+
+def test_load_prices_cache_hit(tmp_path: Path, mocker):
+    import time
+
+    cache = tmp_path / "pricing.json"
+    cache.write_text(
+        '{"region":"US East (N. Virginia)","fetched_at":'
+        + str(int(time.time()))
+        + ',"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
+    )
+    mock_get = mocker.patch("agent_wrap.commands.usage._http_get")
+    result = load_prices(cache)
+    mock_get.assert_not_called()
+    assert "claude-sonnet-4-5" in result
+
+
+def test_load_prices_stale_cache_triggers_refetch(tmp_path: Path, mocker):
+    cache = tmp_path / "pricing.json"
+    cache.write_text(
+        '{"region":"US East (N. Virginia)","fetched_at":0,"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
+    )
+    mocker.patch("agent_wrap.commands.usage._http_get", side_effect=OSError("network"))
+    result = load_prices(cache)
+    # Falls back to stale cache
+    assert "claude-sonnet-4-5" in result
+
+
+def test_load_prices_refresh_bypasses_fresh_cache(tmp_path: Path, mocker):
+    import time
+
+    cache = tmp_path / "pricing.json"
+    cache.write_text(
+        '{"region":"US East (N. Virginia)","fetched_at":'
+        + str(int(time.time()))
+        + ',"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
+    )
+    mock_get = mocker.patch("agent_wrap.commands.usage._http_get", side_effect=OSError("network"))
+    result = load_prices(cache, refresh=True)
+    mock_get.assert_called()
+    # No fresh data returned, falls back to stale
+    assert "claude-sonnet-4-5" in result
+
+
+def test_load_prices_no_cache_no_network(tmp_path: Path, mocker, capsys):
+    mocker.patch("agent_wrap.commands.usage._http_get", side_effect=OSError("offline"))
+    result = load_prices(None)
+    assert result == {}
+
+
+# --- render ---
+
+
+def test_render_empty_rows(prices):
+    output = render([], {}, {}, prices, 30)
+    assert "Total:" in output
+
+
+def test_render_single_project(prices):
+    b = Bucket()
+    b.in_ = 100
+    rows = [
+        {
+            "path": "/home/user/proj",
+            "exists": True,
+            "sessions": 1,
+            "last_ts": None,
+            "total": b,
+            "cost": 0.5,
+        }
+    ]
+    output = render(rows, {}, {}, prices, 30)
+    assert "proj" in output
+
+
+def test_render_unknown_model_cost():
+    output = render(
+        [
+            {
+                "path": "/home/user/proj",
+                "exists": True,
+                "sessions": 1,
+                "last_ts": None,
+                "total": Bucket(),
+                "cost": None,  # unknown model
+            }
+        ],
+        {},
+        {},
+        {},
+        30,
+    )
+    assert "?" in output
+
+
+def test_render_table_borders(prices):
+    output = render(
+        [
+            {
+                "path": "/home/user/proj",
+                "exists": True,
+                "sessions": 1,
+                "last_ts": None,
+                "total": Bucket(),
+                "cost": 0.0,
+            }
+        ],
+        {},
+        {},
+        prices,
+        30,
+    )
+    # Table should have box-drawing borders
+    assert "┌" in output
+    assert "┐" in output
+    assert "└" in output
+    assert "┘" in output
+
+
+# --- Tree logic edge cases ---
+
+
+def test_tree_shared_prefix_renders_under_parent():
+    rows = [
+        {
+            "path": "/home/user/proj-a",
+            "exists": True,
+            "sessions": 5,
+            "last_ts": None,
+            "total": Bucket(),
+            "cost": 1.0,
+        },
+        {
+            "path": "/home/user/proj-b",
+            "exists": True,
+            "sessions": 3,
+            "last_ts": None,
+            "total": Bucket(),
+            "cost": 0.5,
+        },
+    ]
+    root = build_project_tree(rows)
+    display = flatten_tree(root)
+    # proj-a and proj-b share /home/user/ prefix → structural parent + 2 project rows
+    assert len(display) == 3
+    structural = [d for d in display if d.is_structural]
+    assert len(structural) == 1  # the shared /home/user/ parent
+
+
+def test_tree_split_self_rows():
+    """Project with a nested project path gets a '.' self-row."""
+    rows = [
+        {
+            "path": "/home/user/proj",
+            "exists": True,
+            "sessions": 5,
+            "last_ts": None,
+            "total": Bucket(),
+            "cost": 1.0,
+        },
+        {
+            "path": "/home/user/proj/sub",
+            "exists": True,
+            "sessions": 2,
+            "last_ts": None,
+            "total": Bucket(),
+            "cost": 0.5,
+        },
+    ]
+    root = build_project_tree(rows)
+    display = flatten_tree(root)
+    dot_rows = [d for d in display if "." in d.label and not d.is_structural]
+    assert len(dot_rows) == 1  # the proj's own row is split into '.'
+
+
+def test_compress_multi_child_not_compressed():
+    """Structural nodes with multiple children should not be compressed."""
+    rows = [
+        {
+            "path": "/a/x",
+            "exists": True,
+            "sessions": 1,
+            "last_ts": None,
+            "total": Bucket(),
+            "cost": 0.1,
+        },
+        {
+            "path": "/a/y",
+            "exists": True,
+            "sessions": 1,
+            "last_ts": None,
+            "total": Bucket(),
+            "cost": 0.2,
+        },
+    ]
+    root = build_project_tree(rows)
+    display = flatten_tree(root)
+    # /a/ has two children, should not compress into a/x or /a/y
+    structural = [d for d in display if d.is_structural]
+    assert len(structural) == 1  # /a/ stays as structural

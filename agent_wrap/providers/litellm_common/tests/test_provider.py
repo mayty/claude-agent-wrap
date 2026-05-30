@@ -442,3 +442,157 @@ def test_release_last_instance_stops_sidecar(
     p.release("test-1")
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert len(stop_calls) == 1
+
+
+# --- _health_poll ---
+
+
+def test_health_poll_healthy_quick(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("healthy", 0)
+    mocker.patch.object(p, "_is_running", return_value=True)
+    call_count = [0]
+
+    def fake_monotonic():
+        call_count[0] += 1
+        return 0.0 if call_count[0] == 1 else 0.5  # start, then after check
+
+    mocker.patch("time.monotonic", side_effect=fake_monotonic)
+    mocker.patch("sys.stderr.isatty", return_value=False)
+    assert p._health_poll() is True
+
+
+def test_health_poll_unhealthy(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("unhealthy", 0)
+    mocker.patch.object(p, "_is_running", return_value=True)
+    call_count = [0]
+
+    def fake_monotonic():
+        call_count[0] += 1
+        return 0.0 if call_count[0] == 1 else 0.5
+
+    mocker.patch("time.monotonic", side_effect=fake_monotonic)
+    mocker.patch("sys.stderr.isatty", return_value=False)
+    assert p._health_poll() is False
+
+
+def test_health_poll_container_gone(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("", 1)  # inspect fails
+    call_count = [0]
+
+    def fake_monotonic():
+        call_count[0] += 1
+        return 0.0 if call_count[0] == 1 else 0.5
+
+    mocker.patch("time.monotonic", side_effect=fake_monotonic)
+    mocker.patch("sys.stderr.isatty", return_value=False)
+    assert p._health_poll() is False
+
+
+# --- _start ---
+
+
+def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    # Create a fake config.yaml
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("model: test")
+    mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.side_effect = [
+        ("", 1),  # container inspect fails (no existing container)
+        ("", 0),  # docker run succeeds
+    ]
+    p._start("upstream-key", "sk-test-master", "bridge")
+    # Verify docker run was called with --name
+    calls = [str(c) for c in mock_docker.call_args_list]
+    assert any("run" in c for c in calls)
+
+
+def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("model: test")
+    mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.side_effect = [
+        ("", 0),  # container inspect succeeds (existing stopped container)
+        ("", 0),  # docker rm -f
+        ("", 0),  # docker run
+    ]
+    p._start("upstream-key", "sk-test-master", "bridge")
+    # Should have called rm -f before run
+    calls = [c.args[0] for c in mock_docker.call_args_list if c.args]
+    assert "rm" in calls
+
+
+# --- _recover_master_key ---
+
+
+def test_recover_master_key_success(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("ENV1=val\nLITELLM_MASTER_KEY=sk-test-recovered\nENV2=val2", 0)
+    key = p._recover_master_key()
+    assert key == "sk-test-recovered"
+
+
+def test_recover_master_key_absent_raises(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("ENV1=val\nENV2=val2", 0)
+    with pytest.raises(SystemExit, match="LITELLM_MASTER_KEY not recoverable"):
+        p._recover_master_key()
+
+
+def test_recover_master_key_container_gone_raises(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("", 1)
+    with pytest.raises(SystemExit, match="LITELLM_MASTER_KEY not recoverable"):
+        p._recover_master_key()
+
+
+# --- _acquire_lock ---
+
+
+def test_acquire_lock_succeeds(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mock_fcntl = mocker.patch("fcntl.flock")
+    p._acquire_lock()
+    assert mock_fcntl.called
+    assert p._lock_file is not None
+    p._lock_file.close()
+
+
+# --- _ensure_sidecar migration ---
+
+
+def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    """Sidecar not on agent-wrap-net or host gets restarted."""
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    mocker.patch.object(p, "_acquire_lock")
+    mocker.patch.object(p, "_ensure_network")
+    mocker.patch.object(p, "_is_running", return_value=True)
+    mocker.patch.object(p, "_is_on_network", return_value=False)  # not on either network
+    mocker.patch.object(p, "_recover_master_key", return_value="sk-test-key")
+    mocker.patch.object(p, "_register_instance")
+    mocker.patch("agent_wrap.providers.litellm_common.provider.fcntl")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker.return_value = ("", 0)
+
+    p.ensure(use_host_net=False, instance_id="test-1", agent_network=None)
+    # Should have stopped the old sidecar
+    stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
+    assert len(stop_calls) == 1

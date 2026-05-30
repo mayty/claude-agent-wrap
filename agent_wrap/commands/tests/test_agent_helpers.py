@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 import pytest_mock
@@ -21,33 +20,29 @@ from agent_wrap.commands.agent import (
     _resolve_agent_name,
     _resolve_host_network,
 )
+from agent_wrap.commands.agent import (
+    run as agent_run,
+)
+from agent_wrap.utils import ResolvedImage
 
 # --- _is_wsl ---
 
 
-def test_is_wsl_true(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    proc = tmp_path / "proc_version"
-    proc.write_text("Linux version 5.15 (microsoft)")
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path")
-    mock_instance = MagicMock()
-    mock_instance.read_text.return_value = "Linux version 5.15 (microsoft)"
-    mock_path.return_value = mock_instance
+def test_is_wsl_true(mocker: pytest_mock.MockFixture) -> None:
+    mock_path = mocker.patch("agent_wrap.commands.agent.Path", autospec=True)
+    mock_path.return_value.read_text.return_value = "Linux version 5.15 (microsoft)"
     assert _is_wsl() is True
 
 
-def test_is_wsl_false(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path")
-    mock_instance = MagicMock()
-    mock_instance.read_text.return_value = "Linux version 5.15 (generic)"
-    mock_path.return_value = mock_instance
+def test_is_wsl_false(mocker: pytest_mock.MockFixture) -> None:
+    mock_path = mocker.patch("agent_wrap.commands.agent.Path", autospec=True)
+    mock_path.return_value.read_text.return_value = "Linux version 5.15 (generic)"
     assert _is_wsl() is False
 
 
 def test_is_wsl_os_error(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path")
-    mock_instance = MagicMock()
-    mock_instance.read_text.side_effect = OSError("no file")
-    mock_path.return_value = mock_instance
+    mock_path = mocker.patch("agent_wrap.commands.agent.Path", autospec=True)
+    mock_path.return_value.read_text.side_effect = OSError("no file")
     assert _is_wsl() is False
 
 
@@ -83,6 +78,14 @@ def test_resolve_agent_name_empty_sanitized(tmp_path: Path) -> None:
     bad_dir.mkdir()
     result = _resolve_agent_name(use_base=True, cwd=bad_dir)
     assert result == "agent"
+
+
+def test_resolve_agent_name_empty_value_after_colon(tmp_path: Path) -> None:
+    """Dockerfile with '# agent-name:' but no value falls back to dir name."""
+    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile.write_text("# agent-name: \nFROM claude-agent\n")
+    result = _resolve_agent_name(use_base=False, cwd=tmp_path)
+    assert result == tmp_path.name.lower()
 
 
 # --- _load_secrets ---
@@ -128,40 +131,47 @@ def test_load_secrets_without_telegram(tmp_path: Path, monkeypatch: pytest.Monke
 # --- _load_telegram_creds ---
 
 
-def test_load_telegram_creds_with_values() -> None:
-    result = _load_telegram_creds({"TelegramBotToken": "abc", "TelegramChatId": "123"})
-    assert result == ("abc", "123")
-
-
-def test_load_telegram_creds_missing() -> None:
-    result = _load_telegram_creds({})
-    assert result == ("", "")
-
-
-def test_load_telegram_creds_none_values() -> None:
-    result = _load_telegram_creds({"TelegramBotToken": None, "TelegramChatId": None})
-    assert result == ("", "")
+@pytest.mark.parametrize(
+    ("secrets", "expected"),
+    [
+        ({"TelegramBotToken": "abc", "TelegramChatId": "123"}, ("abc", "123")),
+        ({}, ("", "")),
+        ({"TelegramBotToken": None, "TelegramChatId": None}, ("", "")),
+    ],
+)
+def test_load_telegram_creds(secrets: dict, expected: tuple[str, str]) -> None:
+    assert _load_telegram_creds(secrets) == expected
 
 
 # --- _build_wslg_args ---
 
 
-def test_build_wslg_args_not_present(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path")
-    mock_path.return_value = MagicMock()
-    mock_path.return_value.is_dir.return_value = False
+def test_build_wslg_args_not_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_mnt = tmp_path / "mnt" / "wslg"
+    # Don't create the directory so is_dir() returns False
+    monkeypatch.setattr(
+        "agent_wrap.commands.agent.Path",
+        lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
+    )
     result = _build_wslg_args(Path("/tool"))
     assert result == []
 
 
-def test_build_wslg_args_present(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch("pathlib.Path.is_dir", return_value=True)
+def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_mnt = tmp_path / "mnt" / "wslg"
+    fake_mnt.mkdir(parents=True)
+    monkeypatch.setattr(
+        "agent_wrap.commands.agent.Path",
+        lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
+    )
     result = _build_wslg_args(Path("/tool"))
-    assert len(result) > 0
     assert "-v" in result
     assert "/mnt/wslg:/mnt/wslg" in result
+    assert f"{Path('/tool')}/wl-paste-shim:/usr/local/bin/wl-paste:ro" in result
     assert "-e" in result
     assert "DISPLAY" in result
+    assert "WAYLAND_DISPLAY" in result
+    assert "XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir" in result
 
 
 # --- _build_env_args ---
@@ -277,3 +287,93 @@ def test_host_network_wsl_agent_network_specified(
     assert use is False
     assert "AGENT_USE_HOST_NETWORK ignored" in capsys.readouterr().err
     assert ports == ["-p", "8080:8080"]
+
+
+# --- run() ---
+
+
+def test_run_image_not_found(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.agent.resolve_image").return_value = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    mocker.patch("agent_wrap.commands.agent.docker_utils.image_exists", return_value=False)
+    mocker.patch("agent_wrap.commands.agent._load_secrets", return_value=("", ""))
+    rc = agent_run([], tmp_path)
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_run_resolve_image_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch(
+        "agent_wrap.commands.agent.resolve_image", side_effect=SystemExit("no Dockerfile.agent")
+    )
+    rc = agent_run([], tmp_path)
+    assert rc == 1
+    assert "no Dockerfile.agent" in capsys.readouterr().err
+
+
+def test_run_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # Create claude_keys.json
+    keys = tmp_path / "claude_keys.json"
+    keys.write_text(json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Create a minimal Dockerfile.agent
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.agent.resolve_image").return_value = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    mocker.patch("agent_wrap.commands.agent.docker_utils.image_exists", return_value=True)
+    mocker.patch("agent_wrap.commands.agent.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.agent.config.prepare_global_config")
+    mocker.patch("agent_wrap.commands.agent.config.prepare_project_dirs")
+    mocker.patch("agent_wrap.commands.agent.config.record_project")
+    mocker.patch("agent_wrap.commands.agent.generate_uuid", return_value="test-uuid")
+
+    # Mock provider
+    mock_provider = mocker.MagicMock()
+    mock_provider.get_run_args.return_value = []
+    mock_provider.get_label_args.return_value = []
+    mocker.patch("agent_wrap.commands.agent.get_provider", return_value=mock_provider)
+
+    mock_result = mocker.MagicMock()
+    mock_result.returncode = 0
+    mock_run = mocker.patch("agent_wrap.commands.agent.subprocess.run", return_value=mock_result)
+
+    rc = agent_run(["--base"], tmp_path)
+    assert rc == 0
+    assert mock_provider.ensure.call_count == 1
+    assert mock_provider.release.call_count == 1
+    assert mock_run.called
+    # Verify the docker run command structure
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == "docker"
+    assert cmd[1] == "run"
+    assert "--rm" in cmd
+    assert "-it" in cmd
+    assert "claude-agent-test" in cmd
+    assert any("AGENT_INSTANCE_ID=" in v for v in cmd)
+    assert any("/workspace" in v for v in cmd if isinstance(v, str))

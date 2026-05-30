@@ -39,44 +39,61 @@ def test_get_behind_not_git_dir(tmp_path: Path, mocker: pytest_mock.MockFixture)
 
 
 def test_get_behind_detached_head(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mock_git = mocker.patch("agent_wrap.commands.update._git")
-    mock_git.side_effect = [
-        (".git", 0),  # rev-parse succeeds
-        ("", 1),  # symbolic-ref fails (detached)
-    ]
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("", 1)
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
     assert _get_behind_count(tmp_path) is None
 
 
 def test_get_behind_three_commits(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mock_git = mocker.patch("agent_wrap.commands.update._git")
-    mock_git.side_effect = [
-        (".git", 0),  # rev-parse
-        ("main", 0),  # symbolic-ref
-        ("", 0),  # fetch
-        ("3", 0),  # rev-list
-    ]
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("main", 0)
+        if args[0] == "fetch":
+            return ("", 0)
+        if args[0] == "rev-list":
+            return ("3", 0)
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
     result = _get_behind_count(tmp_path)
     assert result == ("main", 3)
 
 
 def test_get_behind_fetch_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mock_git = mocker.patch("agent_wrap.commands.update._git")
-    mock_git.side_effect = [
-        (".git", 0),  # rev-parse
-        ("main", 0),  # symbolic-ref
-        ("", 1),  # fetch fails
-    ]
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("main", 0)
+        if args[0] == "fetch":
+            return ("", 1)
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
     assert _get_behind_count(tmp_path) is None
 
 
 def test_get_behind_no_commits(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mock_git = mocker.patch("agent_wrap.commands.update._git")
-    mock_git.side_effect = [
-        (".git", 0),
-        ("main", 0),
-        ("", 0),
-        ("0", 0),  # rev-list returns 0
-    ]
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("main", 0)
+        if args[0] == "fetch":
+            return ("", 0)
+        if args[0] == "rev-list":
+            return ("0", 0)
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
     assert _get_behind_count(tmp_path) is None
 
 
