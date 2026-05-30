@@ -2,3 +2,5 @@
 .agent-launches/
 *.pyc
 __pycache__
+agent_wrap/providers/*/lock
+agent_wrap/providers/*/refcount

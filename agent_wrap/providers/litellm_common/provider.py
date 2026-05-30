@@ -55,10 +55,10 @@ class LiteLLMProvider(Provider):
 
     #: Pinned Docker image with tag + digest.
     image: ClassVar[str] = ""
-    #: Name of the lock file under .agent-launches/.
-    lock_file: ClassVar[str] = "litellm.lock"
-    #: Name of the refcount file under .agent-launches/.
-    refcount_file: ClassVar[str] = "litellm.refcount"
+    #: Name of the lock file in the provider's source directory.
+    lock_file: ClassVar[str] = "lock"
+    #: Name of the refcount file in the provider's source directory.
+    refcount_file: ClassVar[str] = "refcount"
     #: Prefix for generated master keys (e.g. "sk-aw-" for bedrock).
     master_key_prefix: ClassVar[str] = "sk-aw-"
 
@@ -105,17 +105,19 @@ class LiteLLMProvider(Provider):
             raise SystemExit(f"litellm-sidecar: config not found at {config}")
         return config
 
+    def _state_dir(self) -> Path:
+        """Resolve the provider's source directory (for lock/refcount files)."""
+        return Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
+
     # --- Public: ensure ---
 
     def ensure(
         self,
-        tool_dir: Path,
         use_host_net: bool,
         instance_id: str,
         agent_network: str | None,
     ) -> None:
-        state_dir = tool_dir / ".agent-launches"
-        state_dir.mkdir(parents=True, exist_ok=True)
+        state_dir = self._state_dir()
 
         lock_path = state_dir / self.lock_file
         self._lock_file = open(lock_path, "w")
@@ -176,7 +178,7 @@ class LiteLLMProvider(Provider):
             ):
                 self._attach_to_network(agent_network)
 
-            self._register_instance(tool_dir, instance_id)
+            self._register_instance(instance_id)
 
             # Build agent-side env vars
             base_url = f"http://{self.container_name}:{self.internal_port}"
@@ -209,11 +211,11 @@ class LiteLLMProvider(Provider):
 
     # --- Public: release ---
 
-    def release(self, tool_dir: Path, instance_id: str) -> None:
+    def release(self, instance_id: str) -> None:
         if not instance_id:
             return
 
-        lock_path = tool_dir / ".agent-launches" / self.lock_file
+        lock_path = self._state_dir() / self.lock_file
         if not lock_path.exists():
             return
 
@@ -224,10 +226,10 @@ class LiteLLMProvider(Provider):
             return
 
         try:
-            self._unregister_instance(tool_dir, instance_id)
-            self._reconcile_refcount(tool_dir)
+            self._unregister_instance(instance_id)
+            self._reconcile_refcount()
 
-            if not self._has_active_instances(tool_dir) and self._is_running():
+            if not self._has_active_instances() and self._is_running():
                 _docker("stop", self.container_name)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -426,33 +428,33 @@ class LiteLLMProvider(Provider):
         )
         return stdout.strip() if rc == 0 else ""
 
-    def _refcount_path(self, tool_dir: Path) -> Path:
-        return tool_dir / ".agent-launches" / self.refcount_file
+    def _refcount_path(self) -> Path:
+        return self._state_dir() / self.refcount_file
 
-    def _register_instance(self, tool_dir: Path, instance_id: str) -> None:
-        path = self._refcount_path(tool_dir)
+    def _register_instance(self, instance_id: str) -> None:
+        path = self._refcount_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = path.read_text().splitlines() if path.exists() else []
         if instance_id not in existing:
             with open(path, "a") as f:
                 f.write(instance_id + "\n")
 
-    def _unregister_instance(self, tool_dir: Path, instance_id: str) -> None:
-        path = self._refcount_path(tool_dir)
+    def _unregister_instance(self, instance_id: str) -> None:
+        path = self._refcount_path()
         if not path.exists():
             return
         lines = [l for l in path.read_text().splitlines() if l != instance_id]
         path.write_text("\n".join(lines) + "\n" if lines else "")
 
-    def _has_active_instances(self, tool_dir: Path) -> bool:
-        path = self._refcount_path(tool_dir)
+    def _has_active_instances(self) -> bool:
+        path = self._refcount_path()
         if not path.exists():
             return False
         return any(line.strip() for line in path.read_text().splitlines())
 
-    def _reconcile_refcount(self, tool_dir: Path) -> None:
+    def _reconcile_refcount(self) -> None:
         """Drop refcount entries whose agent container no longer exists."""
-        path = self._refcount_path(tool_dir)
+        path = self._refcount_path()
         if not path.exists():
             return
         entries = [l for l in path.read_text().splitlines() if l.strip()]

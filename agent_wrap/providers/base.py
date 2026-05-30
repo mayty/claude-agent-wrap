@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 
 class Provider(ABC):
@@ -22,7 +21,6 @@ class Provider(ABC):
     @abstractmethod
     def ensure(
         self,
-        tool_dir: Path,
         use_host_net: bool,
         instance_id: str,
         agent_network: str | None,
@@ -30,7 +28,7 @@ class Provider(ABC):
         """Ensure the backend is ready. Raises on failure."""
 
     @abstractmethod
-    def release(self, tool_dir: Path, instance_id: str) -> None:
+    def release(self, instance_id: str) -> None:
         """Clean up after the agent exits."""
 
     @abstractmethod

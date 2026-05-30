@@ -204,7 +204,7 @@ def run(args: list[str], tool_dir: Path) -> int:
 
     # Provider lifecycle
     provider = get_provider()
-    provider.ensure(tool_dir, use_host_net, instance_id, agent_network)
+    provider.ensure(use_host_net, instance_id, agent_network)
 
     try:
         label_args = provider.get_label_args(instance_id)
@@ -270,4 +270,4 @@ def run(args: list[str], tool_dir: Path) -> int:
         result = subprocess.run(cmd)
         return result.returncode
     finally:
-        provider.release(tool_dir, instance_id)
+        provider.release(instance_id)

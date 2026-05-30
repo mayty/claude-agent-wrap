@@ -14,8 +14,6 @@ class DashscopeProvider(LiteLLMProvider):
         "ghcr.io/berriai/litellm:v1.83.14-stable"
         "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
     )
-    lock_file: ClassVar[str] = "litellm-dashscope.lock"
-    refcount_file: ClassVar[str] = "litellm-dashscope.refcount"
     master_key_prefix: ClassVar[str] = "sk-ds-"
 
     def read_secret_key(self, secrets: dict) -> str:
