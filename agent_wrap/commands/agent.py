@@ -22,19 +22,21 @@ from agent_wrap.utils import (
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
 # Per-project state directories mounted into the container.
-_STATE_MOUNTS = (
-    "sessions",
-    "session-state",
-    "daemon",
-    "jobs",
-    "plans",
-    "todos",
-    "tasks",
-    "shell-snapshots",
-    "session-env",
-    "file-history",
-    "paste-cache",
-)
+# Keys are the host subdirectory names under $(pwd)/.claude/;
+# values are the in-container destination relative to ~/.claude/.
+_STATE_MOUNTS = {
+    "sessions": "projects/-workspace",
+    "session-state": "sessions",
+    "daemon": "daemon",
+    "jobs": "jobs",
+    "plans": "plans",
+    "todos": "todos",
+    "tasks": "tasks",
+    "shell-snapshots": "shell-snapshots",
+    "session-env": "session-env",
+    "file-history": "file-history",
+    "paste-cache": "paste-cache",
+}
 
 # Per-project files mounted into the container.
 _STATE_FILES = (
@@ -244,8 +246,8 @@ def _build_volume_mounts(
     )
 
     # Per-project state directory mounts
-    for name in _STATE_MOUNTS:
-        mounts.extend(["-v", f"{cwd}/.claude/{name}:{claude_home}/.claude/{name}"])
+    for name, dest in _STATE_MOUNTS.items():
+        mounts.extend(["-v", f"{cwd}/.claude/{name}:{claude_home}/.claude/{dest}"])
 
     # Per-project state file mounts
     for name in _STATE_FILES:
