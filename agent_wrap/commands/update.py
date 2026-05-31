@@ -135,6 +135,34 @@ def _handle_claude_md_propagation(tool_dir: Path, before: str, after: str, pre_s
         print("     The next 'agent' run will then copy the new default into place.")
 
 
+_REBUILD_FILES = {
+    "agent_wrap/commands/update.py",
+    "agent_wrap/__main__.py",
+    "ops/Dockerfile",
+}
+
+_RESOURCE_FILES = {
+    "agent-wrap.bashrc",
+}
+
+
+def _changed_files(tool_dir: Path, before: str, after: str) -> set[str]:
+    """Return the set of file paths changed between two commits."""
+    out, rc = _git("diff", "--name-only", before, after, cwd=str(tool_dir))
+    if rc != 0 or not out:
+        return set()
+    return set(out.splitlines())
+
+
+def _resolve_ref(tool_dir: Path, commit: str) -> str:
+    """Return a tag name if *commit* is tagged, otherwise its short hash."""
+    tag, rc = _git("describe", "--tags", "--exact-match", commit, cwd=str(tool_dir))
+    if rc == 0 and tag:
+        return tag
+    short, _rc = _git("rev-parse", "--short", commit, cwd=str(tool_dir))
+    return short or commit
+
+
 def apply(tool_dir: Path) -> int:
     """
     Pull updates and handle default-CLAUDE.md propagation.
@@ -168,11 +196,19 @@ def apply(tool_dir: Path) -> int:
         print("\033[1;33mNote:\033[0m already up to date; no action needed.")
         return 0
 
-    print("\033[1;33mNote:\033[0m re-source agent-wrap.bashrc to pick up script changes.")
-    print(
-        "\033[1;33mNote:\033[0m run 'rebuild_agent' to rebuild the Docker image"
-        " with the updated files."
-    )
+    ref = _resolve_ref(tool_dir, after)
+    print(f"\033[1;32mUpdated to {ref}\033[0m")
+
+    changed = _changed_files(tool_dir, before, after)
+
+    if changed & _RESOURCE_FILES:
+        print("\033[1;33mNote:\033[0m re-source agent-wrap.bashrc to pick up script changes.")
+
+    if changed & _REBUILD_FILES:
+        print(
+            "\033[1;33mNote:\033[0m run 'rebuild_agent' to rebuild the Docker image"
+            " with the updated files."
+        )
 
     _handle_claude_md_propagation(tool_dir, before, after, pre_state)
     return 0
