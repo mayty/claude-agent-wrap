@@ -8,7 +8,6 @@
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  disable_spend_logs: true
 
 model_list:
   - model_name: "*opus*"
@@ -34,7 +33,3 @@ model_list:
       model: "anthropic/qwen3.6-flash"
       api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
       api_key: os.environ/DASHSCOPE_API_KEY
-
-litellm_settings:
-  drop_params: true
-#   callbacks: ["langfuse"]
