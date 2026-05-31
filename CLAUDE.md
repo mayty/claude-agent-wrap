@@ -97,17 +97,17 @@ The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent
 - `$(pwd)/.claude/daemon.status.json` → `/home/<user>/.claude/daemon.status.json` (per-project supervisor status snapshot)
 - `$(pwd)/.claude/history.jsonl` → `/home/<user>/.claude/history.jsonl` (per-project shell-prompt history)
 - `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}/` → `/home/<user>/.claude/<same>/` (per-project overlays for plan-mode files, TodoWrite/TaskCreate state, task definitions, shell snapshots, session env, file-edit history, and paste cache)
-- `<wrap-dir>/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
-- `<wrap-dir>/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
-- `<wrap-dir>/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
-- `<wrap-dir>/statusline.py` → `/opt/agent-wrap/statusline.py` (read-only; the default Claude Code status-line script, invoked via `settings.json`)
-- `<wrap-dir>/telegram-notify.sh` → `/opt/agent-wrap/telegram-notify.sh` (read-only; Telegram notification script invoked by hooks)
-- `<wrap-dir>/md_to_html.js` → `/opt/agent-wrap/md_to_html.js` (read-only; Markdown→Telegram-HTML converter used by `telegram-notify.sh`)
+- `<wrap-dir>/ops/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
+- `<wrap-dir>/ops/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
+- `<wrap-dir>/ops/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
+- `<wrap-dir>/ops/statusline.py` → `/opt/agent-wrap/statusline.py` (read-only; the default Claude Code status-line script, invoked via `settings.json`)
+- `<wrap-dir>/ops/telegram-notify.sh` → `/opt/agent-wrap/telegram-notify.sh` (read-only; Telegram notification script invoked by hooks)
+- `<wrap-dir>/ops/md_to_html.js` → `/opt/agent-wrap/md_to_html.js` (read-only; Markdown→Telegram-HTML converter used by `telegram-notify.sh`)
 
 When the host is WSL2 with WSLg (i.e. `/mnt/wslg` exists), `agent()` also adds:
 - `/mnt/wslg` → `/mnt/wslg` (Wayland + Pulse sockets, `runtime-dir/wayland-0`)
 - `/mnt/wslg/.X11-unix` → `/tmp/.X11-unix` (XWayland socket, the conventional X11 path)
-- `<wrap-dir>/wl-paste-shim` → `/usr/local/bin/wl-paste` (read-only; shadows the real binary so callers asking for `image/png` get on-the-fly BMP→PNG conversion of WSLg-surfaced clipboard images)
+- `<wrap-dir>/ops/wl-paste-shim` → `/usr/local/bin/wl-paste` (read-only; shadows the real binary so callers asking for `image/png` get on-the-fly BMP→PNG conversion of WSLg-surfaced clipboard images)
 
 These are gated on `[ -d /mnt/wslg ]` so they have no effect on macOS or native Linux hosts.
 

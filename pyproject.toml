@@ -118,7 +118,7 @@ ignore = [
     "TC002",   # type-checking block imports not needed in test files
     "TC003",   # type-checking block imports not needed in test files
 ]
-"statusline.py" = [
+"ops/statusline.py" = [
     "BLE001", # broad except Exception -- statusline must never crash
 ]
 
@@ -128,6 +128,12 @@ known-first-party = ["agent_wrap"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# setuptools
+# ---------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+include = ["agent_wrap*"]
 
 # ---------------------------------------------------------------------------
 # coverage
@@ -157,7 +163,7 @@ exclude_lines = [
 project_includes = [
     "agent_wrap",
     "main.py",
-    "statusline.py",
+    "ops/statusline.py",
 ]
 project_excludes = [
     "__pycache__",

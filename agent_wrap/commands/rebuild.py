@@ -105,8 +105,8 @@ def _do_rebuild(tool_dir: Path, *, full: bool) -> int:
     gid = str(os.getgid())
 
     if full:
-        print(f"--- Building base claude-agent from {tool_dir}/Dockerfile ---")
-        rc = _docker_build(tool_dir / "Dockerfile", "claude-agent", tool_dir, uid, gid)
+        print(f"--- Building base claude-agent from {tool_dir}/ops/Dockerfile ---")
+        rc = _docker_build(tool_dir / "ops" / "Dockerfile", "claude-agent", tool_dir, uid, gid)
         if rc != 0:
             return rc
 

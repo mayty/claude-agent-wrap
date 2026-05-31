@@ -157,7 +157,7 @@ def prepare_global_config(
     if telegram_bot_token and telegram_chat_id:
         ensure_telegram_hooks(settings_path)
 
-    ensure_claude_md(global_config_dir, tool_dir / "default-CLAUDE.md")
+    ensure_claude_md(global_config_dir, tool_dir / "ops" / "default-CLAUDE.md")
 
     # Pre-create projects dir so Docker doesn't create it as root
     (claude_dir / "projects" / "-workspace").mkdir(parents=True, exist_ok=True)

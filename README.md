@@ -275,7 +275,7 @@ The `agent` command bind-mounts the following paths into the container:
 | `$(pwd)/.claude/{daemon,jobs}` | `/home/<user>/.claude/{daemon,jobs}` | Per-project supervisor/worker roster and bg-job state |
 | `$(pwd)/.claude/{daemon.lock,daemon.log,daemon.status.json,history.jsonl}` | `/home/<user>/.claude/<same>` | Per-project daemon lock/log/status files and shell-prompt history |
 | `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}` | `/home/<user>/.claude/<same>` | Per-project state overlays (plans, todos, tasks, shell snapshots, session env, file history, paste cache) |
-| `/mnt/wslg`, `/mnt/wslg/.X11-unix`, `<wrap-dir>/wl-paste-shim` | `/mnt/wslg`, `/tmp/.X11-unix`, `/usr/local/bin/wl-paste` | WSL2 + WSLg only — Wayland/X11 sockets and the `wl-paste` shim that surfaces Windows-clipboard images as PNG. See [Clipboard / WSLg](#clipboard--wslg). |
+| `/mnt/wslg`, `/mnt/wslg/.X11-unix`, `<wrap-dir>/ops/wl-paste-shim` | `/mnt/wslg`, `/tmp/.X11-unix`, `/usr/local/bin/wl-paste` | WSL2 + WSLg only — Wayland/X11 sockets and the `wl-paste` shim that surfaces Windows-clipboard images as PNG. See [Clipboard / WSLg](#clipboard--wslg). |
 
 The wrapper also bind-mounts its own source files read-only under `/opt/agent-wrap/` so the in-container agent can inspect and invoke them (the validator, status line, Telegram script, etc.).
 
@@ -309,8 +309,8 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 
 The active provider injects additional vars via `get_agent_env()` and `get_run_args()`. See the provider's README:
 
-- [litellm-bedrock](agent_wrap/providers/litellm_bedrock/README.md)
-- [litellm-dashscope](agent_wrap/providers/litellm_dashscope/README.md)
+- [litellm-bedrock](ops/agent_wrap/providers/litellm_bedrock/README.md)
+- [litellm-dashscope](ops/agent_wrap/providers/litellm_dashscope/README.md)
 
 #### Conditional vars
 
@@ -321,17 +321,14 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 
 ```
 .
-├── Dockerfile                   # Base image: Ubuntu 24.04 + Node 24 + Claude Code CLI + hadolint + crane + clipboard tooling
-├── agent-wrap.bashrc            # Shell functions: agent, rebuild_agent, create_custom_agent, agent_usage, agent-wrap_update
-├── main.py                      # CLI entry point (importlib dispatcher → agent_wrap.commands.*)
-├── validate-dockerfile-agent    # Pre-build validator (hadolint, contract checks, crane user probe)
-├── statusline.py                # Status bar script (model/cost, context %/update notice)
-├── telegram-notify.sh           # PermissionRequest / Stop / StopFailure Telegram notifications
-├── md_to_html.js                # Markdown → Telegram-HTML converter used by telegram-notify.sh
-├── wl-paste-shim                # WSLg clipboard shim: surfaces Windows-clipboard BMP images as PNG via ImageMagick
-├── default-CLAUDE.md            # Default instructions (copied into consumer projects' global config)
 ├── CLAUDE.md                    # Repo-level guidance (for editing this project)
 ├── README.md
+├── Makefile                     # QA targets (test, lint, format, typecheck)
+├── pyproject.toml               # Python project config
+├── Dockerfile.agent             # Template for project-specific agent images
+├── .gitignore
+├── agent-wrap.bashrc            # Shell functions: agent, rebuild_agent, create_custom_agent, agent_usage, agent-wrap_update
+├── main.py                      # CLI entry point (importlib dispatcher → agent_wrap.commands.*)
 ├── agent_wrap/                  # Python package — all orchestration logic
 │   ├── commands/                # Subcommand implementations (agent, rebuild, create, usage, update)
 │   ├── providers/               # Provider plugins
@@ -342,6 +339,14 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 │   ├── config.py                # Settings JSON manipulation (statusline, telegram hooks, dir creation)
 │   ├── utils.py                 # Name sanitization, image resolution, Dockerfile.agent parsing
 │   └── docker_utils.py          # Docker info queries (rootless detection, image existence)
+├── ops/                         # Wrapper ops files (bind-mounted into the container)
+│   ├── Dockerfile               # Base image: Ubuntu 24.04 + Node 24 + Claude Code CLI + hadolint + crane + clipboard tooling
+│   ├── validate-dockerfile-agent    # Pre-build validator (hadolint, contract checks, crane user probe)
+│   ├── statusline.py                # Status bar script (model/cost, context %/update notice)
+│   ├── telegram-notify.sh           # PermissionRequest / Stop / StopFailure Telegram notifications
+│   ├── md_to_html.js                # Markdown → Telegram-HTML converter used by telegram-notify.sh
+│   ├── wl-paste-shim                # WSLg clipboard shim: surfaces Windows-clipboard BMP images as PNG via ImageMagick
+│   └── default-CLAUDE.md            # Default instructions (copied into consumer projects' global config)
 ├── .claude_config/              # Global Claude config (git-ignored, auto-created)
 └── .agent-launches/             # Project registry (projects.txt) and pricing cache (git-ignored, auto-created)
                                  # Provider lock/refcount files live under agent_wrap/providers/<name>/

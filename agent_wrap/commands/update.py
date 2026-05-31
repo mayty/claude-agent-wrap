@@ -84,7 +84,7 @@ def check(tool_dir: Path) -> bool:
 def _detect_claude_md_state(tool_dir: Path) -> str:
     """Return 'matches', 'customized', or 'missing' for user's CLAUDE.md."""
     user_claude_md = tool_dir / ".claude_config" / ".claude" / "CLAUDE.md"
-    default_claude_md = tool_dir / "default-CLAUDE.md"
+    default_claude_md = tool_dir / "ops" / "default-CLAUDE.md"
     if not (user_claude_md.exists() and default_claude_md.exists()):
         return "missing"
     result = subprocess.run(
@@ -104,7 +104,7 @@ def _detect_claude_md_state(tool_dir: Path) -> str:
 def _handle_claude_md_propagation(tool_dir: Path, before: str, after: str, pre_state: str) -> None:
     """Handle default-CLAUDE.md propagation after a successful pull."""
     user_claude_md = tool_dir / ".claude_config" / ".claude" / "CLAUDE.md"
-    default_claude_md = tool_dir / "default-CLAUDE.md"
+    default_claude_md = tool_dir / "ops" / "default-CLAUDE.md"
 
     _, rc = _git("diff", "--quiet", before, after, "--", "default-CLAUDE.md", cwd=str(tool_dir))
     if rc == 0:

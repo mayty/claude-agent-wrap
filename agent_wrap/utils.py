@@ -136,6 +136,6 @@ def resolve_image(tool_dir: Path, *, use_base: bool = False) -> ResolvedImage:
     # Default: use base claude-agent image
     return ResolvedImage(
         image="claude-agent",
-        dockerfile=tool_dir / "Dockerfile",
+        dockerfile=tool_dir / "ops" / "Dockerfile",
         context=tool_dir,
     )

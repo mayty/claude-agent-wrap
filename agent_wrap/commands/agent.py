@@ -46,15 +46,6 @@ _STATE_FILES = (
     "history.jsonl",
 )
 
-# Tool files mounted read-only into the container.
-_TOOL_MOUNTS = (
-    "Dockerfile",
-    "agent-wrap.bashrc",
-    "validate-dockerfile-agent",
-    "statusline.py",
-    "telegram-notify.sh",
-    "md_to_html.js",
-)
 
 
 def _is_wsl() -> bool:
@@ -169,7 +160,7 @@ def _build_wslg_args(tool_dir: Path) -> list[str]:
         "-v",
         "/mnt/wslg/.X11-unix:/tmp/.X11-unix",
         "-v",
-        f"{tool_dir}/wl-paste-shim:/usr/local/bin/wl-paste:ro",
+        f"{tool_dir}/ops/wl-paste-shim:/usr/local/bin/wl-paste:ro",
         "-e",
         "DISPLAY",
         "-e",
@@ -253,9 +244,8 @@ def _build_volume_mounts(
     for name in _STATE_FILES:
         mounts.extend(["-v", f"{cwd}/.claude/{name}:{claude_home}/.claude/{name}"])
 
-    # Tool mounts (read-only)
-    for name in _TOOL_MOUNTS:
-        mounts.extend(["-v", f"{tool_dir}/{name}:{AGENT_WRAP_MOUNT}/{name}:ro"])
+    # Tool directory mounted read-only into the container.
+    mounts.extend(["-v", f"{tool_dir}/ops:{AGENT_WRAP_MOUNT}:ro"])
 
     return mounts
 

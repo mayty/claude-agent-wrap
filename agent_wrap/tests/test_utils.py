@@ -124,7 +124,7 @@ def test_resolve_base_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.chdir(tmp_path)
     result = resolve_image(tmp_path, use_base=True)
     assert result.image == "claude-agent"
-    assert result.dockerfile == tmp_path / "Dockerfile"
+    assert result.dockerfile == tmp_path / "ops" / "Dockerfile"
     assert result.context == tmp_path
 
 

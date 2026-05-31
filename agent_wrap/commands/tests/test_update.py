@@ -139,7 +139,9 @@ def test_detect_matches(tmp_path: Path) -> None:
     config_dir = tmp_path / ".claude_config" / ".claude"
     config_dir.mkdir(parents=True)
     user_md = config_dir / "CLAUDE.md"
-    default_md = tmp_path / "default-CLAUDE.md"
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    default_md = ops_dir / "default-CLAUDE.md"
     content = "# hello"
     user_md.write_text(content)
     default_md.write_text(content)
@@ -150,7 +152,9 @@ def test_detect_customized(tmp_path: Path) -> None:
     config_dir = tmp_path / ".claude_config" / ".claude"
     config_dir.mkdir(parents=True)
     user_md = config_dir / "CLAUDE.md"
-    default_md = tmp_path / "default-CLAUDE.md"
+    ops_dir = tmp_path / "ops"
+    ops_dir.mkdir()
+    default_md = ops_dir / "default-CLAUDE.md"
     user_md.write_text("# user version")
     default_md.write_text("# default version")
     assert _detect_claude_md_state(tmp_path) == "customized"

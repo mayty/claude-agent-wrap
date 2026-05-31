@@ -167,7 +167,7 @@ def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     result = _build_wslg_args(Path("/tool"))
     assert "-v" in result
     assert "/mnt/wslg:/mnt/wslg" in result
-    assert f"{Path('/tool')}/wl-paste-shim:/usr/local/bin/wl-paste:ro" in result
+    assert f"{Path('/tool')}/ops/wl-paste-shim:/usr/local/bin/wl-paste:ro" in result
     assert "-e" in result
     assert "DISPLAY" in result
     assert "WAYLAND_DISPLAY" in result
@@ -218,8 +218,8 @@ def test_build_volume_mounts_basic(tmp_path: Path) -> None:
     assert f"{global_config}/.claude.json:/home/ubuntu/.claude.json" in result
     assert f"{global_config}/.claude:/home/ubuntu/.claude" in result
     assert f"{cwd}:/workspace" in result
-    assert f"{cwd}/.claude/sessions:/home/ubuntu/.claude/sessions" in result
-    assert f"{tool}/Dockerfile:/opt/agent-wrap/Dockerfile:ro" in result
+    assert f"{cwd}/.claude/sessions:/home/ubuntu/.claude/projects/-workspace" in result
+    assert f"{tool}/ops:/opt/agent-wrap:ro" in result
 
 
 # --- _parse_dockerfile_directives ---
