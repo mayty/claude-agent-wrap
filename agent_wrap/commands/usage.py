@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from agent_wrap.lib.console import Ansi
+
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
 # Pricing source: the AWS Bedrock pricing page renders per-model cells as
@@ -38,17 +40,13 @@ PRICING_SCHEMAS = {
     5: ("in", "out", "cw_5m", "cw_1h", "cr"),
 }
 
-DIM = "\033[90m"
-YELLOW = "\033[1;33m"
-RESET = "\033[0m"
-
 _BILLION = 1_000_000_000
 _MILLION = 1_000_000
 _THOUSAND = 1_000
 
 
 def color(s: str, code: str) -> str:
-    return f"{code}{s}{RESET}" if sys.stdout.isatty() else s
+    return f"{code}{s}{Ansi.RESET}" if sys.stdout.isatty() else s
 
 
 def fmt_count(n: int) -> str:
@@ -727,12 +725,12 @@ def _build_total_body(
                 fmt_cost(tree_root.subtree_known_cost)
                 + ("+?" if tree_root.subtree_unknown else ""),
             ],
-            DIM,
+            Ansi.DIM,
             0,
         )
     )
     for dr in display_rows:
-        style = DIM if dr.is_structural else ""
+        style = Ansi.DIM if dr.is_structural else ""
         body.append(
             (
                 [
@@ -879,7 +877,7 @@ def _build_recent_body(
                     fmt_count(total_b.cr),
                     fmt_cost(total_cost) + ("+?" if total_unknown else ""),
                 ],
-                YELLOW,
+                Ansi.BOLD_YELLOW,
                 0,
             )
         )
@@ -895,7 +893,7 @@ def _build_recent_body(
                     fmt_count(total_b.cr // n_days),
                     fmt_cost(total_cost / n_days) + ("+?" if total_unknown else ""),
                 ],
-                YELLOW,
+                Ansi.BOLD_YELLOW,
                 0,
             )
         )
@@ -945,14 +943,14 @@ def _render_row(
             parts[1:] = [color(p, style) for p in parts[1:]]
         else:
             parts = [color(p, style) for p in parts]
-    sep = color("│", DIM)
+    sep = color("│", Ansi.DIM)
     return sep + sep.join(parts) + sep
 
 
 def _make_border(widths: list[int], left: str, mid: str, right: str) -> str:
     """Render a horizontal border line."""
     parts = ["─" * (w + 2) for w in widths]
-    return color(left + mid.join(parts) + right, DIM)
+    return color(left + mid.join(parts) + right, Ansi.DIM)
 
 
 def _render_table(  # noqa: PLR0913
@@ -966,9 +964,9 @@ def _render_table(  # noqa: PLR0913
 ) -> list[str]:
     """Render a complete table with borders."""
     widths = _widths_for(headers, body, leading, shared_widths, div)
-    out = [color(title, DIM)]
+    out = [color(title, Ansi.DIM)]
     out.append(_make_border(widths, "┌", "┬", "┐"))
-    out.append(_render_row(headers, aligns, widths, DIM))
+    out.append(_render_row(headers, aligns, widths, Ansi.DIM))
     out.append(_make_border(widths, "├", "┼", "┤"))
     for item in body:
         if item == div:
@@ -1054,7 +1052,7 @@ def render(
             )
         )
         if by_day_truncation_note:
-            lines.append(color(by_day_truncation_note, DIM))
+            lines.append(color(by_day_truncation_note, Ansi.DIM))
 
     return "\n".join(lines)
 

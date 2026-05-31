@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from agent_wrap.docker_utils import image_exists
+from agent_wrap.lib.console import Ansi
 from agent_wrap.utils import ResolvedImage, resolve_image
 
 
@@ -69,7 +70,7 @@ def _check_from_line(resolved: ResolvedImage) -> bool:
 
     if from_line and not re.match(r"^claude-agent(:.*)?$", from_line):
         print(
-            f"\033[1;33mNote:\033[0m '{resolved.dockerfile}' inherits from "
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} '{resolved.dockerfile}' inherits from "
             f"'{from_line}' rather than 'claude-agent'. Consider migrating to "
             f"'FROM claude-agent' to reuse the base toolchain.",
             file=sys.stderr,

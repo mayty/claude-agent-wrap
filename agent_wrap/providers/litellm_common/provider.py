@@ -20,6 +20,7 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import IO, ClassVar
 
+from agent_wrap.lib.console import Ansi
 from agent_wrap.providers.base import Provider
 from agent_wrap.utils import generate_uuid
 
@@ -425,7 +426,7 @@ class LiteLLMProvider(Provider):
             if is_tty:
                 elapsed = int(time.monotonic() - start)
                 print(
-                    f"\r\033[2Klitellm-sidecar: {spinner[frame]} waiting for "
+                    f"{Ansi.CR}{Ansi.ERASE_LINE}litellm-sidecar: {spinner[frame]} waiting for "
                     f"healthy [{status or '?'}] ({elapsed}s)",
                     end="",
                     file=sys.stderr,
@@ -451,7 +452,10 @@ class LiteLLMProvider(Provider):
     def _health_end(*, is_tty: bool, success: bool, elapsed: float) -> None:
         if is_tty:
             if success:
-                print(f"\r\033[2Klitellm-sidecar: ready ({int(elapsed)}s)", file=sys.stderr)
+                print(
+                    f"{Ansi.CR}{Ansi.ERASE_LINE}litellm-sidecar: ready ({int(elapsed)}s)",
+                    file=sys.stderr,
+                )
             else:
                 print(file=sys.stderr)
 

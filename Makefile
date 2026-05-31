@@ -9,7 +9,7 @@ test:
 	python3 -m pytest --cov=agent_wrap
 
 lint:
-	python3 -m ruff check --fix .
+	python3 -m ruff check --fix --unsafe-fixes .
 
 lintcheck:
 	python3 -m ruff check --output-format=github .

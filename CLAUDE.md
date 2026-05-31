@@ -209,6 +209,15 @@ What does **not** require a `default-CLAUDE.md` update:
 
 `agent-wrap_update` handles propagation: if a user's copy matches the old default, it is replaced automatically; if it's been customized, they get a diff-and-merge prompt. So updating `default-CLAUDE.md` is the only action required on the wrapper side — consumer projects pick up the change on their next `agent-wrap_update`.
 
+## Development workflow
+
+A `Makefile` provides all QA targets. Follow these rules when working on this repo:
+
+- **`make check` must pass before handing off.** Never conclude a task or ask the user to take over until `make check` (lintcheck + format-check + test + typecheck) passes cleanly. Fix any failures yourself rather than passing them to the user.
+- **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck` rather than invoking `pytest`, `ruff`, `pyrefly`, etc. by hand. The Makefile is the single source of truth for how each tool is called.
+- **Fix lint/format errors with `make` first.** When `make check` fails on lint or format issues, run `make lint` or `make format` to auto-fix before attempting a manual edit. Only use manual edits when the auto-fix doesn't resolve the issue.
+- **Never `pip install` dependencies.** If a change requires a new Python package, add it to the `dev` dependency group in `pyproject.toml` and prompt the user to run `rebuild_agent`. Do not attempt to install packages inside the running session — changes are discarded on restart.
+
 ## Notes
 
 - The Docker container runs as the current user (`$(id -u):$(id -g)`) to avoid permission issues

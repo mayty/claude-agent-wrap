@@ -8,6 +8,8 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
+from agent_wrap.lib.console import Ansi
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -68,7 +70,9 @@ def check(tool_dir: Path) -> bool:
         return False
 
     branch, behind = result
-    print(f"\033[1;33mNote:\033[0m agent-wrap is {behind} commit(s) behind origin/{branch}.")
+    print(
+        f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} agent-wrap is {behind} commit(s) behind origin/{branch}."
+    )
     try:
         ans = input("Update agent-wrap now? [y/N] ")
     except (EOFError, KeyboardInterrupt):
@@ -113,14 +117,14 @@ def _handle_claude_md_propagation(tool_dir: Path, before: str, after: str, pre_s
     if pre_state == "matches":
         user_claude_md.unlink(missing_ok=True)
         print(
-            "\033[1;33mNote:\033[0m default-CLAUDE.md changed and your "
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} default-CLAUDE.md changed and your "
             ".claude_config/.claude/CLAUDE.md was unmodified; removed it so the "
             "next 'agent' run will install the new default."
         )
     elif pre_state == "customized":
         print()
         print(
-            "\033[1;33mWarning:\033[0m default-CLAUDE.md changed upstream, but your "
+            f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} default-CLAUDE.md changed upstream, but your "
             ".claude_config/.claude/CLAUDE.md has local customizations and was NOT touched."
         )
         print("To update it manually:")
@@ -193,20 +197,22 @@ def apply(tool_dir: Path) -> int:
 
     print()
     if before == after:
-        print("\033[1;33mNote:\033[0m already up to date; no action needed.")
+        print(f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} already up to date; no action needed.")
         return 0
 
     ref = _resolve_ref(tool_dir, after)
-    print(f"\033[1;32mUpdated to {ref}\033[0m")
+    print(f"{Ansi.BOLD_YELLOW}Updated to {ref}{Ansi.RESET}")
 
     changed = _changed_files(tool_dir, before, after)
 
     if changed & _RESOURCE_FILES:
-        print("\033[1;33mNote:\033[0m re-source agent-wrap.bashrc to pick up script changes.")
+        print(
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} re-source agent-wrap.bashrc to pick up script changes."
+        )
 
     if changed & _REBUILD_FILES:
         print(
-            "\033[1;33mNote:\033[0m run 'rebuild_agent' to rebuild the Docker image"
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} run 'rebuild_agent' to rebuild the Docker image"
             " with the updated files."
         )
 
