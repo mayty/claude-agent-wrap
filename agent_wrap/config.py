@@ -36,9 +36,9 @@ def ensure_statusline(settings_path: Path) -> None:
     """
     Idempotently inject statusLine key into settings.json.
 
-    If the key is absent, adds it pointing to statusline.py run via
-    python3 (so the script's execute bit is not required).  An existing
-    bare-path entry is migrated in place.
+    If the key is absent, adds it pointing to the statusline.py script
+    (invoked directly — the script has its execute bit set).
+    An existing ``python3``-prefixed entry is migrated to bare path.
     If the file is empty or missing, creates it with {}.
     If the JSON is malformed, does nothing (don't clobber user's file).
     """
@@ -50,11 +50,12 @@ def ensure_statusline(settings_path: Path) -> None:
     if data is None:
         return  # malformed JSON — don't clobber
 
-    wanted = "python3 /opt/agent-wrap/statusline.py"
+    wanted = "/opt/agent-wrap/statusline.py"
+    old_python = "python3 " + wanted
 
-    # Migrate old bare-path entry.
+    # Migrate old python3-prefixed entry.
     sl = data.get("statusLine")
-    if isinstance(sl, dict) and sl.get("command") == "/opt/agent-wrap/statusline.py":
+    if isinstance(sl, dict) and sl.get("command") == old_python:
         sl["command"] = wanted
         _save_json(settings_path, data)
         return
@@ -92,9 +93,9 @@ def ensure_telegram_hooks(settings_path: Path) -> None:
     """
     Idempotently inject PermissionRequest/Stop/StopFailure hooks.
 
-    Each hook runs telegram-notify.sh via ``bash`` so the script's
-    execute bit is not required.  Old bare-path entries (no ``bash``
-    prefix) are migrated in place to avoid duplicates.
+    Each hook runs telegram-notify.sh directly (the script has its
+    execute bit set).  Old ``bash``-prefixed entries are migrated in
+    place to avoid duplicates.
     If the file is empty or missing, creates it with {}.
     If the JSON is malformed, does nothing.
     """
@@ -106,16 +107,16 @@ def ensure_telegram_hooks(settings_path: Path) -> None:
     if data is None:
         return
 
-    # Migrate old bare-path entries to bash-prefixed form.
-    old_bare = "/opt/agent-wrap/telegram-notify.sh"
+    # Migrate old bash-prefixed entries to direct invocation.
+    cmd = "/opt/agent-wrap/telegram-notify.sh"
+    old_bash = "bash " + cmd
     for event in list(data.get("hooks", {})):
         for entry in data["hooks"].get(event, []):
             for hook in entry.get("hooks", []):
-                cmd = hook.get("command", "")
-                if cmd == old_bare or cmd.startswith(old_bare + " "):
-                    hook["command"] = "bash " + cmd
+                c = hook.get("command", "")
+                if c == old_bash or c.startswith(old_bash + " "):
+                    hook["command"] = c[len("bash "):]
 
-    cmd = "bash /opt/agent-wrap/telegram-notify.sh"
     _ensure_hook(data, "PermissionRequest", cmd)
     _ensure_hook(data, "Stop", f"{cmd} stop")
     _ensure_hook(data, "StopFailure", f"{cmd} stopfailure")

@@ -70,15 +70,15 @@ def test_skips_malformed_json(tmp_path: Path):
     assert settings.read_text() == "{bad json"
 
 
-def test_statusline_migration_bare_path(tmp_path: Path):
-    """Old bare-path entry is migrated to python3-prefixed form."""
+def test_statusline_migration_python3_prefix(tmp_path: Path):
+    """Old python3-prefixed entry is migrated to bare path."""
     settings = tmp_path / "settings.json"
     settings.write_text(
-        json.dumps({"statusLine": {"type": "command", "command": "/opt/agent-wrap/statusline.py"}})
+        json.dumps({"statusLine": {"type": "command", "command": "python3 /opt/agent-wrap/statusline.py"}})
     )
     ensure_statusline(settings)
     data = json.loads(settings.read_text())
-    assert data["statusLine"]["command"] == "python3 /opt/agent-wrap/statusline.py"
+    assert data["statusLine"]["command"] == "/opt/agent-wrap/statusline.py"
 
 
 # --- telegram hooks ---
@@ -143,15 +143,15 @@ def test_telegram_hooks_skips_malformed_json(tmp_path: Path):
     assert settings.read_text() == "{bad json"
 
 
-def test_telegram_hooks_migration_bare_path(tmp_path: Path):
-    """Old bare-path hook entries are migrated to bash-prefixed form."""
+def test_telegram_hooks_migration_bash_prefix(tmp_path: Path):
+    """Old bash-prefixed hook entries are migrated to direct invocation."""
     settings = tmp_path / "settings.json"
     existing = {
         "hooks": {
             "PermissionRequest": [
                 {
                     "matcher": "",
-                    "hooks": [{"type": "command", "command": "/opt/agent-wrap/telegram-notify.sh"}],
+                    "hooks": [{"type": "command", "command": "bash /opt/agent-wrap/telegram-notify.sh"}],
                 }
             ]
         }
@@ -160,7 +160,7 @@ def test_telegram_hooks_migration_bare_path(tmp_path: Path):
     ensure_telegram_hooks(settings)
     data = json.loads(settings.read_text())
     cmd = data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
-    assert cmd.startswith("bash ")
+    assert cmd == "/opt/agent-wrap/telegram-notify.sh"
 
 
 # --- ensure_claude_md ---

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # This file has been created with the assistance of an AI tool.
 """
 agent-wrap CLI entry point.

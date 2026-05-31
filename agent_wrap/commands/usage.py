@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # This file has been edited with the assistance of an AI tool.
 """The `usage` subcommand — aggregate Claude Code usage stats across all projects."""
 
