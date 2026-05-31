@@ -10,7 +10,7 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 ## Architecture
 
 - **Dockerfile**: Builds an Ubuntu 24.04-based image with Node.js 24.x and Claude Code CLI installed globally. Also bakes in `hadolint` and `crane` for use by the in-container validator, plus `wl-clipboard`, `xclip`, and `imagemagick` so Claude Code's `Ctrl+V` can paste images from the WSLg-bridged Windows clipboard (ImageMagick is used by the `wl-paste` shim to convert WSLg's BMP-only clipboard images to PNG on the fly). Configured to use AWS Bedrock for Claude API access.
-- **agent-wrap.bashrc**: Thin bash dispatcher sourced in your shell. Each function delegates to `python3 main.py <subcommand>`:
+- **agent-wrap.bashrc**: Thin bash dispatcher sourced in your shell. Each function delegates to `python3 -m agent_wrap <subcommand>`:
   - `agent([--base] [args...])`: Runs Claude Code in Docker with proper volume mounts and credentials. With `--base`, ignores any `Dockerfile.agent` in the current directory and launches the base `claude-agent` image instead (no project-specific `EXPOSE`, `agent-user`, or `agent-run-args` are applied). The flag is consumed by `agent()` itself; remaining args are forwarded to the in-container `claude` CLI.
   - `rebuild_agent([--full])`: Rebuilds the resolved image with `--no-cache`. With `--full`, rebuilds the base `claude-agent` image first, then the project image. Without `--full` in a project whose `Dockerfile.agent` uses `FROM claude-agent` and the base is missing, fails fast with a hint pointing at `--full`. Without `--full` in a project whose `Dockerfile.agent` inherits from a non-`claude-agent` base, prints a one-line migration suggestion but builds normally.
   - `create_custom_agent()`: Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory.
@@ -21,13 +21,12 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 - **telegram-notify.sh**: Bash script mounted read-only at `/opt/agent-wrap/telegram-notify.sh` and invoked by `PermissionRequest`, `Stop`, and `StopFailure` hooks when Telegram credentials are present in `~/claude_keys.json`. Sends a Telegram message when Claude asks for permission, finishes responding, or hits an API error. Hook entries are idempotently injected into `settings.json` by `_agent_ensure_telegram_hooks()` on each `agent()` launch when creds are configured.
 - **md_to_html.js**: Node script mounted read-only at `/opt/agent-wrap/md_to_html.js` and invoked by `telegram-notify.sh` to convert Markdown into Telegram's subset of HTML (bold/italic/code/links/strikethrough + `<pre>` with optional language tag for code blocks).
 - **wl-paste-shim**: Bash shim mounted read-only at `/usr/local/bin/wl-paste` (only when `/mnt/wslg` exists on the host) so it shadows the real `/usr/bin/wl-paste` via PATH order. WSLg advertises Windows clipboard images as `image/bmp` only, but Claude Code's `Ctrl+V` paste handler asks for `image/png` and doesn't fall back. The shim intercepts `--list-types` (advertises `image/png` when only BMP is on clipboard) and `--type image/png` (fetches BMP and pipes through `convert bmp:- png:-`), and falls through to the real binary for everything else.
-- **agent_wrap/**: Python package containing all orchestration logic. `main.py` at the repo root is the CLI entry point (argparse dispatcher). Subpackages:
+- **agent_wrap/**: Python package containing all orchestration logic. `__main__.py` is the CLI entry point (invoked via `python3 -m agent_wrap`). Subpackages:
   - **commands/**: One module per subcommand (`agent.py`, `rebuild.py`, `create.py`, `usage.py`, `update.py`).
   - **providers/**: Provider plugin tree. `base.py` defines the `Provider` ABC (4 abstract methods: `ensure`, `release`, `get_run_args`, `get_label_args`). Each provider is a subdirectory with `provider.py` + `config.yaml`. `litellm_common/provider.py` implements the shared LiteLLM sidecar lifecycle (~350 lines); `litellm_bedrock/` and `litellm_dashscope/` are thin overrides (~60 lines each). Auto-discovery in `__init__.py` scans `*/provider.py` for concrete `Provider` subclasses (`inspect.isabstract()` filters out the base classes). Selected by `AGENT_PROVIDER` env var (default `litellm-bedrock`).
   - **config.py**: Settings JSON manipulation (statusline injection, telegram hooks, project directory creation).
   - **utils.py**: Name sanitization, image resolution, UUID generation, Dockerfile.agent parsing.
   - **docker_utils.py**: Docker info queries (rootless detection, image existence checks).
-- **main.py**: CLI entry point at repo root. Dispatches `agent`, `rebuild`, `create`, `usage`, `update` subcommands to `agent_wrap.commands.*`.
 
 ## Key Configuration
 

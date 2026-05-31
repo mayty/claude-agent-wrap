@@ -47,7 +47,6 @@ _STATE_FILES = (
 )
 
 
-
 def _is_wsl() -> bool:
     """Check if running on WSL."""
     try:

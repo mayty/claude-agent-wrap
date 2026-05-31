@@ -162,7 +162,6 @@ exclude_lines = [
 [tool.pyrefly]
 project_includes = [
     "agent_wrap",
-    "main.py",
     "ops/statusline.py",
 ]
 project_excludes = [

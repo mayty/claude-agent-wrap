@@ -4,7 +4,7 @@
 agent-wrap CLI entry point.
 
 Dispatches subcommands to the agent_wrap.commands package.
-Called from agent-wrap.bashrc as: python3 main.py <subcommand> [args...]
+Called from agent-wrap.bashrc as: python3 -m agent_wrap <subcommand> [args...]
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _COMMANDS = {
 _MIN_ARGS = 2
 
 _USAGE = """\
-Usage: main.py <command> [args...]
+Usage: python3 -m agent_wrap <command> [args...]
 
 Commands:
   agent    [--base] [claude-args...]  Launch Claude Code in Docker
@@ -46,7 +46,7 @@ def main() -> int:
 
     command = sys.argv[1]
     args = sys.argv[2:]
-    tool_dir = Path(__file__).parent.resolve()
+    tool_dir = Path(__file__).parent.parent.resolve()
 
     module_path = _COMMANDS.get(command)
     if module_path is None:

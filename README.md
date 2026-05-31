@@ -328,8 +328,7 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 ├── Dockerfile.agent             # Template for project-specific agent images
 ├── .gitignore
 ├── agent-wrap.bashrc            # Shell functions: agent, rebuild_agent, create_custom_agent, agent_usage, agent-wrap_update
-├── main.py                      # CLI entry point (importlib dispatcher → agent_wrap.commands.*)
-├── agent_wrap/                  # Python package — all orchestration logic
+├── agent_wrap/                  # Python package — all orchestration logic (entry point: __main__.py)
 │   ├── commands/                # Subcommand implementations (agent, rebuild, create, usage, update)
 │   ├── providers/               # Provider plugins
 │   │   ├── base.py              # Provider ABC (4 abstract methods)
