@@ -1,5 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
-"""The `usage` subcommand — aggregate Claude Code usage stats across all projects."""
+"""The `stats` subcommand — aggregate Claude Code usage stats across all projects."""
 
 from __future__ import annotations
 
@@ -1058,7 +1058,7 @@ def render(
 
 
 _USAGE_TEXT = (
-    "Usage: agent_usage.py [--cache PATH] [--region LABEL] [--refresh] [--days N] <projects.txt>\n\n"
+    "Usage: agent stats [--cache PATH] [--region LABEL] [--refresh] [--days N] <projects.txt>\n\n"
     "Reads a list of project paths (one per line) and prints aggregated\n"
     "usage stats from each project's .claude/sessions/*.jsonl files.\n\n"
     "Output is a per-project table plus per-model and per-day breakdowns.\n"
@@ -1073,7 +1073,7 @@ _USAGE_TEXT = (
 
 @dataclass
 class _UsageArgsBuilder:
-    """Parsed CLI arguments for agent_usage."""
+    """Parsed CLI arguments for `agent stats`."""
 
     cache_path: Path | None = None
     region_label: str = DEFAULT_REGION_LABEL
@@ -1083,7 +1083,7 @@ class _UsageArgsBuilder:
 
 @dataclass
 class _UsageArgs:
-    """Parsed CLI arguments for agent_usage."""
+    """Parsed CLI arguments for `agent stats`."""
 
     registry_path: Path
     cache_path: Path | None = None
@@ -1139,7 +1139,7 @@ def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
 
     if not positional:
         print(
-            "Usage: agent_usage.py [--cache PATH] [--region LABEL]"
+            "Usage: agent stats [--cache PATH] [--region LABEL]"
             " [--refresh] [--days N] <projects.txt>",
             file=sys.stderr,
         )
@@ -1198,7 +1198,7 @@ def _collect_project_rows(
 
 def run(args: list[str], tool_dir: Path) -> int:
     """
-    Execute the `usage` subcommand.
+    Execute the `stats` subcommand.
 
     Constructs the cache and project-registry paths from ``tool_dir``,
     injects them into the argument stream, and runs the core usage logic.

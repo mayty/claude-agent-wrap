@@ -34,13 +34,13 @@ def test_help_short(capsys: pytest.CaptureFixture) -> None:
     result = _parse_rebuild_args(["--help"])
     assert result == (False, True)
     out = capsys.readouterr().out
-    assert "Usage: rebuild_agent" in out
+    assert "Usage: agent rebuild" in out
 
 
 def test_help_long(capsys: pytest.CaptureFixture) -> None:
     result = _parse_rebuild_args(["-h"])
     assert result == (False, True)
-    assert "Usage: rebuild_agent" in capsys.readouterr().out
+    assert "Usage: agent rebuild" in capsys.readouterr().out
 
 
 def test_full_and_help(capsys: pytest.CaptureFixture) -> None:

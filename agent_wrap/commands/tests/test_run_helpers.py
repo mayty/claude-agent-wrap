@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""Tests for internal helpers in agent_wrap/commands/agent.py."""
+"""Tests for internal helpers in agent_wrap/commands/run.py."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import pytest_mock
 
-from agent_wrap.commands.agent import (
+from agent_wrap.commands.run import (
     _build_env_args,
     _build_volume_mounts,
     _build_wslg_args,
@@ -20,7 +20,7 @@ from agent_wrap.commands.agent import (
     _resolve_agent_name,
     _resolve_host_network,
 )
-from agent_wrap.commands.agent import (
+from agent_wrap.commands.run import (
     run as agent_run,
 )
 from agent_wrap.lib.utils import ResolvedImage
@@ -29,19 +29,19 @@ from agent_wrap.lib.utils import ResolvedImage
 
 
 def test_is_wsl_true(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path", autospec=True)
+    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
     mock_path.return_value.read_text.return_value = "Linux version 5.15 (microsoft)"
     assert _is_wsl() is True
 
 
 def test_is_wsl_false(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path", autospec=True)
+    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
     mock_path.return_value.read_text.return_value = "Linux version 5.15 (generic)"
     assert _is_wsl() is False
 
 
 def test_is_wsl_os_error(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.agent.Path", autospec=True)
+    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
     mock_path.return_value.read_text.side_effect = OSError("no file")
     assert _is_wsl() is False
 
@@ -150,7 +150,7 @@ def test_build_wslg_args_not_present(tmp_path: Path, monkeypatch: pytest.MonkeyP
     fake_mnt = tmp_path / "mnt" / "wslg"
     # Don't create the directory so is_dir() returns False
     monkeypatch.setattr(
-        "agent_wrap.commands.agent.Path",
+        "agent_wrap.commands.run.Path",
         lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
     )
     result = _build_wslg_args(Path("/tool"))
@@ -161,7 +161,7 @@ def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     fake_mnt = tmp_path / "mnt" / "wslg"
     fake_mnt.mkdir(parents=True)
     monkeypatch.setattr(
-        "agent_wrap.commands.agent.Path",
+        "agent_wrap.commands.run.Path",
         lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
     )
     result = _build_wslg_args(Path("/tool"))
@@ -261,7 +261,7 @@ def test_host_network_not_wsl(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.agent._is_wsl", return_value=False)
+    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=False)
     use, _, _ = _resolve_host_network(None, ["-p", "8080:8080"])
     assert use is False
     assert "only honored on WSL" in capsys.readouterr().err
@@ -271,7 +271,7 @@ def test_host_network_wsl_no_agent_network(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.agent._is_wsl", return_value=True)
+    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=True)
     use, args, ports = _resolve_host_network(None, ["-p", "8080:8080"])
     assert use is True
     assert args == ["--network", "host"]
@@ -282,7 +282,7 @@ def test_host_network_wsl_agent_network_specified(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.agent._is_wsl", return_value=True)
+    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=True)
     use, _, ports = _resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
     assert "AGENT_USE_HOST_NETWORK ignored" in capsys.readouterr().err
@@ -300,13 +300,13 @@ def test_run_image_not_found(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
-    mocker.patch("agent_wrap.commands.agent.resolve_image").return_value = ResolvedImage(
+    mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=tmp_path / "Dockerfile.agent",
         context=tmp_path,
     )
-    mocker.patch("agent_wrap.commands.agent.docker_utils.image_exists", return_value=False)
-    mocker.patch("agent_wrap.commands.agent._load_secrets", return_value=("", ""))
+    mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=False)
+    mocker.patch("agent_wrap.commands.run._load_secrets", return_value=("", ""))
     rc = agent_run([], tmp_path)
     assert rc == 1
     assert "not found" in capsys.readouterr().err
@@ -321,7 +321,7 @@ def test_run_resolve_image_exits(
     monkeypatch.chdir(tmp_path)
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
     mocker.patch(
-        "agent_wrap.commands.agent.resolve_image", side_effect=SystemExit("no Dockerfile.agent")
+        "agent_wrap.commands.run.resolve_image", side_effect=SystemExit("no Dockerfile.agent")
     )
     rc = agent_run([], tmp_path)
     assert rc == 1
@@ -341,27 +341,27 @@ def test_run_happy_path(
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
-    mocker.patch("agent_wrap.commands.agent.resolve_image").return_value = ResolvedImage(
+    mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=tmp_path / "Dockerfile.agent",
         context=tmp_path,
     )
-    mocker.patch("agent_wrap.commands.agent.docker_utils.image_exists", return_value=True)
-    mocker.patch("agent_wrap.commands.agent.docker_utils.get_user_args", return_value=[])
-    mocker.patch("agent_wrap.commands.agent.config.prepare_global_config")
-    mocker.patch("agent_wrap.commands.agent.config.prepare_project_dirs")
-    mocker.patch("agent_wrap.commands.agent.config.record_project")
-    mocker.patch("agent_wrap.commands.agent.generate_uuid", return_value="test-uuid")
+    mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=True)
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.run.config.prepare_global_config")
+    mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
+    mocker.patch("agent_wrap.commands.run.config.record_project")
+    mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
 
     # Mock provider
     mock_provider = mocker.MagicMock()
     mock_provider.get_run_args.return_value = []
     mock_provider.get_label_args.return_value = []
-    mocker.patch("agent_wrap.commands.agent.get_provider", return_value=mock_provider)
+    mocker.patch("agent_wrap.commands.run.get_provider", return_value=mock_provider)
 
     mock_result = mocker.MagicMock()
     mock_result.returncode = 0
-    mock_run = mocker.patch("agent_wrap.commands.agent.subprocess.run", return_value=mock_result)
+    mock_run = mocker.patch("agent_wrap.commands.run.subprocess.run", return_value=mock_result)
 
     rc = agent_run(["--base"], tmp_path)
     assert rc == 0

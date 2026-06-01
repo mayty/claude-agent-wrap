@@ -21,7 +21,7 @@ def _parse_rebuild_args(args: list[str]) -> tuple[bool, bool]:
         if arg == "--full":
             full = True
         elif arg in ("-h", "--help"):
-            print("Usage: rebuild_agent [--full]")
+            print("Usage: agent rebuild [--full]")
             print("  --full  Rebuild the base 'claude-agent' image first, then the project image.")
             return full, True
         else:
@@ -65,7 +65,7 @@ def _check_from_line(resolved: ResolvedImage) -> bool:
             f"base image is not built.",
             file=sys.stderr,
         )
-        print("       Run 'rebuild_agent --full' to build the base first.", file=sys.stderr)
+        print("       Run 'agent rebuild --full' to build the base first.", file=sys.stderr)
         return False
 
     if from_line and not re.match(r"^claude-agent(:.*)?$", from_line):

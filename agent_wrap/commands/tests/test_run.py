@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from agent_wrap.commands.agent import _extract_network
+from agent_wrap.commands.run import _extract_network
 
 
 def test_no_network():

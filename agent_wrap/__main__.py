@@ -17,23 +17,23 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _COMMANDS = {
-    "agent": "agent_wrap.commands.agent",
+    "run": "agent_wrap.commands.run",
     "rebuild": "agent_wrap.commands.rebuild",
     "create": "agent_wrap.commands.create",
-    "usage": "agent_wrap.commands.usage",
+    "stats": "agent_wrap.commands.stats",
     "update": "agent_wrap.commands.update",
 }
 
 _MIN_ARGS = 2
 
 _USAGE = """\
-Usage: python3 -m agent_wrap <command> [args...]
+Usage: agent <command> [args...]
 
 Commands:
-  agent    [--base] [claude-args...]  Launch Claude Code in Docker
+  run      [--base] [claude-args...]  Launch Claude Code in Docker
   rebuild  [--full]                   Rebuild Docker image
   create                              Scaffold Dockerfile.agent
-  usage    [--days N] [--region L]    Show token usage stats
+  stats    [--days N] [--region L]    Show token usage stats
   update                              Pull upstream updates
 """
 

@@ -209,7 +209,7 @@ def apply(tool_dir: Path) -> int:
 
     if changed & _REBUILD_FILES:
         print(
-            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} run 'rebuild_agent' to rebuild the Docker image"
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} run 'agent rebuild' to rebuild the Docker image"
             " with the updated files."
         )
 

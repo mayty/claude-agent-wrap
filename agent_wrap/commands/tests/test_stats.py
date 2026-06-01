@@ -1,5 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
-"""Tests for the `usage` subcommand (agent_wrap.commands.usage)."""
+"""Tests for the `stats` subcommand (agent_wrap.commands.stats)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_wrap.commands.usage import (
+from agent_wrap.commands.stats import (
     Bucket,
     _parse_usage_args,
     _process_record,
@@ -273,7 +273,7 @@ def test_run_empty_project_registry(tmp_path):
     cache = launches / "pricing.json"
     cache.touch()
 
-    with patch("agent_wrap.commands.usage.load_projects", return_value=[]):
+    with patch("agent_wrap.commands.stats.load_projects", return_value=[]):
         rc = run([], tmp_path)
         assert rc == 0
 
@@ -586,7 +586,7 @@ def test_load_prices_cache_hit(tmp_path: Path, mocker):
         + str(int(time.time()))
         + ',"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
     )
-    mock_get = mocker.patch("agent_wrap.commands.usage._http_get")
+    mock_get = mocker.patch("agent_wrap.commands.stats._http_get")
     result = load_prices(cache)
     mock_get.assert_not_called()
     assert "claude-sonnet-4-5" in result
@@ -597,7 +597,7 @@ def test_load_prices_stale_cache_triggers_refetch(tmp_path: Path, mocker):
     cache.write_text(
         '{"region":"US East (N. Virginia)","fetched_at":0,"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
     )
-    mocker.patch("agent_wrap.commands.usage._http_get", side_effect=OSError("network"))
+    mocker.patch("agent_wrap.commands.stats._http_get", side_effect=OSError("network"))
     result = load_prices(cache)
     # Falls back to stale cache
     assert "claude-sonnet-4-5" in result
@@ -612,7 +612,7 @@ def test_load_prices_refresh_bypasses_fresh_cache(tmp_path: Path, mocker):
         + str(int(time.time()))
         + ',"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
     )
-    mock_get = mocker.patch("agent_wrap.commands.usage._http_get", side_effect=OSError("network"))
+    mock_get = mocker.patch("agent_wrap.commands.stats._http_get", side_effect=OSError("network"))
     result = load_prices(cache, refresh=True)
     mock_get.assert_called()
     # No fresh data returned, falls back to stale
@@ -620,7 +620,7 @@ def test_load_prices_refresh_bypasses_fresh_cache(tmp_path: Path, mocker):
 
 
 def test_load_prices_no_cache_no_network(tmp_path: Path, mocker, capsys):
-    mocker.patch("agent_wrap.commands.usage._http_get", side_effect=OSError("offline"))
+    mocker.patch("agent_wrap.commands.stats._http_get", side_effect=OSError("offline"))
     result = load_prices(None)
     assert result == {}
 

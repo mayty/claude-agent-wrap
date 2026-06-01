@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""The `agent` subcommand — launches Claude Code in a Docker container."""
+"""The `run` subcommand — launches Claude Code in a Docker container."""
 
 from __future__ import annotations
 
@@ -248,10 +248,10 @@ def _build_volume_mounts(
 
 def run(args: list[str], tool_dir: Path) -> int:
     """
-    Execute the `agent` subcommand.
+    Execute the `run` subcommand.
 
     Args:
-        args: Command-line arguments (after 'agent').
+        args: Command-line arguments (after 'run').
         tool_dir: Path to the agent-wrap tool directory.
 
     Returns:
@@ -285,13 +285,13 @@ def run(args: list[str], tool_dir: Path) -> int:
         if use_base:
             print(
                 f"Error: Base image '{resolved.image}' not found. "
-                f"Run 'rebuild_agent --full' to build it.",
+                f"Run 'agent rebuild --full' to build it.",
                 file=sys.stderr,
             )
         else:
             print(
                 f"Error: Image '{resolved.image}' not found. "
-                f"Run 'rebuild_agent' in this directory to build it.",
+                f"Run 'agent rebuild' in this directory to build it.",
                 file=sys.stderr,
             )
         return 1
