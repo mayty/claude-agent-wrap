@@ -18,7 +18,7 @@ from pathlib import Path
 
 from agent_wrap.lib.console import Ansi
 
-USAGE = "[--days N] [--region L]"
+USAGE = "[--region LABEL] [--refresh] [--days N]"
 SUMMARY = "Show token usage stats"
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
