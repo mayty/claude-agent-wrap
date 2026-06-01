@@ -237,3 +237,61 @@ def test_record_project_deduplicates(tmp_path: Path, monkeypatch: pytest.MonkeyP
     projects_file = tmp_path / ".agent-launches" / "projects.txt"
     lines = projects_file.read_text().splitlines()
     assert lines.count(str(tmp_path)) == 1
+
+
+def test_record_project_uses_pwd_env_when_consistent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    monkeypatch.chdir(link)
+    monkeypatch.setenv("PWD", str(link))
+    record_project(tmp_path)
+
+    lines = (tmp_path / ".agent-launches" / "projects.txt").read_text().splitlines()
+    assert str(link) in lines
+    assert str(real) not in lines
+
+
+def test_record_project_replaces_alias_pointing_to_same_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir()
+    projects_file = launches / "projects.txt"
+    projects_file.write_text(f"{real}\n")
+
+    monkeypatch.chdir(link)
+    monkeypatch.setenv("PWD", str(link))
+    record_project(tmp_path)
+
+    lines = projects_file.read_text().splitlines()
+    assert lines == [str(link)]
+
+
+def test_record_project_keeps_file_sorted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir()
+    projects_file = launches / "projects.txt"
+    projects_file.write_text("/z\n/a\n/m\n")
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    monkeypatch.chdir(extra)
+    monkeypatch.delenv("PWD", raising=False)
+    record_project(tmp_path)
+
+    lines = projects_file.read_text().splitlines()
+    assert lines == sorted(lines)
+    assert str(extra) in lines
+    assert "/z" in lines
+    assert "/a" in lines
+    assert "/m" in lines

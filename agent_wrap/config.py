@@ -10,6 +10,7 @@ instead of jq.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -172,9 +173,32 @@ def prepare_project_dirs(project_dir: Path) -> None:
         gitignore.write_text("*\n")
 
 
+def _current_project_path() -> str:
+    """
+    Return the project path as the user sees it.
+
+    Mirrors bash's `$(pwd)`: when the user `cd`'d through a symlink, $PWD
+    preserves it; Path.cwd() (os.getcwd()) would resolve it. Fall back to
+    Path.cwd() if $PWD is missing, relative, or points somewhere else.
+    """
+    cwd = Path.cwd()
+    pwd = os.environ.get("PWD")
+    if pwd and Path(pwd).is_absolute():
+        try:
+            if Path(pwd).resolve() == cwd.resolve():
+                return pwd
+        except OSError:
+            pass
+    return str(cwd)
+
+
 def record_project(tool_dir: Path) -> None:
     """
-    Append cwd to the project registry if not already present.
+    Record cwd in the project registry, deduping aliases and keeping it sorted.
+
+    Existing entries that resolve to the same canonical target as cwd are
+    replaced by the current path — so a stale `/mnt/...` line gets overwritten
+    once the user starts launching from its `/home/.../symlink` alias.
 
     Failures are non-fatal — the agent launch must not depend on this.
     """
@@ -182,13 +206,33 @@ def record_project(tool_dir: Path) -> None:
         launches_dir = tool_dir / ".agent-launches"
         launches_dir.mkdir(parents=True, exist_ok=True)
         projects_file = launches_dir / "projects.txt"
-        if not projects_file.exists():
-            projects_file.touch()
 
-        cwd = str(Path.cwd())
-        existing = projects_file.read_text().splitlines()
-        if cwd not in existing:
-            with open(projects_file, "a") as f:
-                f.write(cwd + "\n")
+        cwd = _current_project_path()
+        try:
+            cwd_target: Path | None = Path(cwd).resolve()
+        except OSError:
+            cwd_target = None
+
+        existing: list[str] = []
+        if projects_file.exists():
+            existing = [
+                line.strip() for line in projects_file.read_text().splitlines() if line.strip()
+            ]
+
+        kept: list[str] = []
+        for entry in existing:
+            if cwd_target is not None:
+                try:
+                    if Path(entry).resolve() == cwd_target:
+                        continue  # alias of cwd — superseded
+                except OSError:
+                    pass  # keep entries we can't resolve
+            kept.append(entry)
+        kept.append(cwd)
+
+        merged = sorted(set(kept))
+        tmp = projects_file.with_suffix(projects_file.suffix + ".tmp")
+        tmp.write_text("\n".join(merged) + "\n")
+        tmp.replace(projects_file)
     except OSError:
         pass  # non-fatal
