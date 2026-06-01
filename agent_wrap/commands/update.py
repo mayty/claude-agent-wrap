@@ -6,10 +6,24 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.utils import is_truthy_env
+
+
+class _MdState(Enum):
+    MATCHES = "matches"
+    CUSTOMIZED = "customized"
+    MISSING = "missing"
+
+
+class _MdPropagation(Enum):
+    UNCHANGED = "unchanged"
+    UPDATED = "updated"
+    CONFLICT = "conflict"
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,6 +45,23 @@ def _git(*args: str, cwd: str | None = None, timeout: int | None = None) -> tupl
         return result.stdout.strip(), result.returncode
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return "", 1
+
+
+def _git_full(
+    *args: str, cwd: str | None = None, timeout: int | None = None
+) -> tuple[str, int, str]:
+    """Run a git command and return (stdout, returncode, stderr)."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=timeout,
+        )
+        return result.stdout.strip(), result.returncode, result.stderr.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "", 1, ""
 
 
 def _get_behind_count(tool_dir: Path) -> tuple[str, int] | None:
@@ -85,12 +116,12 @@ def check(tool_dir: Path) -> bool:
     return True
 
 
-def _detect_claude_md_state(tool_dir: Path) -> str:
-    """Return 'matches', 'customized', or 'missing' for user's CLAUDE.md."""
+def _detect_claude_md_state(tool_dir: Path) -> _MdState:
+    """Return the state of the user's CLAUDE.md relative to the default."""
     user_claude_md = tool_dir / ".claude_config" / ".claude" / "CLAUDE.md"
     default_claude_md = tool_dir / "ops" / "default-CLAUDE.md"
     if not (user_claude_md.exists() and default_claude_md.exists()):
-        return "missing"
+        return _MdState.MISSING
     result = subprocess.run(
         [
             "diff",
@@ -102,41 +133,26 @@ def _detect_claude_md_state(tool_dir: Path) -> str:
         ],
         capture_output=True,
     )
-    return "matches" if result.returncode == 0 else "customized"
+    return _MdState.MATCHES if result.returncode == 0 else _MdState.CUSTOMIZED
 
 
-def _handle_claude_md_propagation(tool_dir: Path, before: str, after: str, pre_state: str) -> None:
+def _handle_claude_md_propagation(
+    tool_dir: Path, before: str, after: str, pre_state: _MdState
+) -> _MdPropagation:
     """Handle default-CLAUDE.md propagation after a successful pull."""
     user_claude_md = tool_dir / ".claude_config" / ".claude" / "CLAUDE.md"
-    default_claude_md = tool_dir / "ops" / "default-CLAUDE.md"
 
     _, rc = _git("diff", "--quiet", before, after, "--", "default-CLAUDE.md", cwd=str(tool_dir))
     if rc == 0:
-        return  # No change to default-CLAUDE.md
+        return _MdPropagation.UNCHANGED
 
-    if pre_state == "matches":
+    if pre_state == _MdState.MATCHES:
         user_claude_md.unlink(missing_ok=True)
-        print(
-            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} default-CLAUDE.md changed and your "
-            ".claude_config/.claude/CLAUDE.md was unmodified; removed it so the "
-            "next 'agent' run will install the new default."
-        )
-    elif pre_state == "customized":
-        print()
-        print(
-            f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} default-CLAUDE.md changed upstream, but your "
-            ".claude_config/.claude/CLAUDE.md has local customizations and was NOT touched."
-        )
-        print("To update it manually:")
-        print(
-            f"  1. Review the upstream change:  "
-            f'git -C "{tool_dir}" diff {before} {after} -- default-CLAUDE.md'
-        )
-        print(f'  2. Compare with your copy:      diff -u "{user_claude_md}" "{default_claude_md}"')
-        print(f'  3. Either merge the changes into "{user_claude_md}" by hand,')
-        print("     or delete it to accept the new default (losing your customizations):")
-        print(f'        rm "{user_claude_md}"')
-        print("     The next 'agent' run will then copy the new default into place.")
+        return _MdPropagation.UPDATED
+    if pre_state == _MdState.CUSTOMIZED:
+        return _MdPropagation.CONFLICT
+
+    return _MdPropagation.UNCHANGED
 
 
 _REBUILD_FILES = {
@@ -167,6 +183,41 @@ def _resolve_ref(tool_dir: Path, commit: str) -> str:
     return short or commit
 
 
+def _print_status(tool_dir: Path, before: str, after: str, pre_state: _MdState) -> None:
+    """Print post-update status summary."""
+    before_ref = _resolve_ref(tool_dir, before)
+    after_ref = _resolve_ref(tool_dir, after)
+    print(f"{Ansi.BOLD_GREEN}Updated {before_ref} -> {after_ref}{Ansi.RESET}")
+
+    changed = _changed_files(tool_dir, before, after)
+
+    if changed & _RESOURCE_FILES:
+        print(f"{Ansi.BOLD_YELLOW}re-source agent-wrap.bashrc to apply latest changes{Ansi.RESET}")
+    else:
+        print(f"{Ansi.BOLD_GREEN}no re-source needed{Ansi.RESET}")
+
+    if changed & _REBUILD_FILES:
+        print(f"{Ansi.BOLD_YELLOW}run 'agent rebuild' to apply latest changes{Ansi.RESET}")
+    else:
+        print(f"{Ansi.BOLD_GREEN}no re-build needed{Ansi.RESET}")
+
+    md_status = _handle_claude_md_propagation(tool_dir, before, after, pre_state)
+    if md_status == _MdPropagation.UPDATED:
+        print(f"{Ansi.BOLD_GREEN}CLAUDE.md updated to new default{Ansi.RESET}")
+    elif md_status == _MdPropagation.CONFLICT:
+        print(
+            f"{Ansi.BOLD_RED}CLAUDE.md changed upstream but you have local customizations{Ansi.RESET}"
+        )
+        print(
+            f'{Ansi.BOLD_RED}Review: git -C "{tool_dir}" diff {before} {after}'
+            f" -- default-CLAUDE.md{Ansi.RESET}"
+        )
+        print(
+            f"{Ansi.BOLD_RED}Merge into .claude_config/.claude/CLAUDE.md"
+            f" or delete it to accept the new default{Ansi.RESET}"
+        )
+
+
 def apply(tool_dir: Path) -> int:
     """
     Pull updates and handle default-CLAUDE.md propagation.
@@ -175,48 +226,34 @@ def apply(tool_dir: Path) -> int:
     """
     branch, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(tool_dir))
     if rc != 0:
-        print("Error: could not determine current branch", file=sys.stderr)
+        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
+        print("could not determine current branch", file=sys.stderr)
         return 1
 
     before, rc = _git("rev-parse", "HEAD", cwd=str(tool_dir))
     if rc != 0:
-        print("Error: could not get current HEAD", file=sys.stderr)
+        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
+        print("could not get current HEAD", file=sys.stderr)
         return 1
 
     pre_state = _detect_claude_md_state(tool_dir)
 
-    # Pull
-    _, rc = _git("pull", "--ff-only", "origin", branch, cwd=str(tool_dir))
+    _, rc, stderr = _git_full("pull", "--ff-only", "origin", branch, cwd=str(tool_dir))
     if rc != 0:
-        print("Error: git pull failed", file=sys.stderr)
+        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}")
+        if stderr:
+            print(stderr)
         return 1
 
     after, rc = _git("rev-parse", "HEAD", cwd=str(tool_dir))
     if rc != 0:
         return 1
 
-    print()
     if before == after:
-        print(f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} already up to date; no action needed.")
+        print(f"{Ansi.BOLD_GREEN}Already up to date{Ansi.RESET}")
         return 0
 
-    ref = _resolve_ref(tool_dir, after)
-    print(f"{Ansi.BOLD_YELLOW}Updated to {ref}{Ansi.RESET}")
-
-    changed = _changed_files(tool_dir, before, after)
-
-    if changed & _RESOURCE_FILES:
-        print(
-            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} re-source agent-wrap.bashrc to pick up script changes."
-        )
-
-    if changed & _REBUILD_FILES:
-        print(
-            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} run 'agent rebuild' to rebuild the Docker image"
-            " with the updated files."
-        )
-
-    _handle_claude_md_propagation(tool_dir, before, after, pre_state)
+    _print_status(tool_dir, before, after, pre_state)
     return 0
 
 
