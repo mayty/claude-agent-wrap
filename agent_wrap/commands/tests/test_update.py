@@ -12,6 +12,8 @@ from agent_wrap.commands.update import (
     _detect_claude_md_state,
     _get_behind_count,
     _handle_claude_md_propagation,
+    _MdPropagation,
+    _MdState,
     apply,
     check,
 )
@@ -131,7 +133,7 @@ def test_detect_matches(tmp_path: Path) -> None:
     content = "# hello"
     user_md.write_text(content)
     default_md.write_text(content)
-    assert _detect_claude_md_state(tmp_path) == "matches"
+    assert _detect_claude_md_state(tmp_path) == _MdState.MATCHES
 
 
 def test_detect_customized(tmp_path: Path) -> None:
@@ -143,11 +145,11 @@ def test_detect_customized(tmp_path: Path) -> None:
     default_md = ops_dir / "default-CLAUDE.md"
     user_md.write_text("# user version")
     default_md.write_text("# default version")
-    assert _detect_claude_md_state(tmp_path) == "customized"
+    assert _detect_claude_md_state(tmp_path) == _MdState.CUSTOMIZED
 
 
 def test_detect_missing(tmp_path: Path) -> None:
-    assert _detect_claude_md_state(tmp_path) == "missing"
+    assert _detect_claude_md_state(tmp_path) == _MdState.MISSING
 
 
 # --- _handle_claude_md_propagation ---
@@ -155,8 +157,8 @@ def test_detect_missing(tmp_path: Path) -> None:
 
 def test_propagation_no_diff(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("agent_wrap.commands.update._git", return_value=("", 0))
-    _handle_claude_md_propagation(tmp_path, "abc", "def", "matches")
-    # User file should not be touched
+    result = _handle_claude_md_propagation(tmp_path, "abc", "def", _MdState.MATCHES)
+    assert result == _MdPropagation.UNCHANGED
 
 
 def test_propagation_matches_deletes(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -165,20 +167,21 @@ def test_propagation_matches_deletes(tmp_path: Path, mocker: pytest_mock.MockFix
     user_md = config_dir / "CLAUDE.md"
     user_md.write_text("# user content")
     mocker.patch("agent_wrap.commands.update._git", return_value=("", 1))
-    _handle_claude_md_propagation(tmp_path, "abc", "def", "matches")
+    result = _handle_claude_md_propagation(tmp_path, "abc", "def", _MdState.MATCHES)
+    assert result == _MdPropagation.UPDATED
     assert not user_md.exists()
 
 
-def test_propagation_customized_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
+def test_propagation_customized_returns_conflict(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
     config_dir = tmp_path / ".claude_config" / ".claude"
     config_dir.mkdir(parents=True)
     user_md = config_dir / "CLAUDE.md"
     user_md.write_text("# custom")
     mocker.patch("agent_wrap.commands.update._git", return_value=("", 1))
-    _handle_claude_md_propagation(tmp_path, "abc", "def", "customized")
-    assert "Warning" in capsys.readouterr().out
+    result = _handle_claude_md_propagation(tmp_path, "abc", "def", _MdState.CUSTOMIZED)
+    assert result == _MdPropagation.CONFLICT
     assert user_md.exists()
 
 
@@ -191,7 +194,9 @@ def test_apply_cannot_determine_branch(
     mocker.patch("agent_wrap.commands.update._git", return_value=("", 1))
     rc = apply(tmp_path)
     assert rc == 1
-    assert "could not determine current branch" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "Update failed:" in captured.err
+    assert "could not determine current branch" in captured.err
 
 
 def test_apply_cannot_get_head(
@@ -204,45 +209,46 @@ def test_apply_cannot_get_head(
     ]
     rc = apply(tmp_path)
     assert rc == 1
-    assert "could not get current HEAD" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "Update failed:" in captured.err
+    assert "could not get current HEAD" in captured.err
 
 
 def test_apply_pull_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
-    mock_git = mocker.patch("agent_wrap.commands.update._git")
-
     def fake_git(*args, **kwargs):
         if args[0] == "symbolic-ref":
             return ("main", 0)
         if args[0] == "rev-parse":
             return ("abc123", 0)
-        if args[0] == "pull":
-            return ("", 1)
         return ("", 0)
 
-    mock_git.side_effect = fake_git
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    mocker.patch(
+        "agent_wrap.commands.update._git_full",
+        return_value=("", 1, "fatal: not possible to fast-forward"),
+    )
     rc = apply(tmp_path)
     assert rc == 1
-    assert "git pull failed" in capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "Update failed:" in out
+    assert "fatal: not possible to fast-forward" in out
 
 
 def test_apply_already_up_to_date(
     tmp_path: Path, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
-    mock_git = mocker.patch("agent_wrap.commands.update._git")
-
     def fake_git(*args, **kwargs):
         if args[0] == "symbolic-ref":
             return ("main", 0)
         if args[0] == "rev-parse":
             return ("abc123", 0)
-        if args[0] == "pull":
-            return ("", 0)
         return ("", 0)
 
-    mock_git.side_effect = fake_git
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    mocker.patch("agent_wrap.commands.update._git_full", return_value=("", 0, ""))
     mocker.patch("subprocess.run").return_value.returncode = 0
     rc = apply(tmp_path)
     assert rc == 0
-    assert "already up to date" in capsys.readouterr().out
+    assert "Already up to date" in capsys.readouterr().out
