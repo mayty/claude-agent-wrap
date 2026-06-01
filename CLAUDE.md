@@ -10,30 +10,35 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
 ## Architecture
 
 - **Dockerfile**: Builds an Ubuntu 24.04-based image with Node.js 24.x and Claude Code CLI installed globally. Also bakes in `hadolint` and `crane` for use by the in-container validator, plus `wl-clipboard`, `xclip`, and `imagemagick` so Claude Code's `Ctrl+V` can paste images from the WSLg-bridged Windows clipboard (ImageMagick is used by the `wl-paste` shim to convert WSLg's BMP-only clipboard images to PNG on the fly). Configured to use AWS Bedrock for Claude API access.
-- **agent-wrap.bashrc**: Provides bash functions to be sourced in your shell:
-  - `agent([--base] [args...])`: Runs Claude Code in Docker with proper volume mounts and credentials. With `--base`, ignores any `Dockerfile.agent` in the current directory and launches the base `claude-agent` image instead (no project-specific `EXPOSE`, `agent-user`, or `agent-run-args` are applied). The flag is consumed by `agent()` itself; remaining args are forwarded to the in-container `claude` CLI.
-  - `rebuild_agent([--full])`: Rebuilds the resolved image with `--no-cache`. With `--full`, rebuilds the base `claude-agent` image first, then the project image. Without `--full` in a project whose `Dockerfile.agent` uses `FROM claude-agent` and the base is missing, fails fast with a hint pointing at `--full`. Without `--full` in a project whose `Dockerfile.agent` inherits from a non-`claude-agent` base, prints a one-line migration suggestion but builds normally.
-  - `create_custom_agent()`: Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory.
-  - `agent_usage()`: Aggregates token usage and estimated cost across every directory the user has launched `agent` in. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` (a flat list of absolute paths, appended to by `agent()` on each invocation) and walks each project's `.claude/sessions/*.jsonl` files. Prints an aligned table sorted by cost descending plus per-model and per-day breakdowns (the per-day section defaults to the last 30 calendar days in host-local time; pass `--days N` through to widen, or `--days 0` to show every active day). Runs on the host (only the host can see every project's session data — each container only mounts one project at a time). Implemented as a thin bash wrapper around `agent_usage.py`.
-- **agent_usage.py**: Python script (stdlib only) invoked by the `agent_usage` shell function. Streams session JSONL files, sums `message.usage` token counts grouped by `message.model` and by host-local calendar date, and converts to USD using AWS Bedrock's published pricing — fetched on first run from `aws.amazon.com/bedrock/pricing/` (which is joined with `b0.p.awsstatic.com/.../bedrockfoundationmodels.json` to resolve the page's opaque `priceOf!...` placeholders into real numbers) and cached at `<wrap-dir>/.agent-launches/pricing.json` for 7 days. Region defaults to "US East (N. Virginia)" to match the wrapper's `AWS_REGION=us-east-1`; `--region` and `--refresh` flags can override, and `--days N` controls the per-day window (default 30, `0` = all). Unknown models render their cost as `?` rather than zero. Lives next to `statusline.py`; runs on the host, not mounted into the container.
+- **agent-wrap.bashrc**: Thin bash dispatcher sourced in your shell. Defines a single `agent` function that forwards `"$@"` to `python3 -m agent_wrap`. The first argument is a verb that selects the operation:
+  - `agent run [--base] [claude-args...]`: Runs Claude Code in Docker with proper volume mounts and credentials. With `--base`, ignores any `Dockerfile.agent` in the current directory and launches the base `claude-agent` image instead (no project-specific `EXPOSE`, `agent-user`, or `agent-run-args` are applied). The flag is consumed by the `run` handler itself; remaining args are forwarded to the in-container `claude` CLI.
+  - `agent rebuild [--full]`: Rebuilds the resolved image with `--no-cache`. With `--full`, rebuilds the base `claude-agent` image first, then the project image. Without `--full` in a project whose `Dockerfile.agent` uses `FROM claude-agent` and the base is missing, fails fast with a hint pointing at `--full`. Without `--full` in a project whose `Dockerfile.agent` inherits from a non-`claude-agent` base, prints a one-line migration suggestion but builds normally.
+  - `agent create`: Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory.
+  - `agent stats`: Aggregates token usage and estimated cost across every directory the user has launched `agent run` in. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` (a flat list of absolute paths, appended to by the `run` handler on each invocation) and walks each project's `.claude/sessions/*.jsonl` files. Prints an aligned table sorted by cost descending plus per-model and per-day breakdowns (the per-day section defaults to the last 30 calendar days in host-local time; pass `--days N` through to widen, or `--days 0` to show every active day). Runs on the host (only the host can see every project's session data — each container only mounts one project at a time).
+  - `agent update`: Pulls upstream wrapper changes; propagates `default-CLAUDE.md` updates into the user's global Claude config when unmodified, otherwise prompts.
+- **agent_wrap/commands/stats.py**: Python script (stdlib only) invoked by `agent stats`. Streams session JSONL files, sums `message.usage` token counts grouped by `message.model` and by host-local calendar date, and converts to USD using AWS Bedrock's published pricing — fetched on first run from `aws.amazon.com/bedrock/pricing/` (which is joined with `b0.p.awsstatic.com/.../bedrockfoundationmodels.json` to resolve the page's opaque `priceOf!...` placeholders into real numbers) and cached at `<wrap-dir>/.agent-launches/pricing.json` for 7 days. Region defaults to "US East (N. Virginia)" to match the wrapper's `AWS_REGION=us-east-1`; `--region` and `--refresh` flags can override, and `--days N` controls the per-day window (default 30, `0` = all). Unknown models render their cost as `?` rather than zero. Runs on the host, not mounted into the container.
 - **validate-dockerfile-agent**: Shell script mounted read-only into every container at `/opt/agent-wrap/validate-dockerfile-agent`. Validates a project's `Dockerfile.agent` before the agent prompts the user to rebuild: runs hadolint, checks wrapper-contract directives, and confirms the expected in-container user exists — catching "build succeeds, launch fails" scenarios at write time. When the `Dockerfile.agent` uses `FROM claude-agent`, the validator hardcodes that the base provides user `ubuntu`; for other bases it uses `crane` to probe the image's `/etc/passwd` from the registry (no Docker daemon).
 - **statusline.py**: Python script mounted read-only at `/opt/agent-wrap/statusline.py` and wired into the user's `settings.json` as the `statusLine` command on first launch. Renders a two-row status line (model/effort/cost on row 1, context-usage %/update-available notice on row 2). If the user removes the `statusLine` key from their `settings.json`, the wrapper re-injects it on the next launch — to customize, redefine the key instead of deleting it.
-- **telegram-notify.sh**: Bash script mounted read-only at `/opt/agent-wrap/telegram-notify.sh` and invoked by `PermissionRequest`, `Stop`, and `StopFailure` hooks when Telegram credentials are present in `~/claude_keys.json`. Sends a Telegram message when Claude asks for permission, finishes responding, or hits an API error. Hook entries are idempotently injected into `settings.json` by `_agent_ensure_telegram_hooks()` on each `agent()` launch when creds are configured.
+- **telegram-notify.sh**: Bash script mounted read-only at `/opt/agent-wrap/telegram-notify.sh` and invoked by `PermissionRequest`, `Stop`, and `StopFailure` hooks when Telegram credentials are present in `~/claude_keys.json`. Sends a Telegram message when Claude asks for permission, finishes responding, or hits an API error. Hook entries are idempotently injected into `settings.json` by `_agent_ensure_telegram_hooks()` on each `agent run` launch when creds are configured.
 - **md_to_html.js**: Node script mounted read-only at `/opt/agent-wrap/md_to_html.js` and invoked by `telegram-notify.sh` to convert Markdown into Telegram's subset of HTML (bold/italic/code/links/strikethrough + `<pre>` with optional language tag for code blocks).
 - **wl-paste-shim**: Bash shim mounted read-only at `/usr/local/bin/wl-paste` (only when `/mnt/wslg` exists on the host) so it shadows the real `/usr/bin/wl-paste` via PATH order. WSLg advertises Windows clipboard images as `image/bmp` only, but Claude Code's `Ctrl+V` paste handler asks for `image/png` and doesn't fall back. The shim intercepts `--list-types` (advertises `image/png` when only BMP is on clipboard) and `--type image/png` (fetches BMP and pipes through `convert bmp:- png:-`), and falls through to the real binary for everything else.
-- **providers/**: Provider plugin tree. Each subdirectory implements a model-routing backend; the launcher selects one by `AGENT_PROVIDER` env var (default `litellm-bedrock`). The contract is three functions (`_provider_ensure`, `_provider_release`, `_provider_label_args`) plus one output array `PROVIDER_EXTRA_RUN_ARGS`. Renaming any of those breaks `agent-wrap.bashrc`. Drop in a new directory to add a provider — auto-discovered, no central registry.
-- **providers/template/**: Reference template for new providers. `provider.sh` carries failing stubs of the three contract functions; `README.md` documents the lifecycle, args, and expected outputs. Copy this directory to `providers/<your-name>/` and implement the stubs.
-- **providers/litellm-bedrock/provider.sh**: Default provider — host-side bash file sourced by `agent-wrap.bashrc` when `AGENT_PROVIDER` is unset or `litellm-bedrock`. Owns the LiteLLM sidecar lifecycle (lazy start, healthcheck-based readiness wait, refcount, shutdown) under a `flock`. Reads the user's Bedrock key from `${HOME}/claude_keys.json` itself — the launcher doesn't pass it in. Sets `PROVIDER_EXTRA_RUN_ARGS` with the proxy-binding `-e` env vars Claude Code expects (`AWS_BEARER_TOKEN_BEDROCK`, `ANTHROPIC_BEDROCK_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`) and the `--network` / `--add-host` flags needed to reach the sidecar from the agent's network namespace. The image is pinned to `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb…` (constant near the top of the file). The proxy's master key lives only in the running sidecar's env: minted in memory on first start, recovered via `docker inspect` on subsequent launches that find the sidecar already running. Refcount lives at `<wrap-dir>/.agent-launches/litellm.refcount`. Not mounted into the claude-agent container — host-side only.
-- **providers/litellm-bedrock/config.yaml**: LiteLLM proxy config, mounted read-only into the *sidecar* container (not into claude-agent). Phase-1 config is `master_key: os.environ/LITELLM_MASTER_KEY` plus a wildcard `model_list` route (`model_name: "*"` → `model: "bedrock/*"`) so any Bedrock model ID (including inference profiles like `us.anthropic.claude-opus-4-7`) resolves through `/bedrock/model/<id>/invoke*` without enumerating each model. A commented-out Langfuse callback block is present as a placeholder for the next change. Resolved at call time from `${BASH_SOURCE[0]}` so each provider owns its own config layout.
+- **agent_wrap/**: Python package containing all orchestration logic. `__main__.py` is the CLI entry point (invoked via `python3 -m agent_wrap`). Subpackages:
+  - **commands/**: One module per verb (`run.py`, `rebuild.py`, `create.py`, `stats.py`, `update.py`).
+  - **providers/**: Provider plugin tree. `base.py` defines the `Provider` ABC (4 abstract methods: `ensure`, `release`, `get_run_args`, `get_label_args`). Each provider is a subdirectory with `provider.py` + `config.yaml`. `litellm_common/provider.py` implements the shared LiteLLM sidecar lifecycle (~350 lines); `litellm_bedrock/` and `litellm_dashscope/` are thin overrides (~60 lines each). Auto-discovery in `__init__.py` scans `*/provider.py` for concrete `Provider` subclasses (`inspect.isabstract()` filters out the base classes). Selected by `AGENT_PROVIDER` env var (default `litellm-bedrock`).
+  - **config.py**: Settings JSON manipulation (statusline injection, telegram hooks, project directory creation).
+  - **lib/**: Low-level helpers with no dependency on the rest of the package.
+    - **lib/console.py**: ANSI/SGR + cursor control sequences.
+    - **lib/utils.py**: Name sanitization, image resolution, UUID generation, Dockerfile.agent parsing, env-var truthiness check.
+    - **lib/docker_utils.py**: Generic `docker_run` subprocess wrapper plus Docker info queries (rootless detection, image existence checks, user mapping).
 
 ## Key Configuration
 
 ### Environment Variables (set on the agent container at `docker run` time)
 
-The four proxy-binding env vars below are produced by the active provider (default: `providers/litellm-bedrock/provider.sh`) and injected via the `PROVIDER_EXTRA_RUN_ARGS` array (spliced into `docker run` by `agent()`). The launcher itself doesn't know about them — that keeps `agent-wrap.bashrc` agnostic to which provider implementation a fork uses.
+The four proxy-binding env vars below are produced by the active provider (default: `agent_wrap/providers/litellm_bedrock/provider.py`) and injected via `get_run_args()` (spliced into `docker run` by the agent command). The launcher itself doesn't know about them — that keeps the orchestration agnostic to which provider implementation a fork uses.
 
 - `CLAUDE_CODE_USE_BEDROCK=1`: Enables AWS Bedrock integration in Claude Code
-- `AWS_REGION=us-east-1`: Default AWS region (kept for parity; the sidecar is the one that actually talks to Bedrock). Overriding this on the host does **not** repoint the sidecar's upstream Bedrock region — both values are pinned together inside `providers/litellm-bedrock/provider.sh` (the agent's `AWS_REGION` next to `AGENT_ENV_ARGS`, the sidecar's `AWS_REGION_NAME` inside `__litellm_start`). To target a different region, fork both spots together.
+- `AWS_REGION=us-east-1`: Default AWS region (kept for parity; the sidecar is the one that actually talks to Bedrock). Overriding this on the host does **not** repoint the sidecar's upstream Bedrock region — both values are pinned together inside `agent_wrap/providers/litellm_bedrock/provider.py` (the agent's `AWS_REGION` in `get_agent_env`, the sidecar's `AWS_REGION_NAME` in `get_sidecar_env`). To target a different region, fork both spots together.
 - `AWS_BEARER_TOKEN_BEDROCK`: the **LiteLLM sidecar's master key**, not the user's AWS bearer token. The user's actual Bedrock key goes only to the sidecar.
 - `ANTHROPIC_BEDROCK_BASE_URL`: `http://agent-wrap-litellm:4000/bedrock` (the sidecar's container name on the shared user-defined Docker network `agent-wrap-net`). When the agent runs in the host network namespace (`AGENT_USE_HOST_NETWORK=1` or `--network host` in `agent-run-args`), the same hostname is resolved via an injected `--add-host` entry — pointing at `127.0.0.1` if the sidecar is also in host mode, otherwise at the sidecar's bridge IP or the host gateway depending on the running mode. Points Claude Code at the sidecar's Bedrock passthrough endpoint.
 
@@ -46,20 +51,20 @@ These are injected via `-e` on each launch rather than baked into the image so u
 
 ### Sidecar networking
 
-The sidecar lives on a Docker user-defined bridge named `agent-wrap-net` (created on demand by `_provider_ensure`). It is not published on a host port — agents reach it directly over Docker networks:
+The sidecar lives on a Docker user-defined bridge named `agent-wrap-net` (created on demand by `LiteLLMProvider.ensure()`). It is not published on a host port — agents reach it directly over Docker networks:
 
-- **Default-network agent** (no `--network` in `agent-run-args`): `_provider_ensure` populates `PROVIDER_EXTRA_RUN_ARGS` with the proxy-binding `-e` env vars plus `--network agent-wrap-net`, so the agent joins the same network and resolves `agent-wrap-litellm` by container DNS.
-- **Custom-network agent** (`Dockerfile.agent` declares `--network myproj` via `agent-run-args`): the launcher parses the network name out of the args and passes it to `_provider_ensure`, which `docker network connect`s the sidecar to that network so the same container-name URL resolves on the project's network.
-- **`AGENT_USE_HOST_NETWORK=1`**: the agent runs in the host network namespace, and `_provider_ensure` also launches the **sidecar** with `--network host` so the proxy's own outbound Bedrock traffic escapes the bridge / FORWARD chain (otherwise the flag would only fix half the path). The agent reaches the sidecar via `--add-host agent-wrap-litellm:127.0.0.1`. Mode is decided at cold-start time and is **first-launch-wins**: a later launch without the flag inherits the running mode rather than fighting it. The sidecar binds the WSL distro's port 4000 in this mode — health-poll catches the failure cleanly if anything else is already listening there.
+- **Default-network agent** (no `--network` in `agent-run-args`): `ensure()` populates `get_run_args()` with the proxy-binding `-e` env vars plus `--network agent-wrap-net`, so the agent joins the same network and resolves `agent-wrap-litellm` by container DNS.
+- **Custom-network agent** (`Dockerfile.agent` declares `--network myproj` via `agent-run-args`): the launcher parses the network name out of the args and passes it to `ensure()`, which `docker network connect`s the sidecar to that network so the same container-name URL resolves on the project's network.
+- **`AGENT_USE_HOST_NETWORK=1`**: the agent runs in the host network namespace, and `ensure()` also launches the **sidecar** with `--network host` so the proxy's own outbound Bedrock traffic escapes the bridge / FORWARD chain (otherwise the flag would only fix half the path). The agent reaches the sidecar via `--add-host agent-wrap-litellm:127.0.0.1`. Mode is decided at cold-start time and is **first-launch-wins**: a later launch without the flag inherits the running mode rather than fighting it. The sidecar binds the WSL distro's port 4000 in this mode — health-poll catches the failure cleanly if anything else is already listening there.
 - **Cross-mode reuse** (bridge-mode agent finds a host-mode sidecar already running, or vice versa): the launcher adapts. A bridge-mode agent reaching a host-mode sidecar uses `--add-host agent-wrap-litellm:host-gateway` (Docker 20.10+'s magic resolver for the host's IP from inside a bridge container).
 
 This sidesteps the FORWARD=DROP scenario triggered by parallel WSL2 distros' dockerds fighting over iptables-legacy rules — agent traffic to the sidecar (and the sidecar's traffic to Bedrock, in host mode) stays inside the namespace it's already on rather than flowing through the host's FORWARD chain.
 
-When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent()` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
+When `/mnt/wslg` exists on the host (WSL2 + WSLg), `agent run` additionally forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` so Wayland/X11 clipboard clients in the container reach WSLg's sockets. On non-WSL hosts the block is a no-op.
 
 ### `AGENT_USE_HOST_NETWORK` (WSL workaround)
 
-Setting `AGENT_USE_HOST_NETWORK=1` (or any non-empty value other than `0`/`false`/`no`) makes `agent()` launch the container with `--network host`. The switch is honored only on WSL hosts (detected via `microsoft` in `/proc/version`); on macOS or native Linux it is ignored with a note.
+Setting `AGENT_USE_HOST_NETWORK=1` (or any non-empty value other than `0`/`false`/`no`) makes `agent run` launch the container with `--network host`. The switch is honored only on WSL hosts (detected via `microsoft` in `/proc/version`); on macOS or native Linux it is ignored with a note.
 
 Use this when running multiple WSL2 distros that each run their own `dockerd`. The two daemons share one kernel and fight over `iptables-legacy` rules — the second daemon's startup flips the legacy `FORWARD` policy to `DROP`, stranding the first distro's containers (parent shell stays online; only forwarded/routed traffic dies). `--network host` puts the agent in the WSL distro's namespace directly, sidestepping the bridge and FORWARD chain entirely.
 
@@ -72,11 +77,11 @@ Trade-offs:
 
 ### `CLAUDE_AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
 
-`agent()` and `rebuild_agent()` perform a best-effort upstream check on every invocation: `git fetch` against the wrap-dir's tracking branch, and if `HEAD` is behind, prompt the user `Update agent-wrap now? [y/N]`. On accept, the wrapper runs `agent-wrap_update`, re-sources `agent-wrap.bashrc` in the parent shell, and returns without launching/rebuilding — the user re-runs the original command afterwards (per the spec, an accepted update intentionally does not chain into the original action). Decline with `n`/Enter and the original command runs as usual.
+`agent run` and `agent rebuild` perform a best-effort upstream check on every invocation: `git fetch` against the wrap-dir's tracking branch, and if `HEAD` is behind, prompt the user `Update agent-wrap now? [y/N]`. On accept, the wrapper runs `agent update` and returns without launching/rebuilding — re-source `agent-wrap.bashrc` and re-run the original command afterwards (per the spec, an accepted update intentionally does not chain into the original action). Decline with `n`/Enter and the original command runs as usual.
 
 Set `CLAUDE_AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. Any unexpected condition — non-git wrap-dir, detached HEAD, `git fetch` failure or 10s timeout — also silently skips the check, so a flaky network never blocks a launch.
 
-Other wrap functions (`agent_usage`, `create_custom_agent`, `agent-wrap_update` itself) do not perform the check.
+Other verbs (`agent stats`, `agent create`, `agent update` itself) do not perform the check.
 
 ### Volume Mounts (in agent function)
 
@@ -94,22 +99,22 @@ The wrapper mirrors a minimal `$HOME` layout into the container at `/home/<agent
 - `$(pwd)/.claude/daemon.status.json` → `/home/<user>/.claude/daemon.status.json` (per-project supervisor status snapshot)
 - `$(pwd)/.claude/history.jsonl` → `/home/<user>/.claude/history.jsonl` (per-project shell-prompt history)
 - `$(pwd)/.claude/{plans,todos,tasks,shell-snapshots,session-env,file-history,paste-cache}/` → `/home/<user>/.claude/<same>/` (per-project overlays for plan-mode files, TodoWrite/TaskCreate state, task definitions, shell snapshots, session env, file-edit history, and paste cache)
-- `<wrap-dir>/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
-- `<wrap-dir>/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
-- `<wrap-dir>/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
-- `<wrap-dir>/statusline.py` → `/opt/agent-wrap/statusline.py` (read-only; the default Claude Code status-line script, invoked via `settings.json`)
-- `<wrap-dir>/telegram-notify.sh` → `/opt/agent-wrap/telegram-notify.sh` (read-only; Telegram notification script invoked by hooks)
-- `<wrap-dir>/md_to_html.js` → `/opt/agent-wrap/md_to_html.js` (read-only; Markdown→Telegram-HTML converter used by `telegram-notify.sh`)
+- `<wrap-dir>/ops/Dockerfile` → `/opt/agent-wrap/Dockerfile` (read-only; lets the agent inspect its own base image)
+- `<wrap-dir>/ops/agent-wrap.bashrc` → `/opt/agent-wrap/agent-wrap.bashrc` (read-only; lets the agent inspect the launcher contract)
+- `<wrap-dir>/ops/validate-dockerfile-agent` → `/opt/agent-wrap/validate-dockerfile-agent` (read-only; validator the agent runs before prompting rebuild)
+- `<wrap-dir>/ops/statusline.py` → `/opt/agent-wrap/statusline.py` (read-only; the default Claude Code status-line script, invoked via `settings.json`)
+- `<wrap-dir>/ops/telegram-notify.sh` → `/opt/agent-wrap/telegram-notify.sh` (read-only; Telegram notification script invoked by hooks)
+- `<wrap-dir>/ops/md_to_html.js` → `/opt/agent-wrap/md_to_html.js` (read-only; Markdown→Telegram-HTML converter used by `telegram-notify.sh`)
 
-When the host is WSL2 with WSLg (i.e. `/mnt/wslg` exists), `agent()` also adds:
+When the host is WSL2 with WSLg (i.e. `/mnt/wslg` exists), `agent run` also adds:
 - `/mnt/wslg` → `/mnt/wslg` (Wayland + Pulse sockets, `runtime-dir/wayland-0`)
 - `/mnt/wslg/.X11-unix` → `/tmp/.X11-unix` (XWayland socket, the conventional X11 path)
-- `<wrap-dir>/wl-paste-shim` → `/usr/local/bin/wl-paste` (read-only; shadows the real binary so callers asking for `image/png` get on-the-fly BMP→PNG conversion of WSLg-surfaced clipboard images)
+- `<wrap-dir>/ops/wl-paste-shim` → `/usr/local/bin/wl-paste` (read-only; shadows the real binary so callers asking for `image/png` get on-the-fly BMP→PNG conversion of WSLg-surfaced clipboard images)
 
 These are gated on `[ -d /mnt/wslg ]` so they have no effect on macOS or native Linux hosts.
 
 ### Authentication
-The `agent()` function expects credentials in `~/claude_keys.json` with the structure:
+The `agent run` command expects credentials in `~/claude_keys.json` with the structure:
 ```json
 {
   "ServiceSpecificCredential": {
@@ -126,35 +131,35 @@ The `agent()` function expects credentials in `~/claude_keys.json` with the stru
 
 ### LiteLLM sidecar lifecycle
 
-A single shared `agent-wrap-litellm` Docker container fronts AWS Bedrock for every claude-agent launch on this host. It is **not** built by `rebuild_agent`; the wrapper pulls a pinned upstream image directly. Lifecycle:
+A single shared `agent-wrap-litellm` Docker container fronts AWS Bedrock for every claude-agent launch on this host. It is **not** built by `agent rebuild`; the wrapper pulls a pinned upstream image directly. Lifecycle:
 
-- **Lazy start**: the first `agent` launch creates the user-defined `agent-wrap-net` bridge (idempotent) and starts the sidecar attached to it (under `flock` on `<wrap-dir>/.agent-launches/litellm.lock`) with a Docker `--health-cmd` that hits `/health/liveliness` from inside the container, and waits up to ~90 s for `.State.Health.Status` to flip to `healthy`. The sidecar publishes no host port — agents reach it over the shared bridge.
-- **Network attach (per-launch)**: if the agent will run on a project-supplied network (`--network X` in `agent-run-args`), `_provider_ensure` `docker network connect`s the sidecar to that network on the agent's launch so the agent reaches `agent-wrap-litellm` by container DNS without leaving its own bridge.
-- **Refcount**: each running claude-agent registers its `AGENT_INSTANCE_ID` in `<wrap-dir>/.agent-launches/litellm.refcount`. Parallel agents share the one sidecar.
+- **Lazy start**: the first `agent run` launch creates the user-defined `agent-wrap-net` bridge (idempotent) and starts the sidecar attached to it (under `flock` on `agent_wrap/providers/<provider>/lock`) with a Docker `--health-cmd` that hits `/health/liveliness` from inside the container, and waits up to ~90 s for `.State.Health.Status` to flip to `healthy`. The sidecar publishes no host port — agents reach it over the shared bridge.
+- **Network attach (per-launch)**: if the agent will run on a project-supplied network (`--network X` in `agent-run-args`), `ensure()` `docker network connect`s the sidecar to that network on the agent's launch so the agent reaches `agent-wrap-litellm` by container DNS without leaving its own bridge.
+- **Refcount**: each running claude-agent registers its `AGENT_INSTANCE_ID` in `agent_wrap/providers/<provider>/refcount`. Parallel agents share the one sidecar.
 - **Refcount-based stop**: when the last agent exits and the refcount file is empty, the sidecar is stopped. Stale entries (from killed launches) are reconciled against `docker ps --filter label=agent-wrap.role=claude-agent` on every release.
 - **Master key**: minted in memory on first start and passed to the sidecar via `-e LITELLM_MASTER_KEY=…`. Subsequent launches that find the sidecar already running recover it via `docker inspect` rather than reading from disk. Consequence: a manual `docker stop`/`restart` of the sidecar mints a fresh key on its next start, which would 401 any in-flight agents holding the old one — but `--rm` plus the refcount-driven stop already imply teardown of those agents, so this matches the actual fault model.
-- **Failure mode**: any failure during `_provider_ensure` aborts the agent launch loudly and dumps the sidecar's recent logs. There is no fallback to direct Bedrock — that would mask a misconfigured proxy.
+- **Failure mode**: any failure during `ensure()` aborts the agent launch loudly and dumps the sidecar's recent logs. There is no fallback to direct Bedrock — that would mask a misconfigured proxy.
 
-To bump the LiteLLM version, change the `_LITELLM_IMAGE` constant at the top of `providers/litellm-bedrock/provider.sh` (tag + digest) and, if any of the lifecycle behavior changed in upstream, update this file accordingly.
+To bump the LiteLLM version, change the `image` class attribute in `agent_wrap/providers/litellm_common/provider.py` or in the specific provider override (tag + digest) and, if any of the lifecycle behavior changed in upstream, update the base class accordingly.
 
 ### Provider plugin selection
 
-`agent-wrap.bashrc` sources exactly one provider per session, selected by the `AGENT_PROVIDER` env var. The default is `litellm-bedrock`, preserving historical behavior. Forks that want a different routing implementation (direct Anthropic, Vertex, a hosted LiteLLM, etc.) should drop a `providers/<name>/provider.sh` into the tree and set `AGENT_PROVIDER=<name>` rather than editing the launcher. If the resolved `providers/$AGENT_PROVIDER/provider.sh` doesn't exist, the launcher fails fast and lists available providers (auto-discovered by directory glob — no central registry to keep in sync).
+`main.py` resolves exactly one provider per invocation, selected by the `AGENT_PROVIDER` env var. The default is `litellm-bedrock`, preserving historical behavior. Forks that want a different routing implementation (direct Anthropic, Vertex, a hosted LiteLLM, etc.) should create `agent_wrap/providers/<name>/` with `provider.py` and `config.yaml`, then set `AGENT_PROVIDER=<name>`. The auto-discovery in `agent_wrap/providers/__init__.py` scans all `*/provider.py` for concrete `Provider` subclasses and fails fast if the requested provider isn't found.
 
-The provider contract is three functions (`_provider_ensure`, `_provider_release`, `_provider_label_args`) plus one output global, `PROVIDER_EXTRA_RUN_ARGS` — an array of flags spliced into the agent's `docker run` carrying both the proxy-binding `-e` env vars Claude Code expects and the network/`--add-host` flags needed to reach the sidecar. Renaming any of those breaks the launcher; everything else (helper functions, the LiteLLM image pin, healthcheck logic, etc.) is internal to the provider. `providers/template/` carries failing stubs and a README documenting the contract — copy it to start a new provider.
+The provider contract is the `Provider` ABC in `agent_wrap/providers/base.py` — 4 abstract methods (`ensure`, `release`, `get_run_args`, `get_label_args`). The shared LiteLLM sidecar lifecycle lives in `agent_wrap/providers/litellm_common/provider.py`; new LiteLLM-based providers subclass `LiteLLMProvider` and only override auth/env specifics.
 
 ## Common Commands
 
 ### Build the Docker image
 ```bash
 source agent-wrap.bashrc
-rebuild_agent
+agent rebuild
 ```
 
 ### Run Claude Code
 ```bash
 source agent-wrap.bashrc
-agent [arguments]
+agent run [arguments]
 ```
 
 ### Project Structure
@@ -164,7 +169,7 @@ agent [arguments]
 
 ## Per-project customization
 
-A project can provide its own `Dockerfile.agent` at its root to layer project-specific tooling on top of the base image. The recommended template is `FROM claude-agent` — the base provides Node, the Claude CLI, hadolint, crane, clipboard tooling, `WORKDIR /workspace`, and `ENTRYPOINT ["claude"]`, so the project file only needs to add its own `RUN` steps. `create_custom_agent` writes that stub. Existing files that inherit from `ubuntu:24.04` (or any other base) keep working — `rebuild_agent` prints a one-line migration suggestion but does not change behavior.
+A project can provide its own `Dockerfile.agent` at its root to layer project-specific tooling on top of the base image. The recommended template is `FROM claude-agent` — the base provides Node, the Claude CLI, hadolint, crane, clipboard tooling, `WORKDIR /workspace`, and `ENTRYPOINT ["claude"]`, so the project file only needs to add its own `RUN` steps. `agent create` writes that stub. Existing files that inherit from `ubuntu:24.04` (or any other base) keep working — `agent rebuild` prints a one-line migration suggestion but does not change behavior.
 
 The file must start with a `# agent-name: <name>` comment; the built image is tagged `claude-agent-<name>`. Additional directives are recognized:
 
@@ -184,13 +189,13 @@ Security note: these flags are pass-through to `docker run`, so a `Dockerfile.ag
 
 ### `HOST_UID` / `HOST_GID` build args
 
-`rebuild_agent` always passes `--build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)`. A `Dockerfile.agent` that needs host-UID awareness at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory) can declare `ARG HOST_UID` / `ARG HOST_GID` and consume them. Projects that don't use these args are unaffected — the base `Dockerfile` declares them as no-ops to silence Docker's unused-build-arg warning.
+`agent rebuild` always passes `--build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)`. A `Dockerfile.agent` that needs host-UID awareness at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory) can declare `ARG HOST_UID` / `ARG HOST_GID` and consume them. Projects that don't use these args are unaffected — the base `Dockerfile` declares them as no-ops to silence Docker's unused-build-arg warning.
 
 Because the baked-in UID differs per host user, each user on a shared host builds their own image variant under the same tag.
 
 ## Keeping `default-CLAUDE.md` in sync
 
-`default-CLAUDE.md` is copied into every consumer project's `.claude_config/.claude/CLAUDE.md` on first `agent` run and is how agents running in *other* projects learn about this wrapper's runtime contract (directives, mounts, installation rules, etc.).
+`default-CLAUDE.md` is copied into every consumer project's `.claude_config/.claude/CLAUDE.md` on first `agent run` and is how agents running in *other* projects learn about this wrapper's runtime contract (directives, mounts, installation rules, etc.).
 
 **Whenever you change wrapper behavior that a consumer agent needs to know about, update `default-CLAUDE.md` in the same change.** This includes:
 
@@ -205,7 +210,16 @@ What does **not** require a `default-CLAUDE.md` update:
 - Changes to this repo's own `CLAUDE.md` (which governs editing *this* repo, not consumer projects).
 - Host-side changes invisible inside the container (e.g., how `.claude_config/` is laid out on disk).
 
-`agent-wrap_update` handles propagation: if a user's copy matches the old default, it is replaced automatically; if it's been customized, they get a diff-and-merge prompt. So updating `default-CLAUDE.md` is the only action required on the wrapper side — consumer projects pick up the change on their next `agent-wrap_update`.
+`agent update` handles propagation: if a user's copy matches the old default, it is replaced automatically; if it's been customized, they get a diff-and-merge prompt. So updating `default-CLAUDE.md` is the only action required on the wrapper side — consumer projects pick up the change on their next `agent update`.
+
+## Development workflow
+
+A `Makefile` provides all QA targets. Follow these rules when working on this repo:
+
+- **`make check` must pass before handing off.** Never conclude a task or ask the user to take over until `make check` (lintcheck + format-check + test + typecheck) passes cleanly. Fix any failures yourself rather than passing them to the user.
+- **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck` rather than invoking `pytest`, `ruff`, `pyrefly`, etc. by hand. The Makefile is the single source of truth for how each tool is called.
+- **Fix lint/format errors with `make` first.** When `make check` fails on lint or format issues, run `make lint` or `make format` to auto-fix before attempting a manual edit. Only use manual edits when the auto-fix doesn't resolve the issue.
+- **Never `pip install` dependencies.** If a change requires a new Python package, add it to the `dev` dependency group in `pyproject.toml` and prompt the user to run `agent rebuild`. Do not attempt to install packages inside the running session — changes are discarded on restart.
 
 ## Notes
 

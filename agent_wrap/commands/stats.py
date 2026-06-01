@@ -1,12 +1,6 @@
-#!/usr/bin/env python3
-# This file has been created with the assistance of an AI tool.
-"""Aggregate Claude Code usage stats across all projects where `agent` was launched.
+# This file has been edited with the assistance of an AI tool.
+"""The `stats` subcommand — aggregate Claude Code usage stats across all projects."""
 
-Reads a list of project paths (one per line) and walks each project's
-`.claude/sessions/*.jsonl` files, summing token usage and estimated cost.
-Prints an aligned text table sorted by cost descending, plus a per-model
-breakdown.
-"""
 from __future__ import annotations
 
 import gzip
@@ -18,8 +12,14 @@ import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from agent_wrap.lib.console import Ansi
+
+USAGE = "[--region LABEL] [--refresh] [--days N]"
+SUMMARY = "Show token usage stats"
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
@@ -43,22 +43,22 @@ PRICING_SCHEMAS = {
     5: ("in", "out", "cw_5m", "cw_1h", "cr"),
 }
 
-DIM = "\033[90m"
-YELLOW = "\033[1;33m"
-RESET = "\033[0m"
+_BILLION = 1_000_000_000
+_MILLION = 1_000_000
+_THOUSAND = 1_000
 
 
 def color(s: str, code: str) -> str:
-    return f"{code}{s}{RESET}" if sys.stdout.isatty() else s
+    return f"{code}{s}{Ansi.RESET}" if sys.stdout.isatty() else s
 
 
 def fmt_count(n: int) -> str:
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.2f}G"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.2f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
+    if n >= _BILLION:
+        return f"{n / _BILLION:.2f}G"
+    if n >= _MILLION:
+        return f"{n / _MILLION:.2f}M"
+    if n >= _THOUSAND:
+        return f"{n / _THOUSAND:.1f}K"
     return str(n)
 
 
@@ -69,14 +69,14 @@ def fmt_cost(c: float | None) -> str:
 
 
 def _http_get(url: str) -> bytes:
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310
         url,
         headers={
             "User-Agent": "agent-wrap/agent_usage",
             "Accept-Encoding": "gzip",
         },
     )
-    with urllib.request.urlopen(req, timeout=PRICING_FETCH_TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=PRICING_FETCH_TIMEOUT) as resp:  # noqa: S310
         data = resp.read()
         if resp.headers.get("Content-Encoding") == "gzip":
             data = gzip.decompress(data)
@@ -84,7 +84,8 @@ def _http_get(url: str) -> bytes:
 
 
 def _scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[str]]]:
-    """Extract `{normalized_model: (column_schema, priceOf_keys)}` from the
+    """
+    Extract `{normalized_model: (column_schema, priceOf_keys)}` from the
     Bedrock pricing page HTML.
 
     Anthropic Claude rows publish either 5 or 7 priceOf columns depending on
@@ -152,7 +153,8 @@ def _scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[
 def _build_pricing_table(
     page_html: str, data_json: dict, region_label: str
 ) -> dict[str, dict[str, float]]:
-    """Join the page's model→keys map with the data file's region→key→price
+    """
+    Join the page's model→keys map with the data file's region→key→price
     map, producing `{canonical_model: {in,out,cw_5m,cw_1h,cr: $/MTok}}`.
 
     Both cache-write rates are kept because session usage records split the
@@ -164,14 +166,14 @@ def _build_pricing_table(
 
     table: dict[str, dict[str, float]] = {}
     for canonical, (schema, keys) in keys_by_model.items():
-        cols = dict(zip(schema, keys))
+        cols = dict(zip(schema, keys, strict=True))
         try:
             row = {
-                "in":    float(region[cols["in"]]["price"]),
-                "out":   float(region[cols["out"]]["price"]),
+                "in": float(region[cols["in"]]["price"]),
+                "out": float(region[cols["out"]]["price"]),
                 "cw_5m": float(region[cols["cw_5m"]]["price"]),
                 "cw_1h": float(region[cols["cw_1h"]]["price"]),
-                "cr":    float(region[cols["cr"]]["price"]),
+                "cr": float(region[cols["cr"]]["price"]),
             }
         except (KeyError, TypeError, ValueError):
             continue
@@ -182,9 +184,11 @@ def _build_pricing_table(
 def load_prices(
     cache_path: Path | None,
     region_label: str = DEFAULT_REGION_LABEL,
+    *,
     refresh: bool = False,
 ) -> dict[str, dict[str, float]]:
-    """Return the pricing table, refreshing from AWS if cache is missing/stale.
+    """
+    Return the pricing table, refreshing from AWS if cache is missing/stale.
 
     On any network or parse failure, falls back to the cached copy if there
     is one; otherwise returns an empty dict (callers will then render unknown
@@ -204,7 +208,7 @@ def load_prices(
         and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
     )
 
-    if fresh_enough and not refresh:
+    if fresh_enough and not refresh and cached is not None:
         return cached.get("prices") or {}
 
     try:
@@ -214,7 +218,7 @@ def load_prices(
     except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
         if cached:
             return cached.get("prices") or {}
-        sys.stderr.write(f"agent_usage: could not fetch pricing ({e}); costs will show as '?'.\n")
+        sys.stderr.write(f"usage: could not fetch pricing ({e}); costs will show as '?'.\n")
         return {}
 
     if not prices:
@@ -250,7 +254,8 @@ _MODEL_FAMILY_RE_T_FIRST = re.compile(
 
 
 def normalize_model(model: str) -> str | None:
-    """Return a canonical 'claude-<tier>-<ver>' key for a session model id.
+    """
+    Return a canonical 'claude-<tier>-<ver>' key for a session model id.
 
     Handles the various forms session JSONLs surface:
       claude-opus-4-7
@@ -283,11 +288,11 @@ def cost_for(model: str, usage: dict, prices: dict) -> float | None:
     if p is None:
         return None
     return (
-        usage["in"]    * p["in"]    / 1_000_000
-        + usage["out"]   * p["out"]   / 1_000_000
+        usage["in"] * p["in"] / 1_000_000
+        + usage["out"] * p["out"] / 1_000_000
         + usage["cw_5m"] * p["cw_5m"] / 1_000_000
         + usage["cw_1h"] * p["cw_1h"] / 1_000_000
-        + usage["cr"]    * p["cr"]    / 1_000_000
+        + usage["cr"] * p["cr"] / 1_000_000
     )
 
 
@@ -307,7 +312,7 @@ def fmt_ts(dt: datetime | None) -> str:
 
 
 class Bucket:
-    __slots__ = ("msgs", "in_", "out", "cw_5m", "cw_1h", "cr")
+    __slots__ = ("cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
 
     def __init__(self) -> None:
         self.msgs = 0
@@ -333,7 +338,7 @@ class Bucket:
             self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
         self.cr += usage.get("cache_read_input_tokens", 0) or 0
 
-    def merge(self, other: "Bucket") -> None:
+    def merge(self, other: Bucket) -> None:
         self.msgs += other.msgs
         self.in_ += other.in_
         self.out += other.out
@@ -346,12 +351,18 @@ class Bucket:
         return self.cw_5m + self.cw_1h
 
     def usage_dict(self) -> dict:
-        return {"in": self.in_, "out": self.out,
-                "cw_5m": self.cw_5m, "cw_1h": self.cw_1h, "cr": self.cr}
+        return {
+            "in": self.in_,
+            "out": self.out,
+            "cw_5m": self.cw_5m,
+            "cw_1h": self.cw_1h,
+            "cr": self.cr,
+        }
 
 
 class Node:
-    """One node in the path trie used to render the per-project tree.
+    """
+    One node in the path trie used to render the per-project tree.
 
     A node is either *structural* (`row is None`, e.g. `/`, `home/`, an
     intermediate path segment) or a *project* node carrying the row dict
@@ -359,15 +370,22 @@ class Node:
     node and all its descendants, populated by `_aggregate` after the trie
     has been compressed and self-rows split.
     """
+
     __slots__ = (
-        "name", "children", "row",
-        "subtree_bucket", "subtree_known_cost", "subtree_unknown",
-        "subtree_sessions", "subtree_last_ts", "subtree_project_count",
+        "children",
+        "name",
+        "row",
+        "subtree_bucket",
+        "subtree_known_cost",
+        "subtree_last_ts",
+        "subtree_project_count",
+        "subtree_sessions",
+        "subtree_unknown",
     )
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.children: dict[str, "Node"] = {}
+        self.children: dict[str, Node] = {}
         self.row: dict | None = None
         self.subtree_bucket = Bucket()
         self.subtree_known_cost = 0.0
@@ -378,12 +396,21 @@ class Node:
 
 
 class DisplayRow:
-    __slots__ = ("label", "prefix_len", "is_structural", "sessions", "bucket", "last_ts", "cost_str")
+    __slots__ = (
+        "bucket",
+        "cost_str",
+        "is_structural",
+        "label",
+        "last_ts",
+        "prefix_len",
+        "sessions",
+    )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         label: str,
         prefix_len: int,
+        *,
         is_structural: bool,
         sessions: int,
         bucket: Bucket,
@@ -400,7 +427,8 @@ class DisplayRow:
 
 
 def build_project_tree(rows: list[dict]) -> Node:
-    """Build a path trie over `rows`, then compress single-child structural
+    """
+    Build a path trie over `rows`, then compress single-child structural
     chains and split projects-with-children into a `.` self-row.
     """
     root = Node("/")
@@ -426,7 +454,8 @@ def build_project_tree(rows: list[dict]) -> Node:
 
 
 def _compress(node: Node) -> None:
-    """Fold `parent/child` into one node when the parent is structural and
+    """
+    Fold `parent/child` into one node when the parent is structural and
     has exactly one child. The synthetic root is exempt (it stays as `/`).
     """
     new_children: dict[str, Node] = {}
@@ -435,13 +464,14 @@ def _compress(node: Node) -> None:
         while child.row is None and len(child.children) == 1:
             (gc,) = child.children.values()
             gc.name = f"{child.name}/{gc.name}"
-            child = gc
+            child = gc  # noqa: PLW2901
         new_children[child.name] = child
     node.children = new_children
 
 
 def _split_self_rows(node: Node) -> None:
-    """For project nodes that also have children (e.g. `mm-builder` with
+    """
+    For project nodes that also have children (e.g. `mm-builder` with
     `mm-builder/mm_random` underneath), move the project's own row to a
     synthetic `.` child so the parent can render as a structural subtotal.
     """
@@ -467,8 +497,7 @@ def _aggregate(node: Node) -> None:
         node.subtree_sessions += child.subtree_sessions
         node.subtree_project_count += child.subtree_project_count
         if child.subtree_last_ts is not None and (
-            node.subtree_last_ts is None
-            or child.subtree_last_ts > node.subtree_last_ts
+            node.subtree_last_ts is None or child.subtree_last_ts > node.subtree_last_ts
         ):
             node.subtree_last_ts = child.subtree_last_ts
     if node.row is not None:
@@ -481,14 +510,14 @@ def _aggregate(node: Node) -> None:
         node.subtree_sessions += r["sessions"]
         node.subtree_project_count += 1
         if r["last_ts"] is not None and (
-            node.subtree_last_ts is None
-            or r["last_ts"] > node.subtree_last_ts
+            node.subtree_last_ts is None or r["last_ts"] > node.subtree_last_ts
         ):
             node.subtree_last_ts = r["last_ts"]
 
 
 def flatten_tree(root: Node) -> list[DisplayRow]:
-    """Walk the tree in display order, producing one DisplayRow per visible
+    """
+    Walk the tree in display order, producing one DisplayRow per visible
     line. The root itself is not emitted; callers prepend their own banner.
     """
     out: list[DisplayRow] = []
@@ -512,7 +541,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
         ordered = dot + leaves + nodes
 
         for i, child in enumerate(ordered):
-            is_last = (i == len(ordered) - 1)
+            is_last = i == len(ordered) - 1
             connector = "└" if is_last else "├"
             prefix = "".join("│" if cont else " " for cont in ancestors_continue) + connector
             prefix_len = len(prefix)
@@ -526,41 +555,70 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
             if child.row is not None:
                 r = child.row
                 cost_str = fmt_cost(r["cost"])
-                out.append(DisplayRow(
-                    label=label,
-                    prefix_len=prefix_len,
-                    is_structural=False,
-                    sessions=r["sessions"],
-                    bucket=r["total"],
-                    last_ts=r["last_ts"],
-                    cost_str=cost_str,
-                ))
+                out.append(
+                    DisplayRow(
+                        label=label,
+                        prefix_len=prefix_len,
+                        is_structural=False,
+                        sessions=r["sessions"],
+                        bucket=r["total"],
+                        last_ts=r["last_ts"],
+                        cost_str=cost_str,
+                    )
+                )
             else:
                 cost_str = fmt_cost(child.subtree_known_cost) + (
                     "+?" if child.subtree_unknown else ""
                 )
-                out.append(DisplayRow(
-                    label=label,
-                    prefix_len=prefix_len,
-                    is_structural=True,
-                    sessions=child.subtree_sessions,
-                    bucket=child.subtree_bucket,
-                    last_ts=child.subtree_last_ts,
-                    cost_str=cost_str,
-                ))
+                out.append(
+                    DisplayRow(
+                        label=label,
+                        prefix_len=prefix_len,
+                        is_structural=True,
+                        sessions=child.subtree_sessions,
+                        bucket=child.subtree_bucket,
+                        last_ts=child.subtree_last_ts,
+                        cost_str=cost_str,
+                    )
+                )
 
             if child.children:
-                walk(child, ancestors_continue + [not is_last])
+                walk(child, [*ancestors_continue, not is_last])
 
     walk(root, [])
     return out
+
+
+def _process_record(
+    rec: dict,
+    seen_message_ids: set[str],
+    buckets: dict[str, dict[str, Bucket]],
+) -> datetime | None:
+    """Process a single JSONL record into buckets. Returns the timestamp if valid."""
+    ts = parse_ts(rec.get("timestamp"))
+    if rec.get("type") != "assistant":
+        return ts
+    msg = rec.get("message") or {}
+    usage = msg.get("usage")
+    if not usage:
+        return ts
+    msg_id = msg.get("id")
+    if msg_id:
+        if msg_id in seen_message_ids:
+            return ts
+        seen_message_ids.add(msg_id)
+    model = msg.get("model") or "?"
+    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts is not None else "?"
+    buckets[day_key][model].add(usage)
+    return ts
 
 
 def scan_project(
     path: Path,
     seen_message_ids: set[str],
 ) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], bool]:
-    """Return (session_count, last_ts, per_day_per_model_buckets, exists).
+    """
+    Return (session_count, last_ts, per_day_per_model_buckets, exists).
 
     The buckets dict is keyed `day → model → Bucket`, where `day` is either a
     `YYYY-MM-DD` string in host-local time or `"?"` for records whose
@@ -590,31 +648,17 @@ def scan_project(
     for f in files:
         try:
             with f.open("r", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
+                for raw_line in fh:
+                    line = raw_line.strip()
                     if not line:
                         continue
                     try:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    ts = parse_ts(rec.get("timestamp"))
+                    ts = _process_record(rec, seen_message_ids, buckets)
                     if ts is not None and (last_ts is None or ts > last_ts):
                         last_ts = ts
-                    if rec.get("type") != "assistant":
-                        continue
-                    msg = rec.get("message") or {}
-                    usage = msg.get("usage")
-                    if not usage:
-                        continue
-                    msg_id = msg.get("id")
-                    if msg_id:
-                        if msg_id in seen_message_ids:
-                            continue
-                        seen_message_ids.add(msg_id)
-                    model = msg.get("model") or "?"
-                    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts is not None else "?"
-                    buckets[day_key][model].add(usage)
         except OSError:
             continue
 
@@ -633,90 +677,131 @@ def load_projects(reg: Path) -> list[Path]:
     return out
 
 
-def render(
-    rows: list[dict],
+def _build_total_body(
     totals_by_model: dict[str, Bucket],
-    totals_by_day_by_model: dict[str, dict[str, Bucket]],
     prices: dict,
-    days_window: int,
-) -> str:
-    # Two stacked tables: "Total" (all-time per-model + per-project tree) and
-    # "Recent" (per-model + per-day, both restricted to the days_window). Each
-    # table has internal sections separated by a `├─┼─┤` divider; widths of
-    # the trailing six numeric columns are shared across both tables so the
-    # numbers line up vertically.
-    SHARED_HEADERS = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
-    SHARED_ALIGNS = [">", ">", ">", ">", ">", ">"]
-    N_SHARED = len(SHARED_HEADERS)
-
-    DIV = "__div__"
-
-    # === Total table: models (all-time) + project tree ===
-    total_headers = ["MODEL / PROJECT", "SESSIONS", "LAST LAUNCH", *SHARED_HEADERS]
-    total_aligns = ["<", ">", "<", *SHARED_ALIGNS]
-    total_body: list = []
+    tree_root: Node,
+    display_rows: list[DisplayRow],
+    div: str,
+) -> list:
+    """Build the body rows for the Total table."""
+    body: list = []
 
     if totals_by_model:
         ordered = sorted(
             totals_by_model.items(),
-            key=lambda kv: (cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0),
+            key=lambda kv: cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0,
             reverse=True,
         )
         for model, b in ordered:
             c = cost_for(model, b.usage_dict(), prices)
-            total_body.append(([
-                model, "", "",
-                fmt_count(b.msgs),
-                fmt_count(b.in_),
-                fmt_count(b.out),
-                fmt_count(b.cw),
-                fmt_count(b.cr),
-                fmt_cost(c),
-            ], "", 0))
-        total_body.append(DIV)
+            body.append(
+                (
+                    [
+                        model,
+                        "",
+                        "",
+                        fmt_count(b.msgs),
+                        fmt_count(b.in_),
+                        fmt_count(b.out),
+                        fmt_count(b.cw),
+                        fmt_count(b.cr),
+                        fmt_cost(c),
+                    ],
+                    "",
+                    0,
+                )
+            )
+        body.append(div)
 
-    tree_root = build_project_tree(rows)
-    display_rows = flatten_tree(tree_root)
-
-    # The synthetic root row ("/") carries the grand-total subtree aggregates,
-    # so it doubles as the project-section totals line.
-    total_body.append(([
-        "/",
-        str(tree_root.subtree_sessions),
-        fmt_ts(tree_root.subtree_last_ts),
-        fmt_count(tree_root.subtree_bucket.msgs),
-        fmt_count(tree_root.subtree_bucket.in_),
-        fmt_count(tree_root.subtree_bucket.out),
-        fmt_count(tree_root.subtree_bucket.cw),
-        fmt_count(tree_root.subtree_bucket.cr),
-        fmt_cost(tree_root.subtree_known_cost) + (
-            "+?" if tree_root.subtree_unknown else ""
-        ),
-    ], DIM, 0))
+    body.append(
+        (
+            [
+                "/",
+                str(tree_root.subtree_sessions),
+                fmt_ts(tree_root.subtree_last_ts),
+                fmt_count(tree_root.subtree_bucket.msgs),
+                fmt_count(tree_root.subtree_bucket.in_),
+                fmt_count(tree_root.subtree_bucket.out),
+                fmt_count(tree_root.subtree_bucket.cw),
+                fmt_count(tree_root.subtree_bucket.cr),
+                fmt_cost(tree_root.subtree_known_cost)
+                + ("+?" if tree_root.subtree_unknown else ""),
+            ],
+            Ansi.DIM,
+            0,
+        )
+    )
     for dr in display_rows:
-        style = DIM if dr.is_structural else ""
-        total_body.append(([
-            dr.label,
-            str(dr.sessions),
-            fmt_ts(dr.last_ts),
-            fmt_count(dr.bucket.msgs),
-            fmt_count(dr.bucket.in_),
-            fmt_count(dr.bucket.out),
-            fmt_count(dr.bucket.cw),
-            fmt_count(dr.bucket.cr),
-            dr.cost_str,
-        ], style, dr.prefix_len))
+        style = Ansi.DIM if dr.is_structural else ""
+        body.append(
+            (
+                [
+                    dr.label,
+                    str(dr.sessions),
+                    fmt_ts(dr.last_ts),
+                    fmt_count(dr.bucket.msgs),
+                    fmt_count(dr.bucket.in_),
+                    fmt_count(dr.bucket.out),
+                    fmt_count(dr.bucket.cw),
+                    fmt_count(dr.bucket.cr),
+                    dr.cost_str,
+                ],
+                style,
+                dr.prefix_len,
+            )
+        )
 
-    # === Recent table: models (in window) + per-day (in window) + TOTAL ===
-    recent_headers = ["MODEL / DATE", *SHARED_HEADERS]
-    recent_aligns = ["<", *SHARED_ALIGNS]
-    recent_body: list = []
+    return body
+
+
+def _aggregate_day_rows(
+    dated: dict[str, dict[str, Bucket]],
+    shown_days: list[str],
+    prices: dict,
+) -> tuple[list[tuple[str, Bucket, float | None]], Bucket, float, bool]:
+    """Aggregate per-day rows. Returns (day_rows_data, total_bucket, total_cost, total_unknown)."""
+    day_rows_data: list[tuple[str, Bucket, float | None]] = []
+    for d in shown_days:
+        day_total = Bucket()
+        day_cost: float = 0.0
+        day_unknown = False
+        for model, b in dated[d].items():
+            day_total.merge(b)
+            c = cost_for(model, b.usage_dict(), prices)
+            if c is None:
+                day_unknown = True
+            else:
+                day_cost += c
+        day_rows_data.append((d, day_total, None if day_unknown else day_cost))
+
+    total_b = Bucket()
+    total_cost: float = 0.0
+    total_unknown = False
+    for _, b, c in day_rows_data:
+        total_b.merge(b)
+        if c is None:
+            total_unknown = True
+        else:
+            total_cost += c
+
+    return day_rows_data, total_b, total_cost, total_unknown
+
+
+def _build_recent_body(
+    totals_by_day_by_model: dict[str, dict[str, Bucket]],
+    prices: dict,
+    days_window: int,
+    div: str,
+) -> tuple[list, str]:
+    """Build the body rows for the Recent table. Returns (body, truncation_note)."""
+    body: list = []
+    truncation_note = ""
 
     dated = {d: m for d, m in totals_by_day_by_model.items() if d != "?"}
     all_days_sorted = sorted(dated.keys(), reverse=True) if dated else []
     if dated and days_window > 0:
-        cutoff = (datetime.now().astimezone().date()
-                  - timedelta(days=days_window - 1)).isoformat()
+        cutoff = (datetime.now().astimezone().date() - timedelta(days=days_window - 1)).isoformat()
         shown_days = [d for d in all_days_sorted if d >= cutoff]
     else:
         shown_days = all_days_sorted
@@ -729,250 +814,359 @@ def render(
     if recent_models:
         ordered = sorted(
             recent_models.items(),
-            key=lambda kv: (cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0),
+            key=lambda kv: cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0,
             reverse=True,
         )
         for model, b in ordered:
             c = cost_for(model, b.usage_dict(), prices)
-            recent_body.append(([
-                model,
-                fmt_count(b.msgs),
-                fmt_count(b.in_),
-                fmt_count(b.out),
-                fmt_count(b.cw),
-                fmt_count(b.cr),
-                fmt_cost(c),
-            ], "", 0))
+            body.append(
+                (
+                    [
+                        model,
+                        fmt_count(b.msgs),
+                        fmt_count(b.in_),
+                        fmt_count(b.out),
+                        fmt_count(b.cw),
+                        fmt_count(b.cr),
+                        fmt_cost(c),
+                    ],
+                    "",
+                    0,
+                )
+            )
 
-    by_day_truncation_note = ""
     if shown_days:
-        if recent_body:
-            recent_body.append(DIV)
+        if body:
+            body.append(div)
 
-        day_rows_data: list[tuple[str, Bucket, float | None]] = []
-        for d in shown_days:
-            day_total = Bucket()
-            day_cost: float = 0.0
-            day_unknown = False
-            for model, b in dated[d].items():
-                day_total.merge(b)
-                c = cost_for(model, b.usage_dict(), prices)
-                if c is None:
-                    day_unknown = True
-                else:
-                    day_cost += c
-            day_rows_data.append((d, day_total, None if day_unknown else day_cost))
-
-        total_b = Bucket()
-        total_cost: float = 0.0
-        total_unknown = False
-        for _, b, c in day_rows_data:
-            total_b.merge(b)
-            if c is None:
-                total_unknown = True
-            else:
-                total_cost += c
+        day_rows_data, total_b, total_cost, total_unknown = _aggregate_day_rows(
+            dated, shown_days, prices
+        )
 
         for d, b, c in reversed(day_rows_data):
-            cost_str = (fmt_cost(c) if c is not None
-                        else fmt_cost(sum(  # show known portion + ?
-                            cost_for(m, bb.usage_dict(), prices) or 0.0
-                            for m, bb in dated[d].items()
-                        )) + "+?")
-            recent_body.append(([
-                d,
-                fmt_count(b.msgs),
-                fmt_count(b.in_),
-                fmt_count(b.out),
-                fmt_count(b.cw),
-                fmt_count(b.cr),
-                cost_str,
-            ], "", 0))
+            cost_str = (
+                fmt_cost(c)
+                if c is not None
+                else fmt_cost(
+                    sum(cost_for(m, bb.usage_dict(), prices) or 0.0 for m, bb in dated[d].items())
+                )
+                + "+?"
+            )
+            body.append(
+                (
+                    [
+                        d,
+                        fmt_count(b.msgs),
+                        fmt_count(b.in_),
+                        fmt_count(b.out),
+                        fmt_count(b.cw),
+                        fmt_count(b.cr),
+                        cost_str,
+                    ],
+                    "",
+                    0,
+                )
+            )
 
-        recent_body.append(DIV)
-        recent_body.append(([
-            "TOTAL",
-            fmt_count(total_b.msgs),
-            fmt_count(total_b.in_),
-            fmt_count(total_b.out),
-            fmt_count(total_b.cw),
-            fmt_count(total_b.cr),
-            fmt_cost(total_cost) + ("+?" if total_unknown else ""),
-        ], YELLOW, 0))
+        body.append(div)
+        body.append(
+            (
+                [
+                    "TOTAL",
+                    fmt_count(total_b.msgs),
+                    fmt_count(total_b.in_),
+                    fmt_count(total_b.out),
+                    fmt_count(total_b.cw),
+                    fmt_count(total_b.cr),
+                    fmt_cost(total_cost) + ("+?" if total_unknown else ""),
+                ],
+                Ansi.BOLD_YELLOW,
+                0,
+            )
+        )
         n_days = len(shown_days)
-        recent_body.append(([
-            "DAILY AVG",
-            fmt_count(total_b.msgs // n_days),
-            fmt_count(total_b.in_ // n_days),
-            fmt_count(total_b.out // n_days),
-            fmt_count(total_b.cw // n_days),
-            fmt_count(total_b.cr // n_days),
-            fmt_cost(total_cost / n_days) + ("+?" if total_unknown else ""),
-        ], YELLOW, 0))
+        body.append(
+            (
+                [
+                    "DAILY AVG",
+                    fmt_count(total_b.msgs // n_days),
+                    fmt_count(total_b.in_ // n_days),
+                    fmt_count(total_b.out // n_days),
+                    fmt_count(total_b.cw // n_days),
+                    fmt_count(total_b.cr // n_days),
+                    fmt_cost(total_cost / n_days) + ("+?" if total_unknown else ""),
+                ],
+                Ansi.BOLD_YELLOW,
+                0,
+            )
+        )
 
         if days_window > 0 and len(shown_days) < len(all_days_sorted):
-            by_day_truncation_note = (
+            truncation_note = (
                 f"  (showing last {len(shown_days)} of "
                 f"{len(all_days_sorted)} days with activity; "
                 f"use --days 0 to widen)"
             )
 
-    # === Shared widths for the trailing six numeric columns ===
-    shared_widths = [0] * N_SHARED
-    for headers, body, leading in (
-        (total_headers, total_body, 3),
-        (recent_headers, recent_body, 1),
-    ):
-        for j in range(N_SHARED):
+    return body, truncation_note
+
+
+def _widths_for(
+    headers: list[str], body: list, leading: int, shared_widths: list[int], div: str
+) -> list[int]:
+    """Compute column widths for a table."""
+    leading_widths = [len(headers[j]) for j in range(leading)]
+    for item in body:
+        if item == div:
+            continue
+        cells, _, _ = item
+        for j in range(leading):
+            leading_widths[j] = max(leading_widths[j], len(cells[j]))
+    return leading_widths + shared_widths
+
+
+def _render_row(
+    cells: list[str],
+    aligns: list[str],
+    widths: list[int],
+    style: str = "",
+    prefix_len: int = 0,
+) -> str:
+    """Render a single table row with alignment and optional styling."""
+    parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
+    if style:
+        if prefix_len:
+            # Keep tree glyphs (`├`, `└`, `│`) at the row's default color;
+            # only style the content after the prefix.
+            first = parts[0]
+            # the cell starts after the leading space
+            head = first[: 1 + prefix_len]
+            tail = first[1 + prefix_len :]
+            parts[0] = head + color(tail, style)
+            parts[1:] = [color(p, style) for p in parts[1:]]
+        else:
+            parts = [color(p, style) for p in parts]
+    sep = color("│", Ansi.DIM)
+    return sep + sep.join(parts) + sep
+
+
+def _make_border(widths: list[int], left: str, mid: str, right: str) -> str:
+    """Render a horizontal border line."""
+    parts = ["─" * (w + 2) for w in widths]
+    return color(left + mid.join(parts) + right, Ansi.DIM)
+
+
+def _render_table(  # noqa: PLR0913
+    title: str,
+    headers: list[str],
+    aligns: list[str],
+    body: list,
+    leading: int,
+    shared_widths: list[int],
+    div: str,
+) -> list[str]:
+    """Render a complete table with borders."""
+    widths = _widths_for(headers, body, leading, shared_widths, div)
+    out = [color(title, Ansi.DIM)]
+    out.append(_make_border(widths, "┌", "┬", "┐"))
+    out.append(_render_row(headers, aligns, widths, Ansi.DIM))
+    out.append(_make_border(widths, "├", "┼", "┤"))
+    for item in body:
+        if item == div:
+            out.append(_make_border(widths, "├", "┼", "┤"))
+        else:
+            cells, style, prefix_len = item
+            out.append(_render_row(cells, aligns, widths, style, prefix_len))
+    out.append(_make_border(widths, "└", "┴", "┘"))
+    return out
+
+
+def _compute_shared_widths(
+    tables: list[tuple[list[str], list, int]],
+    n_shared: int,
+    div: str,
+) -> list[int]:
+    """Compute shared column widths across multiple tables."""
+    shared_widths = [0] * n_shared
+    for headers, body, leading in tables:
+        for j in range(n_shared):
             shared_widths[j] = max(shared_widths[j], len(headers[leading + j]))
         for item in body:
-            if item == DIV:
+            if item == div:
                 continue
             cells, _, _ = item
-            for j in range(N_SHARED):
+            for j in range(n_shared):
                 shared_widths[j] = max(shared_widths[j], len(cells[leading + j]))
+    return shared_widths
 
-    def widths_for(headers: list[str], body: list, leading: int) -> list[int]:
-        leading_widths = [len(headers[j]) for j in range(leading)]
-        for item in body:
-            if item == DIV:
-                continue
-            cells, _, _ = item
-            for j in range(leading):
-                if len(cells[j]) > leading_widths[j]:
-                    leading_widths[j] = len(cells[j])
-        return leading_widths + shared_widths
 
-    def render_row(
-        cells: list[str],
-        aligns: list[str],
-        widths: list[int],
-        style: str = "",
-        prefix_len: int = 0,
-    ) -> str:
-        parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
-        if style:
-            if prefix_len:
-                # Keep tree glyphs (`├`, `└`, `│`) at the row's default color;
-                # only style the content after the prefix.
-                first = parts[0]
-                # the cell starts after the leading space
-                head = first[: 1 + prefix_len]
-                tail = first[1 + prefix_len :]
-                parts[0] = head + color(tail, style)
-                parts[1:] = [color(p, style) for p in parts[1:]]
-            else:
-                parts = [color(p, style) for p in parts]
-        sep = color("│", DIM)
-        return sep + sep.join(parts) + sep
+def render(
+    rows: list[dict],
+    totals_by_model: dict[str, Bucket],
+    totals_by_day_by_model: dict[str, dict[str, Bucket]],
+    prices: dict,
+    days_window: int,
+) -> str:
+    # Two stacked tables: "Total" (all-time per-model + per-project tree) and
+    # "Recent" (per-model + per-day, both restricted to the days_window). Each
+    # table has internal sections separated by a `├─┼─┤` divider; widths of
+    # the trailing six numeric columns are shared across both tables so the
+    # numbers line up vertically.
+    shared_headers = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
+    shared_aligns = [">", ">", ">", ">", ">", ">"]
+    n_shared = len(shared_headers)
 
-    def make_border(widths: list[int], left: str, mid: str, right: str) -> str:
-        parts = ["─" * (w + 2) for w in widths]
-        return color(left + mid.join(parts) + right, DIM)
+    div = "__div__"
 
-    def render_table(
-        title: str,
-        headers: list[str],
-        aligns: list[str],
-        body: list,
-        leading: int,
-    ) -> list[str]:
-        widths = widths_for(headers, body, leading)
-        out = [color(title, DIM)]
-        out.append(make_border(widths, "┌", "┬", "┐"))
-        out.append(render_row(headers, aligns, widths, DIM))
-        out.append(make_border(widths, "├", "┼", "┤"))
-        for item in body:
-            if item == DIV:
-                out.append(make_border(widths, "├", "┼", "┤"))
-            else:
-                cells, style, prefix_len = item
-                out.append(render_row(cells, aligns, widths, style, prefix_len))
-        out.append(make_border(widths, "└", "┴", "┘"))
-        return out
+    # === Total table: models (all-time) + project tree ===
+    total_headers = ["MODEL / PROJECT", "SESSIONS", "LAST LAUNCH", *shared_headers]
+    total_aligns = ["<", ">", "<", *shared_aligns]
+
+    tree_root = build_project_tree(rows)
+    display_rows = flatten_tree(tree_root)
+
+    total_body = _build_total_body(totals_by_model, prices, tree_root, display_rows, div)
+
+    # === Recent table: models (in window) + per-day (in window) + TOTAL ===
+    recent_headers = ["MODEL / DATE", *shared_headers]
+    recent_aligns = ["<", *shared_aligns]
+
+    recent_body, by_day_truncation_note = _build_recent_body(
+        totals_by_day_by_model, prices, days_window, div
+    )
+
+    # === Shared widths for the trailing six numeric columns ===
+    shared_widths = _compute_shared_widths(
+        [(total_headers, total_body, 3), (recent_headers, recent_body, 1)],
+        n_shared,
+        div,
+    )
 
     lines: list[str] = []
-    lines.extend(render_table("Total:", total_headers, total_aligns, total_body, 3))
+    lines.extend(
+        _render_table("Total:", total_headers, total_aligns, total_body, 3, shared_widths, div)
+    )
     if recent_body:
-        recent_title = (
-            "Recent:" if days_window == 0
-            else f"Recent (last {days_window} days):"
-        )
+        recent_title = "Recent:" if days_window == 0 else f"Recent (last {days_window} days):"
         lines.append("")
-        lines.extend(render_table(
-            recent_title, recent_headers, recent_aligns, recent_body, 1
-        ))
+        lines.extend(
+            _render_table(
+                recent_title, recent_headers, recent_aligns, recent_body, 1, shared_widths, div
+            )
+        )
         if by_day_truncation_note:
-            lines.append(color(by_day_truncation_note, DIM))
+            lines.append(color(by_day_truncation_note, Ansi.DIM))
 
     return "\n".join(lines)
 
 
-def main(argv: list[str]) -> int:
-    args = argv[1:]
+_USAGE_TEXT = (
+    "Usage: agent stats [--cache PATH] [--region LABEL] [--refresh] [--days N] <projects.txt>\n\n"
+    "Reads a list of project paths (one per line) and prints aggregated\n"
+    "usage stats from each project's .claude/sessions/*.jsonl files.\n\n"
+    "Output is a per-project table plus per-model and per-day breakdowns.\n"
+    "Day buckets use host-local time. --days N limits the per-day section\n"
+    "to the most recent N calendar days (default 30; use 0 to show all).\n\n"
+    "Pricing is fetched from aws.amazon.com/bedrock/pricing/ (cached for 7 days).\n"
+    "Default region: 'US East (N. Virginia)' (matches the wrapper's AWS_REGION=us-east-1).\n\n"
+    "Projects are recorded by `agent` on each launch — a project that\n"
+    "has never had `agent` invoked from it will not appear here."
+)
+
+
+@dataclass
+class _UsageArgsBuilder:
+    """Parsed CLI arguments for `agent stats`."""
+
     cache_path: Path | None = None
-    region_label = DEFAULT_REGION_LABEL
-    refresh = False
-    days_window = 30
+    region_label: str = DEFAULT_REGION_LABEL
+    refresh: bool = False
+    days_window: int = 30
+
+
+@dataclass
+class _UsageArgs:
+    """Parsed CLI arguments for `agent stats`."""
+
+    registry_path: Path
+    cache_path: Path | None = None
+    region_label: str = DEFAULT_REGION_LABEL
+    refresh: bool = False
+    days_window: int = 30
+
+
+def _parse_days(value: str) -> int | None:
+    """Parse --days value. Returns None on error."""
+    try:
+        days = int(value)
+    except ValueError:
+        print(f"usage: --days expects an integer, got '{value}'", file=sys.stderr)
+        return None
+    if days < 0:
+        print("usage: --days must be >= 0", file=sys.stderr)
+        return None
+    return days
+
+
+def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
+    """Parse CLI arguments. Returns None if help was printed or an error occurred."""
+    parsed = _UsageArgsBuilder()
     positional: list[str] = []
     i = 0
     while i < len(args):
         a = args[i]
         if a in ("-h", "--help"):
-            print(
-                "Usage: agent_usage.py [--cache PATH] [--region LABEL] [--refresh] [--days N] <projects.txt>\n\n"
-                "Reads a list of project paths (one per line) and prints aggregated\n"
-                "usage stats from each project's .claude/sessions/*.jsonl files.\n\n"
-                "Output is a per-project table plus per-model and per-day breakdowns.\n"
-                "Day buckets use host-local time. --days N limits the per-day section\n"
-                "to the most recent N calendar days (default 30; use 0 to show all).\n\n"
-                "Pricing is fetched from aws.amazon.com/bedrock/pricing/ (cached for 7 days).\n"
-                "Default region: 'US East (N. Virginia)' (matches the wrapper's AWS_REGION=us-east-1).\n\n"
-                "Projects are recorded by `agent` on each launch — a project that\n"
-                "has never had `agent` invoked from it will not appear here.",
-                file=sys.stderr,
-            )
-            return 0
+            print(_USAGE_TEXT, file=sys.stderr)
+            return None
         if a == "--cache" and i + 1 < len(args):
-            cache_path = Path(args[i + 1]); i += 2; continue
+            parsed.cache_path = Path(args[i + 1])
+            i += 2
+            continue
         if a == "--region" and i + 1 < len(args):
-            region_label = args[i + 1]; i += 2; continue
+            parsed.region_label = args[i + 1]
+            i += 2
+            continue
         if a == "--refresh":
-            refresh = True; i += 1; continue
+            parsed.refresh = True
+            i += 1
+            continue
         if a == "--days" and i + 1 < len(args):
-            try:
-                days_window = int(args[i + 1])
-            except ValueError:
-                print(f"agent_usage: --days expects an integer, got '{args[i + 1]}'", file=sys.stderr)
-                return 1
-            if days_window < 0:
-                print("agent_usage: --days must be >= 0", file=sys.stderr)
-                return 1
-            i += 2; continue
+            days = _parse_days(args[i + 1])
+            if days is None:
+                return None
+            parsed.days_window = days
+            i += 2
+            continue
         positional.append(a)
         i += 1
 
     if not positional:
-        print("Usage: agent_usage.py [--cache PATH] [--region LABEL] [--refresh] [--days N] <projects.txt>", file=sys.stderr)
-        return 1
+        print(
+            "Usage: agent stats [--cache PATH] [--region LABEL]"
+            " [--refresh] [--days N] <projects.txt>",
+            file=sys.stderr,
+        )
+        return None
 
     reg = Path(positional[0])
     if not reg.is_file():
-        print(f"agent_usage: registry not found at {reg}", file=sys.stderr)
-        return 1
+        print(f"usage: registry not found at {reg}", file=sys.stderr)
+        return None
 
-    projects = load_projects(reg)
-    if not projects:
-        print("agent_usage: no projects recorded yet — launch `agent` once to register a project.", file=sys.stderr)
-        return 0
+    return _UsageArgs(
+        registry_path=reg,
+        **parsed.__dict__,
+    )
 
-    prices = load_prices(cache_path, region_label, refresh)
 
+def _collect_project_rows(
+    projects: list[Path],
+    prices: dict,
+) -> tuple[list[dict], dict[str, Bucket], dict[str, dict[str, Bucket]]]:
+    """Scan all projects and return (rows, totals_by_model, totals_by_day_by_model)."""
     rows: list[dict] = []
     totals_by_model: dict[str, Bucket] = defaultdict(Bucket)
-    totals_by_day_by_model: dict[str, dict[str, Bucket]] = defaultdict(
-        lambda: defaultdict(Bucket)
-    )
+    totals_by_day_by_model: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
     seen_message_ids: set[str] = set()
 
     for path in projects:
@@ -990,26 +1184,56 @@ def main(argv: list[str]) -> int:
                     proj_unknown = True
                 else:
                     proj_cost += c
-        rows.append({
-            "path": path,
-            "exists": exists,
-            "sessions": sessions,
-            "last_ts": last_ts,
-            "total": total,
-            "cost": None if proj_unknown else proj_cost,
-        })
+        rows.append(
+            {
+                "path": path,
+                "exists": exists,
+                "sessions": sessions,
+                "last_ts": last_ts,
+                "total": total,
+                "cost": None if proj_unknown else proj_cost,
+            }
+        )
 
-    rows.sort(key=lambda r: (r["cost"] if r["cost"] is not None else -1.0), reverse=True)
+    rows.sort(key=lambda r: r["cost"] if r["cost"] is not None else -1.0, reverse=True)
+    return rows, dict(totals_by_model), {d: dict(m) for d, m in totals_by_day_by_model.items()}
 
-    print(render(
-        rows,
-        dict(totals_by_model),
-        {d: dict(m) for d, m in totals_by_day_by_model.items()},
-        prices,
-        days_window,
-    ))
+
+def run(args: list[str], tool_dir: Path) -> int:
+    """
+    Execute the `stats` subcommand.
+
+    Constructs the cache and project-registry paths from ``tool_dir``,
+    injects them into the argument stream, and runs the core usage logic.
+    """
+    cache_path = tool_dir / ".agent-launches" / "pricing.json"
+    projects_file = tool_dir / ".agent-launches" / "projects.txt"
+
+    # Inject tool-dir-derived paths into the args stream so _parse_usage_args
+    # can find --cache and the positional registry path.
+    injected = ["--cache", str(cache_path), str(projects_file), *args]
+    parsed = _parse_usage_args(injected)
+    if parsed is None:
+        return 1 if args and args[0] not in ("-h", "--help") else 0
+
+    projects = load_projects(parsed.registry_path)
+    if not projects:
+        print(
+            "usage: no projects recorded yet — launch `agent` once to register a project.",
+            file=sys.stderr,
+        )
+        return 0
+
+    prices = load_prices(parsed.cache_path, parsed.region_label, refresh=parsed.refresh)
+    rows, totals_by_model, totals_by_day_by_model = _collect_project_rows(projects, prices)
+
+    print(
+        render(
+            rows,
+            totals_by_model,
+            totals_by_day_by_model,
+            prices,
+            parsed.days_window,
+        )
+    )
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))

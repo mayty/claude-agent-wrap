@@ -3,11 +3,11 @@
 
 ## Environment
 
-You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist. The user can also launch with `agent --base` to bypass a project's `Dockerfile.agent` and run against the base image — mention this if they hit a broken or stale project image.
+You are running inside a Docker container managed by the `agent-wrap` tooling. The container is built from a `Dockerfile.agent` in the project root (or from the base `Dockerfile` if none exists). Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist. The user can also launch with `agent run --base` to bypass a project's `Dockerfile.agent` and run against the base image — mention this if they hit a broken or stale project image.
 
 Within the Claude home directory (`$HOME/.claude/`), most paths (`settings.json`, `CLAUDE.md`, `themes/`, `cache/`, etc.) are backed by a *shared* global mount on the host, so they persist across every project. A specific set of paths are instead overlaid with a *per-project* mount rooted at `$(pwd)/.claude/<subdir>/` on the host — currently: `projects/-workspace/` (session transcripts, mounted from `$(pwd)/.claude/sessions/`), `sessions/` (live-process registry, mounted from `$(pwd)/.claude/session-state/`), `daemon/` (supervisor/worker roster), `jobs/` (bg-job state), `plans/`, `todos/`, `tasks/`, `shell-snapshots/`, `session-env/`, `file-history/`, `paste-cache/`, and the top-level files `daemon.lock`, `daemon.log`, `daemon.status.json`, and `history.jsonl` (shell-prompt history). Content you write under those paths is visible only within this project, not in other projects' agent sessions. Don't rely on finding another project's plans or todos by reading `~/.claude/plans/` — they won't be there.
 
-The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image), `agent-wrap.bashrc` (the launcher, including the `agent`, `rebuild_agent`, and `create_custom_agent` functions), `validate-dockerfile-agent` (a validator script, see below), `statusline.py` (the default Claude Code status-line script, auto-wired into `settings.json` on first launch — to customize, redefine the `statusLine` key in `settings.json`; deleting the key will cause it to be re-injected on the next launch), and `telegram-notify.sh` + `md_to_html.js` (invoked by `PermissionRequest`/`Stop`/`StopFailure` hooks when the user has configured Telegram credentials in `~/claude_keys.json` — the hook entries are auto-injected into `settings.json` when creds are present; don't treat the hook entries or mount references as stale). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
+The wrapper's own source is mounted read-only at `/opt/agent-wrap/` — `Dockerfile` (the base image), `agent-wrap.bashrc` (the launcher, which defines a single `agent` shell function whose first argument is a verb: `run`, `rebuild`, `create`, `stats`, `update`), `validate-dockerfile-agent` (a validator script, see below), `statusline.py` (the default Claude Code status-line script, auto-wired into `settings.json` on first launch — to customize, redefine the `statusLine` key in `settings.json`; deleting the key will cause it to be re-injected on the next launch), and `telegram-notify.sh` + `md_to_html.js` (invoked by `PermissionRequest`/`Stop`/`StopFailure` hooks when the user has configured Telegram credentials in `~/claude_keys.json` — the hook entries are auto-injected into `settings.json` when creds are present; don't treat the hook entries or mount references as stale). Consult these files as the source of truth if the guidance below is ambiguous or you suspect it has drifted from actual behavior; otherwise prefer the summary here.
 
 **Important:** You always run as a non-root user inside the container and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 
@@ -19,7 +19,7 @@ Do **not** install dependencies ad-hoc inside the running container (`apt-get in
 
 Instead:
 
-- **If `Dockerfile.agent` exists in the project root:** edit it to add the dependency (e.g., add a `RUN apt-get install -y <pkg>` line), then tell the user to run `rebuild_agent` and restart the session.
+- **If `Dockerfile.agent` exists in the project root:** edit it to add the dependency (e.g., add a `RUN apt-get install -y <pkg>` line), then tell the user to run `agent rebuild` and restart the session.
 - **If there is no `Dockerfile.agent`:** create one with `FROM claude-agent` (the locally built base image). Prepend `# agent-name: <name>` where `<name>` is the **host** project directory name — the launcher exports this inside the container as `$AGENT_NAME` (already lowercased and sanitized to `[a-z0-9_.-]+`), so use that value verbatim. Do **not** use `workspace`: that's the in-container mount path, not the project name (running `basename "$(pwd)"` inside the container yields `workspace` and is wrong — read `$AGENT_NAME` instead). The name must be lowercase, match `[a-z0-9_.-]+`, and must not be `workspace`. The base provides Node, the Claude CLI, hadolint, crane, clipboard tooling, `WORKDIR /workspace`, and `ENTRYPOINT ["claude"]` — your `Dockerfile.agent` only adds project-specific `RUN` steps on top. Do **not** copy the contents of `/opt/agent-wrap/Dockerfile` into your `Dockerfile.agent`; layer on `claude-agent` instead so the toolchain isn't duplicated. Minimal template:
 
   ```dockerfile
@@ -29,7 +29,7 @@ Instead:
   # project-specific RUN steps here
   ```
 
-Once edited, run `/opt/agent-wrap/validate-dockerfile-agent` and prompt the user to run `rebuild_agent`. If `claude-agent` hasn't been built yet on this host, the user needs `rebuild_agent --full` (which builds the base first, then the project image).
+Once edited, run `/opt/agent-wrap/validate-dockerfile-agent` and prompt the user to run `agent rebuild`. If `claude-agent` hasn't been built yet on this host, the user needs `agent rebuild --full` (which builds the base first, then the project image).
 
 Project-level (language) dependencies that belong in the project's own manifest (`package.json`, `requirements.txt`, `go.mod`, `Cargo.toml`, etc.) can be installed normally — those live in `/workspace` and persist.
 
@@ -52,9 +52,9 @@ Recognized directives (as special comments in `Dockerfile.agent`):
   ```
 
 - **`EXPOSE <port>`** — any `EXPOSE` line in `Dockerfile.agent` is automatically published to `127.0.0.1:<port>` on the host. Use this for dev servers, debuggers, etc. — don't ask the user to add `-p` flags manually. Exception: when the user has set `AGENT_USE_HOST_NETWORK=1` on a WSL host, the wrapper launches the container with `--network host` and skips all `EXPOSE` port mappings (with a warning). In that mode, in-container services bind directly on the WSL distro's interfaces, so make sure they listen on `127.0.0.1` rather than `0.0.0.0` to avoid LAN exposure.
-- **`ARG HOST_UID` / `ARG HOST_GID`** — `rebuild_agent` always passes the host user's UID/GID as build args. Declare these in `Dockerfile.agent` if you need them at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory baked into the image).
+- **`ARG HOST_UID` / `ARG HOST_GID`** — `agent rebuild` always passes the host user's UID/GID as build args. Declare these in `Dockerfile.agent` if you need them at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory baked into the image).
 
-When a user asks for something that a `docker run` flag would solve (mounting a path, exposing a port, adding a capability, passing a device), add the appropriate directive to `Dockerfile.agent` and prompt them to run `rebuild_agent` — do not tell them to edit `agent-wrap.bashrc` or their shell invocation.
+When a user asks for something that a `docker run` flag would solve (mounting a path, exposing a port, adding a capability, passing a device), add the appropriate directive to `Dockerfile.agent` and prompt them to run `agent rebuild` — do not tell them to edit `agent-wrap.bashrc` or their shell invocation.
 
 Security note: `agent-run-args` is pass-through to `docker run`, so it can grant `--privileged`, host mounts, and similar. Only add flags you actually need, and flag to the user what you're granting and why.
 
@@ -72,7 +72,7 @@ An anonymous volume (a `-v` flag with only a container path, no host path) shado
 
 ## Validating `Dockerfile.agent` before rebuild
 
-**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `Dockerfile.agent`, and before you tell the user to run `rebuild_agent`.** The validator catches mistakes that `docker build` alone won't — most importantly, base images that don't contain the user the wrapper will try to use. A build can succeed and still produce an image the wrapper cannot launch (mounts land on a nonexistent `/home/<user>`), so catch these issues up front.
+**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `Dockerfile.agent`, and before you tell the user to run `agent rebuild`.** The validator catches mistakes that `docker build` alone won't — most importantly, base images that don't contain the user the wrapper will try to use. A build can succeed and still produce an image the wrapper cannot launch (mounts land on a nonexistent `/home/<user>`), so catch these issues up front.
 
 The validator runs three layers of checks:
 
