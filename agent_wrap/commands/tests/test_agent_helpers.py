@@ -23,7 +23,7 @@ from agent_wrap.commands.agent import (
 from agent_wrap.commands.agent import (
     run as agent_run,
 )
-from agent_wrap.utils import ResolvedImage
+from agent_wrap.lib.utils import ResolvedImage
 
 # --- _is_wsl ---
 

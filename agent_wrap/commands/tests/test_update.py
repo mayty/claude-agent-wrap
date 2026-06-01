@@ -12,23 +12,9 @@ from agent_wrap.commands.update import (
     _detect_claude_md_state,
     _get_behind_count,
     _handle_claude_md_propagation,
-    _is_truthy_skip,
     apply,
     check,
 )
-
-# --- _is_truthy_skip ---
-
-
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "False", "NO"])
-def test_truthy_skip_false(value: str) -> None:
-    assert _is_truthy_skip(value) is False
-
-
-@pytest.mark.parametrize("value", ["1", "yes", "true", "anything", "Yes", "TRUE"])
-def test_truthy_skip_true(value: str) -> None:
-    assert _is_truthy_skip(value) is True
-
 
 # --- _get_behind_count ---
 

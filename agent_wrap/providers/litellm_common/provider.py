@@ -21,29 +21,9 @@ from pathlib import Path
 from typing import IO, ClassVar
 
 from agent_wrap.lib.console import Ansi
+from agent_wrap.lib.docker_utils import docker_run
+from agent_wrap.lib.utils import generate_uuid
 from agent_wrap.providers.base import Provider
-from agent_wrap.utils import generate_uuid
-
-
-def _docker(*args: str, capture: bool = True, check: bool = False) -> tuple[str, int]:
-    """Run a docker command and return (stdout, returncode)."""
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["docker", *args],
-            capture_output=capture,
-            text=True,
-            timeout=30,
-        )
-        if check and result.returncode != 0:
-            msg = f"docker {' '.join(args)} failed: {result.stderr}"
-            raise RuntimeError(msg)
-        return result.stdout.strip(), result.returncode
-    except subprocess.TimeoutExpired:
-        return "", 1
-    except FileNotFoundError:
-        return "", 1
 
 
 class LiteLLMProvider(Provider):
@@ -186,7 +166,7 @@ class LiteLLMProvider(Provider):
                 "litellm-sidecar: existing sidecar predates agent-wrap-net; restarting",
                 file=sys.stderr,
             )
-            _docker("stop", self.container_name)
+            docker_run("stop", self.container_name)
 
         if self._is_running():
             # First-launch-wins: inherit running mode
@@ -199,8 +179,8 @@ class LiteLLMProvider(Provider):
             self._start(secret_key, self._master_key, sidecar_mode)
             if not self._health_poll():
                 print("litellm-sidecar: health check failed; recent logs:", file=sys.stderr)
-                _docker("logs", "--tail", "50", self.container_name)
-                _docker("stop", self.container_name)
+                docker_run("logs", "--tail", "50", self.container_name)
+                docker_run("stop", self.container_name)
                 raise SystemExit(1)
 
         return sidecar_mode
@@ -259,7 +239,7 @@ class LiteLLMProvider(Provider):
             self._reconcile_refcount()
 
             if not self._has_active_instances() and self._is_running():
-                _docker("stop", self.container_name)
+                docker_run("stop", self.container_name)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
@@ -298,7 +278,7 @@ class LiteLLMProvider(Provider):
             raise SystemExit(msg) from None
 
     def _recover_master_key(self) -> str:
-        stdout, rc = _docker(
+        stdout, rc = docker_run(
             "inspect",
             self.container_name,
             "--format={{range .Config.Env}}{{println .}}{{end}}",
@@ -321,7 +301,7 @@ class LiteLLMProvider(Provider):
         raise SystemExit(msg)
 
     def _is_running(self) -> bool:
-        stdout, rc = _docker(
+        stdout, rc = docker_run(
             "container",
             "inspect",
             "-f",
@@ -331,7 +311,7 @@ class LiteLLMProvider(Provider):
         return rc == 0 and stdout.strip() == "true"
 
     def _is_on_network(self, network: str) -> bool:
-        stdout, rc = _docker(
+        stdout, rc = docker_run(
             "inspect",
             self.container_name,
             "--format",
@@ -342,10 +322,10 @@ class LiteLLMProvider(Provider):
         return network in stdout.splitlines()
 
     def _ensure_network(self) -> None:
-        _, rc = _docker("network", "inspect", self.network_name)
+        _, rc = docker_run("network", "inspect", self.network_name)
         if rc == 0:
             return
-        _, rc = _docker("network", "create", self.network_name)
+        _, rc = docker_run("network", "create", self.network_name)
         if rc != 0:
             msg = f"litellm-sidecar: failed to create docker network {self.network_name}"
             raise SystemExit(msg)
@@ -354,9 +334,9 @@ class LiteLLMProvider(Provider):
         config_path = self._config_path()
 
         # Reap any stopped container under our name
-        _, rc = _docker("container", "inspect", self.container_name)
+        _, rc = docker_run("container", "inspect", self.container_name)
         if rc == 0:
-            _docker("rm", "-f", self.container_name)
+            docker_run("rm", "-f", self.container_name)
 
         network = "host" if sidecar_mode == "host" else self.network_name
 
@@ -398,7 +378,7 @@ class LiteLLMProvider(Provider):
             str(self.internal_port),
             *self.get_sidecar_cmd_args(),
         ]
-        _, rc = _docker(*cmd)
+        _, rc = docker_run(*cmd)
         if rc != 0:
             msg = f"litellm-sidecar: failed to start {self.container_name}"
             raise SystemExit(msg)
@@ -412,7 +392,7 @@ class LiteLLMProvider(Provider):
         start = time.monotonic()
 
         while time.monotonic() < deadline:
-            stdout, rc = _docker(
+            stdout, rc = docker_run(
                 "inspect",
                 self.container_name,
                 "--format={{.State.Health.Status}}",
@@ -460,7 +440,7 @@ class LiteLLMProvider(Provider):
                 print(file=sys.stderr)
 
     def _attach_to_network(self, network: str) -> None:
-        _, rc = _docker("network", "inspect", network)
+        _, rc = docker_run("network", "inspect", network)
         if rc != 0:
             msg = f"litellm-sidecar: network '{network}' (from agent-run-args) does not exist"
             raise SystemExit(msg)
@@ -469,7 +449,7 @@ class LiteLLMProvider(Provider):
         if self._is_on_network(network):
             return
 
-        _, rc = _docker("network", "connect", network, self.container_name)
+        _, rc = docker_run("network", "connect", network, self.container_name)
         if rc != 0:
             msg = f"litellm-sidecar: failed to attach {self.container_name} to network '{network}'"
             raise SystemExit(msg)
@@ -478,7 +458,7 @@ class LiteLLMProvider(Provider):
         fmt = (
             f'{{{{with index .NetworkSettings.Networks "{network}"}}}}{{{{.IPAddress}}}}{{{{end}}}}'
         )
-        stdout, rc = _docker(
+        stdout, rc = docker_run(
             "inspect",
             self.container_name,
             "--format",
@@ -519,7 +499,7 @@ class LiteLLMProvider(Provider):
         if not entries:
             return
 
-        stdout, rc = _docker(
+        stdout, rc = docker_run(
             "ps",
             "--filter",
             "label=agent-wrap.role=claude-agent",

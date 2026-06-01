@@ -1,5 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
-"""Tests for agent_wrap.utils."""
+"""Tests for agent_wrap.lib.utils."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.utils import (
+from agent_wrap.lib.utils import (
     generate_uuid,
+    is_truthy_env,
     parse_dockerfile_agent,
     resolve_image,
     sanitize_name,
@@ -63,6 +64,19 @@ def test_lowercase_uuid():
 
 def test_unique():
     assert generate_uuid() != generate_uuid()
+
+
+# --- is_truthy_env ---
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "FALSE", "NO", "False"])
+def test_is_truthy_env_false(value: str) -> None:
+    assert is_truthy_env(value) is False
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "YES", "true", "TRUE", "anything"])
+def test_is_truthy_env_true(value: str) -> None:
+    assert is_truthy_env(value) is True
 
 
 # --- parse_dockerfile_agent ---

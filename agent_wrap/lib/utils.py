@@ -37,6 +37,11 @@ def generate_uuid() -> str:
     return str(uuid.uuid4())
 
 
+def is_truthy_env(value: str) -> bool:
+    """Check if an env var value is truthy (not empty/0/false/no)."""
+    return value.lower() not in ("", "0", "false", "no")
+
+
 @dataclass
 class DockerfileAgentInfo:
     """Parsed directives from a Dockerfile.agent file."""

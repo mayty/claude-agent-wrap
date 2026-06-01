@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import pytest_mock
 
-from agent_wrap.providers.litellm_common.provider import LiteLLMProvider, _docker
+from agent_wrap.providers.litellm_common.provider import LiteLLMProvider
 
 
 class ConcreteTestProvider(LiteLLMProvider):
@@ -39,45 +39,6 @@ class ConcreteTestProvider(LiteLLMProvider):
 
     def get_sidecar_cmd_args(self) -> list[str]:
         return []
-
-
-# --- _docker helper ---
-
-
-def test_docker_returns_tuple(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("subprocess.run")
-    mock_run.return_value.stdout = "hello"
-    mock_run.return_value.returncode = 0
-    stdout, rc = _docker("info")
-    assert stdout == "hello"
-    assert rc == 0
-
-
-def test_docker_timeout(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("subprocess.run")
-    import subprocess
-
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd="docker", timeout=30)
-    stdout, rc = _docker("info")
-    assert stdout == ""
-    assert rc == 1
-
-
-def test_docker_file_not_found(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("subprocess.run")
-    mock_run.side_effect = FileNotFoundError()
-    stdout, rc = _docker("info")
-    assert stdout == ""
-    assert rc == 1
-
-
-def test_docker_check_true_raises(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("subprocess.run")
-    mock_run.return_value.stdout = ""
-    mock_run.return_value.returncode = 1
-    mock_run.return_value.stderr = "error"
-    with pytest.raises(RuntimeError, match="docker info failed"):
-        _docker("info", check=True)
 
 
 # --- Pure/light methods ---
@@ -174,42 +135,42 @@ def test_has_active_instances_empty_file(tmp_path: Path) -> None:
 
 def test_is_running_true(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("true", 0)
     assert p._is_running() is True
 
 
 def test_is_running_false(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("false", 0)
     assert p._is_running() is False
 
 
 def test_is_running_error(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 1)
     assert p._is_running() is False
 
 
 def test_is_on_network_true(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("agent-wrap-net\nhost\n", 0)
     assert p._is_on_network("host") is True
 
 
 def test_is_on_network_false(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("agent-wrap-net\n", 0)
     assert p._is_on_network("host") is False
 
 
 def test_ensure_network_exists(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 0)
     p._ensure_network()
     calls = [c.args for c in mock_docker.call_args_list]
@@ -218,7 +179,7 @@ def test_ensure_network_exists(mocker: pytest_mock.MockFixture) -> None:
 
 def test_ensure_network_creates(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
         ("", 1),  # inspect fails
         ("", 0),  # create succeeds
@@ -228,7 +189,7 @@ def test_ensure_network_creates(mocker: pytest_mock.MockFixture) -> None:
 
 def test_ensure_network_create_fails(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
         ("", 1),  # inspect fails
         ("", 1),  # create fails
@@ -239,14 +200,14 @@ def test_ensure_network_create_fails(mocker: pytest_mock.MockFixture) -> None:
 
 def test_attach_to_network_already_connected(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mocker.patch("agent_wrap.providers.litellm_common.provider._docker", return_value=("", 0))
+    mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run", return_value=("", 0))
     mocker.patch.object(p, "_is_on_network", return_value=True)
     p._attach_to_network("mynet")
 
 
 def test_sidecar_ip_on_network(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("172.18.0.2", 0)
     ip = p._sidecar_ip_on_network("agent-wrap-net")
     assert ip == "172.18.0.2"
@@ -254,7 +215,7 @@ def test_sidecar_ip_on_network(mocker: pytest_mock.MockFixture) -> None:
 
 def test_sidecar_ip_on_network_failure(mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider()
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 1)
     ip = p._sidecar_ip_on_network("agent-wrap-net")
     assert ip == ""
@@ -338,7 +299,7 @@ def test_reconcile_drops_stale(tmp_path: Path, mocker: pytest_mock.MockFixture) 
     p = ConcreteTestProvider(state_dir=tmp_path)
     p._register_instance("stale-1")
     p._register_instance("live-1")
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("live-1\n", 0)
     p._reconcile_refcount()
     content = (tmp_path / "refcount").read_text()
@@ -357,7 +318,7 @@ def test_reconcile_docker_fails_keeps_entries(
 ) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
     p._register_instance("keep-1")
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 1)
     p._reconcile_refcount()
     content = (tmp_path / "refcount").read_text()
@@ -422,7 +383,7 @@ def test_release_with_active_instances(tmp_path: Path, mocker: pytest_mock.MockF
     mocker.patch.object(p, "_state_dir").return_value = tmp_path
     mocker.patch.object(p, "_is_running", return_value=True)
     mocker.patch("fcntl.flock")
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("other-1\n", 0)
     p.release("test-1")
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
@@ -437,7 +398,7 @@ def test_release_last_instance_stops_sidecar(
     (tmp_path / "lock").touch()
     mocker.patch.object(p, "_is_running", return_value=True)
     mocker.patch("fcntl.flock")
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 0)
     p.release("test-1")
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
@@ -449,7 +410,7 @@ def test_release_last_instance_stops_sidecar(
 
 def test_health_poll_healthy_quick(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("healthy", 0)
     mocker.patch.object(p, "_is_running", return_value=True)
     call_count = [0]
@@ -465,7 +426,7 @@ def test_health_poll_healthy_quick(tmp_path: Path, mocker: pytest_mock.MockFixtu
 
 def test_health_poll_unhealthy(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("unhealthy", 0)
     mocker.patch.object(p, "_is_running", return_value=True)
     call_count = [0]
@@ -481,7 +442,7 @@ def test_health_poll_unhealthy(tmp_path: Path, mocker: pytest_mock.MockFixture) 
 
 def test_health_poll_container_gone(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 1)  # inspect fails
     call_count = [0]
 
@@ -505,7 +466,7 @@ def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture
     (config_dir / "config.yaml").write_text("model: test")
     mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
 
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
         ("", 1),  # container inspect fails (no existing container)
         ("", 0),  # docker run succeeds
@@ -523,7 +484,7 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
     (config_dir / "config.yaml").write_text("model: test")
     mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
 
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
         ("", 0),  # container inspect succeeds (existing stopped container)
         ("", 0),  # docker rm -f
@@ -540,7 +501,7 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
 
 def test_recover_master_key_success(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("ENV1=val\nLITELLM_MASTER_KEY=sk-test-recovered\nENV2=val2", 0)
     key = p._recover_master_key()
     assert key == "sk-test-recovered"
@@ -548,7 +509,7 @@ def test_recover_master_key_success(tmp_path: Path, mocker: pytest_mock.MockFixt
 
 def test_recover_master_key_absent_raises(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("ENV1=val\nENV2=val2", 0)
     with pytest.raises(SystemExit, match="LITELLM_MASTER_KEY not recoverable"):
         p._recover_master_key()
@@ -558,7 +519,7 @@ def test_recover_master_key_container_gone_raises(
     tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 1)
     with pytest.raises(SystemExit, match="LITELLM_MASTER_KEY not recoverable"):
         p._recover_master_key()
@@ -589,7 +550,7 @@ def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.Mo
     mocker.patch.object(p, "_recover_master_key", return_value="sk-test-key")
     mocker.patch.object(p, "_register_instance")
     mocker.patch("agent_wrap.providers.litellm_common.provider.fcntl")
-    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider._docker")
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.return_value = ("", 0)
 
     p.ensure(use_host_net=False, instance_id="test-1", agent_network=None)

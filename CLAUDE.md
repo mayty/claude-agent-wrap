@@ -25,8 +25,10 @@ This repository provides a Docker-based wrapper for running Claude Code CLI thro
   - **commands/**: One module per subcommand (`agent.py`, `rebuild.py`, `create.py`, `usage.py`, `update.py`).
   - **providers/**: Provider plugin tree. `base.py` defines the `Provider` ABC (4 abstract methods: `ensure`, `release`, `get_run_args`, `get_label_args`). Each provider is a subdirectory with `provider.py` + `config.yaml`. `litellm_common/provider.py` implements the shared LiteLLM sidecar lifecycle (~350 lines); `litellm_bedrock/` and `litellm_dashscope/` are thin overrides (~60 lines each). Auto-discovery in `__init__.py` scans `*/provider.py` for concrete `Provider` subclasses (`inspect.isabstract()` filters out the base classes). Selected by `AGENT_PROVIDER` env var (default `litellm-bedrock`).
   - **config.py**: Settings JSON manipulation (statusline injection, telegram hooks, project directory creation).
-  - **utils.py**: Name sanitization, image resolution, UUID generation, Dockerfile.agent parsing.
-  - **docker_utils.py**: Docker info queries (rootless detection, image existence checks).
+  - **lib/**: Low-level helpers with no dependency on the rest of the package.
+    - **lib/console.py**: ANSI/SGR + cursor control sequences.
+    - **lib/utils.py**: Name sanitization, image resolution, UUID generation, Dockerfile.agent parsing, env-var truthiness check.
+    - **lib/docker_utils.py**: Generic `docker_run` subprocess wrapper plus Docker info queries (rootless detection, image existence checks, user mapping).
 
 ## Key Configuration
 

@@ -10,14 +10,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_wrap import config, docker_utils
-from agent_wrap.providers import get_provider
-from agent_wrap.utils import (
+from agent_wrap import config
+from agent_wrap.lib import docker_utils
+from agent_wrap.lib.utils import (
     generate_uuid,
+    is_truthy_env,
     parse_dockerfile_agent,
     resolve_image,
     sanitize_name,
 )
+from agent_wrap.providers import get_provider
 
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
@@ -56,11 +58,6 @@ def _is_wsl() -> bool:
         return False
 
 
-def _is_truthy(value: str) -> bool:
-    """Check if an env var value is truthy (not empty/0/false/no)."""
-    return value.lower() not in ("", "0", "false", "no")
-
-
 def _extract_network(extra_run_args: list[str]) -> str | None:
     """Extract --network value from a list of docker run flags."""
     for i, arg in enumerate(extra_run_args):
@@ -90,7 +87,7 @@ def _resolve_host_network(
     cleared if host networking is enabled.
     """
     env_val = os.environ.get("AGENT_USE_HOST_NETWORK", "")
-    if not _is_truthy(env_val):
+    if not is_truthy_env(env_val):
         return False, [], port_args
 
     if not _is_wsl():

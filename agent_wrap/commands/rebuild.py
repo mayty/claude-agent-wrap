@@ -9,9 +9,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_wrap.docker_utils import image_exists
 from agent_wrap.lib.console import Ansi
-from agent_wrap.utils import ResolvedImage, resolve_image
+from agent_wrap.lib.docker_utils import image_exists
+from agent_wrap.lib.utils import ResolvedImage, resolve_image
 
 
 def _parse_rebuild_args(args: list[str]) -> tuple[bool, bool]:

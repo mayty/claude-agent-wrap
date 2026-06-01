@@ -6,7 +6,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agent_wrap.utils import sanitize_name
+from agent_wrap.lib.utils import sanitize_name
 
 
 def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001

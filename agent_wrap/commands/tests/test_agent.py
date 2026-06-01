@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from agent_wrap.commands.agent import _extract_network, _is_truthy
+from agent_wrap.commands.agent import _extract_network
 
 
 def test_no_network():
@@ -37,13 +35,3 @@ def test_missing_value():
 def test_among_other_flags():
     args = ["--device", "/dev/fuse", "--network", "mynet", "--cap-add", "SYS_ADMIN"]
     assert _extract_network(args) == "mynet"
-
-
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "FALSE", "NO"])
-def test_truthy_false(value: str) -> None:
-    assert not _is_truthy(value)
-
-
-@pytest.mark.parametrize("value", ["1", "yes", "YES", "hello", "true"])
-def test_truthy_true(value: str) -> None:
-    assert _is_truthy(value)

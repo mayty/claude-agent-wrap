@@ -17,7 +17,7 @@ from agent_wrap.commands.rebuild import (
 from agent_wrap.commands.rebuild import (
     run as rebuild_run,
 )
-from agent_wrap.utils import ResolvedImage
+from agent_wrap.lib.utils import ResolvedImage
 
 # --- _parse_rebuild_args ---
 

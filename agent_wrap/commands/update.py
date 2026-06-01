@@ -9,13 +9,10 @@ import sys
 from typing import TYPE_CHECKING
 
 from agent_wrap.lib.console import Ansi
+from agent_wrap.lib.utils import is_truthy_env
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-def _is_truthy_skip(value: str) -> bool:
-    return value.lower() not in ("", "0", "false", "no")
 
 
 def _git(*args: str, cwd: str | None = None, timeout: int | None = None) -> tuple[str, int]:
@@ -62,7 +59,7 @@ def check(tool_dir: Path) -> bool:
     failure) returns False so the caller's original command runs.
     """
     env_val = os.environ.get("CLAUDE_AGENT_SKIP_UPDATE_CHECK", "")
-    if _is_truthy_skip(env_val):
+    if is_truthy_env(env_val):
         return False
 
     result = _get_behind_count(tool_dir)
