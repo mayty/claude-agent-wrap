@@ -145,25 +145,22 @@ def prepare_global_config(
     (claude_dir / "projects" / "-workspace").mkdir(parents=True, exist_ok=True)
 
 
-def prepare_project_dirs(project_dir: Path) -> None:
-    """Create per-project .claude/ directories and files."""
+def prepare_project_dirs(
+    project_dir: Path,
+    state_dirs: tuple[str, ...] | list[str],
+    state_files: tuple[str, ...] | list[str],
+) -> None:
+    """
+    Create per-project .claude/ directories and files.
+
+    Pre-creating these as the host user prevents Docker from materializing
+    them as root when the bind-mount targets don't yet exist.
+    """
     claude_dir = project_dir / ".claude"
-    for subdir in (
-        "sessions",
-        "session-state",
-        "daemon",
-        "jobs",
-        "plans",
-        "todos",
-        "tasks",
-        "shell-snapshots",
-        "session-env",
-        "file-history",
-        "paste-cache",
-    ):
+    for subdir in state_dirs:
         (claude_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    for name in ("daemon.lock", "daemon.log", "daemon.status.json", "history.jsonl"):
+    for name in state_files:
         path = claude_dir / name
         if not path.exists():
             path.touch()

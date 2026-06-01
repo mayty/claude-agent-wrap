@@ -192,21 +192,25 @@ def test_prepare_global_config_without_telegram(tmp_path: Path) -> None:
 # --- prepare_project_dirs ---
 
 
+_STATE_DIRS = ("sessions", "session-state", "daemon", "jobs", "plans", "todos", "tasks")
+_STATE_FILES = ("daemon.lock", "daemon.log", "daemon.status.json", "history.jsonl")
+
+
 def test_prepare_project_dirs_creates_subdirs(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    prepare_project_dirs(project_dir)
+    prepare_project_dirs(project_dir, _STATE_DIRS, _STATE_FILES)
     claude_dir = project_dir / ".claude"
-    for subdir in ("sessions", "session-state", "daemon", "jobs", "plans", "todos", "tasks"):
+    for subdir in _STATE_DIRS:
         assert (claude_dir / subdir).exists()
 
 
 def test_prepare_project_dirs_creates_files(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    prepare_project_dirs(project_dir)
+    prepare_project_dirs(project_dir, _STATE_DIRS, _STATE_FILES)
     claude_dir = project_dir / ".claude"
-    for name in ("daemon.lock", "daemon.log", "daemon.status.json", "history.jsonl"):
+    for name in _STATE_FILES:
         assert (claude_dir / name).exists()
     assert (claude_dir / ".gitignore").exists()
     assert (claude_dir / ".gitignore").read_text() == "*\n"
@@ -215,8 +219,8 @@ def test_prepare_project_dirs_creates_files(tmp_path: Path) -> None:
 def test_prepare_project_dirs_idempotent(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    prepare_project_dirs(project_dir)
-    prepare_project_dirs(project_dir)  # should not raise
+    prepare_project_dirs(project_dir, _STATE_DIRS, _STATE_FILES)
+    prepare_project_dirs(project_dir, _STATE_DIRS, _STATE_FILES)  # should not raise
 
 
 # --- record_project ---

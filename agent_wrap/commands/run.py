@@ -41,6 +41,7 @@ _STATE_MOUNTS = {
     "session-env": "session-env",
     "file-history": "file-history",
     "paste-cache": "paste-cache",
+    "image-cache": "image-cache",
 }
 
 # Per-project files mounted into the container.
@@ -320,7 +321,7 @@ def run(args: list[str], tool_dir: Path) -> int:
         telegram_bot_token,
         telegram_chat_id,
     )
-    config.prepare_project_dirs(cwd)
+    config.prepare_project_dirs(cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
     config.record_project(tool_dir)
 
     wslg_args = _build_wslg_args(tool_dir)
