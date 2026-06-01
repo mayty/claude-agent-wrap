@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `run` subcommand — launches Claude Code in a Docker container."""
 
 from __future__ import annotations
@@ -20,6 +20,9 @@ from agent_wrap.lib.utils import (
     sanitize_name,
 )
 from agent_wrap.providers import get_provider
+
+USAGE = "[--base] [claude-args...]"
+SUMMARY = "Launch Claude Code in Docker"
 
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 

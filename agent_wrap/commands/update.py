@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `update` subcommand — git-based self-update."""
 
 from __future__ import annotations
@@ -13,6 +13,9 @@ from agent_wrap.lib.utils import is_truthy_env
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+USAGE = ""
+SUMMARY = "Pull upstream updates"
 
 
 def _git(*args: str, cwd: str | None = None, timeout: int | None = None) -> tuple[str, int]:

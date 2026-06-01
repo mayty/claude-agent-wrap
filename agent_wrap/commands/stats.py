@@ -18,6 +18,9 @@ from pathlib import Path
 
 from agent_wrap.lib.console import Ansi
 
+USAGE = "[--days N] [--region L]"
+SUMMARY = "Show token usage stats"
+
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
 # Pricing source: the AWS Bedrock pricing page renders per-model cells as

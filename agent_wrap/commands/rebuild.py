@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `rebuild` subcommand — builds Docker images."""
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ from pathlib import Path
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.docker_utils import image_exists
 from agent_wrap.lib.utils import ResolvedImage, resolve_image
+
+USAGE = "[--full]"
+SUMMARY = "Rebuild Docker image"
 
 
 def _parse_rebuild_args(args: list[str]) -> tuple[bool, bool]:
