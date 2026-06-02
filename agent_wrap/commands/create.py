@@ -29,11 +29,7 @@ def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001
         return 1
 
     dst.write_text(
-        f"# agent-name: {name}\n"
-        f"# This file has been created with the assistance of an AI tool.\n"
-        f"FROM claude-agent\n"
-        f"\n"
-        f"# Add project-specific RUN steps here.\n"
+        f"# agent-name: {name}\nFROM claude-agent\n\n# Add project-specific RUN steps here.\n"
     )
     print(f"Created {dst} with agent-name '{name}' (FROM claude-agent)")
     return 0

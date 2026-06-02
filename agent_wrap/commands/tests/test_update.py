@@ -89,7 +89,7 @@ def test_get_behind_no_commits(tmp_path: Path, mocker: pytest_mock.MockFixture) 
 
 
 def test_check_skip_env_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLAUDE_AGENT_SKIP_UPDATE_CHECK", "1")
+    monkeypatch.setenv("AGENT_SKIP_UPDATE_CHECK", "1")
     assert check(tmp_path) is False
 
 
