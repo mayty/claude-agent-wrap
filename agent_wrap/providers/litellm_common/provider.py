@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import IO, ClassVar
 
 from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.docker_utils import docker_run
+from agent_wrap.lib.docker_utils import docker_run, image_exists
 from agent_wrap.lib.utils import generate_uuid
 from agent_wrap.providers.base import Provider
 
@@ -176,6 +176,7 @@ class LiteLLMProvider(Provider):
             sidecar_mode = "host" if use_host_net else "bridge"
             secret_key = self.read_secret_key(self._load_secrets())
             self._master_key = self._generate_master_key()
+            self._ensure_image()
             self._start(secret_key, self._master_key, sidecar_mode)
             if not self._health_poll():
                 print("litellm-sidecar: health check failed; recent logs:", file=sys.stderr)
@@ -328,6 +329,19 @@ class LiteLLMProvider(Provider):
         _, rc = docker_run("network", "create", self.network_name)
         if rc != 0:
             msg = f"litellm-sidecar: failed to create docker network {self.network_name}"
+            raise SystemExit(msg)
+
+    def _ensure_image(self) -> None:
+        """Pull the sidecar image if it isn't present locally (streams progress)."""
+        if image_exists(self.image):
+            return
+        print(
+            f"litellm-sidecar: pulling {self.image} (first run, may take a few minutes)…",
+            file=sys.stderr,
+        )
+        _, rc = docker_run("pull", self.image, capture=False, timeout=900)
+        if rc != 0:
+            msg = f"litellm-sidecar: failed to pull image {self.image}"
             raise SystemExit(msg)
 
     def _start(self, secret_key: str, master_key: str, sidecar_mode: str) -> None:

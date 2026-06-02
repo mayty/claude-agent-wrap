@@ -348,6 +348,7 @@ def test_ensure_first_launch(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch.object(p, "_is_running", return_value=False)
     mocker.patch.object(p, "_load_secrets", return_value={"_secret_key": "aws-key"})
     mocker.patch.object(p, "_generate_master_key", return_value="sk-test-new")
+    mocker.patch.object(p, "_ensure_image")
     mocker.patch.object(p, "_start")
     mocker.patch.object(p, "_health_poll", return_value=True)
     mocker.patch.object(p, "_register_instance")
@@ -453,6 +454,37 @@ def test_health_poll_container_gone(tmp_path: Path, mocker: pytest_mock.MockFixt
     mocker.patch("time.monotonic", side_effect=fake_monotonic)
     mocker.patch("sys.stderr.isatty", return_value=False)
     assert p._health_poll() is False
+
+
+# --- _ensure_image ---
+
+
+def test_ensure_image_present_skips_pull(mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider()
+    mocker.patch("agent_wrap.providers.litellm_common.provider.image_exists", return_value=True)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
+    p._ensure_image()
+    pull_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "pull"]
+    assert pull_calls == []
+
+
+def test_ensure_image_absent_pulls(mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider()
+    mocker.patch("agent_wrap.providers.litellm_common.provider.image_exists", return_value=False)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
+    mock_docker.return_value = ("", 0)
+    p._ensure_image()
+    pull_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "pull"]
+    assert len(pull_calls) == 1
+
+
+def test_ensure_image_pull_fails_raises(mocker: pytest_mock.MockFixture) -> None:
+    p = ConcreteTestProvider()
+    mocker.patch("agent_wrap.providers.litellm_common.provider.image_exists", return_value=False)
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
+    mock_docker.return_value = ("", 1)
+    with pytest.raises(SystemExit, match="failed to pull"):
+        p._ensure_image()
 
 
 # --- _start ---
