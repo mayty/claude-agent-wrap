@@ -22,9 +22,7 @@ Reads `~/claude_keys.json`:
 
 ```json
 {
-  "ServiceSpecificCredential": {
-    "ServiceCredentialSecret": "your-aws-bearer-token"
-  }
+  "BedrockBearerToken": "your-aws-bearer-token"
 }
 ```
 

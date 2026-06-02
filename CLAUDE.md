@@ -134,15 +134,15 @@ Credentials live in `~/claude_keys.json`. The structure depends on the active pr
 
 ```json
 {
-  "ServiceSpecificCredential": {
-    "ServiceCredentialSecret": "your-aws-bearer-token"
-  },
+  "BedrockBearerToken": "your-aws-bearer-token",
   "TelegramBotToken": "123456:ABC-DEF...",
   "TelegramChatId": "123456789"
 }
 ```
 
-`ServiceCredentialSecret` is the user's AWS Bedrock bearer token. It is passed only to the LiteLLM sidecar (as `AWS_BEARER_TOKEN_BEDROCK` on the sidecar container); claude-agent never sees it. Inside claude-agent, `AWS_BEARER_TOKEN_BEDROCK` is the proxy's auto-generated master key — the boundary between Claude Code and the proxy is bearer-on-Bearer, not SigV4.
+`BedrockBearerToken` is the user's AWS Bedrock bearer token. It is passed only to the LiteLLM sidecar (as `AWS_BEARER_TOKEN_BEDROCK` on the sidecar container); claude-agent never sees it. Inside claude-agent, `AWS_BEARER_TOKEN_BEDROCK` is the proxy's auto-generated master key — the boundary between Claude Code and the proxy is bearer-on-Bearer, not SigV4.
+
+(Legacy `ServiceSpecificCredential.ServiceCredentialSecret` key is still accepted for backward compatibility.)
 
 #### DashScope (`litellm-dashscope`)
 
