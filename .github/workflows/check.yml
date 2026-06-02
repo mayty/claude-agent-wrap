@@ -39,3 +39,6 @@ jobs:
 
       - name: Run type checker
         run: make typecheck
+
+      - name: Check markdown links
+        run: make markdown-check

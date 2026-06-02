@@ -20,7 +20,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | [docs/volume-mounts.md](docs/volume-mounts.md) | Debugging mount paths or per-project state persistence |
 | [docs/shell-commands.md](docs/shell-commands.md) | Adding/editing an `agent` verb or its flags |
 | [docs/container-environment.md](docs/container-environment.md) | Adding/editing container env var injection |
-| [ops/agent-wrap.bashrc](ops/agent-wrap.bashrc) | Adding/editing shell completion or the `agent` function |
+| [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `agent` function |
 | [agent_wrap/providers/litellm_common/README.md](agent_wrap/providers/litellm_common/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
 | Provider READMEs (`agent_wrap/providers/*/README.md`) | Provider-specific env vars, credentials, or model mappings |
 
