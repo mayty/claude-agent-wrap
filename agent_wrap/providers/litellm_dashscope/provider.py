@@ -34,6 +34,12 @@ class DashscopeProvider(LiteLLMProvider):
         return {
             "ANTHROPIC_API_KEY": master_key,
             "ANTHROPIC_BASE_URL": base_url,
+            "ANTHROPIC_MODEL": "qwen3.6-plus[1m]",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3.7-max[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3.6-plus[1m]",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3.6-flash",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "qwen3.6-flash",
+            "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
 
     def get_sidecar_cmd_args(self) -> list[str]:
