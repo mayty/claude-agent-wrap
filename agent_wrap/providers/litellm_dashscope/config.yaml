@@ -10,26 +10,8 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
 model_list:
-  - model_name: "*opus*"
-    litellm_params:
-      model: "anthropic/qwen3.7-max"
-      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
-      api_key: os.environ/DASHSCOPE_API_KEY
-
-  - model_name: "*sonnet*"
-    litellm_params:
-      model: "anthropic/qwen3.6-plus"
-      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
-      api_key: os.environ/DASHSCOPE_API_KEY
-
-  - model_name: "*haiku*"
-    litellm_params:
-      model: "anthropic/qwen3.6-flash"
-      api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
-      api_key: os.environ/DASHSCOPE_API_KEY
-
   - model_name: "*"
     litellm_params:
-      model: "anthropic/qwen3.6-flash"
+      model: "anthropic/*"
       api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages
       api_key: os.environ/DASHSCOPE_API_KEY
