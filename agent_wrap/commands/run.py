@@ -196,7 +196,7 @@ def _build_env_args(
     """Build -e flags for the docker run command."""
     return [
         "-e",
-        "DISABLE_AUTOUPDATER=1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         "-e",
         f"TELEGRAM_BOT_TOKEN={telegram_bot_token}",
         "-e",
