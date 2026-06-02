@@ -45,23 +45,8 @@ It packages Claude Code into a reproducible container image and exposes a single
 ### Requirements
 
 - Docker
-- API credentials for your chosen provider, stored in `~/claude_keys.json`. The default provider (`litellm-bedrock`) expects:
-  ```json
-  {
-    "ServiceSpecificCredential": {
-      "ServiceCredentialSecret": "your-aws-bearer-token"
-    }
-  }
-  ```
-  Other providers have different keys — see their READMEs for the expected format.
-- (Optional) Telegram credentials for permission-request and stop notifications, added to the same `~/claude_keys.json` (see [Telegram notifications](#telegram-notifications) for how to obtain them):
-  ```json
-  {
-    ...
-    "TelegramBotToken": "your-telegram-bot-token",
-    "TelegramChatId": "your-telegram-chat-id"
-  }
-  ```
+- API credentials for your chosen provider, stored in `~/claude_keys.json`. See [Available Providers](#available-providers).
+- (Optional) Telegram credentials for permission-request and stop notifications, added to the same `~/claude_keys.json`. See [Telegram notifications](#telegram-notifications).
 
 ### Setup
 
@@ -123,8 +108,6 @@ agent rebuild
 The resulting image is tagged `claude-agent-<name>` and `agent run` will pick it up automatically whenever you invoke it from that directory. The base toolchain (Node, Claude CLI, hadolint, crane, clipboard tooling, `WORKDIR /workspace`, `ENTRYPOINT ["claude"]`) is inherited from `claude-agent`, so there's no need to redeclare it.
 
 If the base `claude-agent` image hasn't been built yet on this host, run `agent rebuild --full` once — it builds the base first, then the project image.
-
-**Backwards compatibility:** existing projects whose `Dockerfile.agent` starts with `FROM ubuntu:24.04` (or any other non-`claude-agent` base) keep working as-is; `agent rebuild` will print a one-line note suggesting migration but does not change behavior. To migrate, replace the body with `FROM claude-agent` plus your project-specific additions.
 
 #### Recognized Directives
 
@@ -193,7 +176,8 @@ The wrapper routes Claude Code through a pluggable provider. Each provider imple
 Select a provider via the `AGENT_PROVIDER` environment variable (default: `litellm-bedrock`):
 
 ```sh
-AGENT_PROVIDER=litellm-dashscope source agent-wrap.bashrc
+source agent-wrap.bashrc
+export AGENT_PROVIDER=litellm-deepseek
 agent run
 ```
 
@@ -203,6 +187,7 @@ agent run
 | --- | --- | --- |
 | `litellm-bedrock` | AWS Bedrock via LiteLLM sidecar (default) | [README](agent_wrap/providers/litellm_bedrock/README.md) |
 | `litellm-dashscope` | Alibaba Cloud DashScope via LiteLLM sidecar | [README](agent_wrap/providers/litellm_dashscope/README.md) |
+| `litellm-deepseek` | DeepSeek via LiteLLM sidecar (Anthropic-compatible endpoint) | [README](agent_wrap/providers/litellm_deepseek/README.md) |
 
 ### Adding a Provider
 
@@ -313,6 +298,7 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 
 - [litellm-bedrock](ops/agent_wrap/providers/litellm_bedrock/README.md)
 - [litellm-dashscope](ops/agent_wrap/providers/litellm_dashscope/README.md)
+- [litellm-deepseek](ops/agent_wrap/providers/litellm_deepseek/README.md)
 
 #### Conditional vars
 
@@ -336,7 +322,8 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 │   │   ├── base.py              # Provider ABC (4 abstract methods)
 │   │   ├── litellm_common/      # Shared LiteLLM sidecar base class (internal)
 │   │   ├── litellm_bedrock/     # AWS Bedrock (default)
-│   │   └── litellm_dashscope/   # Alibaba DashScope
+│   │   ├── litellm_dashscope/   # Alibaba DashScope
+│   │   └── litellm_deepseek/    # DeepSeek (Anthropic-compatible endpoint)
 │   ├── config.py                # Settings JSON manipulation (statusline, telegram hooks, dir creation)
 │   ├── utils.py                 # Name sanitization, image resolution, Dockerfile.agent parsing
 │   └── docker_utils.py          # Docker info queries (rootless detection, image existence)
