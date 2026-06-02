@@ -31,9 +31,7 @@ def get_md_files(root_dir: Path) -> list[Path]:
     md_files: list[Path] = []
 
     # Project root (non-recursive), excluding CLAUDE.md which we add separately
-    root_md_files = [
-        f for f in root_dir.iterdir() if f.is_file() and f.suffix == ".md"
-    ]
+    root_md_files = [f for f in root_dir.iterdir() if f.is_file() and f.suffix == ".md"]
     md_files.extend(root_md_files)
 
     # Recursive directories
