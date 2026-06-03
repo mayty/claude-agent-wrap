@@ -1,6 +1,12 @@
 # This file has been created with the assistance of an AI tool.
 #
-# Validates markdown files for broken internal links.
+# Validates markdown files for broken internal links and doc reachability.
+#
+# Rules enforced:
+#   1. Every internal link resolves to an existing file.
+#   2. Every .md file (except those under ops/, and CLAUDE.md) is reachable
+#      from the root README.md via one or more link hops. Orphaned docs rot
+#      silently, so an unreachable doc is a hard error.
 #
 # Search paths:
 #   Project root (non-recursive)
@@ -11,8 +17,8 @@
 # Usage: python3 validate-markdown-links.py
 #
 # Exit codes:
-#   0 - all internal links resolve to existing files
-#   1 - one or more broken links found
+#   0 - all internal links resolve and all docs are reachable
+#   1 - one or more broken links or unreachable docs found
 #   2 - usage / directory not found
 
 import re
@@ -43,19 +49,20 @@ def get_md_files(root_dir: Path) -> list[Path]:
     return md_files
 
 
-def validate_link(source_file: Path, target: str, root_dir: Path) -> tuple[bool, str]:
+def resolve_target(source_file: Path, target: str, root_dir: Path) -> Path | None:
     """
-    Validate a single link target from a source markdown file.
+    Resolve a link target to an absolute filesystem path.
 
-    Returns:
-        (is_valid, error_message)
-
+    Returns None for targets that don't map to a local file: external URLs,
+    fragment-only / empty links, and absolute paths outside the ops special
+    case (those can't be resolved against the repo and are warned about by
+    the caller).
     """
     if target.startswith(EXTERNAL_PREFIXES):
-        return True, ""
+        return None
 
     if target.startswith("#") or target == "":
-        return True, ""
+        return None
 
     file_target = target.split("#", 1)[0]
 
@@ -67,15 +74,34 @@ def validate_link(source_file: Path, target: str, root_dir: Path) -> tuple[bool,
 
     if in_ops and file_target.startswith("/opt/agent-wrap/"):
         relative_path = file_target.removeprefix("/opt/agent-wrap/")
-        resolved_path = (root_dir / "ops" / relative_path).resolve()
-    elif file_target.startswith("/"):
+        return (root_dir / "ops" / relative_path).resolve()
+
+    if file_target.startswith("/"):
+        return None
+
+    return (source_file.parent / file_target).resolve()
+
+
+def validate_link(source_file: Path, target: str, root_dir: Path) -> tuple[bool, str]:
+    """
+    Validate a single link target from a source markdown file.
+
+    Returns:
+        (is_valid, error_message)
+
+    """
+    if target.startswith(EXTERNAL_PREFIXES) or target.startswith("#") or target == "":
+        return True, ""
+
+    resolved_path = resolve_target(source_file, target, root_dir)
+
+    if resolved_path is None:
+        # Reaches here only for an absolute path outside the ops special case.
+        file_target = target.split("#", 1)[0]
         return (
             True,
             f"WARNING: Absolute path '{file_target}' in {source_file.relative_to(root_dir)}",
         )
-    else:
-        source_dir = source_file.parent
-        resolved_path = (source_dir / file_target).resolve()
 
     if not resolved_path.exists():
         return (
@@ -84,6 +110,51 @@ def validate_link(source_file: Path, target: str, root_dir: Path) -> tuple[bool,
         )
 
     return True, ""
+
+
+# .md files exempt from the README-reachability rule (config, not docs).
+EXEMPT_FROM_REACHABILITY = {"CLAUDE.md"}
+
+
+def get_reachable_md_files(root: Path) -> set[Path]:
+    """Walk the link graph from the `root`, returning every .md file reached."""
+    root = root.resolve()
+    root_dir = root.parent
+    visited: set[Path] = {root}
+    queue: list[Path] = [root]
+
+    while queue:
+        current = queue.pop()
+
+        for match in LINK_PATTERN.finditer(current.read_text(encoding="utf-8")):
+            resolved = resolve_target(current, match.group(2), root_dir)
+            if (
+                resolved is not None
+                and resolved.suffix == ".md"
+                and resolved.exists()
+                and resolved not in visited
+            ):
+                visited.add(resolved)
+                queue.append(resolved)
+
+    return visited
+
+
+def check_reachability(md_files: list[Path], root_dir: Path) -> list[str]:
+    """Return an error for each .md file not reachable from README.md."""
+    reachable = get_reachable_md_files(root_dir / "README.md")
+    errors: list[str] = []
+
+    for md_file in md_files:
+        rel = md_file.relative_to(root_dir)
+        if rel.parts[0] == "ops":
+            continue
+        if rel.as_posix() in EXEMPT_FROM_REACHABILITY:
+            continue
+        if md_file.resolve() not in reachable:
+            errors.append(f"ERROR: {rel}: not reachable from README.md via any link path")
+
+    return errors
 
 
 def process_file(md_file: Path, root_dir: Path) -> tuple[int, int, int, list[str], list[str]]:
@@ -140,6 +211,11 @@ def main() -> None:
             print(msg, file=sys.stderr)
         for msg in warning_msgs:
             print(msg, file=sys.stderr)
+
+    reachability_errors = check_reachability(md_files, root_dir)
+    for msg in reachability_errors:
+        print(msg, file=sys.stderr)
+    total_errors += len(reachability_errors)
 
     print(f"Checked {len(md_files)} markdown files, validated {total_links_checked} links.")
 
