@@ -61,4 +61,4 @@ Aggregates token usage and estimated USD cost across every project where you've 
 agent update
 ```
 
-Pulls the latest wrapper source. If `default-CLAUDE.md` changed, replaces the user's copy when unmodified or prompts when customized.
+Pulls the latest wrapper source. On `master`, it only updates when a newer tag has been published and fast-forwards to that tag's commit; on any other branch it fast-forwards to the branch tip on any upstream commit. If `default-CLAUDE.md` changed, replaces the user's copy when unmodified or prompts when customized.
