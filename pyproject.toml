@@ -121,6 +121,9 @@ ignore = [
 "ops/statusline.py" = [
     "BLE001", # broad except Exception -- statusline must never crash
 ]
+"scripts/**" = [
+    "INP001",  # individual scripts, not package
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["agent_wrap"]

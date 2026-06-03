@@ -3,7 +3,7 @@
 # Strict targets (for CI): lintcheck, format-check, typecheck, test, check
 # Fix targets (for dev):    lint, format
 
-.PHONY: test lint lintcheck format format-check typecheck check
+.PHONY: test lint lintcheck format format-check typecheck markdown-check check
 
 test:
 	python3 -m pytest --cov=agent_wrap
@@ -23,4 +23,7 @@ format-check:
 typecheck:
 	python3 -m pyrefly check .
 
-check: lintcheck format-check test typecheck
+markdown-check:
+	python3 scripts/validate-markdown-links.py
+
+check: lintcheck format-check test typecheck markdown-check

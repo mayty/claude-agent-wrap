@@ -17,19 +17,14 @@ class BedrockProvider(LiteLLMProvider):
     master_key_prefix: ClassVar[str] = "sk-aw-"
 
     def read_secret_key(self, secrets: dict) -> str:
-        try:
-            key = secrets["ServiceSpecificCredential"]["ServiceCredentialSecret"]
-        except (KeyError, TypeError):
-            msg = (
-                "litellm-sidecar: .ServiceSpecificCredential.ServiceCredentialSecret "
-                "missing or empty in ~/claude_keys.json"
-            )
-            raise SystemExit(msg) from None
+        # New flat key (preferred).
+        key = secrets.get("BedrockBearerToken", "")
+        # Legacy nested key, kept for backward compatibility.
         if not key:
-            msg = (
-                "litellm-sidecar: .ServiceSpecificCredential.ServiceCredentialSecret "
-                "missing or empty in ~/claude_keys.json"
-            )
+            cred = secrets.get("ServiceSpecificCredential", {}) or {}
+            key = cred.get("ServiceCredentialSecret", "")
+        if not key:
+            msg = "litellm-sidecar: .BedrockBearerToken missing or empty in ~/claude_keys.json"
             raise SystemExit(msg)
         return key
 

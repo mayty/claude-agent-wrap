@@ -92,7 +92,7 @@ def check(tool_dir: Path) -> bool:
     Best-effort: any error (no network, detached HEAD, non-git dir, fetch
     failure) returns False so the caller's original command runs.
     """
-    env_val = os.environ.get("CLAUDE_AGENT_SKIP_UPDATE_CHECK", "")
+    env_val = os.environ.get("AGENT_SKIP_UPDATE_CHECK", "")
     if is_truthy_env(env_val):
         return False
 
