@@ -99,8 +99,15 @@ class LiteLLMProvider(Provider):
         return Path(__file__).parent / "callback.py"
 
     def _log_dir(self) -> Path:
-        """Host directory for the request/response JSONL log (bind-mounted into sidecar)."""
-        return Path.cwd() / ".claude" / "litellm-logs"
+        """
+        Host directory for the request/response JSONL log (bind-mounted into sidecar).
+
+        Includes the provider name (e.g., 'litellm-bedrock') so the sidecar mounts
+        directly to /var/log/agent-wrap, letting the callback simply write to
+        /var/log/agent-wrap/<session_id>/messages.jsonl.
+        """
+        provider_name = self.__class__.name if hasattr(self.__class__, "name") else "unknown"
+        return Path.cwd() / ".claude" / "litellm-logs" / provider_name
 
     # --- Public: ensure ---
 

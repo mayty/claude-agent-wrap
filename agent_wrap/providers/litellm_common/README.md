@@ -33,7 +33,9 @@ The base class implements `ensure()`, `release()`, `get_run_args()`, and `get_la
 
 `_start()` mounts a shared logging callback (`callback.py`) into the sidecar next to the config (`/etc/litellm/callback.py` — LiteLLM resolves callback modules relative to the config file's directory) and bind-mounts a host log dir into it. Each provider's `config.yaml` references the callback via `litellm_settings.callbacks: callback.file_logger_instance`.
 
-- **What it does**: appends one JSON line per LLM call (request messages + `proxy_server_request` + full response) to `agent-llm.jsonl`.
-- **Where**: host dir `./.claude/litellm-logs/` (per-project, git-ignored) → `/var/log/agent-wrap/` in the sidecar.
+- **What it does**: appends one JSON line per LLM call (request messages + `proxy_server_request` + full response) to a session-specific log file.
+- **Where**: host dir `./.claude/litellm-logs/<provider-name>/<session_id>/messages.jsonl` (e.g., `litellm-bedrock`) → `/var/log/agent-wrap/<session_id>/messages.jsonl` in the sidecar. The provider-specific directory is mounted directly, so the callback only needs to append the `session_id`.
+- **Session routing**: the `session_id` is extracted from Claude Code's `x-claude-code-session-id` HTTP header (falls back to `unknown-session`).
 - **Always on**: this is a proof-of-concept "see what the agent sent upstream" log — no flag, no UI, no DB. Logging failures are swallowed so they never break the proxy.
+- **Directory-per-session design**: accommodates future expansion (e.g., separate files for tools, errors, etc. within the same session directory).
 - **Caveat**: Bedrock uses a passthrough route; confirm callbacks fire on passthrough (Step 0 spike) before relying on the captured bodies.

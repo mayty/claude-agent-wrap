@@ -23,9 +23,16 @@ from pathlib import Path
 from typing import Any
 
 # The host log directory is bind-mounted here by the provider lifecycle
-# (see litellm_common/provider.py::_start). The file is appended to, never
-# truncated, so it persists across sidecar restarts.
-LOG_FILE = Path("/var/log/agent-wrap/agent-llm.jsonl")
+# (see litellm_common/provider.py::_start). The provider-specific subdirectory
+# is mounted directly to /var/log/agent-wrap, so we only need to append the session_id.
+
+
+def _get_session_id(kwargs: dict[str, Any]) -> str:
+    """Extract the Claude Code session ID from the proxy server request headers."""
+    litellm_params = kwargs.get("litellm_params") or {}
+    proxy_request = litellm_params.get("proxy_server_request") or {}
+    headers = proxy_request.get("headers") or {}
+    return headers.get("x-claude-code-session-id", "unknown-session")
 
 
 def _json_safe(obj: Any, _seen: frozenset[int] = frozenset()) -> Any:
@@ -88,12 +95,16 @@ def build_record(
     return record
 
 
-def _write_record(record: dict[str, Any]) -> None:
-    """Append one record as a JSON line. Never raises (logging must not break the proxy)."""
+def _write_record(record: dict[str, Any], kwargs: dict[str, Any]) -> None:
+    """Append one record as a JSON line to the session-specific log file. Never raises (logging must not break the proxy)."""
     try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        session_id = _get_session_id(kwargs)
+        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "messages.jsonl"
+
         line = json.dumps(record, default=str)
-        with LOG_FILE.open("a") as f:
+        with log_file.open("a") as f:
             f.write(line + "\n")
     except Exception as e:  # noqa: BLE001 - logging is best-effort
         print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
@@ -107,7 +118,7 @@ try:
         """LiteLLM CustomLogger that appends each call to the JSONL log file."""
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
-            _write_record(build_record(kwargs, response_obj, status="success"))
+            _write_record(build_record(kwargs, response_obj, status="success"), kwargs)
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
             _write_record(
@@ -116,7 +127,8 @@ try:
                     response_obj,
                     status="failure",
                     exc=kwargs.get("exception"),
-                )
+                ),
+                kwargs,
             )
 
     file_logger_instance = FileLogger()

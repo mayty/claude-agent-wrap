@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-from agent_wrap.providers.litellm_common.callback import build_record
+from agent_wrap.providers.litellm_common.callback import _get_session_id, build_record
 
 
 def test_build_record_success_shape() -> None:
@@ -68,3 +68,25 @@ def test_build_record_uses_model_dump_for_pydantic_like() -> None:
 
     record = build_record({"model": "m"}, Modelish(), status="success")
     assert record["response"] == {"kind": "modelish", "n": 1}
+
+
+def test_get_session_id_extracted_from_headers() -> None:
+    kwargs = {
+        "litellm_params": {
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": "test-session-123", "other-header": "value"}
+            }
+        }
+    }
+    assert _get_session_id(kwargs) == "test-session-123"
+
+
+def test_get_session_id_fallback_when_missing() -> None:
+    kwargs = {"litellm_params": {}}
+    assert _get_session_id(kwargs) == "unknown-session"
+
+    kwargs = {"litellm_params": {"proxy_server_request": {}}}
+    assert _get_session_id(kwargs) == "unknown-session"
+
+    kwargs = {"litellm_params": {"proxy_server_request": {"headers": {}}}}
+    assert _get_session_id(kwargs) == "unknown-session"
