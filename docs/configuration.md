@@ -36,7 +36,9 @@ Trade-offs:
 
 ## `AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
 
-`agent run` and `agent rebuild` run a best-effort upstream check on every invocation: a `git fetch` against the wrap-dir's tracking branch, then — if `HEAD` is behind — a `Update agent-wrap now? [y/N]` prompt. On `y`, the wrapper runs `agent update` and returns without launching the container or rebuilding the image; re-source `agent-wrap.bashrc` and re-run your original command afterwards. On `n` (or Enter), the original command proceeds unchanged.
+`agent run` and `agent rebuild` run a best-effort upstream check on every invocation: a `git fetch --tags` against the wrap-dir's tracking branch, then — if an update is available — a `Update agent-wrap now? [y/N]` prompt. On `y`, the wrapper runs `agent update` and returns without launching the container or rebuilding the image; re-source `agent-wrap.bashrc` and re-run your original command afterwards. On `n` (or Enter), the original command proceeds unchanged.
+
+What counts as "an update available" depends on the branch. On `master`, the prompt only appears when a **newer tag** has been published upstream, and the update fast-forwards to that tag's commit — untagged commits pushed after the latest tag do not trigger a prompt. On any other branch, the check is commit-based: any upstream commit triggers the prompt and the update fast-forwards to the branch tip.
 
 Set `AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. The check is also auto-skipped on any error path — non-git wrap-dir, detached HEAD, fetch failure, or 10-second fetch timeout — so a flaky or offline network never blocks a launch.
 

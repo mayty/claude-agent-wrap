@@ -38,7 +38,9 @@ def test_get_behind_detached_head(tmp_path: Path, mocker: pytest_mock.MockFixtur
     assert _get_behind_count(tmp_path) is None
 
 
-def test_get_behind_three_commits(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_get_behind_three_commits_non_master(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
     def fake_git(*args, **kwargs):
         if args[0] == "rev-parse":
             return (".git", 0)
@@ -52,7 +54,82 @@ def test_get_behind_three_commits(tmp_path: Path, mocker: pytest_mock.MockFixtur
 
     mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
     result = _get_behind_count(tmp_path)
-    assert result == ("main", 3)
+    assert result == ("main", 3, "origin/main")
+
+
+def test_get_behind_fetches_tags(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("main", 0)
+        if args[0] == "fetch":
+            return ("", 0)
+        if args[0] == "rev-list":
+            return ("1", 0)
+        return ("", 0)
+
+    mock_git = mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    _get_behind_count(tmp_path)
+    fetch_calls = [c for c in mock_git.call_args_list if c.args and c.args[0] == "fetch"]
+    assert fetch_calls
+    assert "--tags" in fetch_calls[0].args
+
+
+def test_get_behind_master_new_tag(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("master", 0)
+        if args[0] == "fetch":
+            return ("", 0)
+        if args[0] == "rev-list":
+            return ("3", 0)
+        if args[0] == "describe":
+            ref = args[-1]
+            return ("v1.1" if ref.startswith("origin/") else "v1.0", 0)
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    result = _get_behind_count(tmp_path)
+    assert result == ("master", 3, "v1.1")
+
+
+def test_get_behind_master_no_new_tag(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("master", 0)
+        if args[0] == "fetch":
+            return ("", 0)
+        if args[0] == "rev-list":
+            return ("3", 0)
+        if args[0] == "describe":
+            return ("v1.0", 0)  # same tag local and upstream
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    assert _get_behind_count(tmp_path) is None
+
+
+def test_get_behind_master_no_upstream_tag(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args, **kwargs):
+        if args[0] == "rev-parse":
+            return (".git", 0)
+        if args[0] == "symbolic-ref":
+            return ("master", 0)
+        if args[0] == "fetch":
+            return ("", 0)
+        if args[0] == "rev-list":
+            return ("3", 0)
+        if args[0] == "describe":
+            return ("", 1)  # no tags reachable
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    assert _get_behind_count(tmp_path) is None
 
 
 def test_get_behind_fetch_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -99,7 +176,9 @@ def test_check_no_behind(tmp_path: Path, mocker: pytest_mock.MockFixture) -> Non
 
 
 def test_check_user_says_no(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch("agent_wrap.commands.update._get_behind_count", return_value=("main", 2))
+    mocker.patch(
+        "agent_wrap.commands.update._get_behind_count", return_value=("main", 2, "origin/main")
+    )
     mocker.patch("builtins.input", return_value="n")
     mock_apply = mocker.patch("agent_wrap.commands.update.apply")
     assert check(tmp_path) is False
@@ -107,15 +186,30 @@ def test_check_user_says_no(tmp_path: Path, mocker: pytest_mock.MockFixture) -> 
 
 
 def test_check_user_says_yes(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch("agent_wrap.commands.update._get_behind_count", return_value=("main", 2))
+    mocker.patch(
+        "agent_wrap.commands.update._get_behind_count", return_value=("main", 2, "origin/main")
+    )
     mocker.patch("builtins.input", return_value="y")
     mock_apply = mocker.patch("agent_wrap.commands.update.apply")
     assert check(tmp_path) is True
-    mock_apply.assert_called_once_with(tmp_path)
+    mock_apply.assert_called_once_with(tmp_path, "origin/main")
+
+
+def test_check_master_announces_tag(
+    tmp_path: Path, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch("agent_wrap.commands.update._get_behind_count", return_value=("master", 3, "v1.1"))
+    mocker.patch("builtins.input", return_value="y")
+    mock_apply = mocker.patch("agent_wrap.commands.update.apply")
+    assert check(tmp_path) is True
+    mock_apply.assert_called_once_with(tmp_path, "v1.1")
+    assert "v1.1" in capsys.readouterr().out
 
 
 def test_check_eof_error(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch("agent_wrap.commands.update._get_behind_count", return_value=("main", 2))
+    mocker.patch(
+        "agent_wrap.commands.update._get_behind_count", return_value=("main", 2, "origin/main")
+    )
     mocker.patch("builtins.input", side_effect=EOFError)
     assert check(tmp_path) is False
 
@@ -207,14 +301,14 @@ def test_apply_cannot_get_head(
         ("main", 0),  # symbolic-ref ok
         ("", 1),  # rev-parse HEAD fails
     ]
-    rc = apply(tmp_path)
+    rc = apply(tmp_path, "origin/main")
     assert rc == 1
     captured = capsys.readouterr()
     assert "Update failed:" in captured.err
     assert "could not get current HEAD" in captured.err
 
 
-def test_apply_pull_fails(
+def test_apply_merge_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     def fake_git(*args, **kwargs):
@@ -225,15 +319,43 @@ def test_apply_pull_fails(
         return ("", 0)
 
     mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
-    mocker.patch(
+    mock_full = mocker.patch(
         "agent_wrap.commands.update._git_full",
         return_value=("", 1, "fatal: not possible to fast-forward"),
     )
-    rc = apply(tmp_path)
+    rc = apply(tmp_path, "origin/main")
     assert rc == 1
     out = capsys.readouterr().out
     assert "Update failed:" in out
     assert "fatal: not possible to fast-forward" in out
+    # Fast-forwards to the resolved target ref, not a raw branch pull.
+    assert mock_full.call_args.args == ("merge", "--ff-only", "origin/main")
+
+
+def test_apply_merges_to_tag_target(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args, **kwargs):
+        if args[0] == "symbolic-ref":
+            return ("master", 0)
+        if args[0] == "rev-parse":
+            return ("abc123", 0)
+        return ("", 0)
+
+    mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
+    mock_full = mocker.patch("agent_wrap.commands.update._git_full", return_value=("", 0, ""))
+    mocker.patch("subprocess.run").return_value.returncode = 0
+    rc = apply(tmp_path, "v1.1")
+    assert rc == 0
+    assert mock_full.call_args.args == ("merge", "--ff-only", "v1.1")
+
+
+def test_apply_recomputes_target_when_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch("agent_wrap.commands.update._git", return_value=("master", 0))
+    mocker.patch("agent_wrap.commands.update._get_behind_count", return_value=None)
+    rc = apply(tmp_path)
+    assert rc == 0
+    assert "Already up to date" in capsys.readouterr().out
 
 
 def test_apply_already_up_to_date(
@@ -249,6 +371,6 @@ def test_apply_already_up_to_date(
     mocker.patch("agent_wrap.commands.update._git", side_effect=fake_git)
     mocker.patch("agent_wrap.commands.update._git_full", return_value=("", 0, ""))
     mocker.patch("subprocess.run").return_value.returncode = 0
-    rc = apply(tmp_path)
+    rc = apply(tmp_path, "origin/main")
     assert rc == 0
     assert "Already up to date" in capsys.readouterr().out
