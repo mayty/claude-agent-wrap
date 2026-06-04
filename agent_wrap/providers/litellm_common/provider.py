@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import IO, ClassVar
 
 from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.docker_utils import docker_run, image_exists
+from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.utils import generate_uuid
 from agent_wrap.providers.base import Provider
 
@@ -394,6 +394,7 @@ class LiteLLMProvider(Provider):
             self.container_name,
             "--network",
             network,
+            *get_user_args(),
             "--health-cmd",
             health_cmd,
             "--health-interval=30s",
