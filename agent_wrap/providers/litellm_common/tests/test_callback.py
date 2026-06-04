@@ -157,10 +157,34 @@ def test_build_record_breaks_circular_references() -> None:
     cyclic["self"] = cyclic
 
     record = build_record({"model": "m"}, cyclic, status="success")
-    line = json.dumps(record)  # no default= needed; build_record made it safe
 
-    assert "<circular>" in line
+    # The root object gets a wrap-ref-id, and the self-reference becomes wrap-ref:<id>
+    assert "wrap-ref-id" in record["response"]
+    root_ref_id = record["response"]["wrap-ref-id"]
+    assert record["response"]["self"] == f"wrap-ref:{root_ref_id}"
     assert record["response"]["a"] == 1
+
+
+def test_build_record_breaks_circular_list_references() -> None:
+    # Test that circular references in lists are handled correctly
+    # with wrap-ref-id inserted at index 0.
+    cyclic_list: list[object] = [1, 2]
+    cyclic_list.append(cyclic_list)
+
+    record = build_record({"model": "m"}, {"data": cyclic_list}, status="success")
+
+    # The outer dict is only referenced once, so it does NOT get a wrap-ref-id.
+    assert "wrap-ref-id" not in record["response"]
+
+    # The list is referenced twice (once in the dict, once inside itself), so it gets a wrap-ref-id.
+    data_list = record["response"]["data"]
+    assert data_list[0] == "wrap-ref-id:0"  # The list's wrap-ref-id is at index 0
+    list_ref_id = data_list[0].split(":")[1]
+
+    # The circular reference to the list becomes wrap-ref:<id>
+    assert data_list[3] == f"wrap-ref:{list_ref_id}"
+    assert data_list[1] == 1
+    assert data_list[2] == 2
 
 
 def test_build_record_uses_model_dump_for_pydantic_like() -> None:
