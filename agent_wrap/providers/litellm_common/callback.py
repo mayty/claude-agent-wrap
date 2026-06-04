@@ -16,11 +16,26 @@ proxy.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from .string_hasher import StringHasher, get_session_hasher
+except ImportError:
+    # Fallback for sidecar container execution where callback.py is mounted
+    # as a top-level module in /etc/litellm/ alongside string_hasher.py
+    # LiteLLM loads this module via importlib.util.spec_from_file_location,
+    # which does not automatically add the file's directory to sys.path.
+    # We must add it explicitly so that `string_hasher` can be imported
+    # when running inside the sidecar container.
+    _current_dir = str(Path(__file__).parent.resolve())
+    if _current_dir not in sys.path:
+        sys.path.insert(0, _current_dir)
+    from string_hasher import StringHasher, get_session_hasher  # type: ignore[no-redef]
 
 # The host log directory is bind-mounted here by the provider lifecycle
 # (see litellm_common/provider.py::_start). The provider-specific subdirectory
@@ -35,7 +50,11 @@ def _get_session_id(kwargs: dict[str, Any]) -> str:
     return headers.get("x-claude-code-session-id", "unknown-session")
 
 
-def _json_safe(obj: Any, _seen: frozenset[int] = frozenset()) -> Any:
+def _json_safe(
+    obj: Any,
+    _seen: frozenset[int] = frozenset(),
+    _hasher: StringHasher | None = None,
+) -> Any:
     """
     Recursively coerce ``obj`` into JSON-serializable primitives.
 
@@ -44,26 +63,38 @@ def _json_safe(obj: Any, _seen: frozenset[int] = frozenset()) -> Any:
     ``json.dumps(..., default=str)`` raise "Circular reference detected". This
     walks the structure, tracking container ids on the current path, and
     replaces any back-reference with ``"<circular>"``. Unknown leaf types fall
-    back to ``str()``.
+    back to ``str()``. If ``_hasher`` is provided, string values meeting the
+    length threshold are replaced with ``"hash:<sha256_hex>"``.
     """
-    if obj is None or isinstance(obj, (str, int, float, bool)):
+    # Handle primitive types
+    if obj is None or isinstance(obj, (int, float, bool)):
         return obj
+
+    # Handle strings (with optional hashing)
+    if isinstance(obj, str):
+        return _hasher.hash_string(obj) if _hasher else obj
+
+    # Handle containers
     if isinstance(obj, (dict, list, tuple, set)):
         if id(obj) in _seen:
             return "<circular>"
         seen = _seen | {id(obj)}
         if isinstance(obj, dict):
-            return {str(k): _json_safe(v, seen) for k, v in obj.items()}
-        return [_json_safe(v, seen) for v in obj]
-    # Pydantic models and other objects: prefer a dict view if available.
+            return {str(k): _json_safe(v, seen, _hasher) for k, v in obj.items()}
+        return [_json_safe(v, seen, _hasher) for v in obj]
+
+    # Handle Pydantic models and other objects with model_dump/dict methods
     for attr in ("model_dump", "dict"):
         method = getattr(obj, attr, None)
         if callable(method):
             try:
-                return _json_safe(method(), _seen)
+                return _json_safe(method(), _seen, _hasher)
             except Exception:  # noqa: BLE001 - best-effort, fall through to str()
                 break
-    return str(obj)
+
+    # Fallback for unknown types: convert to string and optionally hash
+    str_val = str(obj)
+    return _hasher.hash_string(str_val) if _hasher else str_val
 
 
 def build_record(
@@ -77,35 +108,56 @@ def build_record(
 
     Pure function (no I/O) so it can be unit-tested directly. All values are run
     through ``_json_safe`` so the result has no cycles and no non-serializable
-    leaves.
+    leaves. String values meeting the length threshold are replaced with
+    "hash:<sha256_hex>" format to reduce space bloat.
     """
+    session_id = _get_session_id(kwargs)
+    hasher = get_session_hasher(session_id)
     litellm_params = kwargs.get("litellm_params") or {}
     record: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "status": status,
-        "model": _json_safe(kwargs.get("model")),
+        "model": _json_safe(kwargs.get("model"), _hasher=hasher),
         "request": {
-            "messages": _json_safe(kwargs.get("messages")),
-            "proxy_server_request": _json_safe(litellm_params.get("proxy_server_request")),
+            "messages": _json_safe(kwargs.get("messages"), _hasher=hasher),
+            "proxy_server_request": _json_safe(
+                litellm_params.get("proxy_server_request"), _hasher=hasher
+            ),
         },
-        "response": _json_safe(response_obj),
+        "response": _json_safe(response_obj, _hasher=hasher),
     }
     if exc is not None:
-        record["error"] = str(exc)
+        record["error"] = hasher.hash_string(str(exc))
+
+    # Flush the hasher to persist string mappings after building the record
+    hasher.flush(session_id)
+
     return record
 
 
-def _write_record(record: dict[str, Any], kwargs: dict[str, Any]) -> None:
-    """Append one record as a JSON line to the session-specific log file. Never raises (logging must not break the proxy)."""
+async def _write_record_async(record: dict[str, Any], kwargs: dict[str, Any]) -> None:
+    """Append one record as a JSON line to the session-specific log file asynchronously. Never raises."""
     try:
         session_id = _get_session_id(kwargs)
-        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "messages.jsonl"
 
+        # Get the hasher (this triggers _load_seen_hashes if it's the first time)
+        hasher = get_session_hasher(session_id)
+
+        # Flush string mappings in a background thread
+        await asyncio.to_thread(hasher.flush, session_id)
+
+        # Append the log record in a background thread
+        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
+        log_file = log_dir / "messages.jsonl"
         line = json.dumps(record, default=str)
-        with log_file.open("a") as f:
-            f.write(line + "\n")
+
+        def _append_to_file() -> None:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with log_file.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+
+        await asyncio.to_thread(_append_to_file)
+
     except Exception as e:  # noqa: BLE001 - logging is best-effort
         print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
 
@@ -115,21 +167,20 @@ try:
     from litellm.integrations.custom_logger import CustomLogger  # pyrefly: ignore[missing-import]
 
     class FileLogger(CustomLogger):
-        """LiteLLM CustomLogger that appends each call to the JSONL log file."""
+        """LiteLLM CustomLogger that appends each call to the JSONL log file asynchronously."""
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
-            _write_record(build_record(kwargs, response_obj, status="success"), kwargs)
+            record = build_record(kwargs, response_obj, status="success")
+            await _write_record_async(record, kwargs)
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
-            _write_record(
-                build_record(
-                    kwargs,
-                    response_obj,
-                    status="failure",
-                    exc=kwargs.get("exception"),
-                ),
+            record = build_record(
                 kwargs,
+                response_obj,
+                status="failure",
+                exc=kwargs.get("exception"),
             )
+            await _write_record_async(record, kwargs)
 
     file_logger_instance = FileLogger()
 except ImportError:

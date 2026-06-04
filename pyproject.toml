@@ -121,6 +121,12 @@ ignore = [
 "ops/statusline.py" = [
     "BLE001", # broad except Exception -- statusline must never crash
 ]
+"agent_wrap/providers/litellm_common/callback.py" = [
+    "PLR0911", # too many return statements -- pre-existing pattern with minor additions
+]
+"agent_wrap/providers/litellm_common/string_hasher.py" = [
+    "PERF203", # try-except within loop -- justified for resilient line-by-line JSONL parsing
+]
 "scripts/**" = [
     "INP001",  # individual scripts, not package
 ]

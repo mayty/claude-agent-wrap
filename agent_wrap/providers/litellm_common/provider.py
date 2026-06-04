@@ -17,6 +17,7 @@ import json
 import sys
 import time
 from abc import abstractmethod
+from itertools import chain
 from pathlib import Path
 from typing import IO, ClassVar
 
@@ -94,9 +95,9 @@ class LiteLLMProvider(Provider):
         """Resolve the provider's source directory (for lock/refcount files)."""
         return Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
 
-    def _callback_path(self) -> Path:
+    def _callback_dir(self) -> Path:
         """Resolve the shared LiteLLM logging callback (mounted into the sidecar)."""
-        return Path(__file__).parent / "callback.py"
+        return Path(__file__).parent
 
     def _log_dir(self) -> Path:
         """
@@ -361,7 +362,7 @@ class LiteLLMProvider(Provider):
 
     def _start(self, secret_key: str, master_key: str, sidecar_mode: str) -> None:
         config_path = self._config_path()
-        callback_path = self._callback_path()
+        callback_dir = self._callback_dir()
         log_dir = self._log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -406,8 +407,12 @@ class LiteLLMProvider(Provider):
             # Logging callback (resolved by LiteLLM relative to the config file's
             # directory, so it must sit next to config.yaml) and the host log dir
             # it appends request/response JSONL to. See callback.py.
-            "-v",
-            f"{callback_path}:/etc/litellm/callback.py:ro",
+            *chain(
+                *(
+                    ("-v", f"{callback_dir / filename}:/etc/litellm/{filename}:ro")
+                    for filename in ("callback.py", "string_hasher.py")
+                )
+            ),
             "-v",
             f"{log_dir}:/var/log/agent-wrap",
             self.image,
