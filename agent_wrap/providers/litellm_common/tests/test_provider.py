@@ -497,6 +497,7 @@ def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text("model: test")
     mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+    mocker.patch.object(p, "_log_dir", return_value=tmp_path / "logs")
 
     mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
@@ -515,6 +516,7 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text("model: test")
     mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+    mocker.patch.object(p, "_log_dir", return_value=tmp_path / "logs")
 
     mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
@@ -526,6 +528,31 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
     # Should have called rm -f before run
     calls = [c.args[0] for c in mock_docker.call_args_list if c.args]
     assert "rm" in calls
+
+
+def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    """_start mounts the logging callback and the host log dir into the sidecar."""
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("model: test")
+    mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+    log_dir = tmp_path / "logs"
+    mocker.patch.object(p, "_log_dir", return_value=log_dir)
+
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
+    mock_docker.side_effect = [
+        ("", 1),  # container inspect fails
+        ("", 0),  # docker run
+    ]
+    p._start("upstream-key", "sk-test-master", "bridge")
+
+    run_call = next(c for c in mock_docker.call_args_list if c.args and c.args[0] == "run")
+    run_args = list(run_call.args)
+    assert any(a.endswith("/etc/litellm/callback.py:ro") for a in run_args)
+    assert f"{log_dir}:/var/log/agent-wrap" in run_args
+    # The host log dir is created so the bind mount has a source.
+    assert log_dir.is_dir()
 
 
 # --- _recover_master_key ---

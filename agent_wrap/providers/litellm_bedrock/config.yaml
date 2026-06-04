@@ -24,10 +24,7 @@ model_list:
     litellm_params:
       model: "bedrock/*"
 
-# litellm_settings:
-#   callbacks: ["langfuse"]
-#   # Env vars consumed by the langfuse callback (pass into the sidecar
-#   # container via -e flags from the provider):
-#   #   LANGFUSE_PUBLIC_KEY
-#   #   LANGFUSE_SECRET_KEY
-#   #   LANGFUSE_HOST
+# Log every request/response to a JSONL file (mounted from the host by the
+# provider lifecycle). See litellm_common/callback.py.
+litellm_settings:
+  callbacks: callback.file_logger_instance

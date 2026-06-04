@@ -94,6 +94,14 @@ class LiteLLMProvider(Provider):
         """Resolve the provider's source directory (for lock/refcount files)."""
         return Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
 
+    def _callback_path(self) -> Path:
+        """Resolve the shared LiteLLM logging callback (mounted into the sidecar)."""
+        return Path(__file__).parent / "callback.py"
+
+    def _log_dir(self) -> Path:
+        """Host directory for the request/response JSONL log (bind-mounted into sidecar)."""
+        return Path.cwd() / ".claude" / "litellm-logs"
+
     # --- Public: ensure ---
 
     def ensure(
@@ -346,6 +354,9 @@ class LiteLLMProvider(Provider):
 
     def _start(self, secret_key: str, master_key: str, sidecar_mode: str) -> None:
         config_path = self._config_path()
+        callback_path = self._callback_path()
+        log_dir = self._log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         # Reap any stopped container under our name
         _, rc = docker_run("container", "inspect", self.container_name)
@@ -385,6 +396,13 @@ class LiteLLMProvider(Provider):
             *env_flags,
             "-v",
             f"{config_path}:/etc/litellm/config.yaml:ro",
+            # Logging callback (resolved by LiteLLM relative to the config file's
+            # directory, so it must sit next to config.yaml) and the host log dir
+            # it appends request/response JSONL to. See callback.py.
+            "-v",
+            f"{callback_path}:/etc/litellm/callback.py:ro",
+            "-v",
+            f"{log_dir}:/var/log/agent-wrap",
             self.image,
             "--config",
             "/etc/litellm/config.yaml",

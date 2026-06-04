@@ -1,3 +1,5 @@
+<!-- This file has been edited with the assistance of an AI tool. -->
+
 # LiteLLM Common Provider (internal)
 
 The shared base class for all LiteLLM-based providers. Subclass this (not the bare `Provider` ABC) when adding a new LiteLLM-backed provider.
@@ -26,3 +28,12 @@ Subclass `LiteLLMProvider` and override:
 | `get_sidecar_cmd_args()` | Extra args for the sidecar `docker run` |
 
 The base class implements `ensure()`, `release()`, `get_run_args()`, and `get_label_args()`.
+
+## Request/response logging
+
+`_start()` mounts a shared logging callback (`callback.py`) into the sidecar next to the config (`/etc/litellm/callback.py` — LiteLLM resolves callback modules relative to the config file's directory) and bind-mounts a host log dir into it. Each provider's `config.yaml` references the callback via `litellm_settings.callbacks: callback.file_logger_instance`.
+
+- **What it does**: appends one JSON line per LLM call (request messages + `proxy_server_request` + full response) to `agent-llm.jsonl`.
+- **Where**: host dir `./.claude/litellm-logs/` (per-project, git-ignored) → `/var/log/agent-wrap/` in the sidecar.
+- **Always on**: this is a proof-of-concept "see what the agent sent upstream" log — no flag, no UI, no DB. Logging failures are swallowed so they never break the proxy.
+- **Caveat**: Bedrock uses a passthrough route; confirm callbacks fire on passthrough (Step 0 spike) before relying on the captured bodies.
