@@ -1,5 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
-"""Tests for the `stats` subcommand (agent_wrap.commands.stats)."""
+"""Tests for the `legacy_stats` subcommand (agent_wrap.commands.legacy_stats)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_wrap.commands.stats import (
+from agent_wrap.commands.legacy_stats import (
     Bucket,
     _parse_usage_args,
     _process_record,
@@ -17,7 +17,6 @@ from agent_wrap.commands.stats import (
     flatten_tree,
     fmt_cost,
     fmt_count,
-    load_prices,
     load_projects,
     normalize_model,
     render,
@@ -125,7 +124,6 @@ def test_minimal_valid_args(tmp_path):
     assert result is not None
     assert result.cache_path == cache
     assert result.registry_path == reg
-    assert result.region_label == "US East (N. Virginia)"
     assert result.refresh is False
     assert result.days_window == 30
 
@@ -141,14 +139,11 @@ def test_with_all_flags(tmp_path):
             str(reg),
             "--days",
             "7",
-            "--region",
-            "EU West (London)",
             "--refresh",
         ]
     )
     assert result is not None
     assert result.days_window == 7
-    assert result.region_label == "EU West (London)"
     assert result.refresh is True
 
 
@@ -273,7 +268,7 @@ def test_run_empty_project_registry(tmp_path):
     cache = launches / "pricing.json"
     cache.touch()
 
-    with patch("agent_wrap.commands.stats.load_projects", return_value=[]):
+    with patch("agent_wrap.commands.legacy_stats.load_projects", return_value=[]):
         rc = run([], tmp_path)
         assert rc == 0
 
@@ -572,57 +567,6 @@ def test_scan_project_missing_sessions_dir(tmp_path: Path):
     assert last_ts is None
     assert buckets == {}
     assert exists is False
-
-
-# --- load_prices ---
-
-
-def test_load_prices_cache_hit(tmp_path: Path, mocker):
-    import time
-
-    cache = tmp_path / "pricing.json"
-    cache.write_text(
-        '{"region":"US East (N. Virginia)","fetched_at":'
-        + str(int(time.time()))
-        + ',"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
-    )
-    mock_get = mocker.patch("agent_wrap.commands.stats._http_get")
-    result = load_prices(cache)
-    mock_get.assert_not_called()
-    assert "claude-sonnet-4-5" in result
-
-
-def test_load_prices_stale_cache_triggers_refetch(tmp_path: Path, mocker):
-    cache = tmp_path / "pricing.json"
-    cache.write_text(
-        '{"region":"US East (N. Virginia)","fetched_at":0,"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
-    )
-    mocker.patch("agent_wrap.commands.stats._http_get", side_effect=OSError("network"))
-    result = load_prices(cache)
-    # Falls back to stale cache
-    assert "claude-sonnet-4-5" in result
-
-
-def test_load_prices_refresh_bypasses_fresh_cache(tmp_path: Path, mocker):
-    import time
-
-    cache = tmp_path / "pricing.json"
-    cache.write_text(
-        '{"region":"US East (N. Virginia)","fetched_at":'
-        + str(int(time.time()))
-        + ',"prices":{"claude-sonnet-4-5":{"in":1.0}}}'
-    )
-    mock_get = mocker.patch("agent_wrap.commands.stats._http_get", side_effect=OSError("network"))
-    result = load_prices(cache, refresh=True)
-    mock_get.assert_called()
-    # No fresh data returned, falls back to stale
-    assert "claude-sonnet-4-5" in result
-
-
-def test_load_prices_no_cache_no_network(tmp_path: Path, mocker, capsys):
-    mocker.patch("agent_wrap.commands.stats._http_get", side_effect=OSError("offline"))
-    result = load_prices(None)
-    assert result == {}
 
 
 # --- render ---

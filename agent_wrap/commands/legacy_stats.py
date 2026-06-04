@@ -1,5 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
-"""The `stats` subcommand — aggregate token usage stats from LiteLLM logs."""
+"""The `legacy_stats` subcommand — aggregate Claude Code usage stats from session data."""
 
 from __future__ import annotations
 
@@ -10,27 +10,16 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from agent_wrap.lib.console import Ansi
 from agent_wrap.providers import get_provider
 
-USAGE = "[--refresh] [--days N]"
-SUMMARY = "Show token usage stats (reads from .claude/litellm-logs/)"
+USAGE = "[--cache PATH] [--refresh] [--days N]"
+SUMMARY = "Show token usage stats (reads from .claude/sessions/*.jsonl)"
 
 _BILLION = 1_000_000_000
 _MILLION = 1_000_000
 _THOUSAND = 1_000
-
-_MODEL_FAMILY_RE_V_FIRST = re.compile(
-    r"claude[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)[-\s.]*(?P<tier>opus|sonnet|haiku)",
-    re.IGNORECASE,
-)
-_MODEL_FAMILY_RE_T_FIRST = re.compile(
-    r"claude[-\s.]*(?P<tier>opus|sonnet|haiku)[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)",
-    re.IGNORECASE,
-)
-_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
 
 def color(s: str, code: str) -> str:
@@ -62,6 +51,17 @@ def fmt_cost_with_unknown(c: float | None, *, unknown: bool) -> str:
     return f"${c:.2f}"
 
 
+_MODEL_FAMILY_RE_V_FIRST = re.compile(
+    r"claude[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)[-\s.]*(?P<tier>opus|sonnet|haiku)",
+    re.IGNORECASE,
+)
+_MODEL_FAMILY_RE_T_FIRST = re.compile(
+    r"claude[-\s.]*(?P<tier>opus|sonnet|haiku)[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)",
+    re.IGNORECASE,
+)
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+
 def normalize_model(model: str) -> str | None:
     """
     Return a canonical 'claude-<tier>-<ver>' key for a session model id.
@@ -85,51 +85,17 @@ def normalize_model(model: str) -> str | None:
     return f"claude-{tier}-{ver}"
 
 
-def extract_usage(response: dict | None) -> dict[str, Any]:
-    """Extract and normalize usage dict from LiteLLM response object."""
-    if not response or not isinstance(response, dict):
-        return {}
-    usage = response.get("usage")
-    if not usage or not isinstance(usage, dict):
-        return {}
-
-    cache_creation = {}
-    if "ephemeral_5m_input_tokens" in usage:
-        cache_creation["ephemeral_5m_input_tokens"] = usage["ephemeral_5m_input_tokens"]
-    if "ephemeral_1h_input_tokens" in usage:
-        cache_creation["ephemeral_1h_input_tokens"] = usage["ephemeral_1h_input_tokens"]
-
-    # LiteLLM standardizes to prompt_tokens/completion_tokens, but some
-    # providers or older versions might use input_tokens/output_tokens.
-    in_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-    out_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or 0
-    cw_tokens = usage.get("cache_creation_input_tokens") or 0
-    cr_tokens = usage.get("cache_read_input_tokens") or 0
-
-    return {
-        "input_tokens": in_tokens,
-        "output_tokens": out_tokens,
-        "cache_creation_input_tokens": cw_tokens,
-        "cache_read_input_tokens": cr_tokens,
-        "cache_creation": cache_creation,
-    }
-
-
-def cost_for_model(display_model: str, usage: dict, provider_prices: dict) -> float | None:
-    """Calculate cost for a model using the provider's pricing table."""
+def cost_for(model: str, usage: dict, prices: dict) -> float | None:
+    # Synthetic / placeholder records contribute no tokens; treat them as
+    # zero-cost rather than poisoning the project's total with "?".
     if not any(usage.values()):
         return 0.0
-
-    parts = display_model.split("/", 1)
-    if len(parts) < 2:  # noqa: PLR2004
+    key = normalize_model(model)
+    if key is None:
         return None
-    provider_name, norm_model = parts[0], parts[1]
-
-    prices = provider_prices.get(provider_name, {})
-    p = prices.get(norm_model)
+    p = prices.get(key)
     if p is None:
         return None
-
     return (
         usage["in"] * p["in"] / 1_000_000
         + usage["out"] * p["out"] / 1_000_000
@@ -176,6 +142,8 @@ class Bucket:
             self.cw_5m += h5
             self.cw_1h += h1
         else:
+            # Older sessions / non-Anthropic providers may only set the flat
+            # `cache_creation_input_tokens` total. Charge those at the 5m rate.
             self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
         self.cr += usage.get("cache_read_input_tokens", 0) or 0
 
@@ -202,7 +170,15 @@ class Bucket:
 
 
 class Node:
-    """One node in the path trie used to render the per-project tree."""
+    """
+    One node in the path trie used to render the per-project tree.
+
+    A node is either *structural* (`row is None`, e.g. `/`, `home/`, an
+    intermediate path segment) or a *project* node carrying the row dict
+    produced by `scan_project`. `subtree_*` fields are aggregates over the
+    node and all its descendants, populated by `_aggregate` after the trie
+    has been compressed and self-rows split.
+    """
 
     __slots__ = (
         "children",
@@ -260,11 +236,18 @@ class DisplayRow:
 
 
 def build_project_tree(rows: list[dict]) -> Node:
+    """
+    Build a path trie over `rows`, then compress single-child structural
+    chains and split projects-with-children into a `.` self-row.
+    """
     root = Node("/")
     for r in rows:
         parts = Path(r["path"]).parts
         if not parts:
             continue
+        # On absolute paths Path.parts starts with "/"; we use the synthetic
+        # root for that. Relative paths (shouldn't appear in projects.txt
+        # but handled defensively) are placed under root as well.
         segments = parts[1:] if parts[0] == "/" else parts
         cur = root
         for seg in segments:
@@ -280,6 +263,10 @@ def build_project_tree(rows: list[dict]) -> Node:
 
 
 def _compress(node: Node) -> None:
+    """
+    Fold `parent/child` into one node when the parent is structural and
+    has exactly one child. The synthetic root is exempt (it stays as `/`).
+    """
     new_children: dict[str, Node] = {}
     for child in list(node.children.values()):
         _compress(child)
@@ -292,6 +279,11 @@ def _compress(node: Node) -> None:
 
 
 def _split_self_rows(node: Node) -> None:
+    """
+    For project nodes that also have children (e.g. `mm-builder` with
+    `mm-builder/mm_random` underneath), move the project's own row to a
+    synthetic `.` child so the parent can render as a structural subtotal.
+    """
     for child in list(node.children.values()):
         _split_self_rows(child)
     if node.row is not None and node.children:
@@ -304,6 +296,7 @@ def _split_self_rows(node: Node) -> None:
 
 
 def _aggregate(node: Node) -> None:
+    """Post-order: fill `subtree_*` fields on every node."""
     for child in node.children.values():
         _aggregate(child)
         node.subtree_bucket.merge(child.subtree_bucket)
@@ -332,10 +325,19 @@ def _aggregate(node: Node) -> None:
 
 
 def flatten_tree(root: Node) -> list[DisplayRow]:
+    """
+    Walk the tree in display order, producing one DisplayRow per visible
+    line. The root itself is not emitted; callers prepend their own banner.
+    """
     out: list[DisplayRow] = []
 
     def walk(node: Node, ancestors_continue: list[bool]) -> None:
         children = list(node.children.values())
+        # `.` is pinned first (it represents the parent directory's own
+        # project row, so it visually belongs immediately under the parent).
+        # Then leaves (no children of their own — single-project rows)
+        # alphabetically, then subtree nodes ordered by ascending project
+        # count so the bushiest groups sink to the bottom.
         dot = [c for c in children if c.name == "."]
         leaves = sorted(
             (c for c in children if c.name != "." and not c.children),
@@ -396,78 +398,80 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
     return out
 
 
-def _process_litellm_record(
+def _process_record(
     rec: dict,
-    provider_name: str,
+    seen_message_ids: set[str],
     buckets: dict[str, dict[str, Bucket]],
 ) -> datetime | None:
-    """Process a single LiteLLM log record. Returns the timestamp if valid."""
-    if rec.get("status") != "success":
-        return None
-
-    model = rec.get("model")
-    if not model:
-        return None
-
-    clean_model = model.split("/")[-1] if "/" in model else model
-    norm_model = normalize_model(clean_model) or clean_model
-    display_model = f"{provider_name}/{norm_model}"
-
-    ts_str = rec.get("ts")
-    ts = parse_ts(ts_str)
-    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
-
-    usage = extract_usage(rec.get("response"))
-    bucket = Bucket()
-    bucket.add(usage)
-    buckets[day_key][display_model].merge(bucket)
-
+    """Process a single JSONL record into buckets. Returns the timestamp if valid."""
+    ts = parse_ts(rec.get("timestamp"))
+    if rec.get("type") != "assistant":
+        return ts
+    msg = rec.get("message") or {}
+    usage = msg.get("usage")
+    if not usage:
+        return ts
+    msg_id = msg.get("id")
+    if msg_id:
+        if msg_id in seen_message_ids:
+            return ts
+        seen_message_ids.add(msg_id)
+    model = msg.get("model") or "?"
+    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts is not None else "?"
+    buckets[day_key][model].add(usage)
     return ts
 
 
-def scan_project_litellm(  # noqa: C901
+def scan_project(
     path: Path,
+    seen_message_ids: set[str],
 ) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], bool]:
-    """Scan LiteLLM logs for a project and aggregate token usage."""
-    logs_dir = path / ".claude" / "litellm-logs"
-    if not logs_dir.is_dir():
+    """
+    Return (session_count, last_ts, per_day_per_model_buckets, exists).
+
+    The buckets dict is keyed `day → model → Bucket`, where `day` is either a
+    `YYYY-MM-DD` string in host-local time or `"?"` for records whose
+    timestamp was missing or unparseable. `exists` is False when the project
+    directory or its sessions dir is gone.
+
+    `seen_message_ids` is a global set used to dedupe assistant records whose
+    `message.id` has already been counted. Claude Code replays prior turns
+    into new session files when a session is resumed/compacted/forked, so the
+    same `msg_bdrk_…` id appears in multiple `.jsonl` files; Bedrock bills the
+    underlying call once. The set is mutated in place across all projects.
+    """
+    sessions_dir = path / ".claude" / "sessions"
+    if not sessions_dir.is_dir():
         return 0, None, {}, False
 
-    buckets: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    # Top-level *.jsonl is one file per resumable conversation; subagent
+    # invocations live in `<sid>/subagents/*.jsonl` under each session and
+    # carry their own billable assistant turns. We scan both, but the
+    # session-count column reflects only top-level files (the user-facing
+    # "session" granularity).
+    top_files = sorted(sessions_dir.glob("*.jsonl"))
+    files = sorted(sessions_dir.rglob("*.jsonl"))
     last_ts: datetime | None = None
-    session_count = 0
+    buckets: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
-    for provider_dir in logs_dir.iterdir():
-        if not provider_dir.is_dir():
+    for f in files:
+        try:
+            with f.open("r", encoding="utf-8", errors="replace") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = _process_record(rec, seen_message_ids, buckets)
+                    if ts is not None and (last_ts is None or ts > last_ts):
+                        last_ts = ts
+        except OSError:
             continue
-        provider_name = provider_dir.name
 
-        for session_dir in provider_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            session_count += 1
-            messages_file = session_dir / "messages.jsonl"
-            if not messages_file.is_file():
-                continue
-
-            try:
-                with messages_file.open("r", encoding="utf-8", errors="replace") as f:
-                    for raw_line in f:
-                        stripped = raw_line.strip()
-                        if not stripped:
-                            continue
-                        try:
-                            rec = json.loads(stripped)
-                        except json.JSONDecodeError:
-                            continue
-
-                        ts = _process_litellm_record(rec, provider_name, buckets)
-                        if ts is not None and (last_ts is None or ts > last_ts):
-                            last_ts = ts
-            except OSError:
-                continue
-
-    return session_count, last_ts, {d: dict(m) for d, m in buckets.items()}, True
+    return len(top_files), last_ts, {d: dict(m) for d, m in buckets.items()}, True
 
 
 def load_projects(reg: Path) -> list[Path]:
@@ -484,21 +488,22 @@ def load_projects(reg: Path) -> list[Path]:
 
 def _build_total_body(
     totals_by_model: dict[str, Bucket],
-    provider_prices: dict,
+    prices: dict,
     tree_root: Node,
     display_rows: list[DisplayRow],
     div: str,
 ) -> list:
+    """Build the body rows for the Total table."""
     body: list = []
 
     if totals_by_model:
         ordered = sorted(
             totals_by_model.items(),
-            key=lambda kv: cost_for_model(kv[0], kv[1].usage_dict(), provider_prices) or 0.0,
+            key=lambda kv: cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0,
             reverse=True,
         )
         for model, b in ordered:
-            c = cost_for_model(model, b.usage_dict(), provider_prices)
+            c = cost_for(model, b.usage_dict(), prices)
             body.append(
                 (
                     [
@@ -563,8 +568,9 @@ def _build_total_body(
 def _aggregate_day_rows(
     dated: dict[str, dict[str, Bucket]],
     shown_days: list[str],
-    provider_prices: dict,
+    prices: dict,
 ) -> tuple[list[tuple[str, Bucket, float, bool]], Bucket, float, bool]:
+    """Aggregate per-day rows. Returns (day_rows_data, total_bucket, total_cost, total_unknown)."""
     day_rows_data: list[tuple[str, Bucket, float, bool]] = []
     for d in shown_days:
         day_total = Bucket()
@@ -572,7 +578,7 @@ def _aggregate_day_rows(
         day_unknown = False
         for model, b in dated[d].items():
             day_total.merge(b)
-            c = cost_for_model(model, b.usage_dict(), provider_prices)
+            c = cost_for(model, b.usage_dict(), prices)
             if c is None:
                 day_unknown = True
             else:
@@ -594,10 +600,11 @@ def _aggregate_day_rows(
 
 def _build_recent_body(
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    provider_prices: dict,
+    prices: dict,
     days_window: int,
     div: str,
 ) -> tuple[list, str]:
+    """Build the body rows for the Recent table. Returns (body, truncation_note)."""
     body: list = []
     truncation_note = ""
 
@@ -617,11 +624,11 @@ def _build_recent_body(
     if recent_models:
         ordered = sorted(
             recent_models.items(),
-            key=lambda kv: cost_for_model(kv[0], kv[1].usage_dict(), provider_prices) or 0.0,
+            key=lambda kv: cost_for(kv[0], kv[1].usage_dict(), prices) or 0.0,
             reverse=True,
         )
         for model, b in ordered:
-            c = cost_for_model(model, b.usage_dict(), provider_prices)
+            c = cost_for(model, b.usage_dict(), prices)
             body.append(
                 (
                     [
@@ -643,7 +650,7 @@ def _build_recent_body(
             body.append(div)
 
         day_rows_data, total_b, total_cost, total_unknown = _aggregate_day_rows(
-            dated, shown_days, provider_prices
+            dated, shown_days, prices
         )
 
         for d, b, day_cost, day_unknown in reversed(day_rows_data):
@@ -710,6 +717,7 @@ def _build_recent_body(
 def _widths_for(
     headers: list[str], body: list, leading: int, shared_widths: list[int], div: str
 ) -> list[int]:
+    """Compute column widths for a table."""
     leading_widths = [len(headers[j]) for j in range(leading)]
     for item in body:
         if item == div:
@@ -727,10 +735,14 @@ def _render_row(
     style: str = "",
     prefix_len: int = 0,
 ) -> str:
+    """Render a single table row with alignment and optional styling."""
     parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
     if style:
         if prefix_len:
+            # Keep tree glyphs (`├`, `└`, `│`) at the row's default color;
+            # only style the content after the prefix.
             first = parts[0]
+            # the cell starts after the leading space
             head = first[: 1 + prefix_len]
             tail = first[1 + prefix_len :]
             parts[0] = head + color(tail, style)
@@ -742,6 +754,7 @@ def _render_row(
 
 
 def _make_border(widths: list[int], left: str, mid: str, right: str) -> str:
+    """Render a horizontal border line."""
     parts = ["─" * (w + 2) for w in widths]
     return color(left + mid.join(parts) + right, Ansi.DIM)
 
@@ -755,6 +768,7 @@ def _render_table(  # noqa: PLR0913
     shared_widths: list[int],
     div: str,
 ) -> list[str]:
+    """Render a complete table with borders."""
     widths = _widths_for(headers, body, leading, shared_widths, div)
     out = [color(title, Ansi.DIM)]
     out.append(_make_border(widths, "┌", "┬", "┐"))
@@ -775,6 +789,7 @@ def _compute_shared_widths(
     n_shared: int,
     div: str,
 ) -> list[int]:
+    """Compute shared column widths across multiple tables."""
     shared_widths = [0] * n_shared
     for headers, body, leading in tables:
         for j in range(n_shared):
@@ -792,30 +807,38 @@ def render(
     rows: list[dict],
     totals_by_model: dict[str, Bucket],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    provider_prices: dict,
+    prices: dict,
     days_window: int,
 ) -> str:
+    # Two stacked tables: "Total" (all-time per-model + per-project tree) and
+    # "Recent" (per-model + per-day, both restricted to the days_window). Each
+    # table has internal sections separated by a `├─┼─┤` divider; widths of
+    # the trailing six numeric columns are shared across both tables so the
+    # numbers line up vertically.
     shared_headers = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
     shared_aligns = [">", ">", ">", ">", ">", ">"]
     n_shared = len(shared_headers)
 
     div = "__div__"
 
+    # === Total table: models (all-time) + project tree ===
     total_headers = ["MODEL / PROJECT", "SESSIONS", "LAST LAUNCH", *shared_headers]
     total_aligns = ["<", ">", "<", *shared_aligns]
 
     tree_root = build_project_tree(rows)
     display_rows = flatten_tree(tree_root)
 
-    total_body = _build_total_body(totals_by_model, provider_prices, tree_root, display_rows, div)
+    total_body = _build_total_body(totals_by_model, prices, tree_root, display_rows, div)
 
+    # === Recent table: models (in window) + per-day (in window) + TOTAL ===
     recent_headers = ["MODEL / DATE", *shared_headers]
     recent_aligns = ["<", *shared_aligns]
 
     recent_body, by_day_truncation_note = _build_recent_body(
-        totals_by_day_by_model, provider_prices, days_window, div
+        totals_by_day_by_model, prices, days_window, div
     )
 
+    # === Shared widths for the trailing six numeric columns ===
     shared_widths = _compute_shared_widths(
         [(total_headers, total_body, 3), (recent_headers, recent_body, 1)],
         n_shared,
@@ -841,14 +864,13 @@ def render(
 
 
 _USAGE_TEXT = (
-    "Usage: agent stats [--cache PATH] [--refresh] [--days N] <projects.txt>\n\n"
+    "Usage: agent legacy_stats [--cache PATH] [--refresh] [--days N] <projects.txt>\n\n"
     "Reads a list of project paths (one per line) and prints aggregated\n"
-    "usage stats from each project's .claude/litellm-logs/ directories.\n\n"
+    "usage stats from each project's .claude/sessions/*.jsonl files.\n\n"
     "Output is a per-project table plus per-model and per-day breakdowns.\n"
-    "Models are displayed as <provider>/<model>. Day buckets use host-local time.\n"
-    "--days N limits the per-day section to the most recent N calendar days\n"
-    "(default 30; use 0 to show all).\n\n"
-    "Pricing is fetched dynamically per-provider as logs are scanned.\n\n"
+    "Day buckets use host-local time. --days N limits the per-day section\n"
+    "to the most recent N calendar days (default 30; use 0 to show all).\n\n"
+    "Pricing is fetched from the default provider (litellm-bedrock).\n\n"
     "Projects are recorded by `agent` on each launch — a project that\n"
     "has never had `agent` invoked from it will not appear here."
 )
@@ -856,6 +878,8 @@ _USAGE_TEXT = (
 
 @dataclass
 class _UsageArgsBuilder:
+    """Parsed CLI arguments for `agent legacy_stats`."""
+
     cache_path: Path | None = None
     refresh: bool = False
     days_window: int = 30
@@ -863,6 +887,8 @@ class _UsageArgsBuilder:
 
 @dataclass
 class _UsageArgs:
+    """Parsed CLI arguments for `agent legacy_stats`."""
+
     registry_path: Path
     cache_path: Path | None = None
     refresh: bool = False
@@ -870,6 +896,7 @@ class _UsageArgs:
 
 
 def _parse_days(value: str) -> int | None:
+    """Parse --days value. Returns None on error."""
     try:
         days = int(value)
     except ValueError:
@@ -882,6 +909,7 @@ def _parse_days(value: str) -> int | None:
 
 
 def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
+    """Parse CLI arguments. Returns None if help was printed or an error occurred."""
     parsed = _UsageArgsBuilder()
     positional: list[str] = []
     i = 0
@@ -910,7 +938,7 @@ def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
 
     if not positional:
         print(
-            "Usage: agent stats [--cache PATH] [--refresh] [--days N] <projects.txt>",
+            "Usage: agent legacy_stats [--cache PATH] [--refresh] [--days N] <projects.txt>",
             file=sys.stderr,
         )
         return None
@@ -926,44 +954,18 @@ def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
     )
 
 
-def _get_provider_pricing(
-    provider_name: str,
-    provider_prices: dict[str, dict[str, dict[str, float]]],
-) -> dict[str, dict[str, float]]:
-    """Fetch and cache pricing for a provider."""
-    if provider_name not in provider_prices:
-        try:
-            provider = get_provider(provider_name)
-            provider_prices[provider_name] = provider.get_pricing()
-        except Exception:  # noqa: BLE001
-            provider_prices[provider_name] = {}
-    return provider_prices[provider_name]
-
-
-def _collect_project_rows_with_pricing(
+def _collect_project_rows(
     projects: list[Path],
-) -> tuple[
-    list[dict],
-    dict[str, Bucket],
-    dict[str, dict[str, Bucket]],
-    dict[str, dict[str, dict[str, float]]],
-]:
+    prices: dict,
+) -> tuple[list[dict], dict[str, Bucket], dict[str, dict[str, Bucket]]]:
+    """Scan all projects and return (rows, totals_by_model, totals_by_day_by_model)."""
     rows: list[dict] = []
     totals_by_model: dict[str, Bucket] = defaultdict(Bucket)
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
-    provider_prices: dict[str, dict[str, dict[str, float]]] = {}
+    seen_message_ids: set[str] = set()
 
     for path in projects:
-        logs_dir = path / ".claude" / "litellm-logs"
-        if not logs_dir.is_dir():
-            continue
-
-        for provider_dir in logs_dir.iterdir():
-            if not provider_dir.is_dir():
-                continue
-            _get_provider_pricing(provider_dir.name, provider_prices)
-
-        sessions, last_ts, by_day, exists = scan_project_litellm(path)
+        sessions, last_ts, by_day, exists = scan_project(path, seen_message_ids)
         total = Bucket()
         proj_cost: float = 0.0
         proj_unknown = False
@@ -972,38 +974,39 @@ def _collect_project_rows_with_pricing(
                 total.merge(b)
                 totals_by_model[model].merge(b)
                 totals_by_day_by_model[day][model].merge(b)
-                c = cost_for_model(model, b.usage_dict(), provider_prices)
+                c = cost_for(model, b.usage_dict(), prices)
                 if c is None:
                     proj_unknown = True
                 else:
                     proj_cost += c
-
-        if sessions > 0 or exists:
-            rows.append(
-                {
-                    "path": path,
-                    "exists": exists,
-                    "sessions": sessions,
-                    "last_ts": last_ts,
-                    "total": total,
-                    "cost": None if proj_unknown else proj_cost,
-                }
-            )
+        rows.append(
+            {
+                "path": path,
+                "exists": exists,
+                "sessions": sessions,
+                "last_ts": last_ts,
+                "total": total,
+                "cost": None if proj_unknown else proj_cost,
+            }
+        )
 
     rows.sort(key=lambda r: r["cost"] if r["cost"] is not None else -1.0, reverse=True)
-    return (
-        rows,
-        dict(totals_by_model),
-        {d: dict(m) for d, m in totals_by_day_by_model.items()},
-        provider_prices,
-    )
+    return rows, dict(totals_by_model), {d: dict(m) for d, m in totals_by_day_by_model.items()}
 
 
 def run(args: list[str], tool_dir: Path) -> int:
+    """
+    Execute the `legacy_stats` subcommand.
+
+    Constructs the cache and project-registry paths from ``tool_dir``,
+    injects them into the argument stream, and runs the core usage logic.
+    """
+    cache_path = tool_dir / ".agent-launches" / "pricing.json"
     projects_file = tool_dir / ".agent-launches" / "projects.txt"
 
-    # Inject tool-dir-derived paths into the args stream
-    injected = [str(projects_file), *args]
+    # Inject tool-dir-derived paths into the args stream so _parse_usage_args
+    # can find --cache and the positional registry path.
+    injected = ["--cache", str(cache_path), str(projects_file), *args]
     parsed = _parse_usage_args(injected)
     if parsed is None:
         return 1 if args and args[0] not in ("-h", "--help") else 0
@@ -1016,22 +1019,21 @@ def run(args: list[str], tool_dir: Path) -> int:
         )
         return 0
 
-    rows, totals_by_model, totals_by_day_by_model, provider_prices = (
-        _collect_project_rows_with_pricing(projects)
-    )
+    # Fetch pricing from the default provider
+    try:
+        provider = get_provider("litellm-bedrock")
+        prices = provider.get_pricing()
+    except Exception:  # noqa: BLE001
+        prices = {}
 
-    # Filter out projects with no logs
-    rows = [r for r in rows if r["sessions"] > 0]
-    if not rows:
-        print("usage: no LiteLLM logs found for any registered project.", file=sys.stderr)
-        return 0
+    rows, totals_by_model, totals_by_day_by_model = _collect_project_rows(projects, prices)
 
     print(
         render(
             rows,
             totals_by_model,
             totals_by_day_by_model,
-            provider_prices,
+            prices,
             parsed.days_window,
         )
     )
