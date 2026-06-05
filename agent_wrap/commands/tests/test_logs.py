@@ -42,10 +42,27 @@ def test_resolve_recurses_nested_structures():
 
 
 def test_resolve_strips_wrap_ref_bookkeeping():
+    # Pass 1 pops wrap-ref-id from dicts and lists, so it's not in the output.
     obj = {"k": "v", "wrap-ref-id": "3"}
     assert resolve(obj, {}) == {"k": "v"}
     lst = ["wrap-ref-id:0", "keep"]
     assert resolve(lst, {}) == ["keep"]
+
+
+def test_resolve_reconstructs_wrap_ref_references():
+    # Simulate the callback's output for a list containing two references to the same dict.
+    canonical = {"content": "hello", "wrap-ref-id": "0"}
+    obj_with_refs = [canonical, "wrap-ref:0"]
+    resolved = resolve(obj_with_refs, {})
+    # Both items should be dicts with identical content.
+    assert resolved[0] == {"content": "hello"}
+    assert resolved[1] == {"content": "hello"}
+    # They should be independent copies, not the same object in memory.
+    assert resolved[0] is not resolved[1]
+    # No wrap-ref strings should remain.
+    assert "wrap-ref:0" not in resolved
+    assert "wrap-ref-id" not in resolved[0]
+    assert "wrap-ref-id" not in resolved[1]
 
 
 # --- normalize_record ---
@@ -83,6 +100,30 @@ def test_normalize_pulls_real_request_data():
     assert out["tools"] == [{"name": "Read"}]
 
 
+def test_normalize_falls_back_to_body_when_data_is_not_dict():
+    # Simulate a record where proxy_server_request.body exists but lacks a "data" dict,
+    # so the normalization falls back to using "body" directly for messages/system/tools.
+    rec = {
+        "ts": "2026-06-05T12:00:00+00:00",
+        "status": "success",
+        "model": "m",
+        "request": {
+            "proxy_server_request": {
+                "body": {
+                    "messages": [{"role": "user", "content": "fallback body message"}],
+                    "system": "fallback system",
+                    "tools": [{"name": "FallbackTool"}],
+                }
+            },
+        },
+        "response": {"choices": [{"message": {"content": "hi"}}]},
+    }
+    out = normalize_record(rec, {})
+    assert out["messages"] == [{"role": "user", "content": "fallback body message"}]
+    assert out["system"] == "fallback system"
+    assert out["tools"] == [{"name": "FallbackTool"}]
+
+
 def test_normalize_ignores_placeholder_messages():
     out = normalize_record(_raw_record(), {})
     # The "default-message-value" placeholder must never surface.
@@ -100,6 +141,27 @@ def test_normalize_resolves_hashes():
     rec["request"]["proxy_server_request"]["body"]["data"]["system"] = "hash:s"
     out = normalize_record(rec, {"hash:s": "resolved system"})
     assert out["system"] == "resolved system"
+
+
+def test_normalize_resolves_wrap_ref_from_discarded_fields():
+    # Simulate a record where the canonical object is in the top-level
+    # request.messages (a LiteLLM placeholder that is discarded),
+    # but proxy_server_request.body.data.messages references it.
+    rec = {
+        "ts": "2026-06-05T12:00:00+00:00",
+        "status": "success",
+        "model": "m",
+        "request": {
+            "messages": [{"wrap-ref-id": "0", "content": "canonical"}],
+            "proxy_server_request": {"body": {"data": {"messages": ["wrap-ref:0"]}}},
+        },
+        "response": {"choices": [{"message": {"content": "hi"}}]},
+    }
+    out = normalize_record(rec, {})
+    # The discarded field's canonical object should still be resolved
+    assert out["messages"] == [{"content": "canonical"}]
+    # It should be a deep copy, not the same object in memory
+    assert out["messages"][0] is not rec["request"]["messages"][0]
 
 
 def test_normalize_tolerates_missing_pieces():

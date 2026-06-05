@@ -27,7 +27,7 @@ The data model (confirmed against real logs):
   Long strings in the record are replaced by ``hash:<sha256>`` pointers; we load
   this map and resolve them for display.
 * Records may carry ``wrap-ref:<id>`` cycle markers and ``wrap-ref-id`` keys
-  from the callback's circular-reference handling; those are stripped here.
+  from the callback's circular-reference handling; those are resolved here.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ import json
 import re
 import sys
 import webbrowser
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -95,25 +96,59 @@ def load_strings(session_dir: Path) -> dict[str, str]:
     return strings
 
 
+_WRAP_REF_PREFIX = "wrap-ref:"
+_WRAP_REF_PREFIX_LEN = len(_WRAP_REF_PREFIX)
+_WRAP_REF_ID_PREFIX = "wrap-ref-id:"
+
+
+def _index_refs(o: Any, wrap_ref_index: dict[str, Any]) -> None:
+    """Pass 1: Collect wrap-ref-id markers into a lookup index."""
+    if isinstance(o, dict):
+        if "wrap-ref-id" in o:
+            ref_id = str(o.pop("wrap-ref-id"))
+            wrap_ref_index[ref_id] = o
+        for v in o.values():
+            _index_refs(v, wrap_ref_index)
+    elif isinstance(o, list):
+        # wrap-ref-id is always inserted at index 0 by the callback.
+        # Check index 0 directly to avoid modifying a list while iterating.
+        if o and isinstance(o[0], str) and o[0].startswith(_WRAP_REF_ID_PREFIX):
+            ref_id = o[0][len(_WRAP_REF_ID_PREFIX) :]
+            wrap_ref_index[ref_id] = o
+            o.pop(0)
+        for item in o:
+            _index_refs(item, wrap_ref_index)
+
+
+def _resolve_refs(o: Any, wrap_ref_index: dict[str, Any], strings: dict[str, str]) -> Any:
+    """Pass 2: Replace wrap-ref strings with canonical objects, and resolve hashes."""
+    if isinstance(o, str):
+        if o.startswith(_WRAP_REF_PREFIX) and len(o) > _WRAP_REF_PREFIX_LEN:
+            ref_id = o[_WRAP_REF_PREFIX_LEN:]
+            canon = wrap_ref_index.get(ref_id)
+            if canon is not None:
+                return deepcopy(canon)
+            return o
+        return strings.get(o, o)
+    if isinstance(o, dict):
+        return {k: _resolve_refs(v, wrap_ref_index, strings) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_resolve_refs(v, wrap_ref_index, strings) for v in o]
+    return o
+
+
 def resolve(obj: Any, strings: dict[str, str]) -> Any:
     """
-    Recursively replace ``hash:<sha256>`` strings with their originals and drop
-    the callback's circular-reference bookkeeping (``wrap-ref``/``wrap-ref-id``).
+    Recursively replace ``hash:<sha256>`` strings with their originals and
+    reconstruct the callback's circular-reference bookkeeping
+    (``wrap-ref:<id>`` -> canonical object with ``wrap-ref-id``).
 
     Unknown hashes are left intact so a missing ``strings.jsonl`` entry is
     visible rather than silently blanked.
     """
-    if isinstance(obj, str):
-        return strings.get(obj, obj)
-    if isinstance(obj, dict):
-        return {k: resolve(v, strings) for k, v in obj.items() if k != "wrap-ref-id"}
-    if isinstance(obj, list):
-        return [
-            resolve(v, strings)
-            for v in obj
-            if not (isinstance(v, str) and v.startswith("wrap-ref-id:"))
-        ]
-    return obj
+    wrap_ref_index: dict[str, Any] = {}
+    _index_refs(obj, wrap_ref_index)
+    return _resolve_refs(obj, wrap_ref_index, strings)
 
 
 # ---------------------------------------------------------------------------
@@ -127,16 +162,24 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
 
     Pure (no I/O) so it can be unit-tested directly. Pulls the real prompt from
     ``request.proxy_server_request.body.data`` and the reply from
-    ``response.choices[0].message``, resolving hashes throughout.
+    ``response.choices[0].message``, resolving hashes and wrap-refs throughout.
+
+    NOTE: Resolution MUST happen on the full raw record *before* extracting fields,
+    because canonical wrap-ref targets might live in parts of the record that are
+    later discarded (e.g., the top-level LiteLLM placeholder messages).
     """
-    request = rec.get("request") or {}
+    # Resolve the entire raw record first so all wrap-ref targets are indexed,
+    # even if they live in fields we will subsequently ignore.
+    resolved_rec = resolve(rec, strings)
+
+    request = resolved_rec.get("request") or {}
     psr = request.get("proxy_server_request")
     data: dict[str, Any] = {}
     agent_id: str | None = None
     if isinstance(psr, dict):
         body = psr.get("body")
-        if isinstance(body, dict) and isinstance(body.get("data"), dict):
-            data = body["data"]
+        if isinstance(body, dict):
+            data = body["data"] if isinstance(body.get("data"), dict) else body
         # Subagent turns carry an ``x-claude-code-agent-id`` request header; the
         # main loop's requests have none. The id is short and unhashed, so it is
         # read straight from the headers dict. It groups a subagent's turns in
@@ -147,7 +190,7 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
             if isinstance(hdr_id, str) and hdr_id:
                 agent_id = hdr_id
 
-    response = rec.get("response")
+    response = resolved_rec.get("response")
     reply: dict[str, Any] = {}
     if isinstance(response, dict):
         choices = response.get("choices")
@@ -159,19 +202,18 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
     else:
         usage = {}
 
-    out = {
-        "ts": rec.get("ts"),
-        "status": rec.get("status"),
-        "model": rec.get("model"),
+    return {
+        "ts": resolved_rec.get("ts"),
+        "status": resolved_rec.get("status"),
+        "model": resolved_rec.get("model"),
         "agent_id": agent_id,
         "messages": data.get("messages") or [],
         "system": data.get("system"),
         "tools": data.get("tools") or [],
         "response": reply,
         "usage": usage,
-        "error": rec.get("error"),
+        "error": resolved_rec.get("error"),
     }
-    return resolve(out, strings)
 
 
 _ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
