@@ -2,7 +2,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
-              poll: null, fp: null };
+              poll: null, fp: null, gen: 0 };
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -45,6 +45,7 @@ async function loadProjects() {
 
 async function selectProject(p, item) {
   stopPolling();
+  state.gen++; // discard any session load still in flight from the prior project
   state.project = p.id;
   state.session = null;
   document.querySelectorAll("#proj-list .item").forEach(e => e.classList.remove("active"));
@@ -81,15 +82,20 @@ function sessionQuery(s) {
 
 async function selectSession(s, item) {
   stopPolling();
+  // Bump the generation so a slower in-flight load for a previously-clicked
+  // session can detect it has been superseded and discard its late response.
+  const gen = ++state.gen;
   state.session = s.session_id;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   $("chat").innerHTML = '<div class="hint">Loading…</div>';
   const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
+  if (gen !== state.gen) return; // another session was selected mid-fetch
   renderChat(reqs, s);
   // Seed the fingerprint from the state at fetch time, then poll for changes.
   try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
   catch (e) { state.fp = null; }
+  if (gen !== state.gen) return;
   startPolling(s);
 }
 
