@@ -95,15 +95,28 @@ function renderContent(content, parent) {
     parent.appendChild(Object.assign(el("pre"), { textContent: asText(content) }));
     return;
   }
+  // With more than one block, give each text block its own box so adjacent
+  // blocks (e.g. a system-reminder followed by the real message) are visually
+  // distinguished — the same way tool_use/tool_result blocks already are.
+  const multi = content.length > 1;
+  const addText = (text) => {
+    if (multi) {
+      const box = el("div", "block-text");
+      box.appendChild(Object.assign(el("pre"), { textContent: text }));
+      parent.appendChild(box);
+    } else {
+      parent.appendChild(Object.assign(el("pre"), { textContent: text }));
+    }
+  };
   for (const block of content) {
     if (block == null) continue;
     if (typeof block === "string") {
-      parent.appendChild(Object.assign(el("pre"), { textContent: block }));
+      addText(block);
       continue;
     }
     const type = block.type || "text";
     if (type === "text") {
-      parent.appendChild(Object.assign(el("pre"), { textContent: asText(block.text) }));
+      addText(asText(block.text));
     } else if (type === "tool_use") {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_use · ${block.name || ""}`));
@@ -165,17 +178,10 @@ function usageLine(u) {
   return line;
 }
 
-function renderRequest(r, displayIdx) {
-  const det = el("details", "req");
-  const sum = el("summary");
-  sum.appendChild(el("span", "idx", `#${displayIdx}`));
-  sum.appendChild(el("span", null, (r.model || "").split("/").pop()));
-  if (r.status && r.status !== "success") {
-    sum.appendChild(el("span", "fail", `· ${r.status}`));
-  }
-  sum.appendChild(el("span", "when", fmtTs(r.ts)));
-  det.appendChild(sum);
-
+// The full detail body for one record: error box, system prompt, tool
+// definitions, the complete message thread, and the response. Shown in the
+// modal opened from a turn.
+function renderFullDetail(r) {
   const body = el("div", "body");
   if (r.error) {
     const e = el("div", "err-box");
@@ -193,11 +199,129 @@ function renderRequest(r, displayIdx) {
     body.appendChild(msgEl(m.role || "user", m.content));
   }
   renderResponse(r.response, body);
-  det.appendChild(body);
+  return body;
+}
 
+// A short "#N · model · status · ts" caption line shared by a turn and its modal.
+function captionEl(r, displayIdx) {
+  const cap = el("div", "caption");
+  cap.appendChild(el("span", "idx", `#${displayIdx}`));
+  cap.appendChild(el("span", null, (r.model || "").split("/").pop()));
+  if (r.status && r.status !== "success") {
+    cap.appendChild(el("span", "fail", `· ${r.status}`));
+  }
+  cap.appendChild(el("span", "when", fmtTs(r.ts)));
+  return cap;
+}
+
+// The last message with role "user" (messages with no role default to user),
+// skipping any trailing non-user messages such as system reminders.
+function lastUserMessage(msgs) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m && (m.role || "user") === "user") return m;
+  }
+  return null;
+}
+
+// Base per-section scroll height (matches `.bubble pre` in styles.css).
+const SECTION_BASE = 240;
+
+// Cap each section's height so the bubble's total stays near 1.5×SECTION_BASE:
+// split that budget across the sections, with a floor of SECTION_BASE/3 so a
+// many-section bubble's sections stay individually usable.
+function applySectionHeights(bubble) {
+  const pres = bubble.querySelectorAll("pre");
+  if (!pres.length) return;
+  const per = Math.max(SECTION_BASE / 3, (SECTION_BASE * 1.5) / pres.length);
+  pres.forEach((p) => { p.style.maxHeight = `${Math.round(per)}px`; });
+}
+
+// One turn: the latest user message as a right-aligned bubble and the response
+// (or error) as a left-aligned bubble below it. Clicking opens the full detail.
+function renderTurn(r, displayIdx) {
+  const turn = el("div", "turn");
+  turn.appendChild(captionEl(r, displayIdx));
+
+  const userBubble = el("div", "bubble user");
+  // The latest *user* message — not simply the last message, which may be a
+  // trailing system-reminder appended after the user's tool_result.
+  const last = lastUserMessage(r.messages || []);
+  if (last) {
+    renderContent(last.content, userBubble);
+  } else {
+    userBubble.appendChild(el("div", "meta", "(no user message)"));
+  }
+  applySectionHeights(userBubble);
+  turn.appendChild(userBubble);
+
+  const respBubble = el("div", "bubble " + (r.error ? "error" : "assistant"));
+  if (r.error) {
+    respBubble.appendChild(Object.assign(el("pre"), { textContent: asText(r.error) }));
+  } else {
+    renderResponseInto(r.response, respBubble);
+  }
+  applySectionHeights(respBubble);
+  turn.appendChild(respBubble);
+
+  turn.onclick = () => openModal(r, displayIdx);
+  return turn;
+}
+
+// Like renderResponse but appends content/tool_calls straight into `parent`
+// without wrapping in a `.msg` block (the bubble is the wrapper here).
+function renderResponseInto(resp, parent) {
+  if (resp && resp.content) renderContent(resp.content, parent);
+  const calls = resp && resp.tool_calls;
+  if (Array.isArray(calls)) {
+    for (const c of calls) {
+      const fn = (c && c.function) || {};
+      const box = el("div", "block-tool_use");
+      box.appendChild(el("div", "block-label", `tool_call · ${fn.name || ""}`));
+      box.appendChild(Object.assign(el("pre"), { textContent: asText(fn.arguments) }));
+      parent.appendChild(box);
+    }
+  }
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length))) {
+    parent.appendChild(el("div", "meta", "(empty response)"));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Modal: the full detail for one turn.
+// ---------------------------------------------------------------------------
+
+function closeModal() {
+  const back = $("modal-backdrop");
+  if (back) back.remove();
+  document.removeEventListener("keydown", onModalKey);
+}
+
+function onModalKey(e) {
+  if (e.key === "Escape") closeModal();
+}
+
+function openModal(r, displayIdx) {
+  closeModal();
+  const back = el("div", "modal-backdrop");
+  back.id = "modal-backdrop";
+  back.onclick = (e) => { if (e.target === back) closeModal(); };
+
+  const modal = el("div", "modal");
+  const head = el("div", "modal-head");
+  head.appendChild(captionEl(r, displayIdx));
+  const close = el("button", "modal-close", "✕");
+  close.onclick = closeModal;
+  head.appendChild(close);
+  modal.appendChild(head);
+
+  modal.appendChild(renderFullDetail(r));
   const u = usageLine(r.usage);
-  if (u) det.appendChild(u);
-  return det;
+  if (u) modal.appendChild(u);
+
+  back.appendChild(modal);
+  document.body.appendChild(back);
+  document.addEventListener("keydown", onModalKey);
 }
 
 // Plain text of a record's first user message, with leading <system-reminder>
@@ -297,7 +421,7 @@ function renderMainStream(chat, groups) {
   state.reqs.forEach((r, i) => {
     const ms = markers.get(i);
     if (ms) for (const m of ms) chat.appendChild(m);
-    if (!r.agent_id) chat.appendChild(renderRequest(r, ++shown));
+    if (!r.agent_id) chat.appendChild(renderTurn(r, ++shown));
   });
 }
 
@@ -317,11 +441,11 @@ function renderStream() {
   chat.appendChild(renderTabs(groups));
 
   if (state.tab === "all") {
-    state.reqs.forEach((r, i) => chat.appendChild(renderRequest(r, i + 1)));
+    state.reqs.forEach((r, i) => chat.appendChild(renderTurn(r, i + 1)));
   } else if (state.tab.startsWith("sub:")) {
     const id = state.tab.slice(4);
     const g = groups.subs.find(x => x.id === id);
-    if (g) g.items.forEach((it, i) => chat.appendChild(renderRequest(it.r, i + 1)));
+    if (g) g.items.forEach((it, i) => chat.appendChild(renderTurn(it.r, i + 1)));
     else renderMainStream(chat, groups); // stale tab → fall back to main
   } else {
     renderMainStream(chat, groups);

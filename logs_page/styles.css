@@ -25,16 +25,35 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
 .badge { display: inline-block; background: var(--border); color: var(--fg);
          border-radius: 4px; padding: 1px 6px; font-size: 10px; margin-right: 4px; }
 .empty { color: var(--muted); padding: 16px 14px; font-style: italic; }
-.req { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 18px;
-       overflow: hidden; }
-.req > summary { list-style: none; cursor: pointer; padding: 10px 14px;
-                 background: var(--panel); display: flex; gap: 10px; align-items: center;
-                 font-weight: 600; }
-.req > summary::-webkit-details-marker { display: none; }
-.req > summary .idx { color: var(--accent); }
-.req > summary .when { color: var(--muted); font-weight: 400; font-size: 12px;
-                       margin-left: auto; }
-.req > summary .fail { color: var(--err); }
+
+/* A chat turn: caption + a right-aligned user bubble and a left-aligned
+   response/error bubble. Hovering anywhere highlights the whole turn. */
+.turn { cursor: pointer; border-radius: 8px; padding: 8px 10px; margin-bottom: 14px; }
+.turn:hover { background: rgba(137,180,250,.07); outline: 1px solid var(--border); }
+.turn .caption { display: flex; gap: 10px; align-items: center; font-weight: 600;
+                 font-size: 12px; margin-bottom: 6px; }
+.turn .caption .idx { color: var(--accent); }
+.turn .caption .when { color: var(--muted); font-weight: 400; margin-left: auto; }
+.turn .caption .fail { color: var(--err); }
+.bubble { border-radius: 12px; padding: 9px 13px; max-width: 75%; position: relative; }
+/* Each section scrolls on its own: a section's pre is capped and scrollable, so
+   a tall block gets its own scrollbar instead of one scrollbar for the bubble. */
+.bubble pre { max-height: 240px; overflow: auto; }
+/* Each text block of a multi-block message gets its own subtle box so adjacent
+   blocks are visually separated, mirroring the tool_use/tool_result boxes. */
+.block-text { background: rgba(0,0,0,.18); border-radius: 5px; padding: 6px 9px;
+              margin: 6px 0; }
+.block-text:first-child { margin-top: 0; }
+.block-text:last-child { margin-bottom: 0; }
+.bubble.user { margin-left: auto; background: var(--user);
+               border-bottom-right-radius: 3px; }
+.bubble.assistant { margin-right: auto; margin-top: 8px; background: var(--assistant);
+                    border-bottom-left-radius: 3px; }
+.bubble.error { margin-right: auto; margin-top: 8px; background: rgba(243,139,168,.12);
+                border: 1px solid var(--err); color: var(--err);
+                border-bottom-left-radius: 3px; }
+
+/* Detail rendering (now shown inside the modal). */
 .body { padding: 12px 14px; }
 .msg { border-radius: 6px; padding: 8px 11px; margin: 8px 0; }
 .msg .role { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
@@ -72,3 +91,22 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45
 .marker:hover { background: rgba(137,180,250,.08); border-color: var(--accent); }
 .marker .when { color: var(--muted); font-style: normal; margin-left: auto; }
 .marker.done { color: var(--muted); }
+
+/* Modal: full detail for a turn. */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55);
+                  display: flex; align-items: center; justify-content: center;
+                  z-index: 100; padding: 24px; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+         width: min(900px, 100%); max-height: 90vh; overflow-y: auto;
+         box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.modal-head { position: sticky; top: 0; background: var(--panel);
+              border-bottom: 1px solid var(--border); padding: 12px 16px;
+              display: flex; align-items: center; gap: 10px; }
+.modal-head .caption { display: flex; gap: 10px; align-items: center;
+                       font-weight: 600; flex: 1; }
+.modal-head .caption .idx { color: var(--accent); }
+.modal-head .caption .when { color: var(--muted); font-weight: 400; font-size: 12px; }
+.modal-head .caption .fail { color: var(--err); }
+.modal-close { background: none; border: none; color: var(--muted); cursor: pointer;
+               font-size: 16px; line-height: 1; padding: 4px 8px; border-radius: 5px; }
+.modal-close:hover { background: var(--border); color: var(--fg); }
