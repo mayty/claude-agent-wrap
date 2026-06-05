@@ -57,12 +57,33 @@ def test_resolve_reconstructs_wrap_ref_references():
     # Both items should be dicts with identical content.
     assert resolved[0] == {"content": "hello"}
     assert resolved[1] == {"content": "hello"}
-    # They should be independent copies, not the same object in memory.
-    assert resolved[0] is not resolved[1]
+    # They MUST be the exact same object in memory to correctly preserve the reference graph.
+    assert resolved[0] is resolved[1]
     # No wrap-ref strings should remain.
-    assert "wrap-ref:0" not in resolved
-    assert "wrap-ref-id" not in resolved[0]
-    assert "wrap-ref-id" not in resolved[1]
+    assert "wrap-ref:0" not in str(resolved)
+    assert "wrap-ref-id" not in str(resolved)
+
+
+def test_resolve_resolves_hashes_inside_wrap_ref():
+    # Ensure that hashes inside a canonical wrap-ref object are properly resolved.
+    canonical = {"content": "hash:abc123", "wrap-ref-id": "0"}
+    obj_with_refs = [canonical, "wrap-ref:0"]
+    strings = {"hash:abc123": "the original text"}
+    resolved = resolve(obj_with_refs, strings)
+    assert resolved[0] == {"content": "the original text"}
+    assert resolved[1] == {"content": "the original text"}
+
+
+def test_resolve_handles_circular_references():
+    # Simulate a canonical object that references itself.
+    # The callback would serialize this as a dict with wrap-ref-id, and a child pointing to it.
+    canonical = {"name": "self", "child": "wrap-ref:0", "wrap-ref-id": "0"}
+    resolved = resolve([canonical], {})
+    # The resolved object should have a child that points to itself.
+    assert resolved[0]["name"] == "self"
+    assert resolved[0]["child"] is resolved[0]
+    # No wrap-ref strings should remain.
+    assert "wrap-ref:0" not in str(resolved)
 
 
 # --- normalize_record ---

@@ -37,7 +37,6 @@ import json
 import re
 import sys
 import webbrowser
-from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -101,40 +100,95 @@ _WRAP_REF_PREFIX_LEN = len(_WRAP_REF_PREFIX)
 _WRAP_REF_ID_PREFIX = "wrap-ref-id:"
 
 
-def _index_refs(o: Any, wrap_ref_index: dict[str, Any]) -> None:
-    """Pass 1: Collect wrap-ref-id markers into a lookup index."""
+def _index_refs(o: Any, wrap_ref_index: dict[str, Any], obj_to_ref: dict[int, str]) -> None:
+    """Pass 1: Collect wrap-ref-id markers into lookup indexes."""
     if isinstance(o, dict):
         if "wrap-ref-id" in o:
             ref_id = str(o.pop("wrap-ref-id"))
             wrap_ref_index[ref_id] = o
+            obj_to_ref[id(o)] = ref_id
         for v in o.values():
-            _index_refs(v, wrap_ref_index)
+            _index_refs(v, wrap_ref_index, obj_to_ref)
     elif isinstance(o, list):
         # wrap-ref-id is always inserted at index 0 by the callback.
         # Check index 0 directly to avoid modifying a list while iterating.
         if o and isinstance(o[0], str) and o[0].startswith(_WRAP_REF_ID_PREFIX):
             ref_id = o[0][len(_WRAP_REF_ID_PREFIX) :]
             wrap_ref_index[ref_id] = o
+            obj_to_ref[id(o)] = ref_id
             o.pop(0)
         for item in o:
-            _index_refs(item, wrap_ref_index)
+            _index_refs(item, wrap_ref_index, obj_to_ref)
 
 
-def _resolve_refs(o: Any, wrap_ref_index: dict[str, Any], strings: dict[str, str]) -> Any:
-    """Pass 2: Replace wrap-ref strings with canonical objects, and resolve hashes."""
-    if isinstance(o, str):
-        if o.startswith(_WRAP_REF_PREFIX) and len(o) > _WRAP_REF_PREFIX_LEN:
-            ref_id = o[_WRAP_REF_PREFIX_LEN:]
-            canon = wrap_ref_index.get(ref_id)
-            if canon is not None:
-                return deepcopy(canon)
+class _RefResolver:
+    """Helper class to resolve wrap-refs and hashes while safely handling cycles."""
+
+    def __init__(
+        self,
+        wrap_ref_index: dict[str, Any],
+        obj_to_ref: dict[int, str],
+        strings: dict[str, str],
+    ):
+        self.wrap_ref_index = wrap_ref_index
+        self.obj_to_ref = obj_to_ref
+        self.strings = strings
+        self.resolved_canons: dict[str, Any] = {}
+
+    def resolve(self, o: Any) -> Any:
+        if isinstance(o, str):
+            return self._resolve_str(o)
+
+        obj_id = id(o)
+        if obj_id in self.obj_to_ref:
+            ref_id = self.obj_to_ref[obj_id]
+            if ref_id in self.resolved_canons:
+                return self.resolved_canons[ref_id]
+
+            # Create a placeholder to break cycles and cache it immediately.
+            # Then populate it by resolving its children.
+            placeholder: Any = {} if isinstance(o, dict) else []
+            self.resolved_canons[ref_id] = placeholder
+
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    placeholder[k] = self.resolve(v)
+            else:
+                for v in o:
+                    placeholder.append(self.resolve(v))
+            return placeholder
+
+        if isinstance(o, dict):
+            return {k: self.resolve(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [self.resolve(v) for v in o]
+        return o
+
+    def _resolve_str(self, o: str) -> Any:
+        if not o.startswith(_WRAP_REF_PREFIX) or len(o) <= _WRAP_REF_PREFIX_LEN:
+            return self.strings.get(o, o)
+
+        ref_id = o[_WRAP_REF_PREFIX_LEN:]
+        if ref_id in self.resolved_canons:
+            return self.resolved_canons[ref_id]
+
+        canon = self.wrap_ref_index.get(ref_id)
+        if canon is None:
             return o
-        return strings.get(o, o)
-    if isinstance(o, dict):
-        return {k: _resolve_refs(v, wrap_ref_index, strings) for k, v in o.items()}
-    if isinstance(o, list):
-        return [_resolve_refs(v, wrap_ref_index, strings) for v in o]
-    return o
+
+        # Create a placeholder to break cycles and cache it immediately.
+        # Then populate it by resolving its children.
+        placeholder: Any = {} if isinstance(canon, dict) else []
+        self.resolved_canons[ref_id] = placeholder
+
+        if isinstance(canon, dict):
+            for k, v in canon.items():
+                placeholder[k] = self.resolve(v)
+        else:
+            for v in canon:
+                placeholder.append(self.resolve(v))
+
+        return placeholder
 
 
 def resolve(obj: Any, strings: dict[str, str]) -> Any:
@@ -144,11 +198,13 @@ def resolve(obj: Any, strings: dict[str, str]) -> Any:
     (``wrap-ref:<id>`` -> canonical object with ``wrap-ref-id``).
 
     Unknown hashes are left intact so a missing ``strings.jsonl`` entry is
-    visible rather than silently blanked.
+    visible rather than silently blanked. Uses a placeholder cache to safely
+    resolve hashes inside canonical objects and break circular reference cycles.
     """
     wrap_ref_index: dict[str, Any] = {}
-    _index_refs(obj, wrap_ref_index)
-    return _resolve_refs(obj, wrap_ref_index, strings)
+    obj_to_ref: dict[int, str] = {}
+    _index_refs(obj, wrap_ref_index, obj_to_ref)
+    return _RefResolver(wrap_ref_index, obj_to_ref, strings).resolve(obj)
 
 
 # ---------------------------------------------------------------------------
