@@ -162,6 +162,34 @@ class PriceSource:
         return table
 
 
+_usage_convention_warned = False
+
+
+def _warn_usage_convention_drift(in_tokens: int, cw_5m: int, cw_1h: int, cr_tokens: int) -> None:
+    """
+    Emit a one-shot warning when the token-overlap assumption appears to have drifted.
+
+    Cost math here assumes prompt/input token counts are INCLUSIVE of cache-write
+    and cache-read tokens (the OpenAI/LiteLLM convention these logs use). If fresh
+    input ever goes negative, that assumption has broken — most likely a provider or
+    LiteLLM change to EXCLUSIVE reporting — and per-request costs are no longer
+    trustworthy. Warn once per process so a real regression is visible without
+    spamming a line per record.
+    """
+    global _usage_convention_warned  # noqa: PLW0603
+    if _usage_convention_warned:
+        return
+    _usage_convention_warned = True
+    print(
+        "warning: token usage convention drift detected — "
+        f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "
+        f"cache-read ({cr_tokens}). Cost math assumes input_tokens is inclusive of "
+        "cache tokens; this record violates that. Reported costs may be inaccurate "
+        "until agent_wrap/commands/stats.py:_cost_for_tiers is revisited.",
+        file=sys.stderr,
+    )
+
+
 def _cost_for_tiers(tiers: list[dict], usage: dict) -> float:
     """Calculate the cost of a single request given its applicable tier list."""
     in_tokens = usage.get("input_tokens", 0) or 0
@@ -180,8 +208,20 @@ def _cost_for_tiers(tiers: list[dict], usage: dict) -> float:
     # Pick the first tier covering the total input size, else the highest tier.
     tier = next((t for t in tiers if in_tokens <= t["max_in"]), tiers[-1])
 
-    # Fresh input tokens exclude cached reads to avoid double-charging them.
-    fresh_in_tokens = max(0, in_tokens - cr_tokens)
+    # `in_tokens` comes from prompt_tokens/input_tokens, which in the LiteLLM logs
+    # this tool reads is the INCLUSIVE total: fresh + cache-write + cache-read. We
+    # bill cache writes (cw_5m/cw_1h) and cache reads (cr) at their own rates below,
+    # so they must be removed here to avoid charging them twice at the full input
+    # rate. Fresh input is therefore the remainder once both are subtracted.
+    fresh_in_tokens = in_tokens - cw_5m - cw_1h - cr_tokens
+    if fresh_in_tokens < 0:
+        # The remainder going negative means the inclusivity assumption above no
+        # longer holds — e.g. a LiteLLM/provider upgrade switched to reporting
+        # input_tokens EXCLUSIVE of the cache fields (the raw Anthropic convention).
+        # Either way the cost math here is wrong; surface it once rather than
+        # silently clamping and mischarging. See _check_usage_convention's note.
+        _warn_usage_convention_drift(in_tokens, cw_5m, cw_1h, cr_tokens)
+        fresh_in_tokens = 0
 
     return (
         fresh_in_tokens * tier["in"] / 1_000_000
