@@ -17,11 +17,12 @@ import json
 import sys
 import time
 from abc import abstractmethod
+from itertools import chain
 from pathlib import Path
 from typing import IO, ClassVar
 
 from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.docker_utils import docker_run, image_exists
+from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.utils import generate_uuid
 from agent_wrap.providers.base import Provider
 
@@ -93,6 +94,21 @@ class LiteLLMProvider(Provider):
     def _state_dir(self) -> Path:
         """Resolve the provider's source directory (for lock/refcount files)."""
         return Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
+
+    def _callback_dir(self) -> Path:
+        """Resolve the shared LiteLLM logging callback (mounted into the sidecar)."""
+        return Path(__file__).parent
+
+    def _log_dir(self) -> Path:
+        """
+        Host directory for the request/response JSONL log (bind-mounted into sidecar).
+
+        Includes the provider name (e.g., 'litellm-bedrock') so the sidecar mounts
+        directly to /var/log/agent-wrap, letting the callback simply write to
+        /var/log/agent-wrap/<session_id>/messages.jsonl.
+        """
+        provider_name = self.__class__.name if hasattr(self.__class__, "name") else "unknown"
+        return Path.cwd() / ".claude" / "litellm-logs" / provider_name
 
     # --- Public: ensure ---
 
@@ -346,6 +362,9 @@ class LiteLLMProvider(Provider):
 
     def _start(self, secret_key: str, master_key: str, sidecar_mode: str) -> None:
         config_path = self._config_path()
+        callback_dir = self._callback_dir()
+        log_dir = self._log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         # Reap any stopped container under our name
         _, rc = docker_run("container", "inspect", self.container_name)
@@ -375,6 +394,7 @@ class LiteLLMProvider(Provider):
             self.container_name,
             "--network",
             network,
+            *get_user_args(),
             "--health-cmd",
             health_cmd,
             "--health-interval=30s",
@@ -385,6 +405,17 @@ class LiteLLMProvider(Provider):
             *env_flags,
             "-v",
             f"{config_path}:/etc/litellm/config.yaml:ro",
+            # Logging callback (resolved by LiteLLM relative to the config file's
+            # directory, so it must sit next to config.yaml) and the host log dir
+            # it appends request/response JSONL to. See callback.py.
+            *chain(
+                *(
+                    ("-v", f"{callback_dir / filename}:/etc/litellm/{filename}:ro")
+                    for filename in ("callback.py", "string_hasher.py")
+                )
+            ),
+            "-v",
+            f"{log_dir}:/var/log/agent-wrap",
             self.image,
             "--config",
             "/etc/litellm/config.yaml",

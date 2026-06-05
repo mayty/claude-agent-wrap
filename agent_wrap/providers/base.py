@@ -40,3 +40,28 @@ class Provider(ABC):
     @abstractmethod
     def get_label_args(self, instance_id: str) -> list[str]:
         """Return --label and --name flags for the agent container."""
+
+    def get_pricing(self) -> dict[str, dict[str, float]]:
+        """
+        Return a pricing table for this provider.
+
+        Keys are canonical model identifiers (e.g., 'claude-sonnet-4-5').
+        Values are dicts with keys: 'in', 'out', 'cw_5m', 'cw_1h', 'cr'
+        representing the cost per 1 million tokens.
+
+        Returns an empty dict if pricing is not available or not implemented.
+        """
+        return {}
+
+    def get_tiered_pricing(self) -> dict | None:
+        """
+        Return a tiered pricing table for this provider, if applicable.
+
+        Keys are canonical model identifiers.
+        Values are dicts with a 'tiers' key containing a list of tier dicts.
+        Each tier dict has 'max_in' (token threshold) and 'in', 'out', 'cw_5m',
+        'cw_1h', 'cr' representing the cost per 1 million tokens for that tier.
+
+        Returns None if tiered pricing is not available or not implemented.
+        """
+        return None
