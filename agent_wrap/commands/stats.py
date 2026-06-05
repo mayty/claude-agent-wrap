@@ -31,6 +31,7 @@ _MODEL_FAMILY_RE_T_FIRST = re.compile(
     re.IGNORECASE,
 )
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+_MODEL_CONTEXT_SUFFIX_RE = re.compile(r"\[(?:1m|128k|32k|8k)\]$", re.IGNORECASE)
 
 
 def color(s: str, code: str) -> str:
@@ -139,6 +140,57 @@ def cost_for_model(display_model: str, usage: dict, provider_prices: dict) -> fl
     )
 
 
+def cost_for_request(
+    provider_name: str,
+    model: str,
+    usage: dict,
+    provider_tiered_prices: dict,
+) -> float | None:
+    """Calculate cost for a single request using tiered pricing rules."""
+    in_tokens = usage.get("input_tokens", 0) or 0
+    out_tokens = usage.get("output_tokens", 0) or 0
+    cr_tokens = usage.get("cache_read_input_tokens", 0) or 0
+
+    cc = usage.get("cache_creation") or {}
+    cw_5m = cc.get("ephemeral_5m_input_tokens", 0) or 0
+    cw_1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
+    if not (cw_5m or cw_1h):
+        cw_5m = usage.get("cache_creation_input_tokens", 0) or 0
+
+    if not (in_tokens or out_tokens or cw_5m or cw_1h or cr_tokens):
+        return 0.0
+
+    # Normalize model name by stripping context suffixes (e.g., [1m], [128k])
+    norm_model = _MODEL_CONTEXT_SUFFIX_RE.sub("", model)
+
+    tiered_model = provider_tiered_prices.get(provider_name, {}).get(norm_model)
+    if not tiered_model or "tiers" not in tiered_model:
+        return None
+
+    # Find the applicable tier based on TOTAL input tokens
+    applicable_tier = None
+    for tier in tiered_model["tiers"]:
+        if in_tokens <= tier["max_in"]:
+            applicable_tier = tier
+            break
+
+    # Fallback to the highest tier if input tokens exceed all defined max_in
+    if applicable_tier is None:
+        applicable_tier = tiered_model["tiers"][-1]
+
+    # Fresh input tokens are total input tokens minus cached tokens
+    # to avoid double-charging cached tokens at the base rate.
+    fresh_in_tokens = max(0, in_tokens - cr_tokens)
+
+    return (
+        fresh_in_tokens * applicable_tier["in"] / 1_000_000
+        + out_tokens * applicable_tier["out"] / 1_000_000
+        + cw_5m * applicable_tier["cw_5m"] / 1_000_000
+        + cw_1h * applicable_tier["cw_1h"] / 1_000_000
+        + cr_tokens * applicable_tier["cr"] / 1_000_000
+    )
+
+
 def parse_ts(s: str | None) -> datetime | None:
     if not s:
         return None
@@ -155,7 +207,7 @@ def fmt_ts(dt: datetime | None) -> str:
 
 
 class Bucket:
-    __slots__ = ("cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
+    __slots__ = ("cost", "cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
 
     def __init__(self) -> None:
         self.msgs = 0
@@ -164,8 +216,9 @@ class Bucket:
         self.cw_5m = 0
         self.cw_1h = 0
         self.cr = 0
+        self.cost = 0.0
 
-    def add(self, usage: dict) -> None:
+    def add(self, usage: dict, request_cost: float = 0.0) -> None:
         self.msgs += 1
         self.in_ += usage.get("input_tokens", 0) or 0
         self.out += usage.get("output_tokens", 0) or 0
@@ -178,6 +231,7 @@ class Bucket:
         else:
             self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
         self.cr += usage.get("cache_read_input_tokens", 0) or 0
+        self.cost += request_cost
 
     def merge(self, other: Bucket) -> None:
         self.msgs += other.msgs
@@ -186,6 +240,7 @@ class Bucket:
         self.cw_5m += other.cw_5m
         self.cw_1h += other.cw_1h
         self.cr += other.cr
+        self.cost += other.cost
 
     @property
     def cw(self) -> int:
@@ -400,14 +455,15 @@ def _process_litellm_record(
     rec: dict,
     provider_name: str,
     buckets: dict[str, dict[str, Bucket]],
-) -> datetime | None:
-    """Process a single LiteLLM log record. Returns the timestamp if valid."""
+    tiered_prices: dict | None,
+) -> tuple[datetime | None, float | None]:
+    """Process a single LiteLLM log record. Returns (timestamp, request_cost)."""
     if rec.get("status") != "success":
-        return None
+        return None, None
 
     model = rec.get("model")
     if not model:
-        return None
+        return None, None
 
     clean_model = model.split("/")[-1] if "/" in model else model
     norm_model = normalize_model(clean_model) or clean_model
@@ -418,15 +474,22 @@ def _process_litellm_record(
     day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
 
     usage = extract_usage(rec.get("response"))
+    request_cost = None
+    if tiered_prices is not None:
+        request_cost = cost_for_request(
+            provider_name, clean_model, usage, {provider_name: tiered_prices}
+        )
+
     bucket = Bucket()
-    bucket.add(usage)
+    bucket.add(usage, request_cost or 0.0)
     buckets[day_key][display_model].merge(bucket)
 
-    return ts
+    return ts, request_cost
 
 
 def scan_project_litellm(  # noqa: C901
     path: Path,
+    provider_tiered_prices: dict[str, dict | None],
 ) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], bool]:
     """Scan LiteLLM logs for a project and aggregate token usage."""
     logs_dir = path / ".claude" / "litellm-logs"
@@ -441,6 +504,7 @@ def scan_project_litellm(  # noqa: C901
         if not provider_dir.is_dir():
             continue
         provider_name = provider_dir.name
+        tiered = provider_tiered_prices.get(provider_name)
 
         for session_dir in provider_dir.iterdir():
             if not session_dir.is_dir():
@@ -461,7 +525,7 @@ def scan_project_litellm(  # noqa: C901
                         except json.JSONDecodeError:
                             continue
 
-                        ts = _process_litellm_record(rec, provider_name, buckets)
+                        ts, _ = _process_litellm_record(rec, provider_name, buckets, tiered)
                         if ts is not None and (last_ts is None or ts > last_ts):
                             last_ts = ts
             except OSError:
@@ -484,7 +548,6 @@ def load_projects(reg: Path) -> list[Path]:
 
 def _build_total_body(
     totals_by_model: dict[str, Bucket],
-    provider_prices: dict,
     tree_root: Node,
     display_rows: list[DisplayRow],
     div: str,
@@ -494,11 +557,10 @@ def _build_total_body(
     if totals_by_model:
         ordered = sorted(
             totals_by_model.items(),
-            key=lambda kv: cost_for_model(kv[0], kv[1].usage_dict(), provider_prices) or 0.0,
+            key=lambda kv: kv[1].cost or 0.0,
             reverse=True,
         )
         for model, b in ordered:
-            c = cost_for_model(model, b.usage_dict(), provider_prices)
             body.append(
                 (
                     [
@@ -510,7 +572,7 @@ def _build_total_body(
                         fmt_count(b.out),
                         fmt_count(b.cw),
                         fmt_count(b.cr),
-                        fmt_cost(c),
+                        fmt_cost(b.cost if b.cost > 0.0 else None),
                     ],
                     "",
                     0,
@@ -563,20 +625,18 @@ def _build_total_body(
 def _aggregate_day_rows(
     dated: dict[str, dict[str, Bucket]],
     shown_days: list[str],
-    provider_prices: dict,
 ) -> tuple[list[tuple[str, Bucket, float, bool]], Bucket, float, bool]:
     day_rows_data: list[tuple[str, Bucket, float, bool]] = []
     for d in shown_days:
         day_total = Bucket()
         day_cost: float = 0.0
         day_unknown = False
-        for model, b in dated[d].items():
+        for b in dated[d].values():
             day_total.merge(b)
-            c = cost_for_model(model, b.usage_dict(), provider_prices)
-            if c is None:
+            if b.cost <= 0.0:
                 day_unknown = True
             else:
-                day_cost += c
+                day_cost += b.cost
         day_rows_data.append((d, day_total, day_cost, day_unknown))
 
     total_b = Bucket()
@@ -594,7 +654,6 @@ def _aggregate_day_rows(
 
 def _build_recent_body(
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    provider_prices: dict,
     days_window: int,
     div: str,
 ) -> tuple[list, str]:
@@ -617,11 +676,10 @@ def _build_recent_body(
     if recent_models:
         ordered = sorted(
             recent_models.items(),
-            key=lambda kv: cost_for_model(kv[0], kv[1].usage_dict(), provider_prices) or 0.0,
+            key=lambda kv: kv[1].cost or 0.0,
             reverse=True,
         )
         for model, b in ordered:
-            c = cost_for_model(model, b.usage_dict(), provider_prices)
             body.append(
                 (
                     [
@@ -631,7 +689,7 @@ def _build_recent_body(
                         fmt_count(b.out),
                         fmt_count(b.cw),
                         fmt_count(b.cr),
-                        fmt_cost(c),
+                        fmt_cost(b.cost if b.cost > 0.0 else None),
                     ],
                     "",
                     0,
@@ -642,9 +700,7 @@ def _build_recent_body(
         if body:
             body.append(div)
 
-        day_rows_data, total_b, total_cost, total_unknown = _aggregate_day_rows(
-            dated, shown_days, provider_prices
-        )
+        day_rows_data, total_b, total_cost, total_unknown = _aggregate_day_rows(dated, shown_days)
 
         for d, b, day_cost, day_unknown in reversed(day_rows_data):
             cost_str = fmt_cost_with_unknown(day_cost, unknown=day_unknown)
@@ -792,7 +848,6 @@ def render(
     rows: list[dict],
     totals_by_model: dict[str, Bucket],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    provider_prices: dict,
     days_window: int,
 ) -> str:
     shared_headers = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
@@ -807,13 +862,13 @@ def render(
     tree_root = build_project_tree(rows)
     display_rows = flatten_tree(tree_root)
 
-    total_body = _build_total_body(totals_by_model, provider_prices, tree_root, display_rows, div)
+    total_body = _build_total_body(totals_by_model, tree_root, display_rows, div)
 
     recent_headers = ["MODEL / DATE", *shared_headers]
     recent_aligns = ["<", *shared_aligns]
 
     recent_body, by_day_truncation_note = _build_recent_body(
-        totals_by_day_by_model, provider_prices, days_window, div
+        totals_by_day_by_model, days_window, div
     )
 
     shared_widths = _compute_shared_widths(
@@ -929,14 +984,17 @@ def _parse_usage_args(args: list[str]) -> _UsageArgs | None:
 def _get_provider_pricing(
     provider_name: str,
     provider_prices: dict[str, dict[str, dict[str, float]]],
+    provider_tiered_prices: dict[str, dict | None],
 ) -> dict[str, dict[str, float]]:
     """Fetch and cache pricing for a provider."""
     if provider_name not in provider_prices:
         try:
             provider = get_provider(provider_name)
             provider_prices[provider_name] = provider.get_pricing()
+            provider_tiered_prices[provider_name] = provider.get_tiered_pricing()
         except Exception:  # noqa: BLE001
             provider_prices[provider_name] = {}
+            provider_tiered_prices[provider_name] = None
     return provider_prices[provider_name]
 
 
@@ -952,6 +1010,7 @@ def _collect_project_rows_with_pricing(
     totals_by_model: dict[str, Bucket] = defaultdict(Bucket)
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
     provider_prices: dict[str, dict[str, dict[str, float]]] = {}
+    provider_tiered_prices: dict[str, dict | None] = {}
 
     for path in projects:
         logs_dir = path / ".claude" / "litellm-logs"
@@ -961,22 +1020,18 @@ def _collect_project_rows_with_pricing(
         for provider_dir in logs_dir.iterdir():
             if not provider_dir.is_dir():
                 continue
-            _get_provider_pricing(provider_dir.name, provider_prices)
+            _get_provider_pricing(provider_dir.name, provider_prices, provider_tiered_prices)
 
-        sessions, last_ts, by_day, exists = scan_project_litellm(path)
+        sessions, last_ts, by_day, exists = scan_project_litellm(path, provider_tiered_prices)
         total = Bucket()
-        proj_cost: float = 0.0
-        proj_unknown = False
         for day, by_model in by_day.items():
             for model, b in by_model.items():
                 total.merge(b)
                 totals_by_model[model].merge(b)
                 totals_by_day_by_model[day][model].merge(b)
-                c = cost_for_model(model, b.usage_dict(), provider_prices)
-                if c is None:
-                    proj_unknown = True
-                else:
-                    proj_cost += c
+
+        # total.cost now contains the sum of per-request costs calculated during scan
+        proj_cost = total.cost if total.cost > 0.0 else None
 
         if sessions > 0 or exists:
             rows.append(
@@ -986,7 +1041,7 @@ def _collect_project_rows_with_pricing(
                     "sessions": sessions,
                     "last_ts": last_ts,
                     "total": total,
-                    "cost": None if proj_unknown else proj_cost,
+                    "cost": proj_cost,
                 }
             )
 
@@ -1016,7 +1071,7 @@ def run(args: list[str], tool_dir: Path) -> int:
         )
         return 0
 
-    rows, totals_by_model, totals_by_day_by_model, provider_prices = (
+    rows, totals_by_model, totals_by_day_by_model, _provider_prices = (
         _collect_project_rows_with_pricing(projects)
     )
 
@@ -1031,7 +1086,6 @@ def run(args: list[str], tool_dir: Path) -> int:
             rows,
             totals_by_model,
             totals_by_day_by_model,
-            provider_prices,
             parsed.days_window,
         )
     )
