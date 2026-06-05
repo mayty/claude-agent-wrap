@@ -7,7 +7,11 @@ import json
 import tempfile
 from pathlib import Path
 
-from agent_wrap.providers.litellm_common.callback import _get_session_id, build_record
+from agent_wrap.providers.litellm_common.callback import (
+    _get_session_id,
+    build_record,
+    extract_session_alias,
+)
 from agent_wrap.providers.litellm_common.string_hasher import (
     _SESSION_HASHERS,
     StringHasher,
@@ -239,6 +243,39 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
     assert len(messages) == 1
     content = messages[0]["content"]
     assert content == short_string
+
+
+def _name_response(content: str) -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
+
+
+def test_extract_session_alias_from_name_payload() -> None:
+    resp = _name_response('{"name": "agent-logs-web-viewer"}')
+    assert extract_session_alias(resp) == "agent-logs-web-viewer"
+
+
+def test_extract_session_alias_ignores_title_payload() -> None:
+    # The sibling title-generation call must not be treated as an alias.
+    resp = _name_response('{"title": "Build a web viewer for logs"}')
+    assert extract_session_alias(resp) is None
+
+
+def test_extract_session_alias_tolerates_trailing_prose() -> None:
+    resp = _name_response('{"name": "fix-login-bug"} sure thing!')
+    assert extract_session_alias(resp) == "fix-login-bug"
+
+
+def test_extract_session_alias_handles_choices_text_shape() -> None:
+    resp = {"choices": [{"text": '{"name": "add-auth-feature"}'}]}
+    assert extract_session_alias(resp) == "add-auth-feature"
+
+
+def test_extract_session_alias_none_for_freeform_and_empty() -> None:
+    assert extract_session_alias(_name_response("just some words")) is None
+    assert extract_session_alias(_name_response('{"name": ""}')) is None
+    assert extract_session_alias(_name_response('{"name": "   "}')) is None
+    assert extract_session_alias({}) is None
+    assert extract_session_alias(None) is None
 
 
 def test_get_session_id_extracted_from_headers() -> None:

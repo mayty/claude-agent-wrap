@@ -38,6 +38,7 @@ _agent_complete() {
         run)     flags="--base" ;;
         stats)         flags="--days" ;;
         legacy_stats)  flags="--days" ;;
+        logs)          flags="--port" ;;
         create|update) flags="" ;;
     esac
 

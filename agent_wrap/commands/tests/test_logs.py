@@ -1,0 +1,288 @@
+# This file has been created with the assistance of an AI tool.
+"""Tests for the `logs` subcommand's data access and record normalization."""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING
+
+from agent_wrap.commands.logs import (
+    _parse_port,
+    extract_alias,
+    list_projects,
+    list_sessions,
+    load_strings,
+    normalize_record,
+    read_session,
+    resolve,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+# --- resolve (hash replacement + wrap-ref stripping) ---
+
+
+def test_resolve_replaces_known_hashes():
+    strings = {"hash:abc": "the original text"}
+    assert resolve("hash:abc", strings) == "the original text"
+
+
+def test_resolve_leaves_unknown_hashes_intact():
+    # A missing strings.jsonl entry should remain visible, not blanked.
+    assert resolve("hash:missing", {}) == "hash:missing"
+
+
+def test_resolve_recurses_nested_structures():
+    strings = {"hash:x": "X", "hash:y": "Y"}
+    obj = {"a": "hash:x", "b": ["hash:y", "plain", {"c": "hash:x"}]}
+    assert resolve(obj, strings) == {"a": "X", "b": ["Y", "plain", {"c": "X"}]}
+
+
+def test_resolve_strips_wrap_ref_bookkeeping():
+    obj = {"k": "v", "wrap-ref-id": "3"}
+    assert resolve(obj, {}) == {"k": "v"}
+    lst = ["wrap-ref-id:0", "keep"]
+    assert resolve(lst, {}) == ["keep"]
+
+
+# --- normalize_record ---
+
+
+def _raw_record() -> dict:
+    return {
+        "ts": "2026-06-05T12:00:00+00:00",
+        "status": "success",
+        "model": "us.anthropic.claude-opus-4-8",
+        "request": {
+            # Top-level messages is a LiteLLM placeholder and must be ignored.
+            "messages": [{"role": "user", "content": "default-message-value"}],
+            "proxy_server_request": {
+                "body": {
+                    "data": {
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "system": "be brief",
+                        "tools": [{"name": "Read"}],
+                    }
+                }
+            },
+        },
+        "response": {
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        },
+    }
+
+
+def test_normalize_pulls_real_request_data():
+    out = normalize_record(_raw_record(), {})
+    assert out["messages"] == [{"role": "user", "content": "hello"}]
+    assert out["system"] == "be brief"
+    assert out["tools"] == [{"name": "Read"}]
+
+
+def test_normalize_ignores_placeholder_messages():
+    out = normalize_record(_raw_record(), {})
+    # The "default-message-value" placeholder must never surface.
+    assert all(m["content"] != "default-message-value" for m in out["messages"])
+
+
+def test_normalize_extracts_response_and_usage():
+    out = normalize_record(_raw_record(), {})
+    assert out["response"] == {"role": "assistant", "content": "hi"}
+    assert out["usage"] == {"prompt_tokens": 10, "completion_tokens": 2}
+
+
+def test_normalize_resolves_hashes():
+    rec = _raw_record()
+    rec["request"]["proxy_server_request"]["body"]["data"]["system"] = "hash:s"
+    out = normalize_record(rec, {"hash:s": "resolved system"})
+    assert out["system"] == "resolved system"
+
+
+def test_normalize_tolerates_missing_pieces():
+    out = normalize_record({"ts": "t", "status": "failure", "error": "boom"}, {})
+    assert out["messages"] == []
+    assert out["tools"] == []
+    assert out["response"] == {}
+    assert out["usage"] == {}
+    assert out["error"] == "boom"
+
+
+# --- extract_alias ---
+
+
+def _naming_record(content: str) -> dict:
+    return {"response": {"choices": [{"message": {"role": "assistant", "content": content}}]}}
+
+
+def test_extract_alias_from_name_payload():
+    assert extract_alias(_naming_record('{"name": "agent-logs-web-viewer"}')) == (
+        "agent-logs-web-viewer"
+    )
+
+
+def test_extract_alias_ignores_title_payload():
+    assert extract_alias(_naming_record('{"title": "Build a web viewer"}')) is None
+
+
+def test_extract_alias_none_for_freeform_and_missing():
+    assert extract_alias(_naming_record("hi there")) is None
+    assert extract_alias(_naming_record('{"name": ""}')) is None
+    assert extract_alias({}) is None
+
+
+# --- filesystem helpers ---
+
+
+def _write_session(project: Path, provider: str, session_id: str, records: list[dict]) -> Path:
+    sdir = project / ".claude" / "litellm-logs" / provider / session_id
+    sdir.mkdir(parents=True)
+    with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+    return sdir
+
+
+def test_list_sessions_enumerates_and_sorts(tmp_path: Path):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "sess-old",
+        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+    )
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "sess-new",
+        [
+            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"},
+            {"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"},
+        ],
+    )
+    sessions = list_sessions(project)
+    assert [s["session_id"] for s in sessions] == ["sess-new", "sess-old"]
+    assert sessions[0]["count"] == 2
+    assert sessions[0]["models"] == ["b"]
+
+
+def test_list_sessions_skips_empty_and_missing(tmp_path: Path):
+    project = tmp_path / "proj"
+    # Directory with no messages.jsonl.
+    (project / ".claude" / "litellm-logs" / "litellm-bedrock" / "empty").mkdir(parents=True)
+    assert list_sessions(project) == []
+
+
+def test_list_sessions_derives_alias_from_naming_record(tmp_path: Path):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"},
+            _naming_record('{"name": "derived-slug"}') | {"ts": "2026-06-05T00:01:00+00:00"},
+        ],
+    )
+    assert list_sessions(project)[0]["alias"] == "derived-slug"
+
+
+def test_list_sessions_alias_file_wins_over_derivation(tmp_path: Path):
+    project = tmp_path / "proj"
+    sdir = _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [_naming_record('{"name": "derived-slug"}') | {"ts": "2026-06-05T00:00:00+00:00"}],
+    )
+    (sdir / "alias").write_text("file-slug\n", encoding="utf-8")
+    assert list_sessions(project)[0]["alias"] == "file-slug"
+
+
+def test_list_sessions_alias_none_when_absent(tmp_path: Path):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    assert list_sessions(project)[0]["alias"] is None
+
+
+def test_read_session_normalizes_and_resolves(tmp_path: Path):
+    project = tmp_path / "proj"
+    sdir = _write_session(project, "litellm-bedrock", "s1", [_raw_record()])
+    (sdir / "strings.jsonl").write_text(
+        json.dumps({"hash": "hash:s", "original": "X"}) + "\n", encoding="utf-8"
+    )
+    reqs = read_session(project, "litellm-bedrock", "s1")
+    assert len(reqs) == 1
+    assert reqs[0]["messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_load_strings_round_trip(tmp_path: Path):
+    sdir = tmp_path / "s"
+    sdir.mkdir()
+    (sdir / "strings.jsonl").write_text(
+        json.dumps({"hash": "hash:a", "original": "A"})
+        + "\n"
+        + "not json\n"
+        + json.dumps({"hash": "hash:b", "original": "B"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert load_strings(sdir) == {"hash:a": "A", "hash:b": "B"}
+
+
+def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    with_logs = tmp_path / "with"
+    without_logs = tmp_path / "without"
+    _write_session(
+        with_logs,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(
+        f"{with_logs}\n{without_logs}\n", encoding="utf-8"
+    )
+    projects = list_projects(tool_dir)
+    assert [p["path"] for p in projects] == [str(with_logs)]
+    assert projects[0]["sessions"] == 1
+    assert projects[0]["id"] == 0
+
+
+def test_list_projects_empty_without_registry(tmp_path: Path):
+    assert list_projects(tmp_path / "nope") == []
+
+
+# --- arg parsing ---
+
+
+def test_parse_port_default():
+    assert _parse_port([]) == 8765
+
+
+def test_parse_port_custom():
+    assert _parse_port(["--port", "9000"]) == 9000
+
+
+def test_parse_port_rejects_non_integer():
+    assert _parse_port(["--port", "abc"]) is None
+
+
+def test_parse_port_rejects_out_of_range():
+    assert _parse_port(["--port", "0"]) is None
+    assert _parse_port(["--port", "70000"]) is None
+
+
+def test_parse_port_help_returns_none():
+    assert _parse_port(["-h"]) is None
+
+
+def test_parse_port_unknown_arg():
+    assert _parse_port(["--bogus"]) is None

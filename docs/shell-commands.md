@@ -9,6 +9,7 @@
 | `rebuild` | Rebuild the project or base image |
 | `create` | Scaffold a `Dockerfile.agent` |
 | `stats` | Aggregate token usage and cost |
+| `logs` | Browse LiteLLM request logs in a local web viewer |
 | `update` | Pull latest wrapper source |
 
 ## `agent run`
@@ -54,6 +55,20 @@ Aggregates token usage and estimated USD cost across every project where you've 
 - **`--days N`** — widens the per-day breakdown window (default 30; `0` = all active days).
 - **`--region LABEL`** — overrides the pricing region (defaults to "US East (N. Virginia)").
 - **`--refresh`** — forces a fresh pricing fetch, bypassing the cache.
+
+## `agent logs`
+
+```
+agent logs [--port N]
+```
+
+Starts a local, read-only web viewer for the LiteLLM request logs written under each project's `.claude/litellm-logs/` directory. Reads the same project registry as `agent stats` (`<wrap-dir>/.agent-launches/projects.txt`), then lets you pick a project, pick a session, and read every logged request chat-style: the system prompt, the message thread (including `tool_use`/`tool_result` blocks), the tool definitions, the response, and per-request token usage. Hashed strings (`hash:<sha256>`) are resolved from each session's `strings.jsonl` for display.
+
+Sessions are labelled with their Claude Code alias (the short kebab-case name, e.g. `agent-logs-web-viewer`) when available. The alias is detected from Claude Code's own session-naming call as it passes through the sidecar and persisted to an `alias` file beside the logs; for older logs it is derived on the fly from the same call, falling back to the session UUID when no name exists yet.
+
+The server binds to `127.0.0.1` only and attempts to open your browser. Press Ctrl-C to stop.
+
+- **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, the next free port is used.
 
 ## `agent update`
 

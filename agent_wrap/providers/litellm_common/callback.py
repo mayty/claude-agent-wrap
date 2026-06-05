@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -218,6 +219,74 @@ def build_record(
     return record
 
 
+_ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+
+
+def _response_content_str(response: Any) -> str | None:
+    """
+    Pull the assistant's text content out of a JSON-safe response dict.
+
+    Handles the OpenAI-shaped ``choices[0].message.content`` and the older
+    ``choices[0].text`` variant. Returns None when no string content is found.
+    """
+    if not isinstance(response, dict):
+        return None
+    choices = response.get("choices")
+    if not (isinstance(choices, list) and choices):
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message")
+    if isinstance(message, dict) and isinstance(message.get("content"), str):
+        return message["content"]
+    if isinstance(first.get("text"), str):
+        return first["text"]
+    return None
+
+
+def extract_session_alias(response: Any) -> str | None:
+    """
+    Return Claude Code's kebab-case session name if this is its naming call.
+
+    Claude Code's session-naming request flows through the proxy like any other
+    call; its response content is a JSON object ``{"name": "<kebab-slug>"}``.
+    The sibling title-generation call returns ``{"title": ...}`` and is ignored.
+    The slug is short, so it is never hashed — this operates on the JSON-safe
+    response dict directly. Returns None for anything that isn't a name payload.
+    """
+    content = _response_content_str(response)
+    if not content:
+        return None
+    stripped = content.strip()
+    try:
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        # Tolerate JSON-ish-but-not-strict content (e.g. trailing prose).
+        match = _ALIAS_NAME_RE.search(stripped)
+        return match.group(1).strip() or None if match else None
+    if isinstance(obj, dict):
+        name = obj.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
+async def _write_alias_async(session_id: str, alias: str) -> None:
+    """Write the session alias to ``alias`` beside the logs. Never raises."""
+    try:
+        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
+
+        def _write() -> None:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            # Overwrite so a later rename of the session wins.
+            (log_dir / "alias").write_text(alias + "\n", encoding="utf-8")
+
+        await asyncio.to_thread(_write)
+    except Exception as e:  # noqa: BLE001 - logging is best-effort
+        print(f"agent-wrap callback: failed to write alias: {e}", file=sys.stderr)
+
+
 async def _write_record_async(record: dict[str, Any], kwargs: dict[str, Any]) -> None:
     """Append one record as a JSON line to the session-specific log file asynchronously. Never raises."""
     try:
@@ -255,6 +324,9 @@ try:
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
             record = build_record(kwargs, response_obj, status="success")
             await _write_record_async(record, kwargs)
+            alias = extract_session_alias(record.get("response"))
+            if alias:
+                await _write_alias_async(_get_session_id(kwargs), alias)
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
             record = build_record(
