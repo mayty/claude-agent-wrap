@@ -1,81 +1,7 @@
-<!DOCTYPE html>
-<!-- This file has been created with the assistance of an AI tool. -->
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agent-wrap · LiteLLM logs</title>
-<style>
-  :root {
-    --bg: #1e1e2e; --panel: #181825; --panel2: #11111b; --fg: #cdd6f4;
-    --muted: #6c7086; --border: #313244; --accent: #89b4fa;
-    --user: #313244; --assistant: #1e3a3a; --system: #3a2e1e;
-    --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
-         background: var(--bg); color: var(--fg); height: 100vh;
-         display: grid; grid-template-columns: 240px 280px 1fr; }
-  .col { height: 100vh; overflow-y: auto; border-right: 1px solid var(--border); }
-  .col h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-            color: var(--muted); padding: 12px 14px 6px; margin: 0;
-            position: sticky; top: 0; background: var(--panel); }
-  #projects { background: var(--panel); }
-  #sessions { background: var(--panel2); }
-  #chat { padding: 16px 22px; }
-  .item { padding: 9px 14px; cursor: pointer; border-bottom: 1px solid var(--border);
-          font-size: 13px; }
-  .item:hover { background: rgba(137,180,250,.08); }
-  .item.active { background: rgba(137,180,250,.18); border-left: 3px solid var(--accent);
-                 padding-left: 11px; }
-  .item .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
-  .badge { display: inline-block; background: var(--border); color: var(--fg);
-           border-radius: 4px; padding: 1px 6px; font-size: 10px; margin-right: 4px; }
-  .empty { color: var(--muted); padding: 16px 14px; font-style: italic; }
-  .req { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 18px;
-         overflow: hidden; }
-  .req > summary { list-style: none; cursor: pointer; padding: 10px 14px;
-                   background: var(--panel); display: flex; gap: 10px; align-items: center;
-                   font-weight: 600; }
-  .req > summary::-webkit-details-marker { display: none; }
-  .req > summary .idx { color: var(--accent); }
-  .req > summary .when { color: var(--muted); font-weight: 400; font-size: 12px;
-                         margin-left: auto; }
-  .req > summary .fail { color: var(--err); }
-  .body { padding: 12px 14px; }
-  .msg { border-radius: 6px; padding: 8px 11px; margin: 8px 0; }
-  .msg .role { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
-               color: var(--muted); margin-bottom: 4px; }
-  .role-user { background: var(--user); }
-  .role-assistant { background: var(--assistant); }
-  .role-system { background: var(--system); }
-  .block-tool_use { background: var(--tool); border-radius: 5px; padding: 6px 9px;
-                    margin: 6px 0; }
-  .block-tool_result { background: var(--result); border-radius: 5px; padding: 6px 9px;
-                       margin: 6px 0; }
-  .block-label { font-size: 10px; color: var(--accent); text-transform: uppercase;
-                 letter-spacing: .05em; margin-bottom: 3px; }
-  pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45
-        ui-monospace, "SF Mono", Menlo, monospace; max-height: 420px; overflow: auto; }
-  .usage { color: var(--muted); font-size: 12px; padding: 8px 14px;
-           border-top: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; }
-  .toolsdef summary { cursor: pointer; color: var(--muted); font-size: 12px;
-                      margin: 8px 0; }
-  .err-box { background: rgba(243,139,168,.12); border: 1px solid var(--err);
-             color: var(--err); border-radius: 6px; padding: 8px 11px; margin: 8px 0; }
-  .hint { color: var(--muted); padding: 40px; text-align: center; }
-</style>
-</head>
-<body>
-  <div class="col" id="projects"><h2>Projects</h2><div id="proj-list"></div></div>
-  <div class="col" id="sessions"><h2>Sessions</h2><div id="sess-list">
-    <div class="empty">Select a project</div></div></div>
-  <div class="col" id="chat"><div class="hint">Select a session to view its requests.</div></div>
-
-<script>
+// This file has been created with the assistance of an AI tool.
 "use strict";
 const $ = (id) => document.getElementById(id);
-let state = { project: null, session: null };
+let state = { project: null, session: null, reqs: [], groups: null, tab: "main" };
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -239,57 +165,178 @@ function usageLine(u) {
   return line;
 }
 
-function renderChat(reqs, s) {
+function renderRequest(r, displayIdx) {
+  const det = el("details", "req");
+  const sum = el("summary");
+  sum.appendChild(el("span", "idx", `#${displayIdx}`));
+  sum.appendChild(el("span", null, (r.model || "").split("/").pop()));
+  if (r.status && r.status !== "success") {
+    sum.appendChild(el("span", "fail", `· ${r.status}`));
+  }
+  sum.appendChild(el("span", "when", fmtTs(r.ts)));
+  det.appendChild(sum);
+
+  const body = el("div", "body");
+  if (r.error) {
+    const e = el("div", "err-box");
+    e.appendChild(Object.assign(el("pre"), { textContent: asText(r.error) }));
+    body.appendChild(e);
+  }
+  if (r.system) body.appendChild(msgEl("system", r.system));
+  if (Array.isArray(r.tools) && r.tools.length) {
+    const td = el("details", "toolsdef");
+    td.appendChild(el("summary", null, `${r.tools.length} tool definition(s)`));
+    td.appendChild(Object.assign(el("pre"), { textContent: asText(r.tools) }));
+    body.appendChild(td);
+  }
+  for (const m of (r.messages || [])) {
+    body.appendChild(msgEl(m.role || "user", m.content));
+  }
+  renderResponse(r.response, body);
+  det.appendChild(body);
+
+  const u = usageLine(r.usage);
+  if (u) det.appendChild(u);
+  return det;
+}
+
+// Plain text of a record's first user message, with leading <system-reminder>
+// blocks stripped, for use as a subagent's human-readable label.
+function firstPromptSnippet(r) {
+  const msgs = r.messages || [];
+  if (!msgs.length) return "";
+  const c = msgs[0].content;
+  let text = "";
+  if (typeof c === "string") {
+    text = c;
+  } else if (Array.isArray(c)) {
+    text = c.map(b => (typeof b === "string" ? b : (b && b.type === "text" ? b.text : "")))
+            .filter(t => typeof t === "string").join("\n");
+  }
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  text = text.replace(/\s+/g, " ");
+  return text.slice(0, 60);
+}
+
+// Does a record look like a subagent's final turn (a text answer, no tool call)?
+function looksTerminal(r) {
+  const resp = r.response || {};
+  const calls = resp.tool_calls;
+  if (Array.isArray(calls) && calls.length) return false;
+  return !!resp.content;
+}
+
+// Partition the time-ordered records into the main stream and per-agent-id
+// subagent streams (ordered by first appearance).
+function groupBySubagent(reqs) {
+  const main = [];
+  const subById = new Map();
+  reqs.forEach((r, i) => {
+    const id = r.agent_id;
+    if (!id) { main.push({ r, i }); return; }
+    let g = subById.get(id);
+    if (!g) {
+      g = { id, ordinal: subById.size + 1, short: id.slice(0, 7),
+            snippet: firstPromptSnippet(r), firstIdx: i, lastIdx: i,
+            lastTerminal: false, items: [] };
+      subById.set(id, g);
+    }
+    g.items.push({ r, i });
+    g.lastIdx = i;
+    g.lastTerminal = looksTerminal(r);
+  });
+  return { main, subs: [...subById.values()] };
+}
+
+function subLabel(g) {
+  return g.snippet ? `⌁ ${g.short} · "${g.snippet}…"` : `⌁ ${g.short}`;
+}
+
+function renderTabs(groups) {
+  const total = state.reqs.length;
+  const bar = el("div", "tabs");
+  const tab = (key, label, n) => {
+    const t = el("div", "tab" + (state.tab === key ? " active" : ""));
+    t.appendChild(el("span", null, label));
+    if (n != null) t.appendChild(el("span", "n", `(${n})`));
+    t.onclick = () => { state.tab = key; renderStream(); };
+    return t;
+  };
+  bar.appendChild(tab("main", "Main agent", groups.main.length));
+  for (const g of groups.subs) {
+    bar.appendChild(tab("sub:" + g.id, subLabel(g), g.items.length));
+  }
+  bar.appendChild(tab("all", "All", total));
+  return bar;
+}
+
+// Render the main stream with clickable "started"/"finished" markers spliced
+// into chronological position for each subagent.
+function renderMainStream(chat, groups) {
+  const markers = new Map(); // original record index -> [marker elements]
+  const pushMarker = (idx, m) => {
+    if (!markers.has(idx)) markers.set(idx, []);
+    markers.get(idx).push(m);
+  };
+  const marker = (g, kind, ts) => {
+    const done = kind !== "started";
+    const verb = kind === "started" ? "started"
+               : (g.lastTerminal ? "finished" : "last seen");
+    const m = el("div", "marker" + (done ? " done" : ""));
+    m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
+    m.appendChild(el("span", "when", fmtTs(ts)));
+    m.onclick = () => { state.tab = "sub:" + g.id; renderStream(); };
+    return m;
+  };
+  for (const g of groups.subs) {
+    pushMarker(g.firstIdx, marker(g, "started", state.reqs[g.firstIdx].ts));
+    pushMarker(g.lastIdx, marker(g, "finished", state.reqs[g.lastIdx].ts));
+  }
+  // Walk the global record order so markers land relative to main records.
+  let shown = 0;
+  state.reqs.forEach((r, i) => {
+    const ms = markers.get(i);
+    if (ms) for (const m of ms) chat.appendChild(m);
+    if (!r.agent_id) chat.appendChild(renderRequest(r, ++shown));
+  });
+}
+
+function renderStream() {
   const chat = $("chat");
   chat.innerHTML = "";
+  const s = state.session_meta;
   const label = s.alias ? `${s.alias} · ${s.session_id.slice(0, 8)}` : s.session_id;
-  const head = el("h2", null, `${label} · ${reqs.length} request(s)`);
+  const head = el("h2", null, `${label} · ${state.reqs.length} request(s)`);
   head.style.position = "static"; head.style.padding = "0 0 10px";
   chat.appendChild(head);
-  if (!reqs.length) {
+  if (!state.reqs.length) {
     chat.appendChild(el("div", "hint", "No requests in this session."));
     return;
   }
-  reqs.forEach((r, i) => {
-    const det = el("details", "req");
-    const sum = el("summary");
-    sum.appendChild(el("span", "idx", `#${i + 1}`));
-    sum.appendChild(el("span", null, (r.model || "").split("/").pop()));
-    if (r.status && r.status !== "success") {
-      sum.appendChild(el("span", "fail", `· ${r.status}`));
-    }
-    sum.appendChild(el("span", "when", fmtTs(r.ts)));
-    det.appendChild(sum);
+  const groups = state.groups;
+  chat.appendChild(renderTabs(groups));
 
-    const body = el("div", "body");
-    if (r.error) {
-      const e = el("div", "err-box");
-      e.appendChild(Object.assign(el("pre"), { textContent: asText(r.error) }));
-      body.appendChild(e);
-    }
-    if (r.system) body.appendChild(msgEl("system", r.system));
-    if (Array.isArray(r.tools) && r.tools.length) {
-      const td = el("details", "toolsdef");
-      td.appendChild(el("summary", null, `${r.tools.length} tool definition(s)`));
-      td.appendChild(Object.assign(el("pre"), { textContent: asText(r.tools) }));
-      body.appendChild(td);
-    }
-    for (const m of (r.messages || [])) {
-      body.appendChild(msgEl(m.role || "user", m.content));
-    }
-    renderResponse(r.response, body);
-    det.appendChild(body);
+  if (state.tab === "all") {
+    state.reqs.forEach((r, i) => chat.appendChild(renderRequest(r, i + 1)));
+  } else if (state.tab.startsWith("sub:")) {
+    const id = state.tab.slice(4);
+    const g = groups.subs.find(x => x.id === id);
+    if (g) g.items.forEach((it, i) => chat.appendChild(renderRequest(it.r, i + 1)));
+    else renderMainStream(chat, groups); // stale tab → fall back to main
+  } else {
+    renderMainStream(chat, groups);
+  }
+}
 
-    const u = usageLine(r.usage);
-    if (u) det.appendChild(u);
-    chat.appendChild(det);
-  });
+function renderChat(reqs, s) {
+  state.reqs = reqs;
+  state.session_meta = s;
+  state.groups = groupBySubagent(reqs);
+  state.tab = "main";
+  renderStream();
 }
 
 loadProjects().catch(e => {
   $("proj-list").innerHTML = "";
   $("proj-list").appendChild(el("div", "empty", "Error: " + e.message));
 });
-</script>
-</body>
-</html>

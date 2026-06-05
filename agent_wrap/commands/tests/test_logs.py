@@ -15,6 +15,7 @@ from agent_wrap.commands.logs import (
     normalize_record,
     read_session,
     resolve,
+    resolve_static,
 )
 
 if TYPE_CHECKING:
@@ -107,6 +108,23 @@ def test_normalize_tolerates_missing_pieces():
     assert out["response"] == {}
     assert out["usage"] == {}
     assert out["error"] == "boom"
+    # A main-loop record (no proxy headers) carries no subagent id.
+    assert out["agent_id"] is None
+
+
+def test_normalize_extracts_subagent_agent_id():
+    rec = _raw_record()
+    rec["request"]["proxy_server_request"]["headers"] = {
+        "x-claude-code-agent-id": "a27b7c3e5cb6db524",
+    }
+    out = normalize_record(rec, {})
+    assert out["agent_id"] == "a27b7c3e5cb6db524"
+
+
+def test_normalize_agent_id_none_without_header():
+    # Main-loop requests have no x-claude-code-agent-id header.
+    out = normalize_record(_raw_record(), {})
+    assert out["agent_id"] is None
 
 
 # --- extract_alias ---
@@ -286,3 +304,23 @@ def test_parse_port_help_returns_none():
 
 def test_parse_port_unknown_arg():
     assert _parse_port(["--bogus"]) is None
+
+
+# --- resolve_static (path mapping + traversal safety) ---
+
+
+def test_resolve_static_maps_root_to_index(tmp_path: Path):
+    assert resolve_static(tmp_path, "/") == (tmp_path / "index.html").resolve()
+
+
+def test_resolve_static_maps_named_asset(tmp_path: Path):
+    assert resolve_static(tmp_path, "/app.js") == (tmp_path / "app.js").resolve()
+    assert resolve_static(tmp_path, "/styles.css") == (tmp_path / "styles.css").resolve()
+
+
+def test_resolve_static_rejects_traversal(tmp_path: Path):
+    page = tmp_path / "logs_page"
+    page.mkdir()
+    # Escaping the page dir must be refused, not resolved to a sibling file.
+    assert resolve_static(page, "/../logs.py") is None
+    assert resolve_static(page, "/../../etc/passwd") is None

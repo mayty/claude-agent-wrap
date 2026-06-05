@@ -12,8 +12,9 @@ tool_use/tool_result blocks, the response, and token usage).
 
 Everything is Python stdlib only (``http.server``) — no extra dependency, no
 ``agent rebuild``, no Docker. It runs on the host exactly like `agent stats`.
-The single-page UI lives beside this module in ``logs_viewer.html`` and is read
-from disk on demand.
+The web UI is a small set of static assets (``index.html``/``app.js``/
+``styles.css``) under the repo-root ``logs_page/`` directory, served on demand
+by a minimal static file server.
 
 The data model (confirmed against real logs):
 
@@ -46,8 +47,19 @@ from agent_wrap.lib.usage_args import load_projects
 USAGE = "[--port N]"
 SUMMARY = "Browse LiteLLM request logs in a local web viewer"
 
-# The single-page UI ships as a sibling file; read on demand in serve().
-_INDEX_HTML_PATH = Path(__file__).parent / "logs_viewer.html"
+# The web UI ships as static assets under the repo-root ``logs_page/`` dir
+# (logs.py is at <root>/agent_wrap/commands/, so the root is parents[2]).
+_LOGS_PAGE_DIR = Path(__file__).resolve().parents[2] / "logs_page"
+
+# Extension -> Content-Type for the static file server. Anything else is served
+# as a generic binary download.
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+}
 
 _DEFAULT_PORT = 8765
 _PORT_SCAN_LIMIT = 50
@@ -120,10 +132,20 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
     request = rec.get("request") or {}
     psr = request.get("proxy_server_request")
     data: dict[str, Any] = {}
+    agent_id: str | None = None
     if isinstance(psr, dict):
         body = psr.get("body")
         if isinstance(body, dict) and isinstance(body.get("data"), dict):
             data = body["data"]
+        # Subagent turns carry an ``x-claude-code-agent-id`` request header; the
+        # main loop's requests have none. The id is short and unhashed, so it is
+        # read straight from the headers dict. It groups a subagent's turns in
+        # the viewer, which otherwise interleaves them with the main thread.
+        headers = psr.get("headers")
+        if isinstance(headers, dict):
+            hdr_id = headers.get("x-claude-code-agent-id")
+            if isinstance(hdr_id, str) and hdr_id:
+                agent_id = hdr_id
 
     response = rec.get("response")
     reply: dict[str, Any] = {}
@@ -141,6 +163,7 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
         "ts": rec.get("ts"),
         "status": rec.get("status"),
         "model": rec.get("model"),
+        "agent_id": agent_id,
         "messages": data.get("messages") or [],
         "system": data.get("system"),
         "tools": data.get("tools") or [],
@@ -361,16 +384,37 @@ def read_session(project: Path, provider: str, session_id: str) -> list[dict[str
 
 
 # ---------------------------------------------------------------------------
+# Static asset serving
+# ---------------------------------------------------------------------------
+
+
+def resolve_static(page_dir: Path, url_path: str) -> Path | None:
+    """
+    Map a URL path to a file inside ``page_dir``, or None if it escapes the dir.
+
+    ``/`` maps to ``index.html``. Pure (the returned path may not exist); callers
+    handle a missing file as a 404. Path traversal (``..``) and absolute targets
+    are rejected by resolving and confirming containment within ``page_dir``.
+    """
+    rel = url_path.lstrip("/") or "index.html"
+    base = page_dir.resolve()
+    candidate = (base / rel).resolve()
+    if candidate != base and base not in candidate.parents:
+        return None
+    return candidate
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
 
 class _Handler(BaseHTTPRequestHandler):
-    """Serves the single-page UI and the read-only JSON API."""
+    """Serves the static web UI and the read-only JSON API."""
 
     # Both bound as class attributes in serve().
     tool_dir: Path
-    index_html: bytes
+    page_dir: Path
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         # Silence the default per-request stderr logging.
@@ -391,10 +435,6 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
-
-        if path in ("/", "/index.html"):
-            self._send(200, self.index_html, "text/html; charset=utf-8")
-            return
 
         if path == "/api/projects":
             self._send_json(list_projects(self.tool_dir))
@@ -418,7 +458,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(read_session(project, provider, session))
             return
 
-        self._send(404, b"not found", "text/plain; charset=utf-8")
+        self._serve_static(path)
+
+    def _serve_static(self, url_path: str) -> None:
+        """Serve a file from ``page_dir``; 404 on traversal or a missing file."""
+        target = resolve_static(self.page_dir, url_path)
+        if target is None or not target.is_file():
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+            return
+        try:
+            body = target.read_bytes()
+        except OSError:
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+            return
+        content_type = _CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
+        self._send(200, body, content_type)
 
     def _resolve_project(self, params: dict[str, list[str]]) -> Path | None:
         raw = (params.get("project") or [""])[0]
@@ -446,16 +500,14 @@ def _bind(port: int) -> tuple[ThreadingHTTPServer, int] | None:
 
 def serve(tool_dir: Path, port: int) -> int:
     """Start the viewer and block until interrupted. Returns an exit code."""
-    try:
-        index_html = _INDEX_HTML_PATH.read_bytes()
-    except OSError as exc:
-        print(f"agent logs: cannot read UI asset {_INDEX_HTML_PATH}: {exc}", file=sys.stderr)
+    if not _LOGS_PAGE_DIR.is_dir():
+        print(f"agent logs: cannot find UI assets at {_LOGS_PAGE_DIR}", file=sys.stderr)
         return 1
 
     # ThreadingHTTPServer instantiates the handler class per request, so bind
     # the shared state as class attributes the handler reads on each request.
     _Handler.tool_dir = tool_dir
-    _Handler.index_html = index_html
+    _Handler.page_dir = _LOGS_PAGE_DIR
 
     bound = _bind(port)
     if bound is None:
