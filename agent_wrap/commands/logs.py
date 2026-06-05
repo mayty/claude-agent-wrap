@@ -358,6 +358,23 @@ def list_sessions(project: Path) -> list[dict[str, Any]]:
     return out
 
 
+def session_fingerprint(project: Path, provider: str, session_id: str) -> dict[str, Any]:
+    """
+    Cheap change-marker for a session: ``mtime_ns`` + ``size`` of ``messages.jsonl``.
+
+    A single ``stat()`` (no file read) — ``messages.jsonl`` is append-only and the
+    callback writes one complete record per line, so this pair reliably changes when
+    a new request lands. Returns ``{"mtime": None, "size": None}`` when the file is
+    missing, so the client can poll a session before its first record is written.
+    """
+    messages_file = _logs_dir(project) / provider / session_id / "messages.jsonl"
+    try:
+        st = messages_file.stat()
+    except OSError:
+        return {"mtime": None, "size": None}
+    return {"mtime": st.st_mtime_ns, "size": st.st_size}
+
+
 def read_session(project: Path, provider: str, session_id: str) -> list[dict[str, Any]]:
     """Read and normalize every request in one session, in file order."""
     session_dir = _logs_dir(project) / provider / session_id
@@ -444,21 +461,30 @@ class _Handler(BaseHTTPRequestHandler):
             project = self._resolve_project(params)
             if project is None:
                 self._send_json({"error": "unknown project"}, status=404)
-                return
-            self._send_json(list_sessions(project))
+            else:
+                self._send_json(list_sessions(project))
             return
 
-        if path == "/api/session":
-            project = self._resolve_project(params)
-            provider = (params.get("provider") or [""])[0]
-            session = (params.get("session") or [""])[0]
-            if project is None or not provider or not session:
-                self._send_json({"error": "missing project/provider/session"}, status=400)
-                return
-            self._send_json(read_session(project, provider, session))
+        # /api/session and /api/session-stat share the same project/provider/session
+        # triple; resolve once and dispatch to the matching reader.
+        if path in ("/api/session", "/api/session-stat"):
+            triple = self._resolve_session(params)
+            if triple is not None:
+                reader = read_session if path == "/api/session" else session_fingerprint
+                self._send_json(reader(*triple))
             return
 
         self._serve_static(path)
+
+    def _resolve_session(self, params: dict[str, list[str]]) -> tuple[Path, str, str] | None:
+        """Resolve a (project, provider, session) triple; 400 + None if incomplete."""
+        project = self._resolve_project(params)
+        provider = (params.get("provider") or [""])[0]
+        session = (params.get("session") or [""])[0]
+        if project is None or not provider or not session:
+            self._send_json({"error": "missing project/provider/session"}, status=400)
+            return None
+        return project, provider, session
 
     def _serve_static(self, url_path: str) -> None:
         """Serve a file from ``page_dir``; 404 on traversal or a missing file."""

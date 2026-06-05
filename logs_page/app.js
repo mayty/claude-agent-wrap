@@ -1,7 +1,8 @@
 // This file has been created with the assistance of an AI tool.
 "use strict";
 const $ = (id) => document.getElementById(id);
-let state = { project: null, session: null, reqs: [], groups: null, tab: "main" };
+let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
+              poll: null, fp: null };
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -43,6 +44,7 @@ async function loadProjects() {
 }
 
 async function selectProject(p, item) {
+  stopPolling();
   state.project = p.id;
   state.session = null;
   document.querySelectorAll("#proj-list .item").forEach(e => e.classList.remove("active"));
@@ -70,14 +72,68 @@ async function selectProject(p, item) {
   }
 }
 
+// Query string identifying one session, shared by the /api/session and
+// /api/session-stat calls.
+function sessionQuery(s) {
+  return `project=${state.project}&provider=${encodeURIComponent(s.provider)}` +
+         `&session=${encodeURIComponent(s.session_id)}`;
+}
+
 async function selectSession(s, item) {
+  stopPolling();
   state.session = s.session_id;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   $("chat").innerHTML = '<div class="hint">Loading…</div>';
-  const reqs = await getJSON(
-    `/api/session?project=${state.project}&provider=${encodeURIComponent(s.provider)}&session=${encodeURIComponent(s.session_id)}`);
+  const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
   renderChat(reqs, s);
+  // Seed the fingerprint from the state at fetch time, then poll for changes.
+  try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
+  catch (e) { state.fp = null; }
+  startPolling(s);
+}
+
+// ---------------------------------------------------------------------------
+// Live polling: refresh the open session as the agent appends new requests.
+// ---------------------------------------------------------------------------
+
+function fpKey(o) {
+  return `${o && o.mtime}:${o && o.size}`;
+}
+
+function stopPolling() {
+  if (state.poll) { clearInterval(state.poll); state.poll = null; }
+}
+
+function startPolling(s) {
+  state.poll = setInterval(() => tick(s), 1000);
+}
+
+// One poll: if the session the user opened is still open and its fingerprint
+// changed, re-fetch and re-render in place, preserving scroll (auto-following
+// only when the user was already at the bottom). Errors are swallowed so a
+// transient failure doesn't kill the interval — the next tick retries.
+async function tick(s) {
+  if (state.session !== s.session_id) return;
+  try {
+    const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
+    if (fp === state.fp) return;
+    const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
+    if (state.session !== s.session_id) return; // user moved on during the fetch
+    state.reqs = reqs;
+    state.groups = groupBySubagent(reqs);
+    state.fp = fp;
+    const chat = $("chat");
+    const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40;
+    const prevTop = chat.scrollTop;
+    renderStream();
+    if (atBottom) {
+      // Glide down to the new content rather than snapping to it.
+      chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
+    } else {
+      chat.scrollTop = prevTop; // hold the user's place instantly (no visible shift)
+    }
+  } catch (e) { /* transient; retry next tick */ }
 }
 
 function asText(v) {

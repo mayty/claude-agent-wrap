@@ -16,6 +16,7 @@ from agent_wrap.commands.logs import (
     read_session,
     resolve,
     resolve_static,
+    session_fingerprint,
 )
 
 if TYPE_CHECKING:
@@ -238,6 +239,28 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path):
     reqs = read_session(project, "litellm-bedrock", "s1")
     assert len(reqs) == 1
     assert reqs[0]["messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_session_fingerprint_reflects_file(tmp_path: Path):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    fp = session_fingerprint(project, "litellm-bedrock", "s1")
+    assert isinstance(fp["mtime"], int)
+    assert isinstance(fp["size"], int)
+    assert fp["size"] > 0
+
+
+def test_session_fingerprint_null_when_missing(tmp_path: Path):
+    project = tmp_path / "proj"
+    assert session_fingerprint(project, "litellm-bedrock", "nope") == {
+        "mtime": None,
+        "size": None,
+    }
 
 
 def test_load_strings_round_trip(tmp_path: Path):
