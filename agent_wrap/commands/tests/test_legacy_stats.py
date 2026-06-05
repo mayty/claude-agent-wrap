@@ -119,43 +119,33 @@ def test_zero_usage_empty_prices():
 def test_minimal_valid_args(tmp_path):
     reg = tmp_path / "projects.txt"
     reg.write_text("/some/project\n")
-    cache = tmp_path / "pricing.json"
-    result = _parse_usage_args(["--cache", str(cache), str(reg)])
+    result = _parse_usage_args([str(reg)])
     assert result is not None
-    assert result.cache_path == cache
     assert result.registry_path == reg
-    assert result.refresh is False
     assert result.days_window == 30
 
 
 def test_with_all_flags(tmp_path):
     reg = tmp_path / "projects.txt"
     reg.write_text("/some/project\n")
-    cache = tmp_path / "pricing.json"
     result = _parse_usage_args(
         [
-            "--cache",
-            str(cache),
             str(reg),
             "--days",
             "7",
-            "--refresh",
         ]
     )
     assert result is not None
     assert result.days_window == 7
-    assert result.refresh is True
 
 
-def test_missing_registry_path(tmp_path):
-    cache = tmp_path / "cache.json"
-    result = _parse_usage_args(["--cache", str(cache)])
+def test_missing_registry_path():
+    result = _parse_usage_args([])
     assert result is None
 
 
-def test_registry_file_not_exists(tmp_path):
-    cache = tmp_path / "cache.json"
-    result = _parse_usage_args(["--cache", str(cache), "/nonexistent/projects.txt"])
+def test_registry_file_not_exists():
+    result = _parse_usage_args(["/nonexistent/projects.txt"])
     assert result is None
 
 
@@ -172,11 +162,8 @@ def test_long_help_flag():
 def test_days_zero(tmp_path):
     reg = tmp_path / "projects.txt"
     reg.write_text("/a\n")
-    cache = tmp_path / "pricing.json"
     result = _parse_usage_args(
         [
-            "--cache",
-            str(cache),
             str(reg),
             "--days",
             "0",
@@ -189,11 +176,8 @@ def test_days_zero(tmp_path):
 def test_days_negative_returns_none(tmp_path):
     reg = tmp_path / "projects.txt"
     reg.write_text("/a\n")
-    cache = tmp_path / "pricing.json"
     result = _parse_usage_args(
         [
-            "--cache",
-            str(cache),
             str(reg),
             "--days",
             "-5",
@@ -205,11 +189,8 @@ def test_days_negative_returns_none(tmp_path):
 def test_days_non_integer_returns_none(tmp_path):
     reg = tmp_path / "projects.txt"
     reg.write_text("/a\n")
-    cache = tmp_path / "pricing.json"
     result = _parse_usage_args(
         [
-            "--cache",
-            str(cache),
             str(reg),
             "--days",
             "abc",
@@ -265,8 +246,6 @@ def test_run_empty_project_registry(tmp_path):
     launches.mkdir()
     projects_file = launches / "projects.txt"
     projects_file.write_text("")
-    cache = launches / "pricing.json"
-    cache.touch()
 
     with patch("agent_wrap.commands.legacy_stats.load_projects", return_value=[]):
         rc = run([], tmp_path)
@@ -419,11 +398,11 @@ def test_fmt_count_thousand():
 
 
 def test_fmt_count_million():
-    assert fmt_count(1_000_000) == "1.00M"
+    assert fmt_count(1_000_000) == "1.0M"
 
 
 def test_fmt_count_billion():
-    assert fmt_count(1_000_000_000) == "1.00G"
+    assert fmt_count(1_000_000_000) == "1.0G"
 
 
 def test_fmt_count_mid_range():
