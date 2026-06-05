@@ -6,13 +6,24 @@
   --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8;
 }
 * { box-sizing: border-box; }
+/* Slim, translucent scrollbars everywhere (chat column, session list, modal),
+   so no element falls back to the bulky OS default. Firefox, then WebKit/Blink.
+   Individual scroll areas (e.g. section <pre>s) may further tune their thumb. */
+* { scrollbar-width: thin; scrollbar-color: rgba(205,214,244,.25) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(205,214,244,.2); border-radius: 5px;
+                             border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(205,214,244,.38);
+                                   background-clip: padding-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
 body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
        background: var(--bg); color: var(--fg); height: 100vh;
        display: grid; grid-template-columns: 240px 280px 1fr; }
 .col { height: 100vh; overflow-y: auto; border-right: 1px solid var(--border); }
 .col h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
           color: var(--muted); padding: 12px 14px 6px; margin: 0;
-          position: sticky; top: 0; background: var(--panel); }
+          position: sticky; top: 0; z-index: 1; background: var(--panel); }
 #projects { background: var(--panel); }
 #sessions { background: var(--panel2); }
 #chat { padding: 16px 22px; }
@@ -45,6 +56,16 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
               margin: 6px 0; }
 .block-text:first-child { margin-top: 0; }
 .block-text:last-child { margin-bottom: 0; }
+/* A section hosts a copy button at its header level (top-right, aligned with
+   the block label). The button only appears on hover to stay out of the way. */
+.section { position: relative; }
+.copy-btn { position: absolute; top: 5px; right: 5px; opacity: 0;
+            background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+            border-radius: 5px; padding: 0 5px; height: 18px; font-size: 11px; line-height: 16px;
+            cursor: pointer; transition: opacity .12s; }
+.section:hover .copy-btn { opacity: .85; }
+.copy-btn:hover { color: var(--fg); border-color: var(--accent); opacity: 1; }
+.copy-btn.copied { color: var(--accent); border-color: var(--accent); opacity: 1; }
 .bubble.user { margin-left: auto; background: var(--user);
                border-bottom-right-radius: 3px; }
 .bubble.assistant { margin-right: auto; margin-top: 8px; background: var(--assistant);
@@ -69,6 +90,16 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
                letter-spacing: .05em; margin-bottom: 3px; }
 pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45
       ui-monospace, "SF Mono", Menlo, monospace; max-height: 420px; overflow: auto; }
+/* Slim, translucent scrollbars that read as part of the section rather than the
+   OS default. Firefox first, then WebKit/Blink. */
+pre { scrollbar-width: thin; scrollbar-color: rgba(205,214,244,.25) transparent; }
+pre::-webkit-scrollbar { width: 8px; height: 8px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: rgba(205,214,244,.22); border-radius: 4px;
+                               border: 2px solid transparent; background-clip: padding-box; }
+pre:hover::-webkit-scrollbar-thumb { background: rgba(205,214,244,.4);
+                                     background-clip: padding-box; }
+pre::-webkit-scrollbar-corner { background: transparent; }
 .usage { color: var(--muted); font-size: 12px; padding: 8px 14px;
          border-top: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; }
 .toolsdef summary { cursor: pointer; color: var(--muted); font-size: 12px;
@@ -97,11 +128,13 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45
                   display: flex; align-items: center; justify-content: center;
                   z-index: 100; padding: 24px; }
 .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-         width: min(900px, 100%); max-height: 90vh; overflow-y: auto;
+         width: min(900px, 100%); max-height: 90vh; overflow: hidden;
+         display: flex; flex-direction: column;
          box-shadow: 0 12px 40px rgba(0,0,0,.5); }
-.modal-head { position: sticky; top: 0; background: var(--panel);
+.modal-head { flex: none; background: var(--panel); border-radius: 10px 10px 0 0;
               border-bottom: 1px solid var(--border); padding: 12px 16px;
               display: flex; align-items: center; gap: 10px; }
+.modal-body { overflow-y: auto; }
 .modal-head .caption { display: flex; gap: 10px; align-items: center;
                        font-weight: 600; flex: 1; }
 .modal-head .caption .idx { color: var(--accent); }

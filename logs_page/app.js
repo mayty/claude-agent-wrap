@@ -136,6 +136,60 @@ function renderContent(content, parent) {
   }
 }
 
+// Copy `text` to the clipboard, flashing the button to confirm. Uses the async
+// Clipboard API (available on the localhost secure context) with an
+// execCommand fallback for older browsers.
+function copyText(text, btn) {
+  const done = () => {
+    btn.classList.add("copied");
+    btn.textContent = "✓";
+    setTimeout(() => { btn.classList.remove("copied"); btn.textContent = "⧉"; }, 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => {});
+    return;
+  }
+  const ta = el("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
+  ta.remove();
+}
+
+// Attach a copy button to the top-right (header level) of `host`, copying the
+// text of `pre`. The button stops click propagation so copying from a bubble
+// does not also open the turn's modal.
+function addCopyButton(host, pre) {
+  host.classList.add("section");
+  const btn = el("button", "copy-btn", "⧉");
+  btn.title = "Copy to clipboard";
+  btn.onclick = (e) => { e.stopPropagation(); copyText(pre.textContent, btn); };
+  host.appendChild(btn);
+}
+
+// Give every section a copy button at its header level. A section is a block box
+// (`.block-text`/`.block-tool_use`/`.block-tool_result`, which carry a label
+// row) or a bare single-content `<pre>` (wrapped on the fly). Idempotent.
+function decorateSections(container) {
+  container
+    .querySelectorAll(".block-text, .block-tool_use, .block-tool_result")
+    .forEach((box) => {
+      if (box.querySelector(":scope > .copy-btn")) return;
+      const pre = box.querySelector("pre");
+      if (pre) addCopyButton(box, pre);
+    });
+  container.querySelectorAll("pre").forEach((pre) => {
+    if (pre.closest(".block-text, .block-tool_use, .block-tool_result, .section")) return;
+    const wrap = el("div", "section");
+    pre.replaceWith(wrap);
+    wrap.appendChild(pre);
+    addCopyButton(wrap, pre);
+  });
+}
+
 function msgEl(role, content) {
   const m = el("div", `msg role-${role}`);
   m.appendChild(el("div", "role", role));
@@ -253,6 +307,7 @@ function renderTurn(r, displayIdx) {
     userBubble.appendChild(el("div", "meta", "(no user message)"));
   }
   applySectionHeights(userBubble);
+  decorateSections(userBubble);
   turn.appendChild(userBubble);
 
   const respBubble = el("div", "bubble " + (r.error ? "error" : "assistant"));
@@ -262,6 +317,7 @@ function renderTurn(r, displayIdx) {
     renderResponseInto(r.response, respBubble);
   }
   applySectionHeights(respBubble);
+  decorateSections(respBubble);
   turn.appendChild(respBubble);
 
   turn.onclick = () => openModal(r, displayIdx);
@@ -315,9 +371,15 @@ function openModal(r, displayIdx) {
   head.appendChild(close);
   modal.appendChild(head);
 
-  modal.appendChild(renderFullDetail(r));
+  // The header stays fixed; only this body scrolls, so its scrollbar starts
+  // below the header rather than spanning the whole panel.
+  const mbody = el("div", "modal-body");
+  const detail = renderFullDetail(r);
+  decorateSections(detail);
+  mbody.appendChild(detail);
   const u = usageLine(r.usage);
-  if (u) modal.appendChild(u);
+  if (u) mbody.appendChild(u);
+  modal.appendChild(mbody);
 
   back.appendChild(modal);
   document.body.appendChild(back);
@@ -459,6 +521,18 @@ function renderChat(reqs, s) {
   state.tab = "main";
   renderStream();
 }
+
+// Home/End scroll the request pop-up when it is open, otherwise the session
+// chat. Plain keypress only — leave modified combos (e.g. Ctrl+Home) alone.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Home" && e.key !== "End") return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const back = $("modal-backdrop");
+  const target = back ? back.querySelector(".modal-body") : $("chat");
+  if (!target) return;
+  e.preventDefault();
+  target.scrollTo({ top: e.key === "Home" ? 0 : target.scrollHeight, behavior: "smooth" });
+});
 
 loadProjects().catch(e => {
   $("proj-list").innerHTML = "";
