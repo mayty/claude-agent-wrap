@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import sys
 import webbrowser
@@ -388,6 +389,95 @@ def extract_title(rec: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _read_last_record_ts(messages_file: Path) -> str | None:
+    r"""
+    Read the ``ts`` field from the last JSON record in *messages_file*.
+
+    Seeks to the last 1 MB, skips to the first ``\n`` to avoid landing in
+    the middle of a multi-byte character, then walks lines backwards to
+    find the last valid JSON record.
+    """
+    if not messages_file.is_file():
+        return None
+
+    try:
+        size = messages_file.stat().st_size
+        if size == 0:
+            return None
+        with messages_file.open("rb") as f:
+            chunk_size = min(size, 1_048_576)
+            f.seek(-chunk_size, os.SEEK_END)
+            tail = f.read(chunk_size)
+    except OSError:
+        return None
+
+    # If we started mid-file (not at offset 0), skip past the first newline
+    # to avoid a partial line that could be cut mid-character.
+    if chunk_size < size:
+        nl = tail.find(b"\n")
+        if nl != -1:
+            tail = tail[nl + 1 :]
+
+    tail_str = tail.decode("utf-8", errors="replace")
+    for raw_line in reversed(tail_str.splitlines()):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        try:
+            rec = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        ts = rec.get("ts")
+        if isinstance(ts, str):
+            return ts
+
+    return None
+
+
+def _lightweight_project_summary(project: Path) -> tuple[int, str | None]:
+    """
+    Return ``(session_count, max_last_ts)`` for *project* using minimal I/O.
+
+    Counts session directories (deduplicating across providers) and reads
+    the last record's timestamp only from the single ``messages.jsonl``
+    with the highest modification time — the file most recently appended to,
+    which is where the latest timestamp lives.
+    """
+    logs_dir = _logs_dir(project)
+    if not logs_dir.is_dir():
+        return 0, None
+
+    seen_sessions: set[str] = set()
+    newest_file: Path | None = None
+    newest_mtime: int = 0
+
+    # rglob walks logs_dir/<provider>/<session_id>/messages.jsonl in one pass.
+    for messages_file in logs_dir.rglob("messages.jsonl"):
+        if not messages_file.is_file():
+            continue
+
+        # Deduplicate session_id across providers.
+        session_id = messages_file.parent.name
+        seen_sessions.add(session_id)
+
+        # Track the file with the highest modification time.
+        try:
+            mtime = messages_file.stat().st_mtime_ns
+        except OSError:
+            continue
+        if mtime > newest_mtime:
+            newest_mtime = mtime
+            newest_file = messages_file
+
+    # Read only the single most-recently-written file — its last record
+    # carries the latest timestamp across all sessions.
+    max_last_ts: str | None = None
+    if newest_file is not None:
+        max_last_ts = _read_last_record_ts(newest_file)
+
+    return len(seen_sessions), max_last_ts
+
+
 def _logs_dir(project: Path) -> Path:
     return project / ".claude" / "litellm-logs"
 
@@ -402,15 +492,16 @@ def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
     for idx, path in enumerate(load_projects(registry)):
         if not _logs_dir(path).is_dir():
             continue
-        sessions = list_sessions(path)
-        last_ts = max((s["last_ts"] for s in sessions if s["last_ts"]), default=None)
+        session_count, max_last_ts = _lightweight_project_summary(path)
+        if session_count == 0:
+            continue
         out.append(
             {
                 "id": idx,
                 "path": str(path),
                 "name": path.name,
-                "sessions": len(sessions),
-                "last_ts": last_ts,
+                "sessions": session_count,
+                "last_ts": max_last_ts,
             }
         )
     out.sort(key=lambda p: p["last_ts"] or "", reverse=True)

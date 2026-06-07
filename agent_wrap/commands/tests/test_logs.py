@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import TYPE_CHECKING
 
 from agent_wrap.commands.logs import (
+    _lightweight_project_summary,
     _parse_port,
+    _read_last_record_ts,
     extract_alias,
     list_projects,
     list_sessions,
@@ -550,6 +553,165 @@ def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
 
 def test_list_projects_empty_without_registry(tmp_path: Path):
     assert list_projects(tmp_path / "nope") == []
+
+
+# --- _read_last_record_ts ---
+
+
+def test_read_last_record_ts_returns_last_ts(tmp_path: Path):
+    f = tmp_path / "messages.jsonl"
+    f.write_text(
+        json.dumps({"ts": "2026-06-01T00:00:00+00:00"})
+        + "\n"
+        + json.dumps({"ts": "2026-06-05T12:00:00+00:00"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _read_last_record_ts(f) == "2026-06-05T12:00:00+00:00"
+
+
+def test_read_last_record_ts_returns_none_for_empty_file(tmp_path: Path):
+    f = tmp_path / "messages.jsonl"
+    f.write_text("", encoding="utf-8")
+    assert _read_last_record_ts(f) is None
+
+
+def test_read_last_record_ts_returns_none_for_missing_file(tmp_path: Path):
+    assert _read_last_record_ts(tmp_path / "nope.jsonl") is None
+
+
+def test_read_last_record_ts_handles_single_record(tmp_path: Path):
+    f = tmp_path / "messages.jsonl"
+    f.write_text(
+        json.dumps({"ts": "2026-06-05T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    assert _read_last_record_ts(f) == "2026-06-05T00:00:00+00:00"
+
+
+def test_read_last_record_ts_handles_no_trailing_newline(tmp_path: Path):
+    f = tmp_path / "messages.jsonl"
+    f.write_text(
+        json.dumps({"ts": "2026-06-05T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    assert _read_last_record_ts(f) == "2026-06-05T00:00:00+00:00"
+
+
+def test_read_last_record_ts_handles_multibyte_utf8_content(tmp_path: Path):
+    """
+    Multibyte UTF-8 characters within records must not prevent
+    extracting the ``ts`` field from the last valid JSON line.
+    """
+    f = tmp_path / "messages.jsonl"
+    # Records containing 3-byte UTF-8 characters (Unicode Hiragana).
+    records = [
+        json.dumps({"ts": "2026-06-01T00:00:00+00:00", "data": "あいうえお"}),
+        json.dumps({"ts": "2026-06-05T12:00:00+00:00", "data": "かきくけこ"}),
+    ]
+    f.write_text("\n".join(records) + "\n", encoding="utf-8")
+    assert _read_last_record_ts(f) == "2026-06-05T12:00:00+00:00"
+
+
+def test_read_last_record_ts_handles_non_json_lines(tmp_path: Path):
+    f = tmp_path / "messages.jsonl"
+    f.write_text(
+        "not json\n" + json.dumps({"ts": "2026-06-05T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    assert _read_last_record_ts(f) == "2026-06-05T00:00:00+00:00"
+
+
+# --- _lightweight_project_summary ---
+
+
+def test_lightweight_project_summary_empty_project(tmp_path: Path):
+    project = tmp_path / "proj"
+    assert _lightweight_project_summary(project) == (0, None)
+
+
+def test_lightweight_project_summary_single_session(tmp_path: Path):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    count, last_ts = _lightweight_project_summary(project)
+    assert count == 1
+    assert last_ts == "2026-06-05T00:00:00+00:00"
+
+
+def test_lightweight_project_summary_multiple_sessions(tmp_path: Path):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s-old",
+        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+    )
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s-new",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"}],
+    )
+    count, last_ts = _lightweight_project_summary(project)
+    assert count == 2
+    assert last_ts == "2026-06-05T00:00:00+00:00"
+
+
+def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
+    """Same session_id under two providers → count=1, max ts from newest file."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+    )
+    # Ensure the second write gets a strictly higher mtime so the
+    # function picks the correct file for last_ts extraction.
+    time.sleep(0.01)
+    _write_session(
+        project,
+        "litellm-deepseek",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"}],
+    )
+    count, last_ts = _lightweight_project_summary(project)
+    assert count == 1
+    assert last_ts == "2026-06-05T00:00:00+00:00"
+
+
+def test_lightweight_project_summary_skips_empty_sessions(tmp_path: Path):
+    """Session dir without a messages.jsonl should be skipped."""
+    project = tmp_path / "proj"
+    (project / ".claude" / "litellm-logs" / "litellm-bedrock" / "empty").mkdir(parents=True)
+    count, last_ts = _lightweight_project_summary(project)
+    assert count == 0
+    assert last_ts is None
+
+
+def test_list_projects_lightweight_produces_same_shape(tmp_path: Path):
+    """Output dict must have the same keys as before the optimization."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    projects = list_projects(tool_dir)
+    assert len(projects) == 1
+    p = projects[0]
+    assert set(p.keys()) == {"id", "path", "name", "sessions", "last_ts"}
+    assert p["sessions"] == 1
+    assert p["last_ts"] == "2026-06-05T00:00:00+00:00"
 
 
 def test_projects_fingerprint_reflects_changes(tmp_path: Path):
