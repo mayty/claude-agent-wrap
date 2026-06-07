@@ -14,7 +14,18 @@ function fmtTs(ts) {
   if (!ts) return "—";
   const d = new Date(ts);
   if (isNaN(d)) return ts;
-  return d.toLocaleString();
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec"];
+  const day = d.getDate();
+  const mon = MONTHS[d.getMonth()];
+  const year = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const datePart = year === new Date().getFullYear()
+    ? `${day} ${mon}`
+    : `${day} ${mon} ${year}`;
+  return `${datePart}, ${hh}:${mm}:${ss}`;
 }
 
 function fmtCost(c) {
