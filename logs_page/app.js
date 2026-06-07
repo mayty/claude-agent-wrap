@@ -17,6 +17,12 @@ function fmtTs(ts) {
   return d.toLocaleString();
 }
 
+function fmtCost(c) {
+  if (c == null) return "?";
+  if (c < 0.01) return "$" + c.toFixed(4);
+  return "$" + c.toFixed(2);
+}
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -313,6 +319,38 @@ function usageLine(u) {
   return line;
 }
 
+function infoLine(r) {
+  const hasTokens = (r.context_tokens != null) || (r.output_tokens != null);
+  const hasCost = r.cost != null;
+  if (!hasTokens && !hasCost) return null;
+
+  const parts = [];
+
+  if (r.context_tokens != null && r.context_tokens > 0) {
+    let ctx = "Context: " + r.context_tokens.toLocaleString();
+    if (r.cache_percent != null) {
+      ctx += " (" + r.cache_percent + "% cached)";
+    }
+    parts.push(ctx);
+  }
+
+  if (r.output_tokens != null) {
+    parts.push("Output: " + r.output_tokens.toLocaleString());
+  }
+
+  if (r.cost != null) {
+    parts.push("Cost: " + fmtCost(r.cost));
+  } else if (hasTokens) {
+    parts.push("Cost: ?");
+  }
+
+  if (!parts.length) return null;
+
+  const line = el("div", "info-line");
+  line.textContent = parts.join(" · ");
+  return line;
+}
+
 // The full detail body for one record: error box, system prompt, tool
 // definitions, the complete message thread, and the response. Shown in the
 // modal opened from a turn.
@@ -378,6 +416,7 @@ function renderTurn(r, displayIdx) {
   const turn = el("div", "turn");
   turn.appendChild(captionEl(r, displayIdx));
 
+  const info = infoLine(r);
   const userBubble = el("div", "bubble user");
   // The latest *user* message — not simply the last message, which may be a
   // trailing system-reminder appended after the user's tool_result.
@@ -389,7 +428,15 @@ function renderTurn(r, displayIdx) {
   }
   applySectionHeights(userBubble);
   decorateSections(userBubble);
-  turn.appendChild(userBubble);
+
+  if (info) {
+    const row = el("div", "exchange-row");
+    row.appendChild(info);
+    row.appendChild(userBubble);
+    turn.appendChild(row);
+  } else {
+    turn.appendChild(userBubble);
+  }
 
   const respBubble = el("div", "bubble " + (r.error ? "error" : "assistant"));
   if (r.error) {
@@ -455,6 +502,10 @@ function openModal(r, displayIdx) {
   // The header stays fixed; only this body scrolls, so its scrollbar starts
   // below the header rather than spanning the whole panel.
   const mbody = el("div", "modal-body");
+
+  const info = infoLine(r);
+  if (info) mbody.appendChild(info);
+
   const detail = renderFullDetail(r);
   decorateSections(detail);
   mbody.appendChild(detail);

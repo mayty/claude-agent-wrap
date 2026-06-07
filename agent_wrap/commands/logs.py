@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from agent_wrap.commands.stats import PriceSource, extract_usage
 from agent_wrap.lib.usage_args import load_projects
 
 USAGE = "[--port N]"
@@ -65,6 +66,8 @@ _DEFAULT_PORT = 8765
 _PORT_SCAN_LIMIT = 50
 _MIN_PORT = 1
 _MAX_PORT = 65535
+
+_PRICES = PriceSource()
 
 # ---------------------------------------------------------------------------
 # Hash resolution
@@ -269,6 +272,44 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
         "response": reply,
         "usage": usage,
         "error": resolved_rec.get("error"),
+    }
+
+
+def _enrich_with_costs(
+    normalized: dict, raw_response: dict | None, provider: str
+) -> dict[str, Any]:
+    """
+    Compute cost, cache pct, and token counts for one normalized record.
+
+    Returns a dict of extra fields to merge into the record. Pure aside from
+    the ``_PRICES`` lookup, which is in-memory after the first fetch per provider.
+    """
+    model = normalized.get("model") or ""
+    usage = normalized.get("usage") or {}
+
+    # Use the canonical token extraction so field-resolution logic lives in one
+    # place (extract_usage handles prompt_tokens/input_tokens fallback, etc.).
+    norm_usage = extract_usage(raw_response)
+    in_t = norm_usage.get("input_tokens", 0)
+    out_t = norm_usage.get("output_tokens", 0)
+    cr_t = norm_usage.get("cache_read_input_tokens", 0)
+
+    # Only set cache_percent when there are actual cache reads, so the frontend
+    # can skip displaying "(0% cached)".
+    cache_percent = None
+    if in_t and cr_t:
+        cache_percent = int(100 * cr_t / in_t)
+
+    # Compute cost in USD when pricing data is available.
+    cost = None
+    if normalized.get("status") == "success" and usage and model:
+        cost = _PRICES.compute_cost(provider, model, raw_response)
+
+    return {
+        "context_tokens": in_t,
+        "output_tokens": out_t,
+        "cache_percent": cache_percent,
+        "cost": cost,
     }
 
 
@@ -492,7 +533,11 @@ def read_session(project: Path, provider: str, session_id: str) -> list[dict[str
                     rec = json.loads(stripped)
                 except json.JSONDecodeError:
                     continue
-                out.append(normalize_record(rec, strings))
+                raw_response = rec.get("response")  # saved for cost computation
+                normalized = normalize_record(rec, strings)
+                enriched = _enrich_with_costs(normalized, raw_response, provider)
+                normalized.update(enriched)
+                out.append(normalized)
     except OSError:
         return []
     return out

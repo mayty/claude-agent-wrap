@@ -46,7 +46,11 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
 .turn .caption .idx { color: var(--accent); }
 .turn .caption .when { color: var(--muted); font-weight: 400; margin-left: auto; }
 .turn .caption .fail { color: var(--err); }
-.bubble { border-radius: 12px; padding: 9px 13px; max-width: 75%; position: relative; }
+.info-line { color: var(--muted); font-size: 11px; line-height: 1.4;
+             letter-spacing: 0.02em; flex-shrink: 0; }
+.exchange-row { display: flex; align-items: flex-start; gap: 10px; }
+.bubble { border-radius: 12px; padding: 9px 13px; max-width: 75%; position: relative;
+         width: fit-content; }
 /* Each section scrolls on its own: a section's pre is capped and scrollable, so
    a tall block gets its own scrollbar instead of one scrollbar for the bubble. */
 .bubble pre { max-height: 240px; overflow: auto; }
@@ -102,6 +106,8 @@ pre:hover::-webkit-scrollbar-thumb { background: rgba(205,214,244,.4);
 pre::-webkit-scrollbar-corner { background: transparent; }
 .usage { color: var(--muted); font-size: 12px; padding: 8px 14px;
          border-top: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; }
+.modal-body > .info-line:first-child { padding: 8px 14px; margin: 0; font-size: 12px;
+                                       border-bottom: 1px solid var(--border); }
 .toolsdef summary { cursor: pointer; color: var(--muted); font-size: 12px;
                     margin: 8px 0; }
 .err-box { background: rgba(243,139,168,.12); border: 1px solid var(--err);
