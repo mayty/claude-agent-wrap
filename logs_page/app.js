@@ -1,6 +1,7 @@
 // This file has been created with the assistance of an AI tool.
 "use strict";
 const $ = (id) => document.getElementById(id);
+const chatBody = () => document.querySelector("#chat .chat-body");
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
               poll: null, fp: null, gen: 0,
               listPoll: null, projectsFp: null, sessionsFp: null };
@@ -113,17 +114,21 @@ async function selectProject(p, item) {
   state.sessionsFp = null;
   document.querySelectorAll("#proj-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
-  $("chat").innerHTML = '<div class="hint">Loading sessions…</div>';
+  chatBody().innerHTML = '<div class="hint">Loading sessions…</div>';
   try {
     const sessions = await getJSON(`/api/sessions?project=${p.id}`);
     renderSessionsList(sessions);
     if (!sessions.length) {
-      $("chat").innerHTML = '<div class="hint">No sessions available.</div>';
+      chatBody().innerHTML = '<div class="hint">No sessions available.</div>';
       return;
     }
-    $("chat").innerHTML = '<div class="hint">Select a session to view its requests.</div>';
+    chatBody().innerHTML = '<div class="hint">Select a session to view its requests.</div>';
   } catch (e) {
-    showError("chat", "Could not load sessions: " + e.message);
+    const body = chatBody();
+    body.innerHTML = "";
+    const box = el("div", "err-box");
+    box.appendChild(Object.assign(el("pre"), { textContent: "Error: Could not load sessions: " + e.message }));
+    body.appendChild(box);
   }
 }
 
@@ -141,7 +146,7 @@ async function selectSession(s, item) {
   state.session = s.session_id;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
-  $("chat").innerHTML = '<div class="hint">Loading…</div>';
+  chatBody().innerHTML = '<div class="hint">Loading…</div>';
   try {
     const data = await getJSON(`/api/session?${sessionQuery(s)}`);
     if (gen !== state.gen) return; // another session was selected mid-fetch
@@ -154,7 +159,11 @@ async function selectSession(s, item) {
     if (gen !== state.gen) return;
     startPolling(s);
   } catch (e) {
-    showError("chat", e.message);
+    const body = chatBody();
+    body.innerHTML = "";
+    const box = el("div", "err-box");
+    box.appendChild(Object.assign(el("pre"), { textContent: "Error: " + e.message }));
+    body.appendChild(box);
   }
 }
 
@@ -206,15 +215,15 @@ async function tick(s) {
     state.groups = groupBySubagent(data.reqs);
     updateSessionListItem(data.session_meta);
     state.fp = fp;
-    const chat = $("chat");
-    const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40;
-    const prevTop = chat.scrollTop;
+    const body = chatBody();
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    const prevTop = body.scrollTop;
     renderStream();
     if (atBottom) {
       // Glide down to the new content rather than snapping to it.
-      chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
+      body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
     } else {
-      chat.scrollTop = prevTop; // hold the user's place instantly (no visible shift)
+      body.scrollTop = prevTop; // hold the user's place instantly (no visible shift)
     }
   } catch (e) { /* transient; retry next tick */ }
 }
@@ -708,32 +717,32 @@ function renderMainStream(chat, groups) {
 }
 
 function renderStream() {
-  const chat = $("chat");
-  chat.innerHTML = "";
+  const head = document.querySelector("#chat .chat-head");
+  const body = chatBody();
+  head.innerHTML = "";
+  body.innerHTML = "";
   const s = state.session_meta;
   const label = s.alias ? `${s.alias} · ${s.session_id.slice(0, 8)}` : s.session_id;
-  const head = el("h2", null, `${label} · ${state.reqs.length} request(s)`);
-  const sticky = el("div", "chat-head");
-  sticky.appendChild(head);
+  head.appendChild(el("h2", null, `${label} · ${state.reqs.length} request(s)`));
   if (!state.reqs.length) {
-    chat.appendChild(sticky);
-    chat.appendChild(el("div", "hint", "No requests in this session."));
+    body.appendChild(el("div", "hint", "No requests in this session."));
+    ensureScrollButton();
     return;
   }
   const groups = state.groups;
-  sticky.appendChild(renderTabs(groups));
-  chat.appendChild(sticky);
+  head.appendChild(renderTabs(groups));
 
   if (state.tab === "all") {
-    state.reqs.forEach((r, i) => chat.appendChild(renderTurn(r, i + 1)));
+    state.reqs.forEach((r, i) => body.appendChild(renderTurn(r, i + 1)));
   } else if (state.tab.startsWith("sub:")) {
     const id = state.tab.slice(4);
     const g = groups.subs.find(x => x.id === id);
-    if (g) g.items.forEach((it, i) => chat.appendChild(renderTurn(it.r, i + 1)));
-    else renderMainStream(chat, groups); // stale tab → fall back to main
+    if (g) g.items.forEach((it, i) => body.appendChild(renderTurn(it.r, i + 1)));
+    else renderMainStream(body, groups); // stale tab → fall back to main
   } else {
-    renderMainStream(chat, groups);
+    renderMainStream(body, groups);
   }
+  ensureScrollButton();
 }
 
 function renderChat(reqs, s) {
@@ -750,11 +759,53 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Home" && e.key !== "End") return;
   if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
   const back = $("modal-backdrop");
-  const target = back ? back.querySelector(".modal-body") : $("chat");
+  const target = back ? back.querySelector(".modal-body") : chatBody();
   if (!target) return;
   e.preventDefault();
   target.scrollTo({ top: e.key === "Home" ? 0 : target.scrollHeight, behavior: "smooth" });
 });
+
+// ---------------------------------------------------------------------------
+// Scroll-to-bottom button — appears when the chat column isn't scrolled to the
+// very bottom, giving the user a one-click way to jump back to the newest turn.
+// ---------------------------------------------------------------------------
+
+function updateScrollButtons() {
+  const body = chatBody();
+  const atTop = body.scrollTop < 40;
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  const toTop = body.querySelector(".scroll-to-top-btn");
+  const toBot = body.querySelector(".scroll-to-bottom-btn");
+  if (toTop) toTop.classList.toggle("visible", !atTop);
+  if (toBot) toBot.classList.toggle("visible", !atBottom);
+}
+
+function ensureScrollButton() {
+  const body = chatBody();
+  if (body.querySelector(".scroll-btn-wrap-bot")) return;
+
+  const wrapTop = el("div", "scroll-btn-wrap-top");
+  const btnTop = el("button", "scroll-btn scroll-to-top-btn");
+  btnTop.title = "Scroll to top";
+  btnTop.onclick = () => {
+    body.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  wrapTop.appendChild(btnTop);
+  body.insertBefore(wrapTop, body.firstChild);
+
+  const wrapBot = el("div", "scroll-btn-wrap-bot");
+  const btnBot = el("button", "scroll-btn scroll-to-bottom-btn");
+  btnBot.title = "Scroll to bottom";
+  btnBot.onclick = () => {
+    body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+  };
+  wrapBot.appendChild(btnBot);
+  body.appendChild(wrapBot);
+
+  updateScrollButtons();
+}
+
+chatBody().addEventListener("scroll", updateScrollButtons);
 
 loadProjects().catch(e => {
   $("proj-list").innerHTML = "";
