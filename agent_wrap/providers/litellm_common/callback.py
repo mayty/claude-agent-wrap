@@ -314,12 +314,46 @@ async def _write_record_async(record: dict[str, Any], kwargs: dict[str, Any]) ->
         print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
 
 
+def _resolve_thinking_reasoning_conflict(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Resolve API conflict between ``thinking`` and ``reasoning_effort``.
+
+    Some providers (DeepSeek's Anthropic-compatible API) rejects requests where
+    ``thinking.type`` is ``"disabled"`` but reasoning_effort is also set.
+    Claude Code sends this combination for lightweight calls (title generation,
+    session naming) when ``CLAUDE_CODE_EFFORT_LEVEL`` is configured.
+
+    This hook strips ``reasoning_effort`` when thinking is explicitly disabled,
+    preserving Claude Code's intent that the call should proceed without
+    extended thinking.
+    """
+    if not isinstance(data.get("thinking"), dict) or data["thinking"].get("type") != "disabled":
+        return data
+
+    if not isinstance(data.get("output_config"), dict):
+        return data
+
+    data["output_config"].pop("effort", None)
+
+    return data
+
+
 try:
     # litellm is only installed inside the sidecar container, not the dev env.
     from litellm.integrations.custom_logger import CustomLogger  # pyrefly: ignore[missing-import]
 
     class FileLogger(CustomLogger):
         """LiteLLM CustomLogger that appends each call to the JSONL log file asynchronously."""
+
+        async def async_pre_call_hook(
+            self,
+            user_api_key_dict,  # noqa: ARG002
+            cache,  # noqa: ARG002
+            data: dict,
+            call_type: str,  # noqa: ARG002
+        ) -> dict:
+            """Resolve provider-specific parameter conflicts before the upstream call."""
+            return _resolve_thinking_reasoning_conflict(data)
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
             record = build_record(kwargs, response_obj, status="success")

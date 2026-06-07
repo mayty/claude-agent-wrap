@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agent_wrap.providers.litellm_common.callback import (
     _get_session_id,
+    _resolve_thinking_reasoning_conflict,
     build_record,
     extract_session_alias,
 )
@@ -419,3 +420,98 @@ def test_string_hasher_loads_seen_hashes_to_prevent_duplicates() -> None:
         assert new_hash in lines[1]
 
     _SESSION_HASHERS.clear()
+
+
+# --- _resolve_thinking_reasoning_conflict ---
+
+
+def test_resolve_conflict_strips_effort_from_output_config() -> None:
+    """Effort is removed from output_config when thinking.type == 'disabled'."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "high", "style": "concise"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert "effort" not in result["output_config"]
+    assert result["output_config"] == {"style": "concise"}
+    assert result["thinking"] == {"type": "disabled"}
+
+
+def test_resolve_conflict_handles_missing_output_config() -> None:
+    """No-op when thinking is disabled but output_config is absent."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result == data  # unchanged
+
+
+def test_resolve_conflict_preserves_output_config_when_thinking_enabled() -> None:
+    """output_config is untouched when thinking.type == 'enabled'."""
+    data: dict = {
+        "model": "deepseek-v4-pro[1m]",
+        "messages": [{"role": "user", "content": "Solve this complex problem"}],
+        "thinking": {"type": "enabled", "budget_tokens": 4000},
+        "output_config": {"effort": "high"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result["output_config"] == {"effort": "high"}
+    assert result["thinking"] == {"type": "enabled", "budget_tokens": 4000}
+
+
+def test_resolve_conflict_preserves_output_config_when_thinking_absent() -> None:
+    """output_config is untouched when thinking is not in data."""
+    data: dict = {
+        "model": "deepseek-v4-pro[1m]",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "output_config": {"effort": "high"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result["output_config"] == {"effort": "high"}
+
+
+def test_resolve_conflict_handles_thinking_none() -> None:
+    """output_config is untouched when thinking is None."""
+    data: dict = {
+        "model": "deepseek-v4-pro[1m]",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "thinking": None,
+        "output_config": {"effort": "high"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result["output_config"] == {"effort": "high"}
+
+
+def test_resolve_conflict_handles_output_config_not_dict() -> None:
+    """No-op when thinking is disabled but output_config is not a dict."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+        "output_config": "not-a-dict",
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result == data  # unchanged
+
+
+def test_resolve_conflict_only_modifies_effort_in_output_config() -> None:
+    """Only output_config.effort is removed; all other keys preserved."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "high", "style": "concise", "max_tokens": 256},
+        "max_tokens": 512,
+        "temperature": 0.7,
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert "effort" not in result["output_config"]
+    assert result["output_config"] == {"style": "concise", "max_tokens": 256}
+    assert result["model"] == "deepseek-v4-flash"
+    assert result["max_tokens"] == 512
+    assert result["temperature"] == 0.7
+    assert result["thinking"] == {"type": "disabled"}
