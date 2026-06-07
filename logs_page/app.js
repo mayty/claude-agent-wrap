@@ -36,6 +36,30 @@ function fmtCost(c) {
   return "$" + c.toFixed(2);
 }
 
+function sessionStats(reqs) {
+  let totalCost = 0;
+  let cacheRead = 0;
+  let totalInput = 0;
+  let hasCost = false;
+
+  for (const r of reqs) {
+    if (r.cost != null) {
+      totalCost += r.cost;
+      hasCost = true;
+    }
+    const u = r.usage || {};
+    const input = u.input_tokens || u.prompt_tokens || 0;
+    const cr = u.cache_read_input_tokens || 0;
+    totalInput += input;
+    cacheRead += cr;
+  }
+
+  return {
+    cost: hasCost ? totalCost : null,
+    cacheRate: totalInput > 0 ? Math.round(100 * cacheRead / totalInput) : null,
+  };
+}
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -722,13 +746,33 @@ function renderStream() {
   head.innerHTML = "";
   body.innerHTML = "";
   const s = state.session_meta;
-  const label = s.alias ? `${s.alias} · ${s.session_id.slice(0, 8)}` : s.session_id;
-  head.appendChild(el("h2", null, `${label} · ${state.reqs.length} request(s)`));
+  const hash = s.session_id.slice(0, 8);
+  const stats = sessionStats(state.reqs);
+
+  // Line 1: title — prefer the parsed title, fall back to alias or hash
+  const title = s.title || s.alias || hash;
+  head.appendChild(el("h2", "chat-title", title));
+
+  // Line 2: alias · hash · reqs · cache · cost
+  {
+    const parts = [];
+    if (s.alias) parts.push(s.alias);
+    parts.push(hash);
+    parts.push(state.reqs.length + " req");
+    if (stats.cacheRate != null) parts.push(stats.cacheRate + "% cached");
+    parts.push("Cost: " + fmtCost(stats.cost));
+    const statsEl = el("div", "chat-stats");
+    statsEl.textContent = parts.join(" · ");
+    head.appendChild(statsEl);
+  }
+
   if (!state.reqs.length) {
     body.appendChild(el("div", "hint", "No requests in this session."));
     ensureScrollButton();
     return;
   }
+
+  // Line 3: agents bar
   const groups = state.groups;
   head.appendChild(renderTabs(groups));
 

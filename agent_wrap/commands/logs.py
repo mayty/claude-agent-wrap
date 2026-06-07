@@ -314,6 +314,7 @@ def _enrich_with_costs(
 
 
 _ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]+)"')
 
 
 def _response_content_str(response: Any) -> str | None:
@@ -357,6 +358,28 @@ def extract_alias(rec: dict) -> str | None:
         name = obj.get("name")
         if isinstance(name, str) and name.strip():
             return name.strip()
+    return None
+
+
+def extract_title(rec: dict) -> str | None:
+    """
+    Return Claude Code's sentence-case session title if ``rec`` is its title-
+    generation call (a short ``{"title": "…"}`` response, typically the first
+    record of every session).
+    """
+    content = _response_content_str(rec.get("response"))
+    if not content:
+        return None
+    stripped = content.strip()
+    try:
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        match = _TITLE_RE.search(stripped)
+        return match.group(1).strip() or None if match else None
+    if isinstance(obj, dict):
+        title = obj.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
     return None
 
 
@@ -413,6 +436,7 @@ class _SessionMeta:
         self.last_ts: str | None = None
         self.models: set[str] = set()
         self.derived_alias: str | None = None
+        self.derived_title: str | None = None
 
     def add(self, rec: dict) -> None:
         self.count += 1
@@ -427,6 +451,9 @@ class _SessionMeta:
         alias = extract_alias(rec)
         if alias:
             self.derived_alias = alias
+        title = extract_title(rec)
+        if title:
+            self.derived_title = title
 
 
 def _scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | None:
@@ -458,6 +485,7 @@ def _scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | Non
         "session_id": session_dir.name,
         # An explicit `alias` file (callback-written) wins over derivation.
         "alias": _read_alias_file(session_dir) or meta.derived_alias,
+        "title": meta.derived_title,
         "count": meta.count,
         "first_ts": meta.first_ts,
         "last_ts": meta.last_ts,
@@ -489,6 +517,8 @@ def _merge_session_meta(existing: dict[str, Any], meta: dict[str, Any]) -> None:
     existing["models"] = sorted(set(existing["models"]) | set(meta["models"]))
     if existing["alias"] is None and meta["alias"] is not None:
         existing["alias"] = meta["alias"]
+    if existing.get("title") is None and meta.get("title") is not None:
+        existing["title"] = meta["title"]
 
 
 def list_sessions(project: Path) -> list[dict[str, Any]]:
@@ -676,6 +706,7 @@ def _read_provider_session(
         "provider": provider,
         "session_id": session_id,
         "alias": _read_alias_file(session_dir) or meta.derived_alias,
+        "title": meta.derived_title,
         "count": meta.count,
         "first_ts": meta.first_ts,
         "last_ts": meta.last_ts,
