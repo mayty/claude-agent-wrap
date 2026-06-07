@@ -625,14 +625,16 @@ function renderStream() {
   const s = state.session_meta;
   const label = s.alias ? `${s.alias} · ${s.session_id.slice(0, 8)}` : s.session_id;
   const head = el("h2", null, `${label} · ${state.reqs.length} request(s)`);
-  head.style.position = "static"; head.style.padding = "0 0 10px";
-  chat.appendChild(head);
+  const sticky = el("div", "chat-head");
+  sticky.appendChild(head);
   if (!state.reqs.length) {
+    chat.appendChild(sticky);
     chat.appendChild(el("div", "hint", "No requests in this session."));
     return;
   }
   const groups = state.groups;
-  chat.appendChild(renderTabs(groups));
+  sticky.appendChild(renderTabs(groups));
+  chat.appendChild(sticky);
 
   if (state.tab === "all") {
     state.reqs.forEach((r, i) => chat.appendChild(renderTurn(r, i + 1)));
