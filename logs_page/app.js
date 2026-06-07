@@ -24,6 +24,14 @@ function el(tag, cls, text) {
   return e;
 }
 
+function showError(containerId, message) {
+  const container = $(containerId);
+  const box = el("div", "err-box");
+  box.appendChild(Object.assign(el("pre"), { textContent: "Error: " + message }));
+  container.innerHTML = "";
+  container.appendChild(box);
+}
+
 async function loadProjects() {
   const projects = await getJSON("/api/projects");
   const list = $("proj-list");
@@ -50,26 +58,33 @@ async function selectProject(p, item) {
   state.session = null;
   document.querySelectorAll("#proj-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
-  $("chat").innerHTML = '<div class="hint">Select a session to view its requests.</div>';
-  const sessions = await getJSON(`/api/sessions?project=${p.id}`);
+  $("chat").innerHTML = '<div class="hint">Loading sessions…</div>';
   const list = $("sess-list");
   list.innerHTML = "";
-  if (!sessions.length) {
-    list.appendChild(el("div", "empty", "No sessions."));
-    return;
-  }
-  for (const s of sessions) {
-    const item = el("div", "item");
-    const top = el("div", null);
-    top.appendChild(el("span", "badge", s.provider.replace(/^litellm-/, "")));
-    top.appendChild(document.createTextNode(s.alias || s.session_id.slice(0, 8)));
-    item.appendChild(top);
-    const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
-    item.appendChild(el("div", "meta",
-      `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
-    item.title = s.session_id;
-    item.onclick = () => selectSession(s, item);
-    list.appendChild(item);
+  try {
+    const sessions = await getJSON(`/api/sessions?project=${p.id}`);
+    if (!sessions.length) {
+      list.appendChild(el("div", "empty", "No sessions."));
+      $("chat").innerHTML = '<div class="hint">No sessions available.</div>';
+      return;
+    }
+    for (const s of sessions) {
+      const sessItem = el("div", "item"); // renamed to avoid shadowing
+      const top = el("div", null);
+      top.appendChild(el("span", "badge", s.provider.replace(/^litellm-/, "")));
+      top.appendChild(document.createTextNode(s.alias || s.session_id.slice(0, 8)));
+      sessItem.appendChild(top);
+      const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
+      sessItem.appendChild(el("div", "meta",
+        `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
+      sessItem.title = s.session_id;
+      sessItem.onclick = () => selectSession(s, sessItem);
+      list.appendChild(sessItem);
+    }
+    $("chat").innerHTML = '<div class="hint">Select a session to view its requests.</div>';
+  } catch (e) {
+    list.appendChild(el("div", "empty", "Error loading sessions"));
+    showError("chat", "Could not load sessions: " + e.message);
   }
 }
 
@@ -89,14 +104,18 @@ async function selectSession(s, item) {
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   $("chat").innerHTML = '<div class="hint">Loading…</div>';
-  const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
-  if (gen !== state.gen) return; // another session was selected mid-fetch
-  renderChat(reqs, s);
-  // Seed the fingerprint from the state at fetch time, then poll for changes.
-  try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
-  catch (e) { state.fp = null; }
-  if (gen !== state.gen) return;
-  startPolling(s);
+  try {
+    const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
+    if (gen !== state.gen) return; // another session was selected mid-fetch
+    renderChat(reqs, s);
+    // Seed the fingerprint from the state at fetch time, then poll for changes.
+    try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
+    catch (e) { state.fp = null; }
+    if (gen !== state.gen) return;
+    startPolling(s);
+  } catch (e) {
+    showError("chat", e.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
