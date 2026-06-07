@@ -75,11 +75,19 @@ async function selectProject(p, item) {
       return;
     }
     for (const s of sessions) {
-      const sessItem = el("div", "item"); // renamed to avoid shadowing
+      const sessItem = el("div", "item");
       const top = el("div", null);
-      top.appendChild(el("span", "badge", s.provider.replace(/^litellm-/, "")));
-      top.appendChild(document.createTextNode(s.alias || s.session_id.slice(0, 8)));
-      sessItem.appendChild(top);
+      for (const p of s.providers) {
+        top.appendChild(el("span", "badge", p.replace(/^litellm-/, "")));
+      }
+      const name = s.alias || s.session_id.slice(0, 8);
+      if (s.providers.length > 1) {
+        sessItem.appendChild(top);
+        sessItem.appendChild(el("div", "name", name));
+      } else {
+        top.appendChild(document.createTextNode(name));
+        sessItem.appendChild(top);
+      }
       const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
       sessItem.appendChild(el("div", "meta",
         `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
@@ -97,8 +105,7 @@ async function selectProject(p, item) {
 // Query string identifying one session, shared by the /api/session and
 // /api/session-stat calls.
 function sessionQuery(s) {
-  return `project=${state.project}&provider=${encodeURIComponent(s.provider)}` +
-         `&session=${encodeURIComponent(s.session_id)}`;
+  return `project=${state.project}&session=${encodeURIComponent(s.session_id)}`;
 }
 
 async function selectSession(s, item) {

@@ -319,7 +319,7 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path):
     (sdir / "strings.jsonl").write_text(
         json.dumps({"hash": "hash:s", "original": "X"}) + "\n", encoding="utf-8"
     )
-    reqs = read_session(project, "litellm-bedrock", "s1")
+    reqs = read_session(project, "s1")
     assert len(reqs) == 1
     assert reqs[0]["messages"] == [{"role": "user", "content": "hello"}]
 
@@ -332,7 +332,7 @@ def test_session_fingerprint_reflects_file(tmp_path: Path):
         "s1",
         [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
     )
-    fp = session_fingerprint(project, "litellm-bedrock", "s1")
+    fp = session_fingerprint(project, "s1")
     assert isinstance(fp["mtime"], int)
     assert isinstance(fp["size"], int)
     assert fp["size"] > 0
@@ -340,10 +340,134 @@ def test_session_fingerprint_reflects_file(tmp_path: Path):
 
 def test_session_fingerprint_null_when_missing(tmp_path: Path):
     project = tmp_path / "proj"
-    assert session_fingerprint(project, "litellm-bedrock", "nope") == {
+    assert session_fingerprint(project, "nope") == {
         "mtime": None,
         "size": None,
     }
+
+
+def test_list_sessions_merges_across_providers(tmp_path: Path):
+    """Same session_id under two providers → one merged entry."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+    )
+    _write_session(
+        project,
+        "litellm-deepseek",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"}],
+    )
+    sessions = list_sessions(project)
+    assert len(sessions) == 1
+    s = sessions[0]
+    assert s["session_id"] == "s1"
+    assert s["providers"] == ["litellm-bedrock", "litellm-deepseek"]
+    assert s["count"] == 2
+    assert s["models"] == ["a", "b"]
+    assert s["first_ts"] == "2026-06-01T00:00:00+00:00"
+    assert s["last_ts"] == "2026-06-05T00:00:00+00:00"
+
+
+def test_list_sessions_providers_field_shape(tmp_path: Path):
+    """Single-provider sessions still have a providers list (of length 1)."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    sessions = list_sessions(project)
+    assert sessions[0]["providers"] == ["litellm-bedrock"]
+    assert "provider" not in sessions[0]
+
+
+def test_read_session_merges_across_providers(tmp_path: Path):
+    """Records from two providers are interleaved by timestamp."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            {
+                "ts": "2026-06-01T00:00:00+00:00",
+                "status": "success",
+                "model": "m/a",
+                "request": {
+                    "proxy_server_request": {
+                        "body": {
+                            "data": {"messages": [{"role": "user", "content": "from bedrock"}]}
+                        }
+                    }
+                },
+                "response": {"choices": [{"message": {"content": "bedrock reply"}}]},
+            },
+        ],
+    )
+    _write_session(
+        project,
+        "litellm-deepseek",
+        "s1",
+        [
+            {
+                "ts": "2026-06-01T00:01:00+00:00",
+                "status": "success",
+                "model": "m/b",
+                "request": {
+                    "proxy_server_request": {
+                        "body": {
+                            "data": {"messages": [{"role": "user", "content": "from deepseek"}]}
+                        }
+                    }
+                },
+                "response": {"choices": [{"message": {"content": "deepseek reply"}}]},
+            },
+        ],
+    )
+    reqs = read_session(project, "s1")
+    assert len(reqs) == 2
+    assert reqs[0]["messages"] == [{"role": "user", "content": "from bedrock"}]
+    assert reqs[1]["messages"] == [{"role": "user", "content": "from deepseek"}]
+
+
+def test_session_fingerprint_combines_across_providers(tmp_path: Path):
+    """Fingerprint reflects max mtime and combined size across providers."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    _write_session(
+        project,
+        "litellm-deepseek",
+        "s1",
+        [
+            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"},
+            {"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"},
+        ],
+    )
+    fp = session_fingerprint(project, "s1")
+    assert isinstance(fp["mtime"], int)
+    assert isinstance(fp["size"], int)
+    # Size should be at least the sum of both files (each file > 0 bytes).
+    size_bedrock = (
+        (project / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1" / "messages.jsonl")
+        .stat()
+        .st_size
+    )
+    size_deepseek = (
+        (project / ".claude" / "litellm-logs" / "litellm-deepseek" / "s1" / "messages.jsonl")
+        .stat()
+        .st_size
+    )
+    assert fp["size"] == size_bedrock + size_deepseek
 
 
 def test_load_strings_round_trip(tmp_path: Path):

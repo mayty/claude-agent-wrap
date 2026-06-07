@@ -477,13 +477,33 @@ def _read_alias_file(session_dir: Path) -> str | None:
     return text or None
 
 
+def _merge_session_meta(existing: dict[str, Any], meta: dict[str, Any]) -> None:
+    """Merge *meta* (from one provider) into *existing* (the combined entry)."""
+    existing["providers"].append(meta["provider"])
+    existing["providers"].sort()
+    existing["count"] += meta["count"]
+    if meta["first_ts"] and (not existing["first_ts"] or meta["first_ts"] < existing["first_ts"]):
+        existing["first_ts"] = meta["first_ts"]
+    if meta["last_ts"] and (not existing["last_ts"] or meta["last_ts"] > existing["last_ts"]):
+        existing["last_ts"] = meta["last_ts"]
+    existing["models"] = sorted(set(existing["models"]) | set(meta["models"]))
+    if existing["alias"] is None and meta["alias"] is not None:
+        existing["alias"] = meta["alias"]
+
+
 def list_sessions(project: Path) -> list[dict[str, Any]]:
-    """List sessions (newest first) across every provider in a project."""
+    """
+    List sessions (newest first) across every provider in a project.
+
+    Sessions with the same ``session_id`` across different providers are merged
+    into a single entry so a mid-session provider switch doesn't produce
+    duplicate rows in the viewer.
+    """
     logs_dir = _logs_dir(project)
     if not logs_dir.is_dir():
         return []
 
-    out: list[dict[str, Any]] = []
+    by_session: dict[str, dict[str, Any]] = {}
     for provider_dir in logs_dir.iterdir():
         if not provider_dir.is_dir():
             continue
@@ -491,56 +511,98 @@ def list_sessions(project: Path) -> list[dict[str, Any]]:
             if not session_dir.is_dir():
                 continue
             meta = _scan_session_meta(session_dir, provider_dir.name)
-            if meta is not None:
-                out.append(meta)
+            if meta is None:
+                continue
+            sid = meta["session_id"]
+            if sid in by_session:
+                _merge_session_meta(by_session[sid], meta)
+            else:
+                meta["providers"] = [meta.pop("provider")]
+                by_session[sid] = meta
+
+    out = list(by_session.values())
     out.sort(key=lambda s: s["last_ts"] or "", reverse=True)
     return out
 
 
-def session_fingerprint(project: Path, provider: str, session_id: str) -> dict[str, Any]:
+def session_fingerprint(project: Path, session_id: str) -> dict[str, Any]:
     """
-    Cheap change-marker for a session: ``mtime_ns`` + ``size`` of ``messages.jsonl``.
+    Return a combined change-marker for a session across all providers.
 
-    A single ``stat()`` (no file read) — ``messages.jsonl`` is append-only and the
-    callback writes one complete record per line, so this pair reliably changes when
-    a new request lands. Returns ``{"mtime": None, "size": None}`` when the file is
-    missing, so the client can poll a session before its first record is written.
+    Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every
+    provider directory that holds this session, so a new record from any
+    provider triggers a refresh in the polling loop.  Returns
+    ``{"mtime": None, "size": None}`` when no provider has the session.
     """
-    messages_file = _logs_dir(project) / provider / session_id / "messages.jsonl"
-    try:
-        st = messages_file.stat()
-    except OSError:
+    logs_dir = _logs_dir(project)
+    if not logs_dir.is_dir():
         return {"mtime": None, "size": None}
-    return {"mtime": st.st_mtime_ns, "size": st.st_size}
+
+    best_mtime: int | None = None
+    total_size: int | None = None
+    found = False
+
+    for provider_dir in logs_dir.iterdir():
+        if not provider_dir.is_dir():
+            continue
+        messages_file = provider_dir / session_id / "messages.jsonl"
+        try:
+            st = messages_file.stat()
+        except OSError:
+            continue
+        found = True
+        if best_mtime is None or st.st_mtime_ns > best_mtime:
+            best_mtime = st.st_mtime_ns
+        total_size = (total_size or 0) + st.st_size
+
+    if not found:
+        return {"mtime": None, "size": None}
+    return {"mtime": best_mtime, "size": total_size}
 
 
-def read_session(project: Path, provider: str, session_id: str) -> list[dict[str, Any]]:
-    """Read and normalize every request in one session, in file order."""
-    session_dir = _logs_dir(project) / provider / session_id
-    messages_file = session_dir / "messages.jsonl"
-    if not messages_file.is_file():
+def read_session(project: Path, session_id: str) -> list[dict[str, Any]]:
+    """
+    Read and normalize every request in one session across all providers.
+
+    When a session spans multiple providers (e.g. the user switched mid-session),
+    records from every provider directory are loaded and merge-sorted by ``ts``
+    so the chat view shows a single chronological thread.
+    """
+    logs_dir = _logs_dir(project)
+    if not logs_dir.is_dir():
         return []
 
-    strings = load_strings(session_dir)
-    out: list[dict[str, Any]] = []
-    try:
-        with messages_file.open("r", encoding="utf-8", errors="replace") as f:
-            for raw_line in f:
-                stripped = raw_line.strip()
-                if not stripped:
-                    continue
-                try:
-                    rec = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                raw_response = rec.get("response")  # saved for cost computation
-                normalized = normalize_record(rec, strings)
-                enriched = _enrich_with_costs(normalized, raw_response, provider)
-                normalized.update(enriched)
-                out.append(normalized)
-    except OSError:
-        return []
-    return out
+    all_records: list[dict[str, Any]] = []
+
+    for provider_dir in logs_dir.iterdir():
+        if not provider_dir.is_dir():
+            continue
+        session_dir = provider_dir / session_id
+        messages_file = session_dir / "messages.jsonl"
+        if not messages_file.is_file():
+            continue
+        provider = provider_dir.name
+        strings = load_strings(session_dir)
+        try:
+            with messages_file.open("r", encoding="utf-8", errors="replace") as f:
+                for raw_line in f:
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        rec = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    raw_response = rec.get("response")
+                    normalized = normalize_record(rec, strings)
+                    enriched = _enrich_with_costs(normalized, raw_response, provider)
+                    normalized.update(enriched)
+                    all_records.append(normalized)
+        except OSError:
+            continue
+
+    all_records.sort(key=lambda r: r.get("ts") or "")
+    return all_records
 
 
 # ---------------------------------------------------------------------------
@@ -608,26 +670,25 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(list_sessions(project))
             return
 
-        # /api/session and /api/session-stat share the same project/provider/session
-        # triple; resolve once and dispatch to the matching reader.
+        # /api/session and /api/session-stat need a (project, session) pair;
+        # resolve once and dispatch to the matching reader.
         if path in ("/api/session", "/api/session-stat"):
-            triple = self._resolve_session(params)
-            if triple is not None:
+            pair = self._resolve_session(params)
+            if pair is not None:
                 reader = read_session if path == "/api/session" else session_fingerprint
-                self._send_json(reader(*triple))
+                self._send_json(reader(*pair))
             return
 
         self._serve_static(path)
 
-    def _resolve_session(self, params: dict[str, list[str]]) -> tuple[Path, str, str] | None:
-        """Resolve a (project, provider, session) triple; 400 + None if incomplete."""
+    def _resolve_session(self, params: dict[str, list[str]]) -> tuple[Path, str] | None:
+        """Resolve a (project, session) pair; 400 + None if incomplete."""
         project = self._resolve_project(params)
-        provider = (params.get("provider") or [""])[0]
         session = (params.get("session") or [""])[0]
-        if project is None or not provider or not session:
-            self._send_json({"error": "missing project/provider/session"}, status=400)
+        if project is None or not session:
+            self._send_json({"error": "missing project/session"}, status=400)
             return None
-        return project, provider, session
+        return project, session
 
     def _serve_static(self, url_path: str) -> None:
         """Serve a file from ``page_dir``; 404 on traversal or a missing file."""

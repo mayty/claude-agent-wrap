@@ -36,6 +36,7 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
 .item.active { background: rgba(137,180,250,.18); border-left: 3px solid var(--accent);
                padding-left: 11px; }
 .item .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.item .name { margin-top: 2px; }
 .badge { display: inline-block; background: var(--border); color: var(--fg);
          border-radius: 4px; padding: 1px 6px; font-size: 10px; margin-right: 4px; }
 .empty { color: var(--muted); padding: 16px 14px; font-style: italic; }
