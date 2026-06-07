@@ -688,7 +688,8 @@ function groupBySubagent(reqs) {
 }
 
 function subLabel(g) {
-  return g.snippet ? `⌁ ${g.short} · "${g.snippet}…"` : `⌁ ${g.short}`;
+  const cnt = `(${g.items.length})`;
+  return g.snippet ? `⌁ ${g.short} ${cnt} · "${g.snippet}…"` : `⌁ ${g.short} ${cnt}`;
 }
 
 function renderTabs(groups) {
@@ -703,7 +704,7 @@ function renderTabs(groups) {
   };
   bar.appendChild(tab("main", "Main agent", groups.main.length));
   for (const g of groups.subs) {
-    bar.appendChild(tab("sub:" + g.id, subLabel(g), g.items.length));
+    bar.appendChild(tab("sub:" + g.id, subLabel(g)));
   }
   bar.appendChild(tab("all", "All", total));
   return bar;
