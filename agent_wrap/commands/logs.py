@@ -40,11 +40,14 @@ import sys
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.commands.stats import PriceSource, extract_usage
 from agent_wrap.lib.usage_args import load_projects
+
+if TYPE_CHECKING:
+    from agent_wrap.providers.litellm_common.callback import LogRecord, MetaData
 
 USAGE = "[--port N]"
 SUMMARY = "Browse LiteLLM request logs in a local web viewer"
@@ -216,7 +219,7 @@ def resolve(obj: Any, strings: dict[str, str]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
+def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
     """
     Reduce one raw log record to the shape the UI consumes.
 
@@ -264,6 +267,7 @@ def normalize_record(rec: dict, strings: dict[str, str]) -> dict[str, Any]:
 
     return {
         "ts": resolved_rec.get("ts"),
+        "end_ts": resolved_rec.get("end_ts"),
         "status": resolved_rec.get("status"),
         "model": resolved_rec.get("model"),
         "agent_id": agent_id,
@@ -336,12 +340,12 @@ def _response_content_str(response: Any) -> str | None:
     return None
 
 
-def extract_alias(rec: dict) -> str | None:
+def extract_alias(rec: LogRecord) -> str | None:
     """
     Return Claude Code's kebab-case session name if ``rec`` is its naming call.
 
     Mirrors the callback's ``extract_session_alias`` so existing logs (written
-    before the callback learned to persist an ``alias`` file) still surface a
+    before the callback learned to persist metadata) still surface a
     name. Claude Code's naming response content is ``{"name": "<kebab-slug>"}``;
     the sibling ``{"title": ...}`` call is ignored. The slug is short and never
     hashed, so the raw record's response is read directly.
@@ -362,7 +366,7 @@ def extract_alias(rec: dict) -> str | None:
     return None
 
 
-def extract_title(rec: dict) -> str | None:
+def extract_title(rec: LogRecord) -> str | None:
     """
     Return Claude Code's sentence-case session title if ``rec`` is its title-
     generation call (a short ``{"title": "…"}`` response, typically the first
@@ -529,7 +533,7 @@ class _SessionMeta:
         self.derived_alias: str | None = None
         self.derived_title: str | None = None
 
-    def add(self, rec: dict) -> None:
+    def add(self, rec: LogRecord) -> None:
         self.count += 1
         ts = rec.get("ts")
         if isinstance(ts, str):
@@ -547,8 +551,65 @@ class _SessionMeta:
             self.derived_title = title
 
 
+def _read_meta_json(session_dir: Path) -> MetaData | None:
+    """
+    Read ``meta.json`` if it exists and is not older than ``messages.jsonl``.
+
+    Returns the parsed dict on success, or ``None`` when the cache is missing,
+    stale, or corrupt so the caller can fall back to a full scan.
+    """
+    meta_file = session_dir / "meta.json"
+    messages_file = session_dir / "messages.jsonl"
+    if not meta_file.is_file() or not messages_file.is_file():
+        return None
+    try:
+        meta_mtime = meta_file.stat().st_mtime_ns
+        msg_mtime = messages_file.stat().st_mtime_ns
+    except OSError:
+        return None
+    # meta.json is written *after* messages.jsonl by the callback; if it is
+    # older, a write was interrupted and the cache may be incomplete.
+    if meta_mtime < msg_mtime:
+        return None
+    try:
+        return json.loads(meta_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_meta_json(session_dir: Path, meta: MetaData) -> None:
+    """Write ``meta.json`` atomically.  Best-effort; never raises."""
+    try:
+        tmp = session_dir / "meta.json.tmp"
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        tmp.replace(session_dir / "meta.json")
+    except OSError:
+        pass
+
+
 def _scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | None:
-    """Cheap metadata for one session: count, first/last ts, models, alias."""
+    """
+    Cheap metadata for one session: count, first/last ts, models, alias.
+
+    Checks a ``meta.json`` cache first (maintained by the LiteLLM callback);
+    falls back to a full scan of ``messages.jsonl`` when the cache is missing
+    or stale, and seeds the cache after a fallback scan.
+    """
+    # Fast path: use the callback-maintained cache when available.
+    cached = _read_meta_json(session_dir)
+    if cached is not None:
+        return {
+            "provider": provider,
+            "session_id": session_dir.name,
+            "alias": cached.get("alias"),
+            "title": cached.get("title"),
+            "count": cached.get("count", 0),
+            "first_ts": cached.get("first_ts"),
+            "last_ts": cached.get("last_ts"),
+            "models": cached.get("models") or [],
+        }
+
+    # Slow path: full scan (existing behavior).
     messages_file = session_dir / "messages.jsonl"
     if not messages_file.is_file():
         return None
@@ -571,29 +632,30 @@ def _scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | Non
     if meta.count == 0:
         return None
 
+    # Seed the cache so subsequent reads hit the fast path.
+    # meta.last_ts is always set when meta.count > 0 (guarded above).
+    assert meta.last_ts is not None
+    _write_meta_json(
+        session_dir,
+        {
+            "count": meta.count,
+            "last_ts": meta.last_ts,
+            "models": sorted(meta.models),
+            "alias": meta.derived_alias,
+            "title": meta.derived_title,
+        },
+    )
+
     return {
         "provider": provider,
         "session_id": session_dir.name,
-        # An explicit `alias` file (callback-written) wins over derivation.
-        "alias": _read_alias_file(session_dir) or meta.derived_alias,
+        "alias": meta.derived_alias,
         "title": meta.derived_title,
         "count": meta.count,
         "first_ts": meta.first_ts,
         "last_ts": meta.last_ts,
         "models": sorted(meta.models),
     }
-
-
-def _read_alias_file(session_dir: Path) -> str | None:
-    """Return the alias persisted beside the logs, if the callback wrote one."""
-    alias_file = session_dir / "alias"
-    if not alias_file.is_file():
-        return None
-    try:
-        text = alias_file.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return None
-    return text or None
 
 
 def _merge_session_meta(existing: dict[str, Any], meta: dict[str, Any]) -> None:
@@ -768,9 +830,12 @@ def _read_provider_session(
     if not messages_file.is_file():
         return [], None
 
-    strings = load_strings(session_dir)
+    # Read every raw record first so we capture a consistent snapshot of
+    # messages.jsonl.  Strings are loaded *afterwards* because the callback
+    # writes hashes to strings.jsonl before appending the record — loading
+    # strings after records guarantees every hash we encounter is resolved.
     meta = _SessionMeta()
-    records: list[dict[str, Any]] = []
+    raw_records: list[dict[str, Any]] = []
     try:
         with messages_file.open("r", encoding="utf-8", errors="replace") as f:
             for raw_line in f:
@@ -781,22 +846,27 @@ def _read_provider_session(
                     rec = json.loads(stripped)
                 except json.JSONDecodeError:
                     continue
+                raw_records.append(rec)
                 meta.add(rec)
-                raw_response = rec.get("response")
-                normalized = normalize_record(rec, strings)
-                enriched = _enrich_with_costs(normalized, raw_response, provider)
-                normalized.update(enriched)
-                records.append(normalized)
     except OSError:
         pass
 
     if meta.count == 0:
         return [], None
 
+    strings = load_strings(session_dir)
+    records: list[dict[str, Any]] = []
+    for rec in raw_records:
+        raw_response = rec.get("response")
+        normalized = normalize_record(rec, strings)  # type: ignore[arg-type]
+        enriched = _enrich_with_costs(normalized, raw_response, provider)
+        normalized.update(enriched)
+        records.append(normalized)
+
     entry: dict[str, Any] = {
         "provider": provider,
         "session_id": session_id,
-        "alias": _read_alias_file(session_dir) or meta.derived_alias,
+        "alias": meta.derived_alias,
         "title": meta.derived_title,
         "count": meta.count,
         "first_ts": meta.first_ts,

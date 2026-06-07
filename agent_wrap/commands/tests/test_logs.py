@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.commands.logs import (
     _lightweight_project_summary,
     _parse_port,
     _read_last_record_ts,
+    _read_meta_json,
+    _scan_session_meta,
+    _write_meta_json,
     extract_alias,
     list_projects,
     list_sessions,
@@ -23,6 +26,9 @@ from agent_wrap.commands.logs import (
     session_fingerprint,
     sessions_fingerprint,
 )
+
+if TYPE_CHECKING:
+    from agent_wrap.providers.litellm_common.callback import LogRecord
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -94,29 +100,34 @@ def test_resolve_handles_circular_references():
 # --- normalize_record ---
 
 
-def _raw_record() -> dict:
-    return {
-        "ts": "2026-06-05T12:00:00+00:00",
-        "status": "success",
-        "model": "us.anthropic.claude-opus-4-8",
-        "request": {
-            # Top-level messages is a LiteLLM placeholder and must be ignored.
-            "messages": [{"role": "user", "content": "default-message-value"}],
-            "proxy_server_request": {
-                "body": {
-                    "data": {
-                        "messages": [{"role": "user", "content": "hello"}],
-                        "system": "be brief",
-                        "tools": [{"name": "Read"}],
+def _raw_record() -> LogRecord:
+    return cast(
+        "LogRecord",
+        {
+            "ts": "2026-06-05T12:00:00+00:00",
+            "end_ts": "2026-06-05T12:00:01+00:00",
+            "status": "success",
+            "model": "us.anthropic.claude-opus-4-8",
+            "request": {
+                # Top-level messages is a LiteLLM placeholder and must be ignored.
+                "messages": [{"role": "user", "content": "default-message-value"}],
+                "proxy_server_request": {
+                    "body": {
+                        "data": {
+                            "messages": [{"role": "user", "content": "hello"}],
+                            "system": "be brief",
+                            "tools": [{"name": "Read"}],
+                        }
                     }
-                }
+                },
             },
+            "response": {
+                "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            },
+            "error": None,
         },
-        "response": {
-            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
-        },
-    }
+    )
 
 
 def test_normalize_pulls_real_request_data():
@@ -129,21 +140,26 @@ def test_normalize_pulls_real_request_data():
 def test_normalize_falls_back_to_body_when_data_is_not_dict():
     # Simulate a record where proxy_server_request.body exists but lacks a "data" dict,
     # so the normalization falls back to using "body" directly for messages/system/tools.
-    rec = {
-        "ts": "2026-06-05T12:00:00+00:00",
-        "status": "success",
-        "model": "m",
-        "request": {
-            "proxy_server_request": {
-                "body": {
-                    "messages": [{"role": "user", "content": "fallback body message"}],
-                    "system": "fallback system",
-                    "tools": [{"name": "FallbackTool"}],
-                }
+    rec = cast(
+        "LogRecord",
+        {
+            "ts": "2026-06-05T12:00:00+00:00",
+            "end_ts": "2026-06-05T12:00:01+00:00",
+            "status": "success",
+            "model": "m",
+            "request": {
+                "proxy_server_request": {
+                    "body": {
+                        "messages": [{"role": "user", "content": "fallback body message"}],
+                        "system": "fallback system",
+                        "tools": [{"name": "FallbackTool"}],
+                    }
+                },
             },
+            "response": {"choices": [{"message": {"content": "hi"}}]},
+            "error": None,
         },
-        "response": {"choices": [{"message": {"content": "hi"}}]},
-    }
+    )
     out = normalize_record(rec, {})
     assert out["messages"] == [{"role": "user", "content": "fallback body message"}]
     assert out["system"] == "fallback system"
@@ -173,16 +189,21 @@ def test_normalize_resolves_wrap_ref_from_discarded_fields():
     # Simulate a record where the canonical object is in the top-level
     # request.messages (a LiteLLM placeholder that is discarded),
     # but proxy_server_request.body.data.messages references it.
-    rec = {
-        "ts": "2026-06-05T12:00:00+00:00",
-        "status": "success",
-        "model": "m",
-        "request": {
-            "messages": [{"wrap-ref-id": "0", "content": "canonical"}],
-            "proxy_server_request": {"body": {"data": {"messages": ["wrap-ref:0"]}}},
+    rec = cast(
+        "LogRecord",
+        {
+            "ts": "2026-06-05T12:00:00+00:00",
+            "end_ts": "2026-06-05T12:00:01+00:00",
+            "status": "success",
+            "model": "m",
+            "request": {
+                "messages": [{"wrap-ref-id": "0", "content": "canonical"}],
+                "proxy_server_request": {"body": {"data": {"messages": ["wrap-ref:0"]}}},
+            },
+            "response": {"choices": [{"message": {"content": "hi"}}]},
+            "error": None,
         },
-        "response": {"choices": [{"message": {"content": "hi"}}]},
-    }
+    )
     out = normalize_record(rec, {})
     # The discarded field's canonical object should still be resolved
     assert out["messages"] == [{"content": "canonical"}]
@@ -191,7 +212,7 @@ def test_normalize_resolves_wrap_ref_from_discarded_fields():
 
 
 def test_normalize_tolerates_missing_pieces():
-    out = normalize_record({"ts": "t", "status": "failure", "error": "boom"}, {})
+    out = normalize_record(cast("LogRecord", {"ts": "t", "status": "failure", "error": "boom"}), {})
     assert out["messages"] == []
     assert out["tools"] == []
     assert out["response"] == {}
@@ -219,8 +240,19 @@ def test_normalize_agent_id_none_without_header():
 # --- extract_alias ---
 
 
-def _naming_record(content: str) -> dict:
-    return {"response": {"choices": [{"message": {"role": "assistant", "content": content}}]}}
+def _naming_record(content: str) -> LogRecord:
+    return cast(
+        "LogRecord",
+        {
+            "ts": "2026-06-05T12:00:00+00:00",
+            "end_ts": "2026-06-05T12:00:01+00:00",
+            "status": "success",
+            "model": "m",
+            "request": {"messages": [], "proxy_server_request": {}},
+            "response": {"choices": [{"message": {"role": "assistant", "content": content}}]},
+            "error": None,
+        },
+    )
 
 
 def test_extract_alias_from_name_payload():
@@ -236,13 +268,13 @@ def test_extract_alias_ignores_title_payload():
 def test_extract_alias_none_for_freeform_and_missing():
     assert extract_alias(_naming_record("hi there")) is None
     assert extract_alias(_naming_record('{"name": ""}')) is None
-    assert extract_alias({}) is None
+    assert extract_alias(cast("LogRecord", {})) is None
 
 
 # --- filesystem helpers ---
 
 
-def _write_session(project: Path, provider: str, session_id: str, records: list[dict]) -> Path:
+def _write_session(project: Path, provider: str, session_id: str, records: list[Any]) -> Path:
     sdir = project / ".claude" / "litellm-logs" / provider / session_id
     sdir.mkdir(parents=True)
     with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
@@ -295,7 +327,8 @@ def test_list_sessions_derives_alias_from_naming_record(tmp_path: Path):
     assert list_sessions(project)[0]["alias"] == "derived-slug"
 
 
-def test_list_sessions_alias_file_wins_over_derivation(tmp_path: Path):
+def test_list_sessions_meta_json_alias_used(tmp_path: Path):
+    """Alias from meta.json cache is used when the cache is fresh."""
     project = tmp_path / "proj"
     sdir = _write_session(
         project,
@@ -303,8 +336,16 @@ def test_list_sessions_alias_file_wins_over_derivation(tmp_path: Path):
         "s1",
         [_naming_record('{"name": "derived-slug"}') | {"ts": "2026-06-05T00:00:00+00:00"}],
     )
-    (sdir / "alias").write_text("file-slug\n", encoding="utf-8")
-    assert list_sessions(project)[0]["alias"] == "file-slug"
+    _write_meta_file(
+        sdir,
+        {
+            "count": 1,
+            "last_ts": "2026-06-05T00:00:00+00:00",
+            "models": ["a"],
+            "alias": "meta-slug",
+        },
+    )
+    assert list_sessions(project)[0]["alias"] == "meta-slug"
 
 
 def test_list_sessions_alias_none_when_absent(tmp_path: Path):
@@ -793,3 +834,162 @@ def test_resolve_static_rejects_traversal(tmp_path: Path):
     # Escaping the page dir must be refused, not resolved to a sibling file.
     assert resolve_static(page, "/../logs.py") is None
     assert resolve_static(page, "/../../etc/passwd") is None
+
+
+# --- meta.json caching (_read_meta_json / _write_meta_json / _scan_session_meta) ---
+
+
+def _write_meta_file(session_dir: Path, meta: dict) -> Path:
+    """Write a meta.json file directly (bypassing atomic write)."""
+    f = session_dir / "meta.json"
+    f.write_text(json.dumps(meta), encoding="utf-8")
+    return f
+
+
+def test_read_meta_json_returns_dict_when_fresh(tmp_path: Path):
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    # Write meta.json AFTER messages.jsonl so it's fresher.
+    _write_meta_file(sdir, {"count": 1, "last_ts": "2026-06-05T00:00:00+00:00", "models": ["a"]})
+    cached = _read_meta_json(sdir)
+    assert cached is not None
+    assert cached["count"] == 1
+    assert cached["models"] == ["a"]
+
+
+def test_read_meta_json_returns_none_when_missing(tmp_path: Path):
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    assert _read_meta_json(sdir) is None
+
+
+def test_read_meta_json_returns_none_when_stale(tmp_path: Path):
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    # Write meta.json BEFORE messages.jsonl, making it stale.
+    _write_meta_file(sdir, {"count": 0, "last_ts": "old", "models": []})
+    # Force meta.json mtime into the past so messages.jsonl is strictly newer.
+    import os
+    import time
+
+    past = time.time() - 60
+    os.utime(sdir / "meta.json", (past, past))
+    # Append another record to messages.jsonl to make it newer.
+    msg_file = sdir / "messages.jsonl"
+    with msg_file.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": "2026-06-06T00:00:00+00:00", "model": "m/b"}) + "\n")
+    assert _read_meta_json(sdir) is None
+
+
+def test_read_meta_json_returns_none_when_corrupt(tmp_path: Path):
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    (sdir / "meta.json").write_text("not valid json", encoding="utf-8")
+    # Ensure meta.json mtime >= messages.jsonl mtime for the freshness check.
+    import time
+
+    time.sleep(0.01)
+    # Touch meta.json so it passes the staleness check but fails JSON parse.
+    (sdir / "meta.json").write_text("still not json {{{", encoding="utf-8")
+    assert _read_meta_json(sdir) is None
+
+
+def test_scan_session_meta_uses_cache(tmp_path: Path):
+    """When meta.json is fresh, _scan_session_meta returns cached data."""
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    _write_meta_file(
+        sdir,
+        {
+            "count": 5,
+            "last_ts": "2026-06-06T00:00:00+00:00",
+            "models": ["a", "b"],
+            "alias": "cached-alias",
+            "title": "Cached Title",
+        },
+    )
+    result = _scan_session_meta(sdir, "litellm-bedrock")
+    assert result is not None
+    assert result["count"] == 5
+    assert result["last_ts"] == "2026-06-06T00:00:00+00:00"
+    assert result["models"] == ["a", "b"]
+    assert result["alias"] == "cached-alias"
+    assert result["title"] == "Cached Title"
+    assert result["provider"] == "litellm-bedrock"
+    assert result["session_id"] == "s1"
+
+
+def test_scan_session_meta_falls_back_without_cache(tmp_path: Path):
+    """Without meta.json, _scan_session_meta scans messages.jsonl and seeds cache."""
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [
+            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"},
+            {"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"},
+        ],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    # No meta.json — should fall back to scan.
+    result = _scan_session_meta(sdir, "litellm-bedrock")
+    assert result is not None
+    assert result["count"] == 2
+    assert result["models"] == ["a", "b"]
+    # Should have seeded the cache for next time.
+    cached = _read_meta_json(sdir)
+    assert cached is not None
+    assert cached["count"] == 2
+    assert cached["models"] == ["a", "b"]
+
+
+def test_write_and_read_meta_json_round_trip(tmp_path: Path):
+    """_write_meta_json produces a file that _read_meta_json can consume."""
+    sdir = tmp_path / "s"
+    sdir.mkdir()
+    (sdir / "messages.jsonl").write_text(
+        json.dumps({"ts": "2026-06-05T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    _write_meta_json(
+        sdir,
+        {
+            "count": 3,
+            "last_ts": "2026-06-05T02:00:00+00:00",
+            "models": ["x", "y"],
+            "alias": "test-alias",
+            "title": "Test Title",
+        },
+    )
+    cached = _read_meta_json(sdir)
+    assert cached is not None
+    assert cached["count"] == 3
+    assert cached["last_ts"] == "2026-06-05T02:00:00+00:00"
+    assert cached["models"] == ["x", "y"]
+    assert cached["alias"] == "test-alias"
+    assert cached["title"] == "Test Title"

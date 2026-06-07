@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_wrap.providers.litellm_common.callback import (
@@ -12,12 +13,15 @@ from agent_wrap.providers.litellm_common.callback import (
     _resolve_thinking_reasoning_conflict,
     build_record,
     extract_session_alias,
+    extract_session_title,
 )
-from agent_wrap.providers.litellm_common.string_hasher import (
+from agent_wrap.providers.litellm_common.helpers import (
     _SESSION_HASHERS,
-    StringHasher,
     get_session_hasher,
 )
+from agent_wrap.providers.litellm_common.string_hasher import StringHasher
+
+_TS = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def test_string_hasher_basic_hashing() -> None:
@@ -121,26 +125,31 @@ def test_build_record_success_shape() -> None:
         "messages": [{"role": "user", "content": "hi"}],
         "litellm_params": {"proxy_server_request": {"url": "/bedrock/x", "body": {"a": 1}}},
     }
-    record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
+    record = build_record(
+        kwargs, {"choices": [{"text": "yo"}]}, status="success", start_ts=_TS, end_ts=_TS
+    )
 
     assert record["status"] == "success"
     assert record["model"] == "bedrock/claude"
     assert record["request"]["messages"] == kwargs["messages"]
     assert record["request"]["proxy_server_request"]["url"] == "/bedrock/x"
     assert record["response"] == {"choices": [{"text": "yo"}]}
-    assert "error" not in record
+    assert record["error"] is None
     assert "ts" in record
+    assert "end_ts" in record
 
 
 def test_build_record_failure_includes_error() -> None:
-    record = build_record({}, None, status="failure", exc=RuntimeError("boom"))
+    record = build_record(
+        {}, None, status="failure", exc=RuntimeError("boom"), start_ts=_TS, end_ts=_TS
+    )
     assert record["status"] == "failure"
     assert record["error"] == "boom"
 
 
 def test_build_record_tolerates_missing_keys() -> None:
-    record = build_record({}, None, status="success")
-    assert record["model"] is None
+    record = build_record({}, None, status="success", start_ts=_TS, end_ts=_TS)
+    assert record["model"] == "undefined"
     assert record["request"]["messages"] is None
     assert record["request"]["proxy_server_request"] is None
 
@@ -150,7 +159,9 @@ def test_build_record_is_json_serializable_with_default_str() -> None:
         def __str__(self) -> str:
             return "weird-obj"
 
-    record = build_record({"model": "m", "messages": [Weird()]}, Weird(), status="success")
+    record = build_record(
+        {"model": "m", "messages": [Weird()]}, Weird(), status="success", start_ts=_TS, end_ts=_TS
+    )
     # default=str mirrors how the callback writes the line.
     line = json.dumps(record, default=str)
     assert "weird-obj" in line
@@ -161,7 +172,7 @@ def test_build_record_breaks_circular_references() -> None:
     cyclic: dict[str, object] = {"a": 1}
     cyclic["self"] = cyclic
 
-    record = build_record({"model": "m"}, cyclic, status="success")
+    record = build_record({"model": "m"}, cyclic, status="success", start_ts=_TS, end_ts=_TS)
 
     # The root object gets a wrap-ref-id, and the self-reference becomes wrap-ref:<id>
     assert "wrap-ref-id" in record["response"]
@@ -176,7 +187,9 @@ def test_build_record_breaks_circular_list_references() -> None:
     cyclic_list: list[object] = [1, 2]
     cyclic_list.append(cyclic_list)
 
-    record = build_record({"model": "m"}, {"data": cyclic_list}, status="success")
+    record = build_record(
+        {"model": "m"}, {"data": cyclic_list}, status="success", start_ts=_TS, end_ts=_TS
+    )
 
     # The outer dict is only referenced once, so it does NOT get a wrap-ref-id.
     assert "wrap-ref-id" not in record["response"]
@@ -197,7 +210,7 @@ def test_build_record_uses_model_dump_for_pydantic_like() -> None:
         def model_dump(self) -> dict[str, object]:
             return {"kind": "modelish", "n": 1}
 
-    record = build_record({"model": "m"}, Modelish(), status="success")
+    record = build_record({"model": "m"}, Modelish(), status="success", start_ts=_TS, end_ts=_TS)
     assert record["response"] == {"kind": "modelish", "n": 1}
 
 
@@ -214,7 +227,9 @@ def test_build_record_hashes_long_strings() -> None:
 
     # We can't test the actual file creation in unit tests due to permissions,
     # but we can verify the hashing behavior in the record
-    record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
+    record = build_record(
+        kwargs, {"choices": [{"text": "yo"}]}, status="success", start_ts=_TS, end_ts=_TS
+    )
 
     # The long string should be hashed in the output
     messages = record["request"]["messages"]
@@ -236,7 +251,9 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
         },
     }
 
-    record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
+    record = build_record(
+        kwargs, {"choices": [{"text": "yo"}]}, status="success", start_ts=_TS, end_ts=_TS
+    )
 
     # The short string should remain unchanged
     messages = record["request"]["messages"]
@@ -279,6 +296,37 @@ def test_extract_session_alias_none_for_freeform_and_empty() -> None:
     assert extract_session_alias(None) is None
 
 
+# --- extract_session_title ---
+
+
+def testextract_session_title_from_title_payload() -> None:
+    resp = _name_response('{"title": "Build a web viewer for logs"}')
+    assert extract_session_title(resp) == "Build a web viewer for logs"
+
+
+def testextract_session_title_ignores_name_payload() -> None:
+    resp = _name_response('{"name": "some-slug"}')
+    assert extract_session_title(resp) is None
+
+
+def testextract_session_title_none_for_freeform_and_empty() -> None:
+    assert extract_session_title(_name_response("just some words")) is None
+    assert extract_session_title(_name_response('{"title": ""}')) is None
+    assert extract_session_title(_name_response('{"title": "   "}')) is None
+    assert extract_session_title({}) is None
+    assert extract_session_title(None) is None
+
+
+def testextract_session_title_tolerates_trailing_prose() -> None:
+    resp = _name_response('{"title": "Fix the login bug"} here you go!')
+    assert extract_session_title(resp) == "Fix the login bug"
+
+
+def testextract_session_title_handles_choices_text_shape() -> None:
+    resp = {"choices": [{"text": '{"title": "Add authentication"}'}]}
+    assert extract_session_title(resp) == "Add authentication"
+
+
 def test_get_session_id_extracted_from_headers() -> None:
     kwargs = {
         "litellm_params": {
@@ -317,7 +365,9 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
             "proxy_server_request": {"headers": {"x-claude-code-session-id": session_id}}
         },
     }
-    record1 = build_record(kwargs1, {"choices": [{"text": "response 1"}]}, status="success")
+    record1 = build_record(
+        kwargs1, {"choices": [{"text": "response 1"}]}, status="success", start_ts=_TS, end_ts=_TS
+    )
 
     # Simulate Request 2 with the SAME string (should be deduplicated in memory)
     kwargs2 = {
@@ -327,7 +377,9 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
             "proxy_server_request": {"headers": {"x-claude-code-session-id": session_id}}
         },
     }
-    record2 = build_record(kwargs2, {"choices": [{"text": "response 2"}]}, status="success")
+    record2 = build_record(
+        kwargs2, {"choices": [{"text": "response 2"}]}, status="success", start_ts=_TS, end_ts=_TS
+    )
 
     # Both records should have the exact same hash
     hash1 = record1["request"]["messages"][0]["content"]

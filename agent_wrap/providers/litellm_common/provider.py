@@ -411,7 +411,7 @@ class LiteLLMProvider(Provider):
             *chain(
                 *(
                     ("-v", f"{callback_dir / filename}:/etc/litellm/{filename}:ro")
-                    for filename in ("callback.py", "string_hasher.py")
+                    for filename in ("callback.py", "string_hasher.py", "helpers.py")
                 )
             ),
             "-v",

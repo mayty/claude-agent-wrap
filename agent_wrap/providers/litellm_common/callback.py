@@ -20,27 +20,55 @@ import asyncio
 import json
 import re
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 try:
-    from .string_hasher import StringHasher, get_session_hasher
+    from .helpers import RefTracker, get_response_content_str, get_session_hasher, json_safe
 except ImportError:
     # Fallback for sidecar container execution where callback.py is mounted
-    # as a top-level module in /etc/litellm/ alongside string_hasher.py
-    # LiteLLM loads this module via importlib.util.spec_from_file_location,
-    # which does not automatically add the file's directory to sys.path.
-    # We must add it explicitly so that `string_hasher` can be imported
-    # when running inside the sidecar container.
+    # as a top-level module in /etc/litellm/ alongside helpers.py
     _current_dir = str(Path(__file__).parent.resolve())
     if _current_dir not in sys.path:
         sys.path.insert(0, _current_dir)
-    from string_hasher import StringHasher, get_session_hasher  # type: ignore[no-redef]
+    from helpers import (  # type: ignore[no-redef]
+        RefTracker,
+        get_response_content_str,
+        get_session_hasher,
+        json_safe,
+    )
+
+
+class MetaData(TypedDict):
+    count: int
+    last_ts: str
+    models: list[str]
+    alias: str | None
+    title: str | None
+
+
+class RequestLog(TypedDict):
+    messages: list[dict[str, Any]]
+    proxy_server_request: dict[str, Any]
+
+
+class LogRecord(TypedDict):
+    ts: str
+    end_ts: str
+    status: str
+    model: str
+    request: RequestLog
+    response: dict[str, Any]
+    error: str | None
+
 
 # The host log directory is bind-mounted here by the provider lifecycle
 # (see litellm_common/provider.py::_start). The provider-specific subdirectory
 # is mounted directly to /var/log/agent-wrap, so we only need to append the session_id.
+
+
+_ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]+)"')
 
 
 def _get_session_id(kwargs: dict[str, Any]) -> str:
@@ -51,128 +79,15 @@ def _get_session_id(kwargs: dict[str, Any]) -> str:
     return headers.get("x-claude-code-session-id", "unknown-session")
 
 
-class RefTracker:
-    """Tracks object references to replace circular dependencies with reference IDs."""
-
-    def __init__(self, root_obj: Any) -> None:
-        self.assigned_ids: dict[int, str] = {}
-        self.reference_counts: dict[int, int] = {}
-        self.next_id: int = 0
-        self._count_references(root_obj)
-
-    def _count_references(self, obj: Any) -> None:
-        stack: list[Any] = [obj]
-        seen_counts: set[int] = set()
-
-        while stack:
-            current = stack.pop()
-            if isinstance(current, (dict, list, tuple, set)):
-                obj_id = id(current)
-                self.reference_counts[obj_id] = self.reference_counts.get(obj_id, 0) + 1
-
-                if obj_id in seen_counts:
-                    continue
-                seen_counts.add(obj_id)
-
-                if isinstance(current, dict):
-                    stack.extend(current.values())
-                else:
-                    stack.extend(current)
-
-    def get_id(self, obj: Any) -> str | None:
-        return self.assigned_ids.get(id(obj))
-
-    def assign_id(self, obj: Any) -> str:
-        ref_id = str(self.next_id)
-        self.next_id += 1
-        self.assigned_ids[id(obj)] = ref_id
-        return ref_id
-
-    def is_referenced(self, obj: Any) -> bool:
-        return self.reference_counts.get(id(obj), 0) > 1
-
-
-def _json_safe_container(
-    obj: dict | list | tuple | set,
-    tracker: RefTracker,
-    _hasher: StringHasher | None = None,
-) -> Any:
-    """Handle JSON serialization for containers with reference tracking."""
-    if tracker.is_referenced(obj):
-        existing_ref = tracker.get_id(obj)
-        if existing_ref is not None:
-            return f"wrap-ref:{existing_ref}"
-
-        # First time serializing this referenced container
-        ref_id = tracker.assign_id(obj)
-
-        if isinstance(obj, dict):
-            result = {str(k): _json_safe(v, tracker, _hasher) for k, v in obj.items()}
-            result["wrap-ref-id"] = ref_id
-            return result
-
-        # For list/tuple/set, convert to list first
-        result = [_json_safe(v, tracker, _hasher) for v in obj]
-        result.insert(0, f"wrap-ref-id:{ref_id}")
-        return result
-
-    # Not referenced multiple times, serialize normally without ref_id
-    if isinstance(obj, dict):
-        return {str(k): _json_safe(v, tracker, _hasher) for k, v in obj.items()}
-    return [_json_safe(v, tracker, _hasher) for v in obj]
-
-
-def _json_safe(
-    obj: Any,
-    tracker: RefTracker,
-    _hasher: StringHasher | None = None,
-) -> Any:
-    """
-    Recursively coerce ``obj`` into JSON-serializable primitives.
-
-    LiteLLM's request/response objects contain cycles (e.g. an object that
-    references the logging object that references it), which makes a plain
-    ``json.dumps(..., default=str)`` raise "Circular reference detected". This
-    walks the structure, assigning a unique reference ID to each container on
-    first encounter *only if the container is referenced multiple times*.
-    Subsequent encounters of the same container are replaced with ``"wrap-ref:<id>"``.
-    The reference ID is also injected into the serialized container (as a
-    ``wrap-ref-id`` key for dicts, or at index 0 for lists). Unknown leaf types fall
-    back to ``str()``. If ``_hasher`` is provided, string values meeting the
-    length threshold are replaced with ``"hash:<sha256_hex>"``.
-    """
-    # Handle primitive types
-    if obj is None or isinstance(obj, (int, float, bool)):
-        return obj
-
-    # Handle strings (with optional hashing)
-    if isinstance(obj, str):
-        return _hasher.hash_string(obj) if _hasher else obj
-
-    # Handle containers
-    if isinstance(obj, (dict, list, tuple, set)):
-        return _json_safe_container(obj, tracker, _hasher)
-
-    # Handle Pydantic models and other objects with model_dump/dict methods
-    for attr in ("model_dump", "dict"):
-        method = getattr(obj, attr, None)
-        if callable(method):
-            try:
-                return _json_safe(method(), tracker, _hasher)
-            except Exception:  # noqa: BLE001 - best-effort, fall through to str()
-                break
-
-    # Fallback for unknown types: convert to string and optionally hash
-    str_val = str(obj)
-    return _hasher.hash_string(str_val) if _hasher else str_val
-
-
-def build_record(
+def build_record(  # noqa: PLR0913
     kwargs: dict[str, Any],
     response_obj: Any,
     status: str,
     exc: Any = None,
-) -> dict[str, Any]:
+    *,
+    start_ts: Any = None,
+    end_ts: Any = None,
+) -> LogRecord:
     """
     Build a JSON-serializable log record from a LiteLLM callback's arguments.
 
@@ -198,17 +113,20 @@ def build_record(
     )
 
     litellm_params = kwargs.get("litellm_params") or {}
-    record: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+    model = kwargs.get("model")
+    record: LogRecord = {
+        "ts": start_ts.isoformat(),
+        "end_ts": end_ts.isoformat(),
         "status": status,
-        "model": _json_safe(kwargs.get("model"), tracker, hasher),
+        "model": model or "undefined",
         "request": {
-            "messages": _json_safe(kwargs.get("messages"), tracker, hasher),
-            "proxy_server_request": _json_safe(
+            "messages": json_safe(kwargs.get("messages"), tracker, hasher),
+            "proxy_server_request": json_safe(
                 litellm_params.get("proxy_server_request"), tracker, hasher
             ),
         },
-        "response": _json_safe(response_obj, tracker, hasher),
+        "response": json_safe(response_obj, tracker, hasher),
+        "error": None,
     }
     if exc is not None:
         record["error"] = hasher.hash_string(str(exc))
@@ -217,32 +135,6 @@ def build_record(
     hasher.flush(session_id)
 
     return record
-
-
-_ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
-
-
-def _response_content_str(response: Any) -> str | None:
-    """
-    Pull the assistant's text content out of a JSON-safe response dict.
-
-    Handles the OpenAI-shaped ``choices[0].message.content`` and the older
-    ``choices[0].text`` variant. Returns None when no string content is found.
-    """
-    if not isinstance(response, dict):
-        return None
-    choices = response.get("choices")
-    if not (isinstance(choices, list) and choices):
-        return None
-    first = choices[0]
-    if not isinstance(first, dict):
-        return None
-    message = first.get("message")
-    if isinstance(message, dict) and isinstance(message.get("content"), str):
-        return message["content"]
-    if isinstance(first.get("text"), str):
-        return first["text"]
-    return None
 
 
 def extract_session_alias(response: Any) -> str | None:
@@ -255,7 +147,7 @@ def extract_session_alias(response: Any) -> str | None:
     The slug is short, so it is never hashed — this operates on the JSON-safe
     response dict directly. Returns None for anything that isn't a name payload.
     """
-    content = _response_content_str(response)
+    content = get_response_content_str(response)
     if not content:
         return None
     stripped = content.strip()
@@ -272,46 +164,109 @@ def extract_session_alias(response: Any) -> str | None:
     return None
 
 
-async def _write_alias_async(session_id: str, alias: str) -> None:
-    """Write the session alias to ``alias`` beside the logs. Never raises."""
+def extract_session_title(response: Any) -> str | None:
+    """
+    Return Claude Code's sentence-case session title if this is its title call.
+
+    Claude Code generates a session title via a small model call whose response
+    content is ``{"title": "…"}``.  This mirrors :func:`extract_session_alias`
+    but for the sibling title payload.  Returns None for anything else.
+    """
+    content = get_response_content_str(response)
+    if not content:
+        return None
+    stripped = content.strip()
     try:
-        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        match = _TITLE_RE.search(stripped)
+        return match.group(1).strip() or None if match else None
+    if isinstance(obj, dict):
+        title = obj.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    return None
 
-        def _write() -> None:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            # Overwrite so a later rename of the session wins.
-            (log_dir / "alias").write_text(alias + "\n", encoding="utf-8")
 
-        await asyncio.to_thread(_write)
-    except Exception as e:  # noqa: BLE001 - logging is best-effort
-        print(f"agent-wrap callback: failed to write alias: {e}", file=sys.stderr)
+def _get_empty_meta() -> MetaData:
+    return {
+        "count": 0,
+        "last_ts": "0000-00-00T00:00:00+00:00",
+        "models": [],
+        "alias": None,
+        "title": None,
+    }
 
 
-async def _write_record_async(record: dict[str, Any], kwargs: dict[str, Any]) -> None:
-    """Append one record as a JSON line to the session-specific log file asynchronously. Never raises."""
+def _read_meta(log_dir: Path) -> MetaData:
+    """Read existing ``meta.json``, returning ``{}`` if missing or corrupt."""
+    meta_file = log_dir / "meta.json"
+    if not meta_file.is_file():
+        return _get_empty_meta()
     try:
-        session_id = _get_session_id(kwargs)
+        return json.loads(meta_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return _get_empty_meta()
 
-        # Get the hasher (this triggers _load_seen_hashes if it's the first time)
-        hasher = get_session_hasher(session_id)
 
-        # Flush string mappings in a background thread
-        await asyncio.to_thread(hasher.flush, session_id)
+def _write_meta(log_dir: Path, meta: MetaData) -> None:
+    """Write ``meta.json`` atomically.  Best-effort; never raises."""
+    meta_file = log_dir / "meta.json"
+    tmp_file = log_dir / "meta.json.tmp"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file.write_text(json.dumps(meta), encoding="utf-8")
+        tmp_file.replace(meta_file)
+    except OSError:
+        pass
 
-        # Append the log record in a background thread
-        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
-        log_file = log_dir / "messages.jsonl"
-        line = json.dumps(record, default=str)
 
-        def _append_to_file() -> None:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            with log_file.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+def _get_log_dir(kwargs: dict[str, Any]) -> Path:
+    """Return the per-session log directory for the session in *kwargs*."""
+    return Path(f"/var/log/agent-wrap/{_get_session_id(kwargs)}")
 
-        await asyncio.to_thread(_append_to_file)
 
-    except Exception as e:  # noqa: BLE001 - logging is best-effort
-        print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
+async def _write_record_async(record: LogRecord, kwargs: dict[str, Any]) -> None:
+    """Append *record* as a JSON line to ``messages.jsonl``.  Never raises."""
+    session_id = _get_session_id(kwargs)
+
+    # Flush string mappings before appending the record.
+    hasher = get_session_hasher(session_id)
+    await asyncio.to_thread(hasher.flush, session_id)
+
+    log_dir = _get_log_dir(kwargs)
+    log_file = log_dir / "messages.jsonl"
+    line = json.dumps(record, default=str)
+
+    def _append() -> None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    await asyncio.to_thread(_append)
+
+
+def _write_metadata(record: LogRecord, kwargs: dict[str, Any]) -> None:
+    """Update ``meta.json`` from *record*.  Never raises."""
+    log_dir = _get_log_dir(kwargs)
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = _read_meta(log_dir)
+    meta["count"] += 1
+    if record.get("ts"):
+        meta["last_ts"] = record["end_ts"]
+    model = record.get("model")
+    if model:
+        short = model.rsplit("/", 1)[-1]
+        meta["models"] = sorted(set(meta["models"]) | {short})
+    alias = extract_session_alias(record.get("response"))
+    if alias:
+        meta["alias"] = alias
+    title = extract_session_title(record.get("response"))
+    if title:
+        meta["title"] = title
+    _write_meta(log_dir, meta)
 
 
 def _resolve_thinking_reasoning_conflict(data: dict[str, Any]) -> dict[str, Any]:
@@ -355,21 +310,31 @@ try:
             """Resolve provider-specific parameter conflicts before the upstream call."""
             return _resolve_thinking_reasoning_conflict(data)
 
-        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
-            record = build_record(kwargs, response_obj, status="success")
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:
+            record = build_record(
+                kwargs, response_obj, status="success", start_ts=start_time, end_ts=end_time
+            )
             await _write_record_async(record, kwargs)
-            alias = extract_session_alias(record.get("response"))
-            if alias:
-                await _write_alias_async(_get_session_id(kwargs), alias)
+            _write_metadata(record, kwargs)
 
-        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ARG002
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:
             record = build_record(
                 kwargs,
                 response_obj,
                 status="failure",
                 exc=kwargs.get("exception"),
+                start_ts=start_time,
+                end_ts=end_time,
             )
-            await _write_record_async(record, kwargs)
+            try:
+                await _write_record_async(record, kwargs)
+            except Exception as e:  # noqa: BLE001 - logging is best-effort
+                print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
+            try:
+                _write_metadata(record, kwargs)
+
+            except Exception as e:  # noqa: BLE001 - logging is best-effort
+                print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
 
     file_logger_instance = FileLogger()
 except ImportError:
