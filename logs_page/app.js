@@ -2,7 +2,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
-              poll: null, fp: null, gen: 0 };
+              poll: null, fp: null, gen: 0,
+              listPoll: null, projectsFp: null, sessionsFp: null };
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -49,8 +50,7 @@ function showError(containerId, message) {
   container.appendChild(box);
 }
 
-async function loadProjects() {
-  const projects = await getJSON("/api/projects");
+function renderProjectsList(projects) {
   const list = $("proj-list");
   list.innerHTML = "";
   if (!projects.length) {
@@ -64,7 +64,44 @@ async function loadProjects() {
     item.appendChild(meta);
     item.title = p.path;
     item.onclick = () => selectProject(p, item);
+    if (state.project === p.id) item.classList.add("active");
     list.appendChild(item);
+  }
+}
+
+async function loadProjects() {
+  const projects = await getJSON("/api/projects");
+  renderProjectsList(projects);
+}
+
+function renderSessionsList(sessions) {
+  const list = $("sess-list");
+  list.innerHTML = "";
+  if (!sessions.length) {
+    list.appendChild(el("div", "empty", "No sessions."));
+    return;
+  }
+  for (const s of sessions) {
+    const sessItem = el("div", "item");
+    const top = el("div", null);
+    for (const p of s.providers) {
+      top.appendChild(el("span", "badge", p.replace(/^litellm-/, "")));
+    }
+    const name = s.alias || s.session_id.slice(0, 8);
+    if (s.providers.length > 1) {
+      sessItem.appendChild(top);
+      sessItem.appendChild(el("div", "name", name));
+    } else {
+      top.appendChild(document.createTextNode(name));
+      sessItem.appendChild(top);
+    }
+    const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
+    sessItem.appendChild(el("div", "meta",
+      `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
+    sessItem.title = s.session_id;
+    sessItem.onclick = () => selectSession(s, sessItem);
+    if (state.session === s.session_id) sessItem.classList.add("active");
+    list.appendChild(sessItem);
   }
 }
 
@@ -73,42 +110,19 @@ async function selectProject(p, item) {
   state.gen++; // discard any session load still in flight from the prior project
   state.project = p.id;
   state.session = null;
+  state.sessionsFp = null;
   document.querySelectorAll("#proj-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   $("chat").innerHTML = '<div class="hint">Loading sessions…</div>';
-  const list = $("sess-list");
-  list.innerHTML = "";
   try {
     const sessions = await getJSON(`/api/sessions?project=${p.id}`);
+    renderSessionsList(sessions);
     if (!sessions.length) {
-      list.appendChild(el("div", "empty", "No sessions."));
       $("chat").innerHTML = '<div class="hint">No sessions available.</div>';
       return;
     }
-    for (const s of sessions) {
-      const sessItem = el("div", "item");
-      const top = el("div", null);
-      for (const p of s.providers) {
-        top.appendChild(el("span", "badge", p.replace(/^litellm-/, "")));
-      }
-      const name = s.alias || s.session_id.slice(0, 8);
-      if (s.providers.length > 1) {
-        sessItem.appendChild(top);
-        sessItem.appendChild(el("div", "name", name));
-      } else {
-        top.appendChild(document.createTextNode(name));
-        sessItem.appendChild(top);
-      }
-      const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
-      sessItem.appendChild(el("div", "meta",
-        `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
-      sessItem.title = s.session_id;
-      sessItem.onclick = () => selectSession(s, sessItem);
-      list.appendChild(sessItem);
-    }
     $("chat").innerHTML = '<div class="hint">Select a session to view its requests.</div>';
   } catch (e) {
-    list.appendChild(el("div", "empty", "Error loading sessions"));
     showError("chat", "Could not load sessions: " + e.message);
   }
 }
@@ -129,9 +143,11 @@ async function selectSession(s, item) {
   item.classList.add("active");
   $("chat").innerHTML = '<div class="hint">Loading…</div>';
   try {
-    const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
+    const data = await getJSON(`/api/session?${sessionQuery(s)}`);
     if (gen !== state.gen) return; // another session was selected mid-fetch
-    renderChat(reqs, s);
+    const reqs = data.reqs;
+    const session_meta = data.session_meta || s;
+    renderChat(reqs, session_meta);
     // Seed the fingerprint from the state at fetch time, then poll for changes.
     try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
     catch (e) { state.fp = null; }
@@ -158,6 +174,23 @@ function startPolling(s) {
   state.poll = setInterval(() => tick(s), 1000);
 }
 
+// Update a session list item's metadata in-place when new data arrives.
+// `meta` is the session_meta object from /api/session — same shape as a
+// list_sessions() entry — so we format it the same way selectProject() does.
+function updateSessionListItem(meta) {
+  if (!meta || !state.session) return;
+  const item = document.querySelector(
+    '#sess-list .item[title="' + CSS.escape(state.session) + '"]');
+  if (!item) return;
+  const metaEl = item.querySelector('.meta');
+  if (!metaEl) return;
+
+  const sub = meta.alias ? state.session.slice(0, 8) + ' · ' : '';
+  metaEl.textContent =
+    sub + meta.count + ' req · ' + fmtTs(meta.last_ts) +
+    (meta.models.length ? ' · ' + meta.models.join(', ') : '');
+}
+
 // One poll: if the session the user opened is still open and its fingerprint
 // changed, re-fetch and re-render in place, preserving scroll (auto-following
 // only when the user was already at the bottom). Errors are swallowed so a
@@ -167,10 +200,11 @@ async function tick(s) {
   try {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
     if (fp === state.fp) return;
-    const reqs = await getJSON(`/api/session?${sessionQuery(s)}`);
+    const data = await getJSON(`/api/session?${sessionQuery(s)}`);
     if (state.session !== s.session_id) return; // user moved on during the fetch
-    state.reqs = reqs;
-    state.groups = groupBySubagent(reqs);
+    state.reqs = data.reqs;
+    state.groups = groupBySubagent(data.reqs);
+    updateSessionListItem(data.session_meta);
     state.fp = fp;
     const chat = $("chat");
     const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40;
@@ -183,6 +217,42 @@ async function tick(s) {
       chat.scrollTop = prevTop; // hold the user's place instantly (no visible shift)
     }
   } catch (e) { /* transient; retry next tick */ }
+}
+
+// ---------------------------------------------------------------------------
+// List-level polling: refresh projects and sessions lists as the agent writes
+// new records.  Runs independently from the per-session poll so both lists
+// stay live even when no session is open.
+// ---------------------------------------------------------------------------
+
+function startListPolling() {
+  state.listPoll = setInterval(listTick, 3000);
+}
+
+async function listTick() {
+  try {
+    const fp = fpKey(await getJSON("/api/projects-stat"));
+    if (state.projectsFp === null) {
+      state.projectsFp = fp; // seed on first tick, no re-fetch needed
+    } else if (fp !== state.projectsFp) {
+      state.projectsFp = fp;
+      const projects = await getJSON("/api/projects");
+      renderProjectsList(projects);
+    }
+  } catch (e) { /* transient */ }
+
+  if (state.project == null) return;
+
+  try {
+    const fp = fpKey(await getJSON(`/api/sessions-stat?project=${state.project}`));
+    if (state.sessionsFp === null) {
+      state.sessionsFp = fp; // seed on first tick for this project
+    } else if (fp !== state.sessionsFp) {
+      state.sessionsFp = fp;
+      const sessions = await getJSON(`/api/sessions?project=${state.project}`);
+      renderSessionsList(sessions);
+    }
+  } catch (e) { /* transient */ }
 }
 
 function asText(v) {
@@ -689,4 +759,6 @@ document.addEventListener("keydown", (e) => {
 loadProjects().catch(e => {
   $("proj-list").innerHTML = "";
   $("proj-list").appendChild(el("div", "empty", "Error: " + e.message));
+}).finally(() => {
+  startListPolling();
 });

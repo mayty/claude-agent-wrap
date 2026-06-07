@@ -560,49 +560,165 @@ def session_fingerprint(project: Path, session_id: str) -> dict[str, Any]:
     return {"mtime": best_mtime, "size": total_size}
 
 
-def read_session(project: Path, session_id: str) -> list[dict[str, Any]]:
+def sessions_fingerprint(project: Path) -> dict[str, Any]:
+    """
+    Return a change-marker for all sessions in a project.
+
+    Like :func:`session_fingerprint` but across every session directory so the
+    frontend's sessions-list poll can detect new sessions, new records, and
+    metadata changes without re-reading every messages.jsonl.
+
+    Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every
+    ``messages.jsonl`` under the project's logs directory.  Returns
+    ``{"mtime": None, "size": None}`` when no sessions exist.
+    """
+    logs_dir = _logs_dir(project)
+    if not logs_dir.is_dir():
+        return {"mtime": None, "size": None}
+
+    best_mtime: int | None = None
+    total_size: int | None = None
+    found = False
+
+    for provider_dir in logs_dir.iterdir():
+        if not provider_dir.is_dir():
+            continue
+        for session_dir in provider_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            messages_file = session_dir / "messages.jsonl"
+            try:
+                st = messages_file.stat()
+            except OSError:
+                continue
+            found = True
+            if best_mtime is None or st.st_mtime_ns > best_mtime:
+                best_mtime = st.st_mtime_ns
+            total_size = (total_size or 0) + st.st_size
+
+    if not found:
+        return {"mtime": None, "size": None}
+    return {"mtime": best_mtime, "size": total_size}
+
+
+def projects_fingerprint(tool_dir: Path) -> dict[str, Any]:
+    """
+    Return a change-marker for all registered projects that have logs.
+
+    Includes the registry file's mtime so new project registrations and removals
+    also change the fingerprint.  Returns ``{"mtime": max_mtime_ns, "size":
+    sum_sizes}`` across every ``messages.jsonl`` under every project.
+
+    Returns ``{"mtime": None, "size": None}`` when no projects have logs.
+    """
+    registry = tool_dir / ".agent-launches" / "projects.txt"
+    best_mtime: int | None = None
+    total_size: int | None = None
+
+    # Include the registry itself so new/removed projects change the fingerprint.
+    try:
+        st = registry.stat()
+        best_mtime = st.st_mtime_ns
+        total_size = st.st_size
+    except OSError:
+        return {"mtime": None, "size": None}
+
+    for project in load_projects(registry):
+        fp = sessions_fingerprint(project)
+        if fp["mtime"] is None:
+            continue
+        if best_mtime is None or fp["mtime"] > best_mtime:
+            best_mtime = fp["mtime"]
+        total_size = (total_size or 0) + (fp["size"] or 0)
+
+    return {"mtime": best_mtime, "size": total_size}
+
+
+def _read_provider_session(
+    session_dir: Path, provider: str, session_id: str
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """
+    Read and normalize records from one provider's session directory.
+
+    Returns ``(records, meta_entry)`` where *meta_entry* has the same shape as
+    :func:`_scan_session_meta` (or ``None`` when the directory has no records).
+    """
+    messages_file = session_dir / "messages.jsonl"
+    if not messages_file.is_file():
+        return [], None
+
+    strings = load_strings(session_dir)
+    meta = _SessionMeta()
+    records: list[dict[str, Any]] = []
+    try:
+        with messages_file.open("r", encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                try:
+                    rec = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                meta.add(rec)
+                raw_response = rec.get("response")
+                normalized = normalize_record(rec, strings)
+                enriched = _enrich_with_costs(normalized, raw_response, provider)
+                normalized.update(enriched)
+                records.append(normalized)
+    except OSError:
+        pass
+
+    if meta.count == 0:
+        return [], None
+
+    entry: dict[str, Any] = {
+        "provider": provider,
+        "session_id": session_id,
+        "alias": _read_alias_file(session_dir) or meta.derived_alias,
+        "count": meta.count,
+        "first_ts": meta.first_ts,
+        "last_ts": meta.last_ts,
+        "models": sorted(meta.models),
+    }
+    return records, entry
+
+
+def read_session(project: Path, session_id: str) -> dict[str, Any]:
     """
     Read and normalize every request in one session across all providers.
 
     When a session spans multiple providers (e.g. the user switched mid-session),
     records from every provider directory are loaded and merge-sorted by ``ts``
     so the chat view shows a single chronological thread.
+
+    Returns ``{"reqs": [...], "session_meta": {...}}`` where *session_meta* has
+    the same shape as one entry from :func:`list_sessions` (or ``None`` when no
+    records exist).
     """
     logs_dir = _logs_dir(project)
     if not logs_dir.is_dir():
-        return []
+        return {"reqs": [], "session_meta": None}
 
     all_records: list[dict[str, Any]] = []
+    combined_meta: dict[str, Any] | None = None
 
     for provider_dir in logs_dir.iterdir():
         if not provider_dir.is_dir():
             continue
-        session_dir = provider_dir / session_id
-        messages_file = session_dir / "messages.jsonl"
-        if not messages_file.is_file():
-            continue
-        provider = provider_dir.name
-        strings = load_strings(session_dir)
-        try:
-            with messages_file.open("r", encoding="utf-8", errors="replace") as f:
-                for raw_line in f:
-                    stripped = raw_line.strip()
-                    if not stripped:
-                        continue
-                    try:
-                        rec = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        continue
-                    raw_response = rec.get("response")
-                    normalized = normalize_record(rec, strings)
-                    enriched = _enrich_with_costs(normalized, raw_response, provider)
-                    normalized.update(enriched)
-                    all_records.append(normalized)
-        except OSError:
-            continue
+        records, entry = _read_provider_session(
+            provider_dir / session_id, provider_dir.name, session_id
+        )
+        all_records.extend(records)
+        if entry is not None:
+            if combined_meta is None:
+                combined_meta = entry
+                combined_meta["providers"] = [combined_meta.pop("provider")]
+            else:
+                _merge_session_meta(combined_meta, entry)
 
     all_records.sort(key=lambda r: r.get("ts") or "")
-    return all_records
+    return {"reqs": all_records, "session_meta": combined_meta}
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +784,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "unknown project"}, status=404)
             else:
                 self._send_json(list_sessions(project))
+            return
+
+        if path == "/api/projects-stat":
+            self._send_json(projects_fingerprint(self.tool_dir))
+            return
+
+        if path == "/api/sessions-stat":
+            project = self._resolve_project(params)
+            if project is None:
+                self._send_json({"error": "unknown project"}, status=404)
+            else:
+                self._send_json(sessions_fingerprint(project))
             return
 
         # /api/session and /api/session-stat need a (project, session) pair;

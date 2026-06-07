@@ -13,10 +13,12 @@ from agent_wrap.commands.logs import (
     list_sessions,
     load_strings,
     normalize_record,
+    projects_fingerprint,
     read_session,
     resolve,
     resolve_static,
     session_fingerprint,
+    sessions_fingerprint,
 )
 
 if TYPE_CHECKING:
@@ -319,9 +321,13 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path):
     (sdir / "strings.jsonl").write_text(
         json.dumps({"hash": "hash:s", "original": "X"}) + "\n", encoding="utf-8"
     )
-    reqs = read_session(project, "s1")
+    data = read_session(project, "s1")
+    reqs = data["reqs"]
     assert len(reqs) == 1
     assert reqs[0]["messages"] == [{"role": "user", "content": "hello"}]
+    assert data["session_meta"] is not None
+    assert data["session_meta"]["count"] == 1
+    assert data["session_meta"]["session_id"] == "s1"
 
 
 def test_session_fingerprint_reflects_file(tmp_path: Path):
@@ -429,10 +435,18 @@ def test_read_session_merges_across_providers(tmp_path: Path):
             },
         ],
     )
-    reqs = read_session(project, "s1")
+    data = read_session(project, "s1")
+    reqs = data["reqs"]
     assert len(reqs) == 2
     assert reqs[0]["messages"] == [{"role": "user", "content": "from bedrock"}]
     assert reqs[1]["messages"] == [{"role": "user", "content": "from deepseek"}]
+    # session_meta should be merged across providers
+    sm = data["session_meta"]
+    assert sm is not None
+    assert sm["session_id"] == "s1"
+    assert sm["providers"] == ["litellm-bedrock", "litellm-deepseek"]
+    assert sm["count"] == 2
+    assert sm["models"] == ["a", "b"]
 
 
 def test_session_fingerprint_combines_across_providers(tmp_path: Path):
@@ -468,6 +482,36 @@ def test_session_fingerprint_combines_across_providers(tmp_path: Path):
         .st_size
     )
     assert fp["size"] == size_bedrock + size_deepseek
+
+
+def test_sessions_fingerprint_reflects_changes(tmp_path: Path):
+    """Fingerprint changes when a record is appended to any session."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    fp1 = sessions_fingerprint(project)
+    assert isinstance(fp1["mtime"], int)
+    assert fp1["size"] > 0
+
+    # Append a record — mtime and size should change.
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s2",
+        [{"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"}],
+    )
+    fp2 = sessions_fingerprint(project)
+    assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
+
+
+def test_sessions_fingerprint_null_when_empty(tmp_path: Path):
+    """No sessions at all → null fingerprint."""
+    project = tmp_path / "proj"
+    assert sessions_fingerprint(project) == {"mtime": None, "size": None}
 
 
 def test_load_strings_round_trip(tmp_path: Path):
@@ -506,6 +550,39 @@ def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
 
 def test_list_projects_empty_without_registry(tmp_path: Path):
     assert list_projects(tmp_path / "nope") == []
+
+
+def test_projects_fingerprint_reflects_changes(tmp_path: Path):
+    """Fingerprint changes when a record is appended anywhere across projects."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    project = tmp_path / "proj"
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+    )
+    fp1 = projects_fingerprint(tool_dir)
+    assert isinstance(fp1["mtime"], int)
+    assert fp1["size"] > 0
+
+    # Append a record in a second session — fingerprint should change.
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s2",
+        [{"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"}],
+    )
+    fp2 = projects_fingerprint(tool_dir)
+    assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
+
+
+def test_projects_fingerprint_null_when_no_registry(tmp_path: Path):
+    """No registry file → null fingerprint."""
+    tool_dir = tmp_path / "nope"
+    assert projects_fingerprint(tool_dir) == {"mtime": None, "size": None}
 
 
 # --- arg parsing ---
