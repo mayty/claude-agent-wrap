@@ -165,7 +165,8 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 /* Scroll-to-bottom/top buttons — sticky inside the chat column so they float
    above the content rather than scrolling with it. */
 .scroll-btn-wrap-top { position: sticky; top: 8px; display: flex; justify-content: flex-end;
-                       padding: 0 22px 0; pointer-events: none; z-index: 3; }
+                       padding: 0 22px 0; height: 0; overflow: visible;
+                       pointer-events: none; z-index: 3; }
 .scroll-btn-wrap-bot { position: sticky; bottom: 0; display: flex; justify-content: flex-end;
                        height: 0; overflow: visible;
                        pointer-events: none; z-index: 3; }
