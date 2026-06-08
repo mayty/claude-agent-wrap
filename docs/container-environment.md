@@ -22,6 +22,17 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 - [litellm-dashscope](../agent_wrap/providers/litellm_dashscope/README.md)
 - [litellm-deepseek](../agent_wrap/providers/litellm_deepseek/README.md)
 
+## Host-forwarded (conditional)
+
+| Var | When forwarded | Effect |
+| --- | --- | --- |
+| `CLAUDE_CODE_ENABLE_AUTO_MODE` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Allows the use of Claude Code's [auto mode](https://code.claude.com/docs/en/auto-mode-config), an LLM-based permission classifier that auto-approves commands instead of prompting. This only matters on backends that **don't** speak the Anthropic protocol — i.e. the default `litellm-bedrock` provider, where auto mode is unavailable unless this var is set. The `litellm-dashscope` and `litellm-deepseek` providers use the Anthropic interface, which makes auto mode available by default, so the var is a no-op there. |
+
+```sh
+# Allow auto mode (LLM permission classifier) on Bedrock
+CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
+```
+
 ## WSLg (conditional)
 
 On WSL2+WSLg hosts, `DISPLAY`, `WAYLAND_DISPLAY`, and `XDG_RUNTIME_DIR` are forwarded. See [Clipboard / WSLg](wslg-clipboard.md).
