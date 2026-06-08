@@ -8,7 +8,6 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.commands.logs import (
-    _has_wrap_refs,
     _lightweight_project_summary,
     _parse_port,
     _read_last_record_ts,
@@ -23,7 +22,6 @@ from agent_wrap.commands.logs import (
     normalize_record,
     projects_fingerprint,
     read_session,
-    resolve,
     resolve_static,
     session_fingerprint,
     sessions_fingerprint,
@@ -34,70 +32,6 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-# --- resolve (hash replacement + wrap-ref stripping) ---
-
-
-def test_resolve_replaces_known_hashes():
-    strings = {"hash:abc": "the original text"}
-    assert resolve("hash:abc", strings) == "the original text"
-
-
-def test_resolve_leaves_unknown_hashes_intact():
-    # A missing strings.jsonl entry should remain visible, not blanked.
-    assert resolve("hash:missing", {}) == "hash:missing"
-
-
-def test_resolve_recurses_nested_structures():
-    strings = {"hash:x": "X", "hash:y": "Y"}
-    obj = {"a": "hash:x", "b": ["hash:y", "plain", {"c": "hash:x"}]}
-    assert resolve(obj, strings) == {"a": "X", "b": ["Y", "plain", {"c": "X"}]}
-
-
-def test_resolve_strips_wrap_ref_bookkeeping():
-    # Pass 1 pops wrap-ref-id from dicts and lists, so it's not in the output.
-    obj = {"k": "v", "wrap-ref-id": "3"}
-    assert resolve(obj, {}) == {"k": "v"}
-    lst = ["wrap-ref-id:0", "keep"]
-    assert resolve(lst, {}) == ["keep"]
-
-
-def test_resolve_reconstructs_wrap_ref_references():
-    # Simulate the callback's output for a list containing two references to the same dict.
-    canonical = {"content": "hello", "wrap-ref-id": "0"}
-    obj_with_refs = [canonical, "wrap-ref:0"]
-    resolved = resolve(obj_with_refs, {})
-    # Both items should be dicts with identical content.
-    assert resolved[0] == {"content": "hello"}
-    assert resolved[1] == {"content": "hello"}
-    # They MUST be the exact same object in memory to correctly preserve the reference graph.
-    assert resolved[0] is resolved[1]
-    # No wrap-ref strings should remain.
-    assert "wrap-ref:0" not in str(resolved)
-    assert "wrap-ref-id" not in str(resolved)
-
-
-def test_resolve_resolves_hashes_inside_wrap_ref():
-    # Ensure that hashes inside a canonical wrap-ref object are properly resolved.
-    canonical = {"content": "hash:abc123", "wrap-ref-id": "0"}
-    obj_with_refs = [canonical, "wrap-ref:0"]
-    strings = {"hash:abc123": "the original text"}
-    resolved = resolve(obj_with_refs, strings)
-    assert resolved[0] == {"content": "the original text"}
-    assert resolved[1] == {"content": "the original text"}
-
-
-def test_resolve_handles_circular_references():
-    # Simulate a canonical object that references itself.
-    # The callback would serialize this as a dict with wrap-ref-id, and a child pointing to it.
-    canonical = {"name": "self", "child": "wrap-ref:0", "wrap-ref-id": "0"}
-    resolved = resolve([canonical], {})
-    # The resolved object should have a child that points to itself.
-    assert resolved[0]["name"] == "self"
-    assert resolved[0]["child"] is resolved[0]
-    # No wrap-ref strings should remain.
-    assert "wrap-ref:0" not in str(resolved)
-
 
 # --- normalize_record ---
 
@@ -111,17 +45,13 @@ def _raw_record() -> LogRecord:
             "status": "success",
             "model": "us.anthropic.claude-opus-4-8",
             "request": {
-                # Top-level messages is a LiteLLM placeholder and must be ignored.
-                "messages": [{"role": "user", "content": "default-message-value"}],
-                "proxy_server_request": {
-                    "body": {
-                        "data": {
-                            "messages": [{"role": "user", "content": "hello"}],
-                            "system": "be brief",
-                            "tools": [{"name": "Read"}],
-                        }
+                "body": {
+                    "data": {
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "system": "be brief",
+                        "tools": [{"name": "Read"}],
                     }
-                },
+                }
             },
             "response": {
                 "choices": [{"message": {"role": "assistant", "content": "hi"}}],
@@ -140,7 +70,7 @@ def test_normalize_pulls_real_request_data():
 
 
 def test_normalize_falls_back_to_body_when_data_is_not_dict():
-    # Simulate a record where proxy_server_request.body exists but lacks a "data" dict,
+    # Simulate a record where request.body exists but lacks a "data" dict,
     # so the normalization falls back to using "body" directly for messages/system/tools.
     rec = cast(
         "LogRecord",
@@ -150,13 +80,11 @@ def test_normalize_falls_back_to_body_when_data_is_not_dict():
             "status": "success",
             "model": "m",
             "request": {
-                "proxy_server_request": {
-                    "body": {
-                        "messages": [{"role": "user", "content": "fallback body message"}],
-                        "system": "fallback system",
-                        "tools": [{"name": "FallbackTool"}],
-                    }
-                },
+                "body": {
+                    "messages": [{"role": "user", "content": "fallback body message"}],
+                    "system": "fallback system",
+                    "tools": [{"name": "FallbackTool"}],
+                }
             },
             "response": {"choices": [{"message": {"content": "hi"}}]},
             "error": None,
@@ -168,12 +96,6 @@ def test_normalize_falls_back_to_body_when_data_is_not_dict():
     assert out["tools"] == [{"name": "FallbackTool"}]
 
 
-def test_normalize_ignores_placeholder_messages():
-    out = normalize_record(_raw_record(), {})
-    # The "default-message-value" placeholder must never surface.
-    assert all(m["content"] != "default-message-value" for m in out["messages"])
-
-
 def test_normalize_extracts_response_and_usage():
     out = normalize_record(_raw_record(), {})
     assert out["response"] == {"role": "assistant", "content": "hi"}
@@ -182,35 +104,9 @@ def test_normalize_extracts_response_and_usage():
 
 def test_normalize_resolves_hashes():
     rec = _raw_record()
-    rec["request"]["proxy_server_request"]["body"]["data"]["system"] = "hash:s"
+    rec["request"]["body"]["data"]["system"] = "hash:s"
     out = normalize_record(rec, {"hash:s": "resolved system"})
     assert out["system"] == "resolved system"
-
-
-def test_normalize_resolves_wrap_ref_from_discarded_fields():
-    # Simulate a record where the canonical object is in the top-level
-    # request.messages (a LiteLLM placeholder that is discarded),
-    # but proxy_server_request.body.data.messages references it.
-    rec = cast(
-        "LogRecord",
-        {
-            "ts": "2026-06-05T12:00:00+00:00",
-            "end_ts": "2026-06-05T12:00:01+00:00",
-            "status": "success",
-            "model": "m",
-            "request": {
-                "messages": [{"wrap-ref-id": "0", "content": "canonical"}],
-                "proxy_server_request": {"body": {"data": {"messages": ["wrap-ref:0"]}}},
-            },
-            "response": {"choices": [{"message": {"content": "hi"}}]},
-            "error": None,
-        },
-    )
-    out = normalize_record(rec, {})
-    # The discarded field's canonical object should still be resolved
-    assert out["messages"] == [{"content": "canonical"}]
-    # It should be a deep copy, not the same object in memory
-    assert out["messages"][0] is not rec["request"]["messages"][0]
 
 
 def test_normalize_tolerates_missing_pieces():
@@ -226,7 +122,7 @@ def test_normalize_tolerates_missing_pieces():
 
 def test_normalize_extracts_subagent_agent_id():
     rec = _raw_record()
-    rec["request"]["proxy_server_request"]["headers"] = {
+    rec["request"]["headers"] = {
         "x-claude-code-agent-id": "a27b7c3e5cb6db524",
     }
     out = normalize_record(rec, {})
@@ -263,36 +159,11 @@ def test_resolve_hashes_leaves_primitives_unchanged():
     assert _resolve_hashes("plain string", {}) == "plain string"
 
 
-# --- _has_wrap_refs ---
+# --- normalize_record hash resolution ---
 
 
-def test_has_wrap_refs_detects_wrap_ref_pointer():
-    assert _has_wrap_refs("wrap-ref:0") is True
-    assert _has_wrap_refs("wrap-ref:123") is True
-
-
-def test_has_wrap_refs_ignores_short_prefix():
-    # "wrap-ref:" alone is not a valid pointer (no ID after colon)
-    assert _has_wrap_refs("wrap-ref:") is False
-
-
-def test_has_wrap_refs_detects_in_nested_structures():
-    assert _has_wrap_refs({"content": "wrap-ref:5"}) is True
-    assert _has_wrap_refs([{"msg": "hello"}, {"content": "wrap-ref:0"}]) is True
-
-
-def test_has_wrap_refs_returns_false_without_refs():
-    assert _has_wrap_refs({}) is False
-    assert _has_wrap_refs([]) is False
-    assert _has_wrap_refs("hash:abc123") is False
-    assert _has_wrap_refs({"msg": "hello", "list": [1, 2, 3]}) is False
-
-
-# --- normalize_record fast path ---
-
-
-def test_normalize_record_takes_fast_path_without_wrap_refs():
-    """Records with no wrap-ref pointers take the hash-only fast path."""
+def test_normalize_record_resolves_hashes():
+    """normalize_record resolves hash pointers in request and response."""
     strings = {"hash:abc123": "resolved content"}
     rec = {
         "ts": "t1",
@@ -300,16 +171,13 @@ def test_normalize_record_takes_fast_path_without_wrap_refs():
         "status": "success",
         "model": "m",
         "request": {
-            "messages": [],
-            "proxy_server_request": {
-                "body": {
-                    "messages": [{"role": "user", "content": "hash:abc123"}],
-                    "system": "hash:abc123",
-                },
+            "body": {
+                "messages": [{"role": "user", "content": "hash:abc123"}],
+                "system": "hash:abc123",
             },
         },
         "response": {
-            "choices": [{"message": {"content": "hello"}}],
+            "choices": [{"message": {"content": "hash:abc123"}}],
             "usage": {"prompt_tokens": 10},
         },
         "error": None,
@@ -317,63 +185,7 @@ def test_normalize_record_takes_fast_path_without_wrap_refs():
     out = normalize_record(rec, strings)
     assert out["messages"] == [{"role": "user", "content": "resolved content"}]
     assert out["system"] == "resolved content"
-
-
-def test_normalize_record_fast_path_and_slow_path_produce_same_result():
-    """Fast path and slow path must return identical output for the same input."""
-    strings = {"hash:abc123": "resolved"}
-    # A record WITHOUT cross-field wrap-refs (new format)
-    rec = {
-        "ts": "t1",
-        "end_ts": "t2",
-        "status": "success",
-        "model": "m",
-        "request": {
-            "messages": [],
-            "proxy_server_request": {
-                "body": {
-                    "messages": [{"role": "user", "content": "hash:abc123"}],
-                },
-            },
-        },
-        "response": {
-            "choices": [{"message": {"content": "hash:abc123"}}],
-            "usage": {"prompt_tokens": 1},
-        },
-        "error": None,
-    }
-    # The fast path is taken automatically (no wrap-refs in messages)
-    out = normalize_record(rec, strings)
-    # Verify hash resolution happened
-    assert out["messages"][0]["content"] == "resolved"
-    assert out["response"]["content"] == "resolved"
-
-
-def test_normalize_record_slow_path_still_works_with_wrap_refs():
-    """Records WITH wrap-ref pointers still take the slow path correctly."""
-    strings = {"hash:abc": "canonical"}
-    # A record WITH cross-field wrap-refs (old format)
-    rec = {
-        "ts": "t1",
-        "end_ts": "t2",
-        "status": "success",
-        "model": "m",
-        "request": {
-            "messages": [{"wrap-ref-id": "0", "content": "canonical"}],
-            "proxy_server_request": {
-                "body": {
-                    "data": {
-                        "messages": ["wrap-ref:0"],
-                    },
-                },
-            },
-        },
-        "response": {},
-        "error": None,
-    }
-    out = normalize_record(rec, strings)
-    # The slow path resolves the wrap-ref:0 pointer
-    assert out["messages"] == [{"content": "canonical"}]
+    assert out["response"]["content"] == "resolved content"
 
 
 # --- extract_alias ---
@@ -387,7 +199,7 @@ def _naming_record(content: str) -> LogRecord:
             "end_ts": "2026-06-05T12:00:01+00:00",
             "status": "success",
             "model": "m",
-            "request": {"messages": [], "proxy_server_request": {}},
+            "request": {},
             "response": {"choices": [{"message": {"role": "assistant", "content": content}}]},
             "error": None,
         },
@@ -588,11 +400,7 @@ def test_read_session_merges_across_providers(tmp_path: Path):
                 "status": "success",
                 "model": "m/a",
                 "request": {
-                    "proxy_server_request": {
-                        "body": {
-                            "data": {"messages": [{"role": "user", "content": "from bedrock"}]}
-                        }
-                    }
+                    "body": {"data": {"messages": [{"role": "user", "content": "from bedrock"}]}}
                 },
                 "response": {"choices": [{"message": {"content": "bedrock reply"}}]},
             },
@@ -608,11 +416,7 @@ def test_read_session_merges_across_providers(tmp_path: Path):
                 "status": "success",
                 "model": "m/b",
                 "request": {
-                    "proxy_server_request": {
-                        "body": {
-                            "data": {"messages": [{"role": "user", "content": "from deepseek"}]}
-                        }
-                    }
+                    "body": {"data": {"messages": [{"role": "user", "content": "from deepseek"}]}}
                 },
                 "response": {"choices": [{"message": {"content": "deepseek reply"}}]},
             },

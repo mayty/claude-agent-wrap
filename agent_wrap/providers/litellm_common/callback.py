@@ -46,17 +46,12 @@ class MetaData(TypedDict):
     title: str | None
 
 
-class RequestLog(TypedDict):
-    messages: list[dict[str, Any]]
-    proxy_server_request: dict[str, Any]
-
-
 class LogRecord(TypedDict):
     ts: str
     end_ts: str
     status: str
     model: str
-    request: RequestLog
+    request: dict[str, Any]
     response: dict[str, Any]
     error: str | None
 
@@ -96,6 +91,9 @@ def build_record(  # noqa: PLR0913
     "hash:<sha256_hex>" format to reduce space bloat. The self-referencing
     ``body.proxy_server_request`` key is deleted before serialization to
     break the only cycle in LiteLLM's data structure.
+
+    The ``request`` field is the proxy server request itself; the real Anthropic
+    request lives at ``request.body.data``.
     """
     session_id = _get_session_id(kwargs)
     hasher = get_session_hasher(session_id)
@@ -115,10 +113,7 @@ def build_record(  # noqa: PLR0913
         "end_ts": end_ts.isoformat(),
         "status": status,
         "model": model or "undefined",
-        "request": {
-            "messages": json_safe(kwargs.get("messages"), hasher),
-            "proxy_server_request": json_safe(psr, hasher),
-        },
+        "request": json_safe(psr, hasher),
         "response": json_safe(response_obj, hasher),
         "error": None,
     }

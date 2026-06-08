@@ -18,16 +18,13 @@ by a minimal static file server.
 
 The data model (confirmed against real logs):
 
-* ``messages.jsonl`` — one record per call. The *real* Anthropic request lives
-  at ``request.proxy_server_request.body.data`` (``messages``/``system``/
-  ``tools``); the top-level ``request.messages`` is a LiteLLM placeholder
-  (``"default-message-value"``) and is ignored. The reply is OpenAI-shaped at
+* ``messages.jsonl`` — one record per call. ``request`` is the proxy server
+  request; the *real* Anthropic request lives at ``request.body.data``
+  (``messages``/``system``/``tools``). The reply is OpenAI-shaped at
   ``response.choices[0].message`` with ``response.usage`` token counts.
 * ``strings.jsonl`` — ``{"hash": "hash:<sha256>", "original": ...}`` lines.
   Long strings in the record are replaced by ``hash:<sha256>`` pointers; we load
   this map and resolve them for display.
-* Records may carry ``wrap-ref:<id>`` cycle markers and ``wrap-ref-id`` keys
-  from the callback's circular-reference handling; those are resolved here.
 """
 
 from __future__ import annotations
@@ -102,131 +99,12 @@ def load_strings(session_dir: Path) -> dict[str, str]:
     return strings
 
 
-_WRAP_REF_PREFIX = "wrap-ref:"
-_WRAP_REF_PREFIX_LEN = len(_WRAP_REF_PREFIX)
-_WRAP_REF_ID_PREFIX = "wrap-ref-id:"
-
-
-def _index_refs(o: Any, wrap_ref_index: dict[str, Any], obj_to_ref: dict[int, str]) -> None:
-    """Pass 1: Collect wrap-ref-id markers into lookup indexes."""
-    if isinstance(o, dict):
-        if "wrap-ref-id" in o:
-            ref_id = str(o.pop("wrap-ref-id"))
-            wrap_ref_index[ref_id] = o
-            obj_to_ref[id(o)] = ref_id
-        for v in o.values():
-            _index_refs(v, wrap_ref_index, obj_to_ref)
-    elif isinstance(o, list):
-        # wrap-ref-id is always inserted at index 0 by the callback.
-        # Check index 0 directly to avoid modifying a list while iterating.
-        if o and isinstance(o[0], str) and o[0].startswith(_WRAP_REF_ID_PREFIX):
-            ref_id = o[0][len(_WRAP_REF_ID_PREFIX) :]
-            wrap_ref_index[ref_id] = o
-            obj_to_ref[id(o)] = ref_id
-            o.pop(0)
-        for item in o:
-            _index_refs(item, wrap_ref_index, obj_to_ref)
-
-
-class _RefResolver:
-    """Helper class to resolve wrap-refs and hashes while safely handling cycles."""
-
-    def __init__(
-        self,
-        wrap_ref_index: dict[str, Any],
-        obj_to_ref: dict[int, str],
-        strings: dict[str, str],
-    ):
-        self.wrap_ref_index = wrap_ref_index
-        self.obj_to_ref = obj_to_ref
-        self.strings = strings
-        self.resolved_canons: dict[str, Any] = {}
-
-    def resolve(self, o: Any) -> Any:
-        if isinstance(o, str):
-            return self._resolve_str(o)
-
-        obj_id = id(o)
-        if obj_id in self.obj_to_ref:
-            ref_id = self.obj_to_ref[obj_id]
-            if ref_id in self.resolved_canons:
-                return self.resolved_canons[ref_id]
-
-            # Create a placeholder to break cycles and cache it immediately.
-            # Then populate it by resolving its children.
-            placeholder: Any = {} if isinstance(o, dict) else []
-            self.resolved_canons[ref_id] = placeholder
-
-            if isinstance(o, dict):
-                for k, v in o.items():
-                    placeholder[k] = self.resolve(v)
-            else:
-                for v in o:
-                    placeholder.append(self.resolve(v))
-            return placeholder
-
-        if isinstance(o, dict):
-            return {k: self.resolve(v) for k, v in o.items()}
-        if isinstance(o, list):
-            return [self.resolve(v) for v in o]
-        return o
-
-    def _resolve_str(self, o: str) -> Any:
-        if not o.startswith(_WRAP_REF_PREFIX) or len(o) <= _WRAP_REF_PREFIX_LEN:
-            return self.strings.get(o, o)
-
-        ref_id = o[_WRAP_REF_PREFIX_LEN:]
-        if ref_id in self.resolved_canons:
-            return self.resolved_canons[ref_id]
-
-        canon = self.wrap_ref_index.get(ref_id)
-        if canon is None:
-            return o
-
-        # Create a placeholder to break cycles and cache it immediately.
-        # Then populate it by resolving its children.
-        placeholder: Any = {} if isinstance(canon, dict) else []
-        self.resolved_canons[ref_id] = placeholder
-
-        if isinstance(canon, dict):
-            for k, v in canon.items():
-                placeholder[k] = self.resolve(v)
-        else:
-            for v in canon:
-                placeholder.append(self.resolve(v))
-
-        return placeholder
-
-
-def resolve(obj: Any, strings: dict[str, str]) -> Any:
-    """
-    Recursively replace ``hash:<sha256>`` strings with their originals and
-    reconstruct the callback's circular-reference bookkeeping
-    (``wrap-ref:<id>`` -> canonical object with ``wrap-ref-id``).
-
-    Unknown hashes are left intact so a missing ``strings.jsonl`` entry is
-    visible rather than silently blanked. Uses a placeholder cache to safely
-    resolve hashes inside canonical objects and break circular reference cycles.
-    """
-    wrap_ref_index: dict[str, Any] = {}
-    obj_to_ref: dict[int, str] = {}
-    _index_refs(obj, wrap_ref_index, obj_to_ref)
-    return _RefResolver(wrap_ref_index, obj_to_ref, strings).resolve(obj)
-
-
-# ---------------------------------------------------------------------------
-# Record normalization
-# ---------------------------------------------------------------------------
-
-
 def _resolve_hashes(obj: Any, strings: dict[str, str]) -> Any:
     """
     Replace ``hash:<sha256>`` strings with their originals.
 
-    Unlike :func:`resolve`, this does NOT handle ``wrap-ref`` cycle markers.
-    It is a lightweight tree walk suitable for records written without
-    cross-field shared references (i.e. after the RefTracker was removed from
-    the callback).
+    A lightweight tree walk. Unknown hashes are left intact so a missing
+    ``strings.jsonl`` entry is visible rather than silently blanked.
     """
     if isinstance(obj, str):
         return strings.get(obj, obj)
@@ -237,23 +115,16 @@ def _resolve_hashes(obj: Any, strings: dict[str, str]) -> Any:
     return obj
 
 
-def _has_wrap_refs(obj: Any) -> bool:
-    """Return True if *obj* contains any ``"wrap-ref:"`` pointer strings."""
-    if isinstance(obj, str):
-        return obj.startswith(_WRAP_REF_PREFIX) and len(obj) > _WRAP_REF_PREFIX_LEN
-    if isinstance(obj, dict):
-        return any(_has_wrap_refs(v) for v in obj.values())
-    if isinstance(obj, list):
-        return any(_has_wrap_refs(v) for v in obj)
-    return False
+# ---------------------------------------------------------------------------
+# Record normalization
+# ---------------------------------------------------------------------------
 
 
 def _extract_record_fields(
     rec: Any,
 ) -> tuple[dict[str, Any], str | None, dict[str, Any], dict[str, Any]]:
     """Extract (data, agent_id, reply, usage) from a raw or resolved record."""
-    request = rec.get("request") or {}
-    psr = request.get("proxy_server_request")
+    psr = rec.get("request")
     data: dict[str, Any] = {}
     agent_id: str | None = None
     if isinstance(psr, dict):
@@ -284,14 +155,10 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
     Reduce one raw log record to the shape the UI consumes.
 
     Pure (no I/O) so it can be unit-tested directly. Pulls the real prompt
-    from ``request.proxy_server_request.body.data`` and the reply from
-    ``response.choices[0].message``, resolving hashes and wrap-refs.
-
-    Records written without cross-field shared references (no ``wrap-ref``
-    pointers in the message content) take a fast path that only resolves
-    hash strings — skipping the expensive full-record wrap-ref tree walk.
+    from ``request.body.data`` and the reply from
+    ``response.choices[0].message``, resolving ``hash:<sha256>`` pointers.
     """
-    resolved = resolve(rec, strings) if _has_wrap_refs(rec) else _resolve_hashes(rec, strings)
+    resolved = _resolve_hashes(rec, strings)
 
     data, agent_id, reply, usage = _extract_record_fields(resolved)
 

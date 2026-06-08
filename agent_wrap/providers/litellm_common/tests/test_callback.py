@@ -131,8 +131,7 @@ def test_build_record_success_shape() -> None:
 
     assert record["status"] == "success"
     assert record["model"] == "bedrock/claude"
-    assert record["request"]["messages"] == kwargs["messages"]
-    assert record["request"]["proxy_server_request"]["url"] == "/bedrock/x"
+    assert record["request"]["url"] == "/bedrock/x"
     assert record["response"] == {"choices": [{"text": "yo"}]}
     assert record["error"] is None
     assert "ts" in record
@@ -150,8 +149,7 @@ def test_build_record_failure_includes_error() -> None:
 def test_build_record_tolerates_missing_keys() -> None:
     record = build_record({}, None, status="success", start_ts=_TS, end_ts=_TS)
     assert record["model"] == "undefined"
-    assert record["request"]["messages"] is None
-    assert record["request"]["proxy_server_request"] is None
+    assert record["request"] is None
 
 
 def test_build_record_is_json_serializable_with_default_str() -> None:
@@ -189,12 +187,12 @@ def test_build_record_drops_proxy_server_request_cycle() -> None:
     record = build_record(kwargs, {}, status="success", start_ts=_TS, end_ts=_TS)
 
     # The cycle should be broken — body.proxy_server_request must not appear
-    body = record["request"]["proxy_server_request"]["body"]
+    body = record["request"]["body"]
     assert "proxy_server_request" not in body
 
     # The rest of the record is intact
-    assert record["request"]["proxy_server_request"]["url"] == "http://example.com"
-    assert record["request"]["messages"][0]["content"] == "hello"
+    assert record["request"]["url"] == "http://example.com"
+    assert record["request"]["body"]["messages"][0]["content"] == "hello"
 
 
 def test_build_record_handles_shared_references() -> None:
@@ -223,9 +221,8 @@ def test_build_record_handles_shared_references() -> None:
     req_json = json.dumps(record)
     assert "wrap-ref" not in req_json
 
-    # Both request.messages and body.messages have the content
-    assert record["request"]["messages"] == messages
-    assert record["request"]["proxy_server_request"]["body"]["messages"] == messages
+    # The request body carries the shared content
+    assert record["request"]["body"]["messages"] == messages
 
 
 def test_build_record_no_wrap_refs_in_output() -> None:
@@ -274,9 +271,11 @@ def test_build_record_hashes_long_strings() -> None:
     long_string = "e" * 100
     kwargs = {
         "model": "bedrock/claude",
-        "messages": [{"role": "user", "content": long_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": "test-session"}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": "test-session"},
+                "body": {"messages": [{"role": "user", "content": long_string}]},
+            }
         },
     }
 
@@ -287,7 +286,7 @@ def test_build_record_hashes_long_strings() -> None:
     )
 
     # The long string should be hashed in the output
-    messages = record["request"]["messages"]
+    messages = record["request"]["body"]["messages"]
     assert messages is not None
     assert len(messages) == 1
     content = messages[0]["content"]
@@ -300,9 +299,11 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
     short_string = "short"
     kwargs = {
         "model": "bedrock/claude",
-        "messages": [{"role": "user", "content": short_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": "test-session"}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": "test-session"},
+                "body": {"messages": [{"role": "user", "content": short_string}]},
+            }
         },
     }
 
@@ -311,7 +312,7 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
     )
 
     # The short string should remain unchanged
-    messages = record["request"]["messages"]
+    messages = record["request"]["body"]["messages"]
     assert messages is not None
     assert len(messages) == 1
     content = messages[0]["content"]
@@ -415,9 +416,11 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     # Simulate Request 1
     kwargs1 = {
         "model": "test-model",
-        "messages": [{"role": "user", "content": long_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": session_id}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": session_id},
+                "body": {"messages": [{"role": "user", "content": long_string}]},
+            }
         },
     }
     record1 = build_record(
@@ -427,9 +430,11 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     # Simulate Request 2 with the SAME string (should be deduplicated in memory)
     kwargs2 = {
         "model": "test-model",
-        "messages": [{"role": "user", "content": long_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": session_id}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": session_id},
+                "body": {"messages": [{"role": "user", "content": long_string}]},
+            }
         },
     }
     record2 = build_record(
@@ -437,8 +442,8 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     )
 
     # Both records should have the exact same hash
-    hash1 = record1["request"]["messages"][0]["content"]
-    hash2 = record2["request"]["messages"][0]["content"]
+    hash1 = record1["request"]["body"]["messages"][0]["content"]
+    hash2 = record2["request"]["body"]["messages"][0]["content"]
     assert hash1 == hash2
     assert hash1.startswith("hash:")
 
