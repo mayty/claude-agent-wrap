@@ -14,19 +14,6 @@ import hashlib
 import json
 from pathlib import Path
 
-# Global cache of hashers per session to enable cross-request deduplication
-# and prevent concurrent flushes from writing duplicate mappings.
-_SESSION_HASHERS: dict[str, StringHasher] = {}
-
-
-def get_session_hasher(session_id: str) -> StringHasher:
-    """Get or create a StringHasher for a specific session, loading existing state."""
-    if session_id not in _SESSION_HASHERS:
-        hasher = StringHasher()
-        hasher.load_seen_hashes(session_id)
-        _SESSION_HASHERS[session_id] = hasher
-    return _SESSION_HASHERS[session_id]
-
 
 class StringHasher:
     """

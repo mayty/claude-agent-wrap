@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import (
+    epoch_to_dt,
     fmt_count,
-    parse_ts,
 )
 from agent_wrap.lib.models import normalize_model
 from agent_wrap.lib.render import render_core
@@ -132,6 +132,21 @@ class PriceSource:
             if match is not None:
                 return table[match]
         return None
+
+    def compute_cost(self, provider: str, model: str, raw_response: dict | None) -> float | None:
+        """
+        Compute the USD cost of a single request, or None if pricing is unknown.
+
+        Encapsulates the full pipeline: model-to-tier lookup, usage extraction,
+        and the per-tier cost formula. Callers that also need the usage dict for
+        accumulation should call ``get_pricing`` + ``extract_usage`` +
+        ``_cost_for_tiers`` directly instead.
+        """
+        tiers = self.get_pricing(provider, model.rsplit("/", 1)[-1])
+        if tiers is None:
+            return None
+        usage = extract_usage(raw_response)
+        return _cost_for_tiers(tiers, usage)
 
     def _fetch(self, provider: str) -> dict[str, list[dict]]:
         """Build the unified tiered table for one provider (fetched once)."""
@@ -302,12 +317,11 @@ def _cost_record(
     norm_model = normalize_model(clean_model) or clean_model
     display_model = f"{provider_name}/{norm_model}"
 
-    ts = parse_ts(rec.get("ts"))
+    ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
     day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
 
     usage = extract_usage(rec.get("response"))
-    tiers = prices.get_pricing(provider_name, clean_model)
-    cost = _cost_for_tiers(tiers, usage) if tiers is not None else 0.0
+    cost = prices.compute_cost(provider_name, model, rec.get("response")) or 0.0
 
     by_day[day_key][display_model].add(usage, cost)
     return ts

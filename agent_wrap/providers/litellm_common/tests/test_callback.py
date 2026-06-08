@@ -7,12 +7,18 @@ import json
 import tempfile
 from pathlib import Path
 
-from agent_wrap.providers.litellm_common.callback import _get_session_id, build_record
-from agent_wrap.providers.litellm_common.string_hasher import (
+from agent_wrap.providers.litellm_common.callback import (
+    _get_session_id,
+    _resolve_thinking_reasoning_conflict,
+    build_record,
+    extract_session_alias,
+    extract_session_title,
+)
+from agent_wrap.providers.litellm_common.helpers import (
     _SESSION_HASHERS,
-    StringHasher,
     get_session_hasher,
 )
+from agent_wrap.providers.litellm_common.string_hasher import StringHasher
 
 
 def test_string_hasher_basic_hashing() -> None:
@@ -115,16 +121,30 @@ def test_build_record_success_shape() -> None:
         "model": "bedrock/claude",
         "messages": [{"role": "user", "content": "hi"}],
         "litellm_params": {"proxy_server_request": {"url": "/bedrock/x", "body": {"a": 1}}},
+        "standard_logging_object": {
+            "startTime": 1780916982.12,
+            "completionStartTime": 1780916982.5,
+            "endTime": 1780916985.0,
+        },
     }
     record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     assert record["status"] == "success"
     assert record["model"] == "bedrock/claude"
-    assert record["request"]["messages"] == kwargs["messages"]
-    assert record["request"]["proxy_server_request"]["url"] == "/bedrock/x"
+    assert record["request"]["url"] == "/bedrock/x"
     assert record["response"] == {"choices": [{"text": "yo"}]}
-    assert "error" not in record
-    assert "ts" in record
+    assert record["error"] is None
+    # Timing is sourced verbatim from LiteLLM's standard_logging_object.
+    assert record["timing"] == {
+        "start": 1780916982.12,
+        "completionStart": 1780916982.5,
+        "end": 1780916985.0,
+    }
+
+
+def test_build_record_timing_defaults_to_none_without_logging_object() -> None:
+    record = build_record({}, None, status="success")
+    assert record["timing"] == {"start": None, "completionStart": None, "end": None}
 
 
 def test_build_record_failure_includes_error() -> None:
@@ -135,9 +155,8 @@ def test_build_record_failure_includes_error() -> None:
 
 def test_build_record_tolerates_missing_keys() -> None:
     record = build_record({}, None, status="success")
-    assert record["model"] is None
-    assert record["request"]["messages"] is None
-    assert record["request"]["proxy_server_request"] is None
+    assert record["model"] == "undefined"
+    assert record["request"] is None
 
 
 def test_build_record_is_json_serializable_with_default_str() -> None:
@@ -151,40 +170,94 @@ def test_build_record_is_json_serializable_with_default_str() -> None:
     assert "weird-obj" in line
 
 
-def test_build_record_breaks_circular_references() -> None:
-    # LiteLLM's response objects contain cycles; build_record must not raise.
-    cyclic: dict[str, object] = {"a": 1}
-    cyclic["self"] = cyclic
+def test_build_record_drops_proxy_server_request_cycle() -> None:
+    """body.proxy_server_request is a self-cycle — build_record must delete it."""
+    psr = {
+        "url": "http://example.com",
+        "method": "POST",
+        "headers": {},
+        "body": {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    }
+    # Create the self-cycle that LiteLLM's data structure has
+    psr["body"]["proxy_server_request"] = psr  # type: ignore[index]
 
-    record = build_record({"model": "m"}, cyclic, status="success")
+    kwargs = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "litellm_params": {"proxy_server_request": psr},
+    }
+    record = build_record(kwargs, {}, status="success")
 
-    # The root object gets a wrap-ref-id, and the self-reference becomes wrap-ref:<id>
-    assert "wrap-ref-id" in record["response"]
-    root_ref_id = record["response"]["wrap-ref-id"]
-    assert record["response"]["self"] == f"wrap-ref:{root_ref_id}"
-    assert record["response"]["a"] == 1
+    # The cycle should be broken — body.proxy_server_request must not appear
+    body = record["request"]["body"]
+    assert "proxy_server_request" not in body
+
+    # The rest of the record is intact
+    assert record["request"]["url"] == "http://example.com"
+    assert record["request"]["body"]["messages"][0]["content"] == "hello"
 
 
-def test_build_record_breaks_circular_list_references() -> None:
-    # Test that circular references in lists are handled correctly
-    # with wrap-ref-id inserted at index 0.
-    cyclic_list: list[object] = [1, 2]
-    cyclic_list.append(cyclic_list)
+def test_build_record_handles_shared_references() -> None:
+    """Shared references serialize normally — duplicated, no wrap-ref pointers."""
+    shared_content = [{"type": "text", "text": "shared text block"}]
+    messages = [{"role": "user", "content": shared_content}]
 
-    record = build_record({"model": "m"}, {"data": cyclic_list}, status="success")
+    psr = {
+        "url": "http://example.com",
+        "method": "POST",
+        "headers": {},
+        "body": {
+            "model": "m",
+            "messages": messages,  # same Python list as kwargs["messages"]
+        },
+    }
 
-    # The outer dict is only referenced once, so it does NOT get a wrap-ref-id.
-    assert "wrap-ref-id" not in record["response"]
+    kwargs = {
+        "model": "m",
+        "messages": messages,
+        "litellm_params": {"proxy_server_request": psr},
+    }
+    record = build_record(kwargs, {}, status="success")
 
-    # The list is referenced twice (once in the dict, once inside itself), so it gets a wrap-ref-id.
-    data_list = record["response"]["data"]
-    assert data_list[0] == "wrap-ref-id:0"  # The list's wrap-ref-id is at index 0
-    list_ref_id = data_list[0].split(":")[1]
+    # Both copies of the shared list are serialized inline — no wrap-ref pointers
+    req_json = json.dumps(record)
+    assert "wrap-ref" not in req_json
 
-    # The circular reference to the list becomes wrap-ref:<id>
-    assert data_list[3] == f"wrap-ref:{list_ref_id}"
-    assert data_list[1] == 1
-    assert data_list[2] == 2
+    # The request body carries the shared content
+    assert record["request"]["body"]["messages"] == messages
+
+
+def test_build_record_no_wrap_refs_in_output() -> None:
+    """The output JSON must contain no wrap-ref strings at all."""
+    kwargs = {
+        "model": "test-model",
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hello"},
+        ],
+        "litellm_params": {
+            "proxy_server_request": {
+                "url": "http://example.com",
+                "method": "POST",
+                "headers": {"x-claude-code-session-id": "test-session"},
+                "body": {
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            },
+        },
+    }
+
+    record = build_record(
+        kwargs,
+        {"choices": [{"message": {"content": "hi"}}]},
+        status="success",
+    )
+    record_json = json.dumps(record)
+    assert "wrap-ref" not in record_json
 
 
 def test_build_record_uses_model_dump_for_pydantic_like() -> None:
@@ -201,9 +274,11 @@ def test_build_record_hashes_long_strings() -> None:
     long_string = "e" * 100
     kwargs = {
         "model": "bedrock/claude",
-        "messages": [{"role": "user", "content": long_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": "test-session"}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": "test-session"},
+                "body": {"messages": [{"role": "user", "content": long_string}]},
+            }
         },
     }
 
@@ -212,7 +287,7 @@ def test_build_record_hashes_long_strings() -> None:
     record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     # The long string should be hashed in the output
-    messages = record["request"]["messages"]
+    messages = record["request"]["body"]["messages"]
     assert messages is not None
     assert len(messages) == 1
     content = messages[0]["content"]
@@ -225,20 +300,86 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
     short_string = "short"
     kwargs = {
         "model": "bedrock/claude",
-        "messages": [{"role": "user", "content": short_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": "test-session"}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": "test-session"},
+                "body": {"messages": [{"role": "user", "content": short_string}]},
+            }
         },
     }
 
     record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     # The short string should remain unchanged
-    messages = record["request"]["messages"]
+    messages = record["request"]["body"]["messages"]
     assert messages is not None
     assert len(messages) == 1
     content = messages[0]["content"]
     assert content == short_string
+
+
+def _name_response(content: str) -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
+
+
+def test_extract_session_alias_from_name_payload() -> None:
+    resp = _name_response('{"name": "agent-logs-web-viewer"}')
+    assert extract_session_alias(resp) == "agent-logs-web-viewer"
+
+
+def test_extract_session_alias_ignores_title_payload() -> None:
+    # The sibling title-generation call must not be treated as an alias.
+    resp = _name_response('{"title": "Build a web viewer for logs"}')
+    assert extract_session_alias(resp) is None
+
+
+def test_extract_session_alias_tolerates_trailing_prose() -> None:
+    resp = _name_response('{"name": "fix-login-bug"} sure thing!')
+    assert extract_session_alias(resp) == "fix-login-bug"
+
+
+def test_extract_session_alias_handles_choices_text_shape() -> None:
+    resp = {"choices": [{"text": '{"name": "add-auth-feature"}'}]}
+    assert extract_session_alias(resp) == "add-auth-feature"
+
+
+def test_extract_session_alias_none_for_freeform_and_empty() -> None:
+    assert extract_session_alias(_name_response("just some words")) is None
+    assert extract_session_alias(_name_response('{"name": ""}')) is None
+    assert extract_session_alias(_name_response('{"name": "   "}')) is None
+    assert extract_session_alias({}) is None
+    assert extract_session_alias(None) is None
+
+
+# --- extract_session_title ---
+
+
+def testextract_session_title_from_title_payload() -> None:
+    resp = _name_response('{"title": "Build a web viewer for logs"}')
+    assert extract_session_title(resp) == "Build a web viewer for logs"
+
+
+def testextract_session_title_ignores_name_payload() -> None:
+    resp = _name_response('{"name": "some-slug"}')
+    assert extract_session_title(resp) is None
+
+
+def testextract_session_title_none_for_freeform_and_empty() -> None:
+    assert extract_session_title(_name_response("just some words")) is None
+    assert extract_session_title(_name_response('{"title": ""}')) is None
+    assert extract_session_title(_name_response('{"title": "   "}')) is None
+    assert extract_session_title({}) is None
+    assert extract_session_title(None) is None
+
+
+def testextract_session_title_tolerates_trailing_prose() -> None:
+    resp = _name_response('{"title": "Fix the login bug"} here you go!')
+    assert extract_session_title(resp) == "Fix the login bug"
+
+
+def testextract_session_title_handles_choices_text_shape() -> None:
+    resp = {"choices": [{"text": '{"title": "Add authentication"}'}]}
+    assert extract_session_title(resp) == "Add authentication"
 
 
 def test_get_session_id_extracted_from_headers() -> None:
@@ -274,9 +415,11 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     # Simulate Request 1
     kwargs1 = {
         "model": "test-model",
-        "messages": [{"role": "user", "content": long_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": session_id}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": session_id},
+                "body": {"messages": [{"role": "user", "content": long_string}]},
+            }
         },
     }
     record1 = build_record(kwargs1, {"choices": [{"text": "response 1"}]}, status="success")
@@ -284,16 +427,18 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     # Simulate Request 2 with the SAME string (should be deduplicated in memory)
     kwargs2 = {
         "model": "test-model",
-        "messages": [{"role": "user", "content": long_string}],
         "litellm_params": {
-            "proxy_server_request": {"headers": {"x-claude-code-session-id": session_id}}
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": session_id},
+                "body": {"messages": [{"role": "user", "content": long_string}]},
+            }
         },
     }
     record2 = build_record(kwargs2, {"choices": [{"text": "response 2"}]}, status="success")
 
     # Both records should have the exact same hash
-    hash1 = record1["request"]["messages"][0]["content"]
-    hash2 = record2["request"]["messages"][0]["content"]
+    hash1 = record1["request"]["body"]["messages"][0]["content"]
+    hash2 = record2["request"]["body"]["messages"][0]["content"]
     assert hash1 == hash2
     assert hash1.startswith("hash:")
 
@@ -382,3 +527,98 @@ def test_string_hasher_loads_seen_hashes_to_prevent_duplicates() -> None:
         assert new_hash in lines[1]
 
     _SESSION_HASHERS.clear()
+
+
+# --- _resolve_thinking_reasoning_conflict ---
+
+
+def test_resolve_conflict_strips_effort_from_output_config() -> None:
+    """Effort is removed from output_config when thinking.type == 'disabled'."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "high", "style": "concise"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert "effort" not in result["output_config"]
+    assert result["output_config"] == {"style": "concise"}
+    assert result["thinking"] == {"type": "disabled"}
+
+
+def test_resolve_conflict_handles_missing_output_config() -> None:
+    """No-op when thinking is disabled but output_config is absent."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result == data  # unchanged
+
+
+def test_resolve_conflict_preserves_output_config_when_thinking_enabled() -> None:
+    """output_config is untouched when thinking.type == 'enabled'."""
+    data: dict = {
+        "model": "deepseek-v4-pro[1m]",
+        "messages": [{"role": "user", "content": "Solve this complex problem"}],
+        "thinking": {"type": "enabled", "budget_tokens": 4000},
+        "output_config": {"effort": "high"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result["output_config"] == {"effort": "high"}
+    assert result["thinking"] == {"type": "enabled", "budget_tokens": 4000}
+
+
+def test_resolve_conflict_preserves_output_config_when_thinking_absent() -> None:
+    """output_config is untouched when thinking is not in data."""
+    data: dict = {
+        "model": "deepseek-v4-pro[1m]",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "output_config": {"effort": "high"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result["output_config"] == {"effort": "high"}
+
+
+def test_resolve_conflict_handles_thinking_none() -> None:
+    """output_config is untouched when thinking is None."""
+    data: dict = {
+        "model": "deepseek-v4-pro[1m]",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "thinking": None,
+        "output_config": {"effort": "high"},
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result["output_config"] == {"effort": "high"}
+
+
+def test_resolve_conflict_handles_output_config_not_dict() -> None:
+    """No-op when thinking is disabled but output_config is not a dict."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+        "output_config": "not-a-dict",
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert result == data  # unchanged
+
+
+def test_resolve_conflict_only_modifies_effort_in_output_config() -> None:
+    """Only output_config.effort is removed; all other keys preserved."""
+    data: dict = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "Generate a title"}],
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "high", "style": "concise", "max_tokens": 256},
+        "max_tokens": 512,
+        "temperature": 0.7,
+    }
+    result = _resolve_thinking_reasoning_conflict(data)
+    assert "effort" not in result["output_config"]
+    assert result["output_config"] == {"style": "concise", "max_tokens": 256}
+    assert result["model"] == "deepseek-v4-flash"
+    assert result["max_tokens"] == 512
+    assert result["temperature"] == 0.7
+    assert result["thinking"] == {"type": "disabled"}

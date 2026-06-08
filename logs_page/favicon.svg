@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+<!-- This file has been created with the assistance of an AI tool. -->
+  <rect width="32" height="32" rx="7" fill="#1e1e2e"/>
+  <rect x="4.5" y="4.5" width="23" height="23" rx="5" fill="none" stroke="#313244" stroke-width="1"/>
+  <path d="M9 11.5 L13 16 L9 20.5" fill="none" stroke="#89b4fa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="15.5" y1="21" x2="23" y2="21" stroke="#cdd6f4" stroke-width="2.4" stroke-linecap="round"/>
+</svg>
