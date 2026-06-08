@@ -57,8 +57,7 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
 .turn .caption .when { color: var(--muted); font-weight: 400; margin-left: auto; }
 .turn .caption .fail { color: var(--err); }
 .info-line { color: var(--muted); font-size: 11px; line-height: 1.4;
-             letter-spacing: 0.02em; flex-shrink: 0; }
-.exchange-row { display: flex; align-items: flex-start; gap: 10px; }
+             letter-spacing: 0.02em; margin: 4px 2px 0; }
 .bubble { border-radius: 12px; padding: 9px 13px; max-width: 75%; position: relative;
          width: fit-content; }
 /* Each section scrolls on its own: a section's pre is capped and scrollable, so
@@ -87,6 +86,9 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
 .bubble.error { margin-right: auto; margin-top: 8px; background: rgba(243,139,168,.12);
                 border: 1px solid var(--err); color: var(--err);
                 border-bottom-left-radius: 3px; }
+/* Response-side timing line, sitting above the left-aligned response bubble. */
+.resp-timing { color: var(--muted); font-size: 11px; letter-spacing: 0.02em;
+               margin: 8px 2px 4px; }
 
 /* Detail rendering (now shown inside the modal). */
 .body { padding: 12px 14px; }

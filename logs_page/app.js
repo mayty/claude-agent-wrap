@@ -38,6 +38,21 @@ function recStart(r) {
   return r && r.timing ? r.timing.start : null;
 }
 
+// A record's full timing object ({ start, completionStart, end }), or null.
+function recTiming(r) {
+  return r && r.timing ? r.timing : null;
+}
+
+// Human-readable duration from a count of seconds: "X.Xs" under a minute, else
+// "Xm Ys". Returns null for null/negative input so callers can skip the part.
+function fmtDur(seconds) {
+  if (seconds == null || seconds < 0) return null;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}m ${s}s`;
+}
+
 function fmtCost(c) {
   if (c == null) return "?";
   if (c < 0.01) return "$" + c.toFixed(4);
@@ -480,6 +495,32 @@ function infoLine(r) {
   return line;
 }
 
+// Response-side timing line shown above the response bubble: the end timestamp plus
+// the time-to-first-token (completionStart − start) and generation time
+// (end − completionStart). Each part appears only when its inputs are present, so
+// failures / non-streaming calls (completionStart === null) and old records with
+// no timing object degrade gracefully. Returns null when nothing is available.
+function respTimingLine(r) {
+  const t = recTiming(r);
+  if (!t) return null;
+
+  const parts = [];
+  if (t.end != null) parts.push(fmtTs(t.end));
+  if (t.start != null && t.completionStart != null) {
+    const ttft = fmtDur(t.completionStart - t.start);
+    if (ttft) parts.push("TTFT " + ttft);
+  }
+  if (t.completionStart != null && t.end != null) {
+    const gen = fmtDur(t.end - t.completionStart);
+    if (gen) parts.push("gen " + gen);
+  }
+  if (!parts.length) return null;
+
+  const line = el("div", "resp-timing");
+  line.textContent = parts.join(" · ");
+  return line;
+}
+
 // The full detail body for one record: error box, system prompt, tool
 // definitions, the complete message thread, and the response. Shown in the
 // modal opened from a turn.
@@ -545,7 +586,6 @@ function renderTurn(r, displayIdx) {
   const turn = el("div", "turn");
   turn.appendChild(captionEl(r, displayIdx));
 
-  const info = infoLine(r);
   const userBubble = el("div", "bubble user");
   // The latest *user* message — not simply the last message, which may be a
   // trailing system-reminder appended after the user's tool_result.
@@ -557,15 +597,7 @@ function renderTurn(r, displayIdx) {
   }
   applySectionHeights(userBubble);
   decorateSections(userBubble);
-
-  if (info) {
-    const row = el("div", "exchange-row");
-    row.appendChild(info);
-    row.appendChild(userBubble);
-    turn.appendChild(row);
-  } else {
-    turn.appendChild(userBubble);
-  }
+  turn.appendChild(userBubble);
 
   const respBubble = el("div", "bubble " + (r.error ? "error" : "assistant"));
   if (r.error) {
@@ -575,7 +607,13 @@ function renderTurn(r, displayIdx) {
   }
   applySectionHeights(respBubble);
   decorateSections(respBubble);
+  // The timing line sits above the response bubble; the context/output/cost
+  // info line sits below it. Both are left-aligned.
+  const rt = respTimingLine(r);
+  if (rt) turn.appendChild(rt);
   turn.appendChild(respBubble);
+  const info = infoLine(r);
+  if (info) turn.appendChild(info);
 
   turn.onclick = () => openModal(r, displayIdx);
   return turn;
