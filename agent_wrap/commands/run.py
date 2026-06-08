@@ -326,6 +326,7 @@ def run(args: list[str], tool_dir: Path) -> int:
         telegram_chat_id,
     )
     config.prepare_project_dirs(cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
+    config.link_litellm_logs(cwd, tool_dir)
     config.record_project(tool_dir)
 
     wslg_args = _build_wslg_args(tool_dir)

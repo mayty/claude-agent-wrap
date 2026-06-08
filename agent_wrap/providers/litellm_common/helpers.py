@@ -20,11 +20,18 @@ except ImportError:
 _SESSION_HASHERS: dict[str, StringHasher] = {}
 
 
-def get_session_hasher(session_id: str) -> StringHasher:
-    """Get or create a StringHasher for a specific session, loading existing state."""
+def get_session_hasher(session_id: str, log_dir: Path) -> StringHasher:
+    """
+    Get or create a StringHasher for a session, loading existing state.
+
+    The cache is keyed by ``session_id`` (Claude Code's globally-unique session
+    UUID) for cross-request deduplication, but I/O uses ``log_dir`` — the
+    resolved per-project/provider/session directory — so ``strings.jsonl`` lands
+    next to ``messages.jsonl`` under the shared sidecar's mount.
+    """
     if session_id not in _SESSION_HASHERS:
         hasher = StringHasher()
-        hasher.load_seen_hashes(session_id)
+        hasher.load_seen_hashes(log_dir)
         _SESSION_HASHERS[session_id] = hasher
     return _SESSION_HASHERS[session_id]
 

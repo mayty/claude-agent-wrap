@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class StringHasher:
@@ -32,12 +35,16 @@ class StringHasher:
         self._hashes_to_strings: dict[str, str] = {}
         self._seen_hashes: set[str] = set()
 
-    def load_seen_hashes(self, session_id: str) -> None:
+    def load_seen_hashes(self, log_dir: Path) -> None:
         """
         Load existing hashes from strings.jsonl to prevent duplicate writes
         after a sidecar restart, without loading full strings into memory.
+
+        ``log_dir`` is the resolved per-project/provider/session directory the
+        callback computes (``_get_log_dir``); the hasher must not reconstruct it
+        from the session id, since logs are no longer at the flat
+        ``/var/log/agent-wrap/<session_id>`` path.
         """
-        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
         strings_file = log_dir / "strings.jsonl"
 
         if not strings_file.exists():
@@ -86,7 +93,7 @@ class StringHasher:
 
         return hash_value
 
-    def flush(self, session_id: str) -> None:
+    def flush(self, log_dir: Path) -> None:
         """
         Append accumulated string mappings to strings.jsonl.
 
@@ -95,7 +102,9 @@ class StringHasher:
         prevent duplicate writes after a sidecar restart.
 
         Args:
-            session_id: The session identifier used to construct the file path
+            log_dir: The resolved per-project/provider/session directory (from
+                the callback's ``_get_log_dir``) where ``strings.jsonl`` lives
+                alongside ``messages.jsonl``.
 
         """
         if not self._hashes_to_strings:
@@ -108,7 +117,6 @@ class StringHasher:
         mappings_to_write = self._hashes_to_strings
         self._hashes_to_strings = {}
 
-        log_dir = Path(f"/var/log/agent-wrap/{session_id}")
         strings_file = log_dir / "strings.jsonl"
 
         # Ensure directory exists

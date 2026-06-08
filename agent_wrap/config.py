@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
+
+from agent_wrap.lib.utils import project_path_hash
 
 
 def _load_json(path: Path) -> dict | None:
@@ -168,6 +171,50 @@ def prepare_project_dirs(
     gitignore = claude_dir / ".gitignore"
     if not gitignore.exists():
         gitignore.write_text("*\n")
+
+
+def link_litellm_logs(project_dir: Path, tool_dir: Path) -> None:
+    """
+    Point ``project_dir/.claude/litellm-logs`` at the shared per-project subtree.
+
+    The shared sidecar writes logs to ``<tool_dir>/litellm-logs/<project_hash>/``;
+    the viewer reads ``project/.claude/litellm-logs/<provider>/<session>``. This
+    symlink bridges the two so the viewer needs no changes.
+
+    Idempotent and non-destructive:
+      * pre-creates the shared target so the symlink is never dangling;
+      * if the link is already correct, does nothing;
+      * if it is a stale symlink, repoints it;
+      * if it is a REAL directory/file from the old per-project scheme, it is
+        moved aside to ``litellm-logs-bkp`` (``-2``, ``-3``… on collision) rather
+        than clobbered, then the symlink is created.
+
+    Best-effort: any OSError is swallowed so logging never blocks a launch.
+    """
+    try:
+        target = tool_dir / "litellm-logs" / project_path_hash(project_dir)
+        target.mkdir(parents=True, exist_ok=True)
+
+        link = project_dir / ".claude" / "litellm-logs"
+        link.parent.mkdir(parents=True, exist_ok=True)
+
+        if link.is_symlink():
+            if link.resolve() == target.resolve():
+                return  # already correct
+            link.unlink()  # stale — repoint below
+        elif link.exists():
+            # A real directory/file from the old scheme — never destroy it.
+            bkp = link.parent / "litellm-logs-bkp"
+            n = 2
+            while bkp.exists():
+                bkp = link.parent / f"litellm-logs-bkp-{n}"
+                n += 1
+            link.rename(bkp)
+            print(f"agent-wrap: backed up pre-existing logs {link} -> {bkp}", file=sys.stderr)
+
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pass  # non-fatal — logging must never block a launch
 
 
 def _current_project_path() -> str:

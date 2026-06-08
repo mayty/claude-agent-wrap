@@ -10,3 +10,4 @@ agent_wrap/providers/*/pricing.json
 .ruff_cache/
 *.egg-info
 .coverage
+/litellm-logs

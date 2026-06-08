@@ -12,6 +12,7 @@ from agent_wrap.lib.utils import (
     generate_uuid,
     is_truthy_env,
     parse_dockerfile_agent,
+    project_path_hash,
     resolve_image,
     sanitize_name,
 )
@@ -64,6 +65,36 @@ def test_lowercase_uuid():
 
 def test_unique():
     assert generate_uuid() != generate_uuid()
+
+
+# --- project_path_hash ---
+
+
+def test_project_path_hash_is_16_hex(tmp_path: Path) -> None:
+    result = project_path_hash(tmp_path)
+    assert len(result) == 16
+    assert all(c in "0123456789abcdef" for c in result)
+
+
+def test_project_path_hash_stable(tmp_path: Path) -> None:
+    assert project_path_hash(tmp_path) == project_path_hash(tmp_path)
+
+
+def test_project_path_hash_resolves_symlink_aliases(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "alias"
+    link.symlink_to(real)
+    # A symlink alias and its target resolve to the same path -> same hash.
+    assert project_path_hash(link) == project_path_hash(real)
+
+
+def test_project_path_hash_differs_by_path(tmp_path: Path) -> None:
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    assert project_path_hash(a) != project_path_hash(b)
 
 
 # --- is_truthy_env ---
