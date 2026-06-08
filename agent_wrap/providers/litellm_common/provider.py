@@ -23,7 +23,7 @@ from typing import IO, ClassVar
 
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
-from agent_wrap.lib.utils import generate_uuid
+from agent_wrap.lib.utils import generate_uuid, project_path_hash
 from agent_wrap.providers.base import Provider
 
 
@@ -99,16 +99,22 @@ class LiteLLMProvider(Provider):
         """Resolve the shared LiteLLM logging callback (mounted into the sidecar)."""
         return Path(__file__).parent
 
+    def _tool_dir(self) -> Path:
+        """Resolve the agent-wrap install/repo root (e.g. /workspace)."""
+        # provider.py is at <root>/agent_wrap/providers/litellm_common/provider.py
+        return Path(__file__).resolve().parents[3]
+
     def _log_dir(self) -> Path:
         """
-        Host directory for the request/response JSONL log (bind-mounted into sidecar).
+        Shared host directory bind-mounted into the sidecar at /var/log/agent-wrap.
 
-        Includes the provider name (e.g., 'litellm-bedrock') so the sidecar mounts
-        directly to /var/log/agent-wrap, letting the callback simply write to
-        /var/log/agent-wrap/<session_id>/messages.jsonl.
+        Project-independent: a single directory under the agent-wrap install root.
+        The callback writes to <project_hash>/<provider>/<session_id>/ beneath it,
+        using the x-agent-wrap-log-prefix header the wrapper injects per launch and
+        the AGENT_WRAP_PROVIDER env var set on the sidecar. This is required because
+        a single shared sidecar (first-launch-wins) serves every project on the host.
         """
-        provider_name = self.__class__.name if hasattr(self.__class__, "name") else "unknown"
-        return Path.cwd() / ".claude" / "litellm-logs" / provider_name
+        return self._tool_dir() / "litellm-logs"
 
     # --- Public: ensure ---
 
@@ -211,7 +217,17 @@ class LiteLLMProvider(Provider):
     ) -> list[str]:
         """Build env var flags and connectivity args for the agent container."""
         base_url = f"http://{self.container_name}:{self.internal_port}"
-        agent_env = self.get_agent_env(self._master_key, base_url)
+        agent_env = dict(self.get_agent_env(self._master_key, base_url))
+
+        # Inject the per-project log discriminator as a custom request header.
+        # Claude Code forwards ANTHROPIC_CUSTOM_HEADERS verbatim on every upstream
+        # call; the sidecar callback reads x-agent-wrap-log-prefix to route logs to
+        # the right project subtree (see callback.py). The provider half of the
+        # discriminator is fixed per sidecar and travels via AGENT_WRAP_PROVIDER.
+        header = f"x-agent-wrap-log-prefix: {project_path_hash(Path.cwd())}"
+        existing = agent_env.get("ANTHROPIC_CUSTOM_HEADERS")
+        agent_env["ANTHROPIC_CUSTOM_HEADERS"] = f"{existing}\n{header}" if existing else header
+
         env_args: list[str] = []
         for key, value in agent_env.items():
             env_args.extend(["-e", f"{key}={value}"])
@@ -385,6 +401,10 @@ class LiteLLMProvider(Provider):
         for key, value in sidecar_env.items():
             env_flags.extend(["-e", f"{key}={value}"])
         env_flags.extend(["-e", f"LITELLM_MASTER_KEY={master_key}"])
+        # The provider is fixed for the shared sidecar's lifetime (first-launch-wins),
+        # so the callback reads it from the container env rather than per-request.
+        provider_name = self.__class__.name if hasattr(self.__class__, "name") else "unknown"
+        env_flags.extend(["-e", f"AGENT_WRAP_PROVIDER={provider_name}"])
 
         cmd = [
             "run",

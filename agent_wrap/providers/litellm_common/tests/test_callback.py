@@ -8,6 +8,9 @@ import tempfile
 from pathlib import Path
 
 from agent_wrap.providers.litellm_common.callback import (
+    _get_log_dir,
+    _get_project_hash,
+    _get_provider,
     _get_session_id,
     _resolve_thinking_reasoning_conflict,
     build_record,
@@ -64,26 +67,14 @@ def test_string_hasher_real_flush() -> None:
     hasher.hash_string(long_string2)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        session_id = "test-session"
-        log_dir = Path(tmp_dir) / session_id
+        # flush() now takes the resolved log dir directly, so the real method can
+        # be exercised against a temp directory — no mocking needed.
+        log_dir = Path(tmp_dir) / "abc123" / "litellm-test" / "test-session"
         log_dir.mkdir(parents=True, exist_ok=True)
         strings_file = log_dir / "strings.jsonl"
 
-        # Mock the flush method to use our temp directory
-        def mock_flush(sid: str) -> None:
-            # Replicate the append logic but with our temp dir
-            try:
-                with strings_file.open("a", encoding="utf-8") as f:
-                    for h, s in hasher._hashes_to_strings.items():
-                        f.write(json.dumps({"hash": h, "original": s}) + "\n")
-                hasher._hashes_to_strings.clear()
-            except OSError as e:
-                print(f"failed to append: {e}", flush=True)
-
-        hasher.flush = mock_flush  # type: ignore[method-assign]
-
         # First flush
-        hasher.flush(session_id)
+        hasher.flush(log_dir)
 
         # Verify file was created and contains the first mappings
         assert strings_file.exists()
@@ -99,7 +90,7 @@ def test_string_hasher_real_flush() -> None:
         # Hash a new string and flush again to test append behavior
         long_string3 = "f" * 100
         hash_result3 = hasher.hash_string(long_string3)
-        hasher.flush(session_id)
+        hasher.flush(log_dir)
 
         # Verify the file now has 3 lines (appended, not overwritten)
         with strings_file.open("r", encoding="utf-8") as f:
@@ -404,6 +395,78 @@ def test_get_session_id_fallback_when_missing() -> None:
     assert _get_session_id(kwargs) == "unknown-session"
 
 
+# --- _get_project_hash ---
+
+
+def _hash_kwargs(value: str) -> dict:
+    return {
+        "litellm_params": {"proxy_server_request": {"headers": {"x-agent-wrap-log-prefix": value}}}
+    }
+
+
+def test_get_project_hash_from_header() -> None:
+    assert _get_project_hash(_hash_kwargs("0123456789abcdef")) == "0123456789abcdef"
+
+
+def test_get_project_hash_fallback_when_missing() -> None:
+    assert _get_project_hash({"litellm_params": {}}) == "unknown-project"
+    assert _get_project_hash({"litellm_params": {"proxy_server_request": {}}}) == "unknown-project"
+    assert _get_project_hash(_hash_kwargs("")) == "unknown-project"
+
+
+def test_get_project_hash_rejects_non_hex_and_traversal() -> None:
+    # Anything outside the lowercase-hex alphabet (including '/', '.', '..',
+    # uppercase, leading slash) falls back so it can never escape the mount.
+    for bad in ("ABCDEF", "../../etc", "/abs/path", "a/b", "..", ".", "g123", "0123 4567"):
+        assert _get_project_hash(_hash_kwargs(bad)) == "unknown-project"
+
+
+# --- _get_provider ---
+
+
+def test_get_provider_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_WRAP_PROVIDER", "litellm-bedrock")
+    assert _get_provider() == "litellm-bedrock"
+
+
+def test_get_provider_fallback_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_WRAP_PROVIDER", raising=False)
+    assert _get_provider() == "unknown-provider"
+
+
+def test_get_provider_rejects_illegal_chars(monkeypatch) -> None:
+    for bad in ("../evil", "Has Spaces", "UPPER", "a/b"):
+        monkeypatch.setenv("AGENT_WRAP_PROVIDER", bad)
+        assert _get_provider() == "unknown-provider"
+
+
+# --- _get_log_dir ---
+
+
+def test_get_log_dir_composes_hash_provider_session(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_WRAP_PROVIDER", "litellm-bedrock")
+    kwargs = {
+        "litellm_params": {
+            "proxy_server_request": {
+                "headers": {
+                    "x-agent-wrap-log-prefix": "0123456789abcdef",
+                    "x-claude-code-session-id": "sess-1",
+                }
+            }
+        }
+    }
+    assert _get_log_dir(kwargs) == Path(
+        "/var/log/agent-wrap/0123456789abcdef/litellm-bedrock/sess-1"
+    )
+
+
+def test_get_log_dir_uses_defaults_when_absent(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_WRAP_PROVIDER", raising=False)
+    assert _get_log_dir({}) == Path(
+        "/var/log/agent-wrap/unknown-project/unknown-provider/unknown-session"
+    )
+
+
 def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     """Test that shared hashers deduplicate across requests and handle concurrent flushes safely."""
     # Clear the global cache to ensure a clean test state
@@ -443,7 +506,7 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     assert hash1.startswith("hash:")
 
     # The shared hasher should retain the mapping for ongoing deduplication
-    hasher = get_session_hasher(session_id)
+    hasher = get_session_hasher(session_id, _get_log_dir(kwargs1))
     assert len(hasher._strings_to_hashes) == 1
 
     # Test concurrent flush safety directly on the hasher
@@ -468,8 +531,9 @@ def test_string_hasher_loads_seen_hashes_to_prevent_duplicates() -> None:
     _SESSION_HASHERS.clear()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        session_id = "test-restart-session"
-        log_dir = Path(tmp_dir) / session_id
+        # load_seen_hashes()/flush() now take the resolved log dir directly, so
+        # the real methods can run against a temp directory — no mocking needed.
+        log_dir = Path(tmp_dir) / "abc123" / "litellm-test" / "test-restart-session"
         log_dir.mkdir(parents=True, exist_ok=True)
         strings_file = log_dir / "strings.jsonl"
 
@@ -479,22 +543,9 @@ def test_string_hasher_loads_seen_hashes_to_prevent_duplicates() -> None:
         with strings_file.open("w", encoding="utf-8") as f:
             f.write(json.dumps({"hash": existing_hash, "original": existing_string}) + "\n")
 
-        # Create a new hasher and load state
+        # Create a new hasher and load state from the existing file
         hasher = StringHasher()
-
-        # Mock the path for testing
-        def mock_load(sid: str) -> None:
-            file_path = log_dir / "strings.jsonl"
-            if file_path.exists():
-                with file_path.open("r", encoding="utf-8") as f:
-                    for line in f:
-                        entry = json.loads(line)
-                        if "hash" in entry:
-                            hasher._seen_hashes.add(entry["hash"])
-
-        hasher.load_seen_hashes = mock_load  # type: ignore[method-assign]
-
-        hasher.load_seen_hashes(session_id)
+        hasher.load_seen_hashes(log_dir)
 
         # Verify the hash was loaded
         assert existing_hash in hasher._seen_hashes
@@ -505,18 +556,7 @@ def test_string_hasher_loads_seen_hashes_to_prevent_duplicates() -> None:
         new_string = "new string"
         hasher._hashes_to_strings[new_hash] = new_string
 
-        # Mock flush to use our temp dir
-        def mock_flush(sid: str) -> None:
-            mappings_to_write = hasher._hashes_to_strings
-            hasher._hashes_to_strings = {}
-            with strings_file.open("a", encoding="utf-8") as f:
-                for h, s in mappings_to_write.items():
-                    if h not in hasher._seen_hashes:
-                        f.write(json.dumps({"hash": h, "original": s}) + "\n")
-                        hasher._seen_hashes.add(h)
-
-        hasher.flush = mock_flush  # type: ignore[method-assign]
-        hasher.flush(session_id)
+        hasher.flush(log_dir)
 
         # Verify only the new hash was appended
         with strings_file.open("r", encoding="utf-8") as f:

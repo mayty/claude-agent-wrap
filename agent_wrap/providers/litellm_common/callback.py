@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -61,13 +62,28 @@ if TYPE_CHECKING:
         error: str | None
 
 
-# The host log directory is bind-mounted here by the provider lifecycle
-# (see litellm_common/provider.py::_start). The provider-specific subdirectory
-# is mounted directly to /var/log/agent-wrap, so we only need to append the session_id.
+# A single shared sidecar (first-launch-wins) serves every project on the host,
+# so its log directory (bind-mounted to /var/log/agent-wrap by
+# litellm_common/provider.py::_start) is project-independent. The callback routes
+# each record to /var/log/agent-wrap/<project_hash>/<provider>/<session_id>/ where:
+#   - <project_hash> varies per request and arrives in the x-agent-wrap-log-prefix
+#     header (injected by the wrapper via Claude Code's ANTHROPIC_CUSTOM_HEADERS);
+#   - <provider> is fixed per sidecar and arrives in the AGENT_WRAP_PROVIDER env var;
+#   - <session_id> is Claude Code's own x-claude-code-session-id header.
+# A per-project symlink (cwd/.claude/litellm-logs -> the <project_hash> subtree)
+# lets the viewer read this layout unchanged.
 
 
 _ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 _TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]+)"')
+
+# project_path_hash output is lowercase hex; validating against that alphabet
+# inherently rejects '/', '.', and '..', so no separate traversal check is needed.
+_HASH_RE = re.compile(r"^[0-9a-f]+$")
+# Provider names are lowercase Docker-style identifiers (e.g. "litellm-bedrock").
+_PROVIDER_RE = re.compile(r"^[a-z0-9-]+$")
+_DEFAULT_PROJECT_HASH = "unknown-project"
+_DEFAULT_PROVIDER = "unknown-provider"
 
 
 def _get_session_id(kwargs: dict[str, Any]) -> str:
@@ -76,6 +92,32 @@ def _get_session_id(kwargs: dict[str, Any]) -> str:
     proxy_request = litellm_params.get("proxy_server_request") or {}
     headers = proxy_request.get("headers") or {}
     return headers.get("x-claude-code-session-id", "unknown-session")
+
+
+def _get_project_hash(kwargs: dict[str, Any]) -> str:
+    """
+    Extract the project hash from the x-agent-wrap-log-prefix request header.
+
+    The wrapper injects this via ANTHROPIC_CUSTOM_HEADERS. Anything that isn't
+    pure lowercase hex (missing header, '/'-bearing, absolute, traversal) falls
+    back to a fixed default so a malformed value can never escape the mount.
+    """
+    litellm_params = kwargs.get("litellm_params") or {}
+    proxy_request = litellm_params.get("proxy_server_request") or {}
+    headers = proxy_request.get("headers") or {}
+    raw = headers.get("x-agent-wrap-log-prefix", "")
+    return raw if _HASH_RE.match(raw) else _DEFAULT_PROJECT_HASH
+
+
+def _get_provider() -> str:
+    """
+    Return the provider name from the AGENT_WRAP_PROVIDER sidecar env var.
+
+    Fixed for the shared sidecar's lifetime. Falls back to a default when unset
+    or containing characters outside the Docker-style identifier alphabet.
+    """
+    name = os.environ.get("AGENT_WRAP_PROVIDER", "")
+    return name if _PROVIDER_RE.match(name) else _DEFAULT_PROVIDER
 
 
 def build_record(
@@ -98,7 +140,8 @@ def build_record(
     request lives at ``request.body.data``.
     """
     session_id = _get_session_id(kwargs)
-    hasher = get_session_hasher(session_id)
+    log_dir = _get_log_dir(kwargs)
+    hasher = get_session_hasher(session_id, log_dir)
 
     litellm_params = kwargs.get("litellm_params") or {}
     psr = litellm_params.get("proxy_server_request")
@@ -127,7 +170,7 @@ def build_record(
         record["error"] = hasher.hash_string(str(exc))
 
     # Flush the hasher to persist string mappings after building the record
-    hasher.flush(session_id)
+    hasher.flush(log_dir)
 
     return record
 
@@ -217,19 +260,24 @@ def _write_meta(log_dir: Path, meta: MetaData) -> None:
 
 
 def _get_log_dir(kwargs: dict[str, Any]) -> Path:
-    """Return the per-session log directory for the session in *kwargs*."""
-    return Path(f"/var/log/agent-wrap/{_get_session_id(kwargs)}")
+    """Return the per-project/provider/session log directory for *kwargs*."""
+    return (
+        Path("/var/log/agent-wrap")
+        / _get_project_hash(kwargs)
+        / _get_provider()
+        / _get_session_id(kwargs)
+    )
 
 
 async def _write_record_async(record: LogRecord, kwargs: dict[str, Any]) -> None:
     """Append *record* as a JSON line to ``messages.jsonl``.  Never raises."""
     session_id = _get_session_id(kwargs)
+    log_dir = _get_log_dir(kwargs)
 
     # Flush string mappings before appending the record.
-    hasher = get_session_hasher(session_id)
-    await asyncio.to_thread(hasher.flush, session_id)
+    hasher = get_session_hasher(session_id, log_dir)
+    await asyncio.to_thread(hasher.flush, log_dir)
 
-    log_dir = _get_log_dir(kwargs)
     log_file = log_dir / "messages.jsonl"
     line = json.dumps(record, default=str)
 

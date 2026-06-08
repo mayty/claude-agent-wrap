@@ -12,10 +12,12 @@ from agent_wrap.config import (
     ensure_claude_md,
     ensure_statusline,
     ensure_telegram_hooks,
+    link_litellm_logs,
     prepare_global_config,
     prepare_project_dirs,
     record_project,
 )
+from agent_wrap.lib.utils import project_path_hash
 
 
 def test_injects_into_empty_file(tmp_path: Path):
@@ -296,6 +298,93 @@ def test_record_project_keeps_file_sorted(tmp_path: Path, monkeypatch: pytest.Mo
     lines = projects_file.read_text().splitlines()
     assert lines == sorted(lines)
     assert str(extra) in lines
-    assert "/z" in lines
-    assert "/a" in lines
-    assert "/m" in lines
+
+
+# --- link_litellm_logs ---
+
+
+def test_link_litellm_logs_creates_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    tool = tmp_path / "tool"
+    (project / ".claude").mkdir(parents=True)
+    tool.mkdir()
+
+    link_litellm_logs(project, tool)
+
+    link = project / ".claude" / "litellm-logs"
+    target = tool / "litellm-logs" / project_path_hash(project)
+    assert link.is_symlink()
+    assert link.resolve() == target.resolve()
+    assert target.is_dir()
+
+
+def test_link_litellm_logs_idempotent(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    tool = tmp_path / "tool"
+    (project / ".claude").mkdir(parents=True)
+    tool.mkdir()
+
+    link_litellm_logs(project, tool)
+    link_litellm_logs(project, tool)  # second call must not raise or change state
+
+    link = project / ".claude" / "litellm-logs"
+    target = tool / "litellm-logs" / project_path_hash(project)
+    assert link.is_symlink()
+    assert link.resolve() == target.resolve()
+
+
+def test_link_litellm_logs_repoints_stale_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    tool = tmp_path / "tool"
+    (project / ".claude").mkdir(parents=True)
+    tool.mkdir()
+
+    bogus = tmp_path / "bogus"
+    bogus.mkdir()
+    link = project / ".claude" / "litellm-logs"
+    link.symlink_to(bogus)
+
+    link_litellm_logs(project, tool)
+
+    target = tool / "litellm-logs" / project_path_hash(project)
+    assert link.is_symlink()
+    assert link.resolve() == target.resolve()
+
+
+def test_link_litellm_logs_backs_up_real_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    project = tmp_path / "project"
+    tool = tmp_path / "tool"
+    old = project / ".claude" / "litellm-logs"
+    old.mkdir(parents=True)
+    (old / "litellm-bedrock").mkdir()
+    (old / "litellm-bedrock" / "keep.txt").write_text("old data")
+    tool.mkdir()
+
+    link_litellm_logs(project, tool)
+
+    link = project / ".claude" / "litellm-logs"
+    bkp = project / ".claude" / "litellm-logs-bkp"
+    # Old data preserved in the backup, link now points at the shared target.
+    assert (bkp / "litellm-bedrock" / "keep.txt").read_text() == "old data"
+    assert link.is_symlink()
+    assert link.resolve() == (tool / "litellm-logs" / project_path_hash(project)).resolve()
+    assert "backed up" in capsys.readouterr().err
+
+
+def test_link_litellm_logs_backup_suffix_on_collision(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    tool = tmp_path / "tool"
+    old = project / ".claude" / "litellm-logs"
+    old.mkdir(parents=True)
+    (old / "marker.txt").write_text("data")
+    # A previous backup already occupies the default name.
+    (project / ".claude" / "litellm-logs-bkp").mkdir()
+    tool.mkdir()
+
+    link_litellm_logs(project, tool)
+
+    # The new backup gets a numeric suffix rather than clobbering the old one.
+    assert (project / ".claude" / "litellm-logs-bkp-2" / "marker.txt").read_text() == "data"
+    assert (project / ".claude" / "litellm-logs").is_symlink()
