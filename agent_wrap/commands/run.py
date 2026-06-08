@@ -194,7 +194,7 @@ def _build_env_args(
     claude_home: str,
 ) -> list[str]:
     """Build -e flags for the docker run command."""
-    return [
+    args = [
         "-e",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         "-e",
@@ -212,6 +212,10 @@ def _build_env_args(
         "-e",
         f"HOME={claude_home}",
     ]
+    auto_mode_flag = os.environ.get("CLAUDE_CODE_ENABLE_AUTO_MODE", None)
+    if auto_mode_flag is not None:
+        args.extend(["-e", f"CLAUDE_CODE_ENABLE_AUTO_MODE={auto_mode_flag}"])
+    return args
 
 
 def _build_volume_mounts(
