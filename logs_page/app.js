@@ -14,7 +14,10 @@ async function getJSON(url) {
 
 function fmtTs(ts) {
   if (!ts) return "—";
-  const d = new Date(ts);
+  // Timestamps are Unix epoch *seconds* (floats) in the new record format;
+  // Date() expects milliseconds, so scale numbers up. ISO strings (older
+  // records / metadata) are still accepted as-is.
+  const d = typeof ts === "number" ? new Date(ts * 1000) : new Date(ts);
   if (isNaN(d)) return ts;
   const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
                   "Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -28,6 +31,11 @@ function fmtTs(ts) {
     ? `${day} ${mon}`
     : `${day} ${mon} ${year}`;
   return `${datePart}, ${hh}:${mm}:${ss}`;
+}
+
+// A record's start timestamp (epoch seconds) from its `timing` object, or null.
+function recStart(r) {
+  return r && r.timing ? r.timing.start : null;
 }
 
 function fmtCost(c) {
@@ -504,7 +512,7 @@ function captionEl(r, displayIdx) {
   if (r.status && r.status !== "success") {
     cap.appendChild(el("span", "fail", `· ${r.status}`));
   }
-  cap.appendChild(el("span", "when", fmtTs(r.ts)));
+  cap.appendChild(el("span", "when", fmtTs(recStart(r))));
   return cap;
 }
 
@@ -729,8 +737,8 @@ function renderMainStream(chat, groups) {
     return m;
   };
   for (const g of groups.subs) {
-    pushMarker(g.firstIdx, marker(g, "started", state.reqs[g.firstIdx].ts));
-    pushMarker(g.lastIdx, marker(g, "finished", state.reqs[g.lastIdx].ts));
+    pushMarker(g.firstIdx, marker(g, "started", recStart(state.reqs[g.firstIdx])));
+    pushMarker(g.lastIdx, marker(g, "finished", recStart(state.reqs[g.lastIdx])));
   }
   // Walk the global record order so markers land relative to main records.
   let shown = 0;

@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import (
+    epoch_to_dt,
     fmt_count,
-    parse_ts,
 )
 from agent_wrap.lib.models import normalize_model
 from agent_wrap.lib.render import render_core
@@ -317,7 +317,7 @@ def _cost_record(
     norm_model = normalize_model(clean_model) or clean_model
     display_model = f"{provider_name}/{norm_model}"
 
-    ts = parse_ts(rec.get("ts"))
+    ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
     day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
 
     usage = extract_usage(rec.get("response"))

@@ -21,7 +21,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 try:
     from .helpers import get_response_content_str, get_session_hasher, json_safe
@@ -38,22 +38,27 @@ except ImportError:
     )
 
 
-class MetaData(TypedDict):
-    count: int
-    last_ts: str
-    models: list[str]
-    alias: str | None
-    title: str | None
+if TYPE_CHECKING:
 
+    class MetaData(TypedDict):
+        count: int
+        last_ts: float | None
+        models: list[str]
+        alias: str | None
+        title: str | None
 
-class LogRecord(TypedDict):
-    ts: str
-    end_ts: str
-    status: str
-    model: str
-    request: dict[str, Any]
-    response: dict[str, Any]
-    error: str | None
+    class RequestTiming(TypedDict):
+        start: float | None
+        completionStart: float | None
+        end: float | None
+
+    class LogRecord(TypedDict):
+        timing: RequestTiming
+        status: str
+        model: str
+        request: dict[str, Any]
+        response: dict[str, Any]
+        error: str | None
 
 
 # The host log directory is bind-mounted here by the provider lifecycle
@@ -73,14 +78,11 @@ def _get_session_id(kwargs: dict[str, Any]) -> str:
     return headers.get("x-claude-code-session-id", "unknown-session")
 
 
-def build_record(  # noqa: PLR0913
+def build_record(
     kwargs: dict[str, Any],
     response_obj: Any,
     status: str,
     exc: Any = None,
-    *,
-    start_ts: Any = None,
-    end_ts: Any = None,
 ) -> LogRecord:
     """
     Build a JSON-serializable log record from a LiteLLM callback's arguments.
@@ -107,10 +109,14 @@ def build_record(  # noqa: PLR0913
     if isinstance(psr, dict) and isinstance(psr.get("body"), dict):
         psr["body"].pop("proxy_server_request", None)
 
+    logging_object = kwargs.get("standard_logging_object", {})
     model = kwargs.get("model")
     record: LogRecord = {
-        "ts": start_ts.isoformat(),
-        "end_ts": end_ts.isoformat(),
+        "timing": {
+            "start": logging_object.get("startTime"),
+            "completionStart": logging_object.get("completionStartTime"),
+            "end": logging_object.get("endTime"),
+        },
         "status": status,
         "model": model or "undefined",
         "request": json_safe(psr, hasher),
@@ -180,7 +186,7 @@ def extract_session_title(response: Any) -> str | None:
 def _get_empty_meta() -> MetaData:
     return {
         "count": 0,
-        "last_ts": "0000-00-00T00:00:00+00:00",
+        "last_ts": None,
         "models": [],
         "alias": None,
         "title": None,
@@ -243,8 +249,9 @@ def _write_metadata(record: LogRecord, kwargs: dict[str, Any]) -> None:
 
     meta = _read_meta(log_dir)
     meta["count"] += 1
-    if record.get("ts"):
-        meta["last_ts"] = record["end_ts"]
+    end = (record.get("timing") or {}).get("end")
+    if end is not None:
+        meta["last_ts"] = end
     model = record.get("model")
     if model:
         short = model.rsplit("/", 1)[-1]
@@ -299,21 +306,29 @@ try:
             """Resolve provider-specific parameter conflicts before the upstream call."""
             return _resolve_thinking_reasoning_conflict(data)
 
-        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:
-            record = build_record(
-                kwargs, response_obj, status="success", start_ts=start_time, end_ts=end_time
-            )
+        async def async_log_success_event(
+            self,
+            kwargs,
+            response_obj,
+            start_time,  # noqa: ARG002
+            end_time,  # noqa: ARG002
+        ) -> None:
+            record = build_record(kwargs, response_obj, status="success")
             await _write_record_async(record, kwargs)
             _write_metadata(record, kwargs)
 
-        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:
+        async def async_log_failure_event(
+            self,
+            kwargs,
+            response_obj,
+            start_time,  # noqa: ARG002
+            end_time,  # noqa: ARG002
+        ) -> None:
             record = build_record(
                 kwargs,
                 response_obj,
                 status="failure",
                 exc=kwargs.get("exception"),
-                start_ts=start_time,
-                end_ts=end_time,
             )
             try:
                 await _write_record_async(record, kwargs)

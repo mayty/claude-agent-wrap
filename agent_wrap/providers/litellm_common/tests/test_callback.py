@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_wrap.providers.litellm_common.callback import (
@@ -20,8 +19,6 @@ from agent_wrap.providers.litellm_common.helpers import (
     get_session_hasher,
 )
 from agent_wrap.providers.litellm_common.string_hasher import StringHasher
-
-_TS = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def test_string_hasher_basic_hashing() -> None:
@@ -124,30 +121,40 @@ def test_build_record_success_shape() -> None:
         "model": "bedrock/claude",
         "messages": [{"role": "user", "content": "hi"}],
         "litellm_params": {"proxy_server_request": {"url": "/bedrock/x", "body": {"a": 1}}},
+        "standard_logging_object": {
+            "startTime": 1780916982.12,
+            "completionStartTime": 1780916982.5,
+            "endTime": 1780916985.0,
+        },
     }
-    record = build_record(
-        kwargs, {"choices": [{"text": "yo"}]}, status="success", start_ts=_TS, end_ts=_TS
-    )
+    record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     assert record["status"] == "success"
     assert record["model"] == "bedrock/claude"
     assert record["request"]["url"] == "/bedrock/x"
     assert record["response"] == {"choices": [{"text": "yo"}]}
     assert record["error"] is None
-    assert "ts" in record
-    assert "end_ts" in record
+    # Timing is sourced verbatim from LiteLLM's standard_logging_object.
+    assert record["timing"] == {
+        "start": 1780916982.12,
+        "completionStart": 1780916982.5,
+        "end": 1780916985.0,
+    }
+
+
+def test_build_record_timing_defaults_to_none_without_logging_object() -> None:
+    record = build_record({}, None, status="success")
+    assert record["timing"] == {"start": None, "completionStart": None, "end": None}
 
 
 def test_build_record_failure_includes_error() -> None:
-    record = build_record(
-        {}, None, status="failure", exc=RuntimeError("boom"), start_ts=_TS, end_ts=_TS
-    )
+    record = build_record({}, None, status="failure", exc=RuntimeError("boom"))
     assert record["status"] == "failure"
     assert record["error"] == "boom"
 
 
 def test_build_record_tolerates_missing_keys() -> None:
-    record = build_record({}, None, status="success", start_ts=_TS, end_ts=_TS)
+    record = build_record({}, None, status="success")
     assert record["model"] == "undefined"
     assert record["request"] is None
 
@@ -157,9 +164,7 @@ def test_build_record_is_json_serializable_with_default_str() -> None:
         def __str__(self) -> str:
             return "weird-obj"
 
-    record = build_record(
-        {"model": "m", "messages": [Weird()]}, Weird(), status="success", start_ts=_TS, end_ts=_TS
-    )
+    record = build_record({"model": "m", "messages": [Weird()]}, Weird(), status="success")
     # default=str mirrors how the callback writes the line.
     line = json.dumps(record, default=str)
     assert "weird-obj" in line
@@ -184,7 +189,7 @@ def test_build_record_drops_proxy_server_request_cycle() -> None:
         "messages": [{"role": "user", "content": "hello"}],
         "litellm_params": {"proxy_server_request": psr},
     }
-    record = build_record(kwargs, {}, status="success", start_ts=_TS, end_ts=_TS)
+    record = build_record(kwargs, {}, status="success")
 
     # The cycle should be broken — body.proxy_server_request must not appear
     body = record["request"]["body"]
@@ -215,7 +220,7 @@ def test_build_record_handles_shared_references() -> None:
         "messages": messages,
         "litellm_params": {"proxy_server_request": psr},
     }
-    record = build_record(kwargs, {}, status="success", start_ts=_TS, end_ts=_TS)
+    record = build_record(kwargs, {}, status="success")
 
     # Both copies of the shared list are serialized inline — no wrap-ref pointers
     req_json = json.dumps(record)
@@ -250,8 +255,6 @@ def test_build_record_no_wrap_refs_in_output() -> None:
         kwargs,
         {"choices": [{"message": {"content": "hi"}}]},
         status="success",
-        start_ts=_TS,
-        end_ts=_TS,
     )
     record_json = json.dumps(record)
     assert "wrap-ref" not in record_json
@@ -262,7 +265,7 @@ def test_build_record_uses_model_dump_for_pydantic_like() -> None:
         def model_dump(self) -> dict[str, object]:
             return {"kind": "modelish", "n": 1}
 
-    record = build_record({"model": "m"}, Modelish(), status="success", start_ts=_TS, end_ts=_TS)
+    record = build_record({"model": "m"}, Modelish(), status="success")
     assert record["response"] == {"kind": "modelish", "n": 1}
 
 
@@ -281,9 +284,7 @@ def test_build_record_hashes_long_strings() -> None:
 
     # We can't test the actual file creation in unit tests due to permissions,
     # but we can verify the hashing behavior in the record
-    record = build_record(
-        kwargs, {"choices": [{"text": "yo"}]}, status="success", start_ts=_TS, end_ts=_TS
-    )
+    record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     # The long string should be hashed in the output
     messages = record["request"]["body"]["messages"]
@@ -307,9 +308,7 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
         },
     }
 
-    record = build_record(
-        kwargs, {"choices": [{"text": "yo"}]}, status="success", start_ts=_TS, end_ts=_TS
-    )
+    record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     # The short string should remain unchanged
     messages = record["request"]["body"]["messages"]
@@ -423,9 +422,7 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
             }
         },
     }
-    record1 = build_record(
-        kwargs1, {"choices": [{"text": "response 1"}]}, status="success", start_ts=_TS, end_ts=_TS
-    )
+    record1 = build_record(kwargs1, {"choices": [{"text": "response 1"}]}, status="success")
 
     # Simulate Request 2 with the SAME string (should be deduplicated in memory)
     kwargs2 = {
@@ -437,9 +434,7 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
             }
         },
     }
-    record2 = build_record(
-        kwargs2, {"choices": [{"text": "response 2"}]}, status="success", start_ts=_TS, end_ts=_TS
-    )
+    record2 = build_record(kwargs2, {"choices": [{"text": "response 2"}]}, status="success")
 
     # Both records should have the exact same hash
     hash1 = record1["request"]["body"]["messages"][0]["content"]

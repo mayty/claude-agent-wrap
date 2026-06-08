@@ -1,10 +1,10 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Formatting helpers shared by the usage-stats subcommands."""
 
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from agent_wrap.lib.console import Ansi
 
@@ -52,6 +52,16 @@ def parse_ts(s: str | None) -> datetime | None:
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
+        return None
+
+
+def epoch_to_dt(x: float | None) -> datetime | None:
+    """Convert a Unix epoch-seconds float to a UTC-aware datetime, or None."""
+    if x is None:
+        return None
+    try:
+        return datetime.fromtimestamp(x, tz=timezone.utc)
+    except (ValueError, OSError, OverflowError):
         return None
 
 

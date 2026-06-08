@@ -1,10 +1,11 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for the `logs` subcommand's data access and record normalization."""
 
 from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.commands.logs import (
@@ -33,6 +34,23 @@ if TYPE_CHECKING:
 if TYPE_CHECKING:
     from pathlib import Path
 
+# --- timing helpers ---------------------------------------------------------
+# Records now carry a `timing` object of Unix epoch-seconds floats rather than
+# the old ISO `ts`/`end_ts` strings. These helpers keep the test fixtures
+# readable (ISO in, epoch out) while matching the new on-disk shape.
+
+
+def _epoch(iso: str) -> float:
+    """ISO-8601 string -> Unix epoch seconds (matches the migration/callback)."""
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
+    """Build a minimal record with a `timing` object whose start == end == ``iso``."""
+    e = _epoch(iso)
+    return {"timing": {"start": e, "completionStart": None, "end": e}, **extra}
+
+
 # --- normalize_record ---
 
 
@@ -40,8 +58,11 @@ def _raw_record() -> LogRecord:
     return cast(
         "LogRecord",
         {
-            "ts": "2026-06-05T12:00:00+00:00",
-            "end_ts": "2026-06-05T12:00:01+00:00",
+            "timing": {
+                "start": _epoch("2026-06-05T12:00:00+00:00"),
+                "completionStart": None,
+                "end": _epoch("2026-06-05T12:00:01+00:00"),
+            },
             "status": "success",
             "model": "us.anthropic.claude-opus-4-8",
             "request": {
@@ -75,8 +96,11 @@ def test_normalize_falls_back_to_body_when_data_is_not_dict():
     rec = cast(
         "LogRecord",
         {
-            "ts": "2026-06-05T12:00:00+00:00",
-            "end_ts": "2026-06-05T12:00:01+00:00",
+            "timing": {
+                "start": _epoch("2026-06-05T12:00:00+00:00"),
+                "completionStart": None,
+                "end": _epoch("2026-06-05T12:00:01+00:00"),
+            },
             "status": "success",
             "model": "m",
             "request": {
@@ -102,6 +126,15 @@ def test_normalize_extracts_response_and_usage():
     assert out["usage"] == {"prompt_tokens": 10, "completion_tokens": 2}
 
 
+def test_normalize_passes_through_timing():
+    out = normalize_record(_raw_record(), {})
+    assert out["timing"] == {
+        "start": _epoch("2026-06-05T12:00:00+00:00"),
+        "completionStart": None,
+        "end": _epoch("2026-06-05T12:00:01+00:00"),
+    }
+
+
 def test_normalize_resolves_hashes():
     rec = _raw_record()
     rec["request"]["body"]["data"]["system"] = "hash:s"
@@ -110,7 +143,7 @@ def test_normalize_resolves_hashes():
 
 
 def test_normalize_tolerates_missing_pieces():
-    out = normalize_record(cast("LogRecord", {"ts": "t", "status": "failure", "error": "boom"}), {})
+    out = normalize_record(cast("LogRecord", {"status": "failure", "error": "boom"}), {})
     assert out["messages"] == []
     assert out["tools"] == []
     assert out["response"] == {}
@@ -166,8 +199,7 @@ def test_normalize_record_resolves_hashes():
     """normalize_record resolves hash pointers in request and response."""
     strings = {"hash:abc123": "resolved content"}
     rec = {
-        "ts": "t1",
-        "end_ts": "t2",
+        "timing": {"start": 1.0, "completionStart": None, "end": 2.0},
         "status": "success",
         "model": "m",
         "request": {
@@ -195,8 +227,11 @@ def _naming_record(content: str) -> LogRecord:
     return cast(
         "LogRecord",
         {
-            "ts": "2026-06-05T12:00:00+00:00",
-            "end_ts": "2026-06-05T12:00:01+00:00",
+            "timing": {
+                "start": _epoch("2026-06-05T12:00:00+00:00"),
+                "completionStart": None,
+                "end": _epoch("2026-06-05T12:00:01+00:00"),
+            },
             "status": "success",
             "model": "m",
             "request": {},
@@ -240,15 +275,15 @@ def test_list_sessions_enumerates_and_sorts(tmp_path: Path):
         project,
         "litellm-bedrock",
         "sess-old",
-        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
     )
     _write_session(
         project,
         "litellm-bedrock",
         "sess-new",
         [
-            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"},
-            {"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"},
+            _ts_rec("2026-06-05T00:00:00+00:00", model="m/b"),
+            _ts_rec("2026-06-05T01:00:00+00:00", model="m/b"),
         ],
     )
     sessions = list_sessions(project)
@@ -271,8 +306,8 @@ def test_list_sessions_derives_alias_from_naming_record(tmp_path: Path):
         "litellm-bedrock",
         "s1",
         [
-            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"},
-            _naming_record('{"name": "derived-slug"}') | {"ts": "2026-06-05T00:01:00+00:00"},
+            _ts_rec("2026-06-05T00:00:00+00:00", model="m/a"),
+            _naming_record('{"name": "derived-slug"}'),
         ],
     )
     assert list_sessions(project)[0]["alias"] == "derived-slug"
@@ -285,13 +320,13 @@ def test_list_sessions_meta_json_alias_used(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [_naming_record('{"name": "derived-slug"}') | {"ts": "2026-06-05T00:00:00+00:00"}],
+        [_naming_record('{"name": "derived-slug"}')],
     )
     _write_meta_file(
         sdir,
         {
             "count": 1,
-            "last_ts": "2026-06-05T00:00:00+00:00",
+            "last_ts": _epoch("2026-06-05T00:00:00+00:00"),
             "models": ["a"],
             "alias": "meta-slug",
         },
@@ -305,7 +340,7 @@ def test_list_sessions_alias_none_when_absent(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     assert list_sessions(project)[0]["alias"] is None
 
@@ -331,7 +366,7 @@ def test_session_fingerprint_reflects_file(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     fp = session_fingerprint(project, "s1")
     assert isinstance(fp["mtime"], int)
@@ -354,13 +389,13 @@ def test_list_sessions_merges_across_providers(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
     )
     _write_session(
         project,
         "litellm-deepseek",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
     )
     sessions = list_sessions(project)
     assert len(sessions) == 1
@@ -369,8 +404,8 @@ def test_list_sessions_merges_across_providers(tmp_path: Path):
     assert s["providers"] == ["litellm-bedrock", "litellm-deepseek"]
     assert s["count"] == 2
     assert s["models"] == ["a", "b"]
-    assert s["first_ts"] == "2026-06-01T00:00:00+00:00"
-    assert s["last_ts"] == "2026-06-05T00:00:00+00:00"
+    assert s["first_ts"] == _epoch("2026-06-01T00:00:00+00:00")
+    assert s["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_list_sessions_providers_field_shape(tmp_path: Path):
@@ -380,7 +415,7 @@ def test_list_sessions_providers_field_shape(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     sessions = list_sessions(project)
     assert sessions[0]["providers"] == ["litellm-bedrock"]
@@ -396,7 +431,11 @@ def test_read_session_merges_across_providers(tmp_path: Path):
         "s1",
         [
             {
-                "ts": "2026-06-01T00:00:00+00:00",
+                "timing": {
+                    "start": _epoch("2026-06-01T00:00:00+00:00"),
+                    "completionStart": None,
+                    "end": _epoch("2026-06-01T00:00:00+00:00"),
+                },
                 "status": "success",
                 "model": "m/a",
                 "request": {
@@ -412,7 +451,11 @@ def test_read_session_merges_across_providers(tmp_path: Path):
         "s1",
         [
             {
-                "ts": "2026-06-01T00:01:00+00:00",
+                "timing": {
+                    "start": _epoch("2026-06-01T00:01:00+00:00"),
+                    "completionStart": None,
+                    "end": _epoch("2026-06-01T00:01:00+00:00"),
+                },
                 "status": "success",
                 "model": "m/b",
                 "request": {
@@ -443,15 +486,15 @@ def test_session_fingerprint_combines_across_providers(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     _write_session(
         project,
         "litellm-deepseek",
         "s1",
         [
-            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"},
-            {"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"},
+            _ts_rec("2026-06-05T00:00:00+00:00", model="m/b"),
+            _ts_rec("2026-06-05T01:00:00+00:00", model="m/b"),
         ],
     )
     fp = session_fingerprint(project, "s1")
@@ -478,7 +521,7 @@ def test_sessions_fingerprint_reflects_changes(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     fp1 = sessions_fingerprint(project)
     assert isinstance(fp1["mtime"], int)
@@ -489,7 +532,7 @@ def test_sessions_fingerprint_reflects_changes(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s2",
-        [{"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"}],
+        [_ts_rec("2026-06-05T01:00:00+00:00", model="m/b")],
     )
     fp2 = sessions_fingerprint(project)
     assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
@@ -524,7 +567,7 @@ def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
         with_logs,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     (tool_dir / ".agent-launches" / "projects.txt").write_text(
         f"{with_logs}\n{without_logs}\n", encoding="utf-8"
@@ -545,13 +588,13 @@ def test_list_projects_empty_without_registry(tmp_path: Path):
 def test_read_last_record_ts_returns_last_ts(tmp_path: Path):
     f = tmp_path / "messages.jsonl"
     f.write_text(
-        json.dumps({"ts": "2026-06-01T00:00:00+00:00"})
+        json.dumps(_ts_rec("2026-06-01T00:00:00+00:00"))
         + "\n"
-        + json.dumps({"ts": "2026-06-05T12:00:00+00:00"})
+        + json.dumps(_ts_rec("2026-06-05T12:00:00+00:00"))
         + "\n",
         encoding="utf-8",
     )
-    assert _read_last_record_ts(f) == "2026-06-05T12:00:00+00:00"
+    assert _read_last_record_ts(f) == _epoch("2026-06-05T12:00:00+00:00")
 
 
 def test_read_last_record_ts_returns_none_for_empty_file(tmp_path: Path):
@@ -567,43 +610,43 @@ def test_read_last_record_ts_returns_none_for_missing_file(tmp_path: Path):
 def test_read_last_record_ts_handles_single_record(tmp_path: Path):
     f = tmp_path / "messages.jsonl"
     f.write_text(
-        json.dumps({"ts": "2026-06-05T00:00:00+00:00"}) + "\n",
+        json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")) + "\n",
         encoding="utf-8",
     )
-    assert _read_last_record_ts(f) == "2026-06-05T00:00:00+00:00"
+    assert _read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_read_last_record_ts_handles_no_trailing_newline(tmp_path: Path):
     f = tmp_path / "messages.jsonl"
     f.write_text(
-        json.dumps({"ts": "2026-06-05T00:00:00+00:00"}),
+        json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")),
         encoding="utf-8",
     )
-    assert _read_last_record_ts(f) == "2026-06-05T00:00:00+00:00"
+    assert _read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_read_last_record_ts_handles_multibyte_utf8_content(tmp_path: Path):
     """
     Multibyte UTF-8 characters within records must not prevent
-    extracting the ``ts`` field from the last valid JSON line.
+    extracting the ``timing.end`` field from the last valid JSON line.
     """
     f = tmp_path / "messages.jsonl"
     # Records containing 3-byte UTF-8 characters (Unicode Hiragana).
     records = [
-        json.dumps({"ts": "2026-06-01T00:00:00+00:00", "data": "あいうえお"}),
-        json.dumps({"ts": "2026-06-05T12:00:00+00:00", "data": "かきくけこ"}),
+        json.dumps(_ts_rec("2026-06-01T00:00:00+00:00", data="あいうえお")),
+        json.dumps(_ts_rec("2026-06-05T12:00:00+00:00", data="かきくけこ")),
     ]
     f.write_text("\n".join(records) + "\n", encoding="utf-8")
-    assert _read_last_record_ts(f) == "2026-06-05T12:00:00+00:00"
+    assert _read_last_record_ts(f) == _epoch("2026-06-05T12:00:00+00:00")
 
 
 def test_read_last_record_ts_handles_non_json_lines(tmp_path: Path):
     f = tmp_path / "messages.jsonl"
     f.write_text(
-        "not json\n" + json.dumps({"ts": "2026-06-05T00:00:00+00:00"}) + "\n",
+        "not json\n" + json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")) + "\n",
         encoding="utf-8",
     )
-    assert _read_last_record_ts(f) == "2026-06-05T00:00:00+00:00"
+    assert _read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
 
 
 # --- _lightweight_project_summary ---
@@ -620,11 +663,11 @@ def test_lightweight_project_summary_single_session(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     count, last_ts = _lightweight_project_summary(project)
     assert count == 1
-    assert last_ts == "2026-06-05T00:00:00+00:00"
+    assert last_ts == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_lightweight_project_summary_multiple_sessions(tmp_path: Path):
@@ -633,17 +676,17 @@ def test_lightweight_project_summary_multiple_sessions(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s-old",
-        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
     )
     _write_session(
         project,
         "litellm-bedrock",
         "s-new",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
     )
     count, last_ts = _lightweight_project_summary(project)
     assert count == 2
-    assert last_ts == "2026-06-05T00:00:00+00:00"
+    assert last_ts == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
@@ -653,7 +696,7 @@ def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-01T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
     )
     # Ensure the second write gets a strictly higher mtime so the
     # function picks the correct file for last_ts extraction.
@@ -662,11 +705,11 @@ def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
         project,
         "litellm-deepseek",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/b"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
     )
     count, last_ts = _lightweight_project_summary(project)
     assert count == 1
-    assert last_ts == "2026-06-05T00:00:00+00:00"
+    assert last_ts == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_lightweight_project_summary_skips_empty_sessions(tmp_path: Path):
@@ -687,7 +730,7 @@ def test_list_projects_lightweight_produces_same_shape(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
     projects = list_projects(tool_dir)
@@ -695,7 +738,7 @@ def test_list_projects_lightweight_produces_same_shape(tmp_path: Path):
     p = projects[0]
     assert set(p.keys()) == {"id", "path", "name", "sessions", "last_ts"}
     assert p["sessions"] == 1
-    assert p["last_ts"] == "2026-06-05T00:00:00+00:00"
+    assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
 
 
 def test_projects_fingerprint_reflects_changes(tmp_path: Path):
@@ -708,7 +751,7 @@ def test_projects_fingerprint_reflects_changes(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     fp1 = projects_fingerprint(tool_dir)
     assert isinstance(fp1["mtime"], int)
@@ -719,7 +762,7 @@ def test_projects_fingerprint_reflects_changes(tmp_path: Path):
         project,
         "litellm-bedrock",
         "s2",
-        [{"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"}],
+        [_ts_rec("2026-06-05T01:00:00+00:00", model="m/b")],
     )
     fp2 = projects_fingerprint(tool_dir)
     assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
@@ -794,11 +837,13 @@ def test_read_meta_json_returns_dict_when_fresh(tmp_path: Path):
         tmp_path,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
     # Write meta.json AFTER messages.jsonl so it's fresher.
-    _write_meta_file(sdir, {"count": 1, "last_ts": "2026-06-05T00:00:00+00:00", "models": ["a"]})
+    _write_meta_file(
+        sdir, {"count": 1, "last_ts": _epoch("2026-06-05T00:00:00+00:00"), "models": ["a"]}
+    )
     cached = _read_meta_json(sdir)
     assert cached is not None
     assert cached["count"] == 1
@@ -810,7 +855,7 @@ def test_read_meta_json_returns_none_when_missing(tmp_path: Path):
         tmp_path,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
     assert _read_meta_json(sdir) is None
@@ -821,11 +866,11 @@ def test_read_meta_json_returns_none_when_stale(tmp_path: Path):
         tmp_path,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
     # Write meta.json BEFORE messages.jsonl, making it stale.
-    _write_meta_file(sdir, {"count": 0, "last_ts": "old", "models": []})
+    _write_meta_file(sdir, {"count": 0, "last_ts": None, "models": []})
     # Force meta.json mtime into the past so messages.jsonl is strictly newer.
     import os
     import time
@@ -835,7 +880,7 @@ def test_read_meta_json_returns_none_when_stale(tmp_path: Path):
     # Append another record to messages.jsonl to make it newer.
     msg_file = sdir / "messages.jsonl"
     with msg_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": "2026-06-06T00:00:00+00:00", "model": "m/b"}) + "\n")
+        f.write(json.dumps(_ts_rec("2026-06-06T00:00:00+00:00", model="m/b")) + "\n")
     assert _read_meta_json(sdir) is None
 
 
@@ -844,7 +889,7 @@ def test_read_meta_json_returns_none_when_corrupt(tmp_path: Path):
         tmp_path,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
     (sdir / "meta.json").write_text("not valid json", encoding="utf-8")
@@ -857,20 +902,34 @@ def test_read_meta_json_returns_none_when_corrupt(tmp_path: Path):
     assert _read_meta_json(sdir) is None
 
 
+def test_read_meta_json_returns_none_for_legacy_string_last_ts(tmp_path: Path):
+    """A pre-timing-format cache (ISO-string last_ts) is treated as stale."""
+    _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
+    )
+    sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
+    # Old sentinel/ISO string would crash the float-keyed session sort.
+    _write_meta_file(sdir, {"count": 1, "last_ts": "0000-00-00T00:00:00+00:00", "models": ["a"]})
+    assert _read_meta_json(sdir) is None
+
+
 def test_scan_session_meta_uses_cache(tmp_path: Path):
     """When meta.json is fresh, _scan_session_meta returns cached data."""
     _write_session(
         tmp_path,
         "litellm-bedrock",
         "s1",
-        [{"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"}],
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
     _write_meta_file(
         sdir,
         {
             "count": 5,
-            "last_ts": "2026-06-06T00:00:00+00:00",
+            "last_ts": _epoch("2026-06-06T00:00:00+00:00"),
             "models": ["a", "b"],
             "alias": "cached-alias",
             "title": "Cached Title",
@@ -879,7 +938,7 @@ def test_scan_session_meta_uses_cache(tmp_path: Path):
     result = _scan_session_meta(sdir, "litellm-bedrock")
     assert result is not None
     assert result["count"] == 5
-    assert result["last_ts"] == "2026-06-06T00:00:00+00:00"
+    assert result["last_ts"] == _epoch("2026-06-06T00:00:00+00:00")
     assert result["models"] == ["a", "b"]
     assert result["alias"] == "cached-alias"
     assert result["title"] == "Cached Title"
@@ -894,8 +953,8 @@ def test_scan_session_meta_falls_back_without_cache(tmp_path: Path):
         "litellm-bedrock",
         "s1",
         [
-            {"ts": "2026-06-05T00:00:00+00:00", "model": "m/a"},
-            {"ts": "2026-06-05T01:00:00+00:00", "model": "m/b"},
+            _ts_rec("2026-06-05T00:00:00+00:00", model="m/a"),
+            _ts_rec("2026-06-05T01:00:00+00:00", model="m/b"),
         ],
     )
     sdir = tmp_path / ".claude" / "litellm-logs" / "litellm-bedrock" / "s1"
@@ -916,14 +975,14 @@ def test_write_and_read_meta_json_round_trip(tmp_path: Path):
     sdir = tmp_path / "s"
     sdir.mkdir()
     (sdir / "messages.jsonl").write_text(
-        json.dumps({"ts": "2026-06-05T00:00:00+00:00"}) + "\n",
+        json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")) + "\n",
         encoding="utf-8",
     )
     _write_meta_json(
         sdir,
         {
             "count": 3,
-            "last_ts": "2026-06-05T02:00:00+00:00",
+            "last_ts": _epoch("2026-06-05T02:00:00+00:00"),
             "models": ["x", "y"],
             "alias": "test-alias",
             "title": "Test Title",
@@ -932,7 +991,7 @@ def test_write_and_read_meta_json_round_trip(tmp_path: Path):
     cached = _read_meta_json(sdir)
     assert cached is not None
     assert cached["count"] == 3
-    assert cached["last_ts"] == "2026-06-05T02:00:00+00:00"
+    assert cached["last_ts"] == _epoch("2026-06-05T02:00:00+00:00")
     assert cached["models"] == ["x", "y"]
     assert cached["alias"] == "test-alias"
     assert cached["title"] == "Test Title"

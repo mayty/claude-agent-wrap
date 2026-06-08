@@ -22,6 +22,8 @@ The data model (confirmed against real logs):
   request; the *real* Anthropic request lives at ``request.body.data``
   (``messages``/``system``/``tools``). The reply is OpenAI-shaped at
   ``response.choices[0].message`` with ``response.usage`` token counts.
+  Timing lives in a ``timing`` object — ``{"start", "completionStart", "end"}``,
+  each a Unix epoch-seconds float (or null) sourced from LiteLLM.
 * ``strings.jsonl`` — ``{"hash": "hash:<sha256>", "original": ...}`` lines.
   Long strings in the record are replaced by ``hash:<sha256>`` pointers; we load
   this map and resolve them for display.
@@ -163,8 +165,7 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
     data, agent_id, reply, usage = _extract_record_fields(resolved)
 
     return {
-        "ts": resolved.get("ts"),
-        "end_ts": resolved.get("end_ts"),
+        "timing": resolved.get("timing"),
         "status": resolved.get("status"),
         "model": resolved.get("model"),
         "agent_id": agent_id,
@@ -290,9 +291,9 @@ def extract_title(rec: LogRecord) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _read_last_record_ts(messages_file: Path) -> str | None:
+def _read_last_record_ts(messages_file: Path) -> float | None:
     r"""
-    Read the ``ts`` field from the last JSON record in *messages_file*.
+    Read the ``timing.end`` epoch from the last JSON record in *messages_file*.
 
     Seeks to the last 1 MB, skips to the first ``\n`` to avoid landing in
     the middle of a multi-byte character, then walks lines backwards to
@@ -328,14 +329,14 @@ def _read_last_record_ts(messages_file: Path) -> str | None:
             rec = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        ts = rec.get("ts")
-        if isinstance(ts, str):
-            return ts
+        end = (rec.get("timing") or {}).get("end")
+        if isinstance(end, (int, float)):
+            return end
 
     return None
 
 
-def _lightweight_project_summary(project: Path) -> tuple[int, str | None]:
+def _lightweight_project_summary(project: Path) -> tuple[int, float | None]:
     """
     Return ``(session_count, max_last_ts)`` for *project* using minimal I/O.
 
@@ -372,7 +373,7 @@ def _lightweight_project_summary(project: Path) -> tuple[int, str | None]:
 
     # Read only the single most-recently-written file — its last record
     # carries the latest timestamp across all sessions.
-    max_last_ts: str | None = None
+    max_last_ts: float | None = None
     if newest_file is not None:
         max_last_ts = _read_last_record_ts(newest_file)
 
@@ -405,7 +406,7 @@ def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
                 "last_ts": max_last_ts,
             }
         )
-    out.sort(key=lambda p: p["last_ts"] or "", reverse=True)
+    out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)
     return out
 
 
@@ -424,19 +425,21 @@ class _SessionMeta:
 
     def __init__(self) -> None:
         self.count = 0
-        self.first_ts: str | None = None
-        self.last_ts: str | None = None
+        self.first_ts: float | None = None
+        self.last_ts: float | None = None
         self.models: set[str] = set()
         self.derived_alias: str | None = None
         self.derived_title: str | None = None
 
     def add(self, rec: LogRecord) -> None:
         self.count += 1
-        ts = rec.get("ts")
-        if isinstance(ts, str):
-            if self.first_ts is None:
-                self.first_ts = ts
-            self.last_ts = ts
+        timing = rec.get("timing") or {}
+        start = timing.get("start")
+        if isinstance(start, (int, float)) and self.first_ts is None:
+            self.first_ts = start
+        end = timing.get("end")
+        if isinstance(end, (int, float)):
+            self.last_ts = end
         model = rec.get("model")
         if isinstance(model, str):
             self.models.add(model.rsplit("/", 1)[-1])
@@ -469,9 +472,17 @@ def _read_meta_json(session_dir: Path) -> MetaData | None:
     if meta_mtime < msg_mtime:
         return None
     try:
-        return json.loads(meta_file.read_text(encoding="utf-8"))
+        cached = json.loads(meta_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    # Reject a pre-timing-format cache: `last_ts` used to be an ISO string but
+    # is now an epoch float. A leftover string entry (e.g. an old sidecar that
+    # rewrote meta.json) would crash the float-keyed session sort, so treat it
+    # as stale and force a rescan that regenerates numeric timestamps.
+    last_ts = cached.get("last_ts")
+    if last_ts is not None and not isinstance(last_ts, (int, float)):
+        return None
+    return cached
 
 
 def _write_meta_json(session_dir: Path, meta: MetaData) -> None:
@@ -529,9 +540,9 @@ def _scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | Non
     if meta.count == 0:
         return None
 
-    # Seed the cache so subsequent reads hit the fast path.
-    # meta.last_ts is always set when meta.count > 0 (guarded above).
-    assert meta.last_ts is not None
+    # Seed the cache so subsequent reads hit the fast path. last_ts may be None
+    # when no record carried a timing.end (e.g. an all-failure session); the
+    # cache, the float sort, and _merge_session_meta all tolerate that.
     _write_meta_json(
         session_dir,
         {
@@ -601,7 +612,7 @@ def list_sessions(project: Path) -> list[dict[str, Any]]:
                 by_session[sid] = meta
 
     out = list(by_session.values())
-    out.sort(key=lambda s: s["last_ts"] or "", reverse=True)
+    out.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
     return out
 
 
@@ -806,7 +817,7 @@ def read_session(project: Path, session_id: str) -> dict[str, Any]:
             else:
                 _merge_session_meta(combined_meta, entry)
 
-    all_records.sort(key=lambda r: r.get("ts") or "")
+    all_records.sort(key=lambda r: (r.get("timing") or {}).get("start") or 0)
     return {"reqs": all_records, "session_meta": combined_meta}
 
 
