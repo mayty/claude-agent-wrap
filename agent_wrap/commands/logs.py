@@ -219,23 +219,40 @@ def resolve(obj: Any, strings: dict[str, str]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
+def _resolve_hashes(obj: Any, strings: dict[str, str]) -> Any:
     """
-    Reduce one raw log record to the shape the UI consumes.
+    Replace ``hash:<sha256>`` strings with their originals.
 
-    Pure (no I/O) so it can be unit-tested directly. Pulls the real prompt from
-    ``request.proxy_server_request.body.data`` and the reply from
-    ``response.choices[0].message``, resolving hashes and wrap-refs throughout.
-
-    NOTE: Resolution MUST happen on the full raw record *before* extracting fields,
-    because canonical wrap-ref targets might live in parts of the record that are
-    later discarded (e.g., the top-level LiteLLM placeholder messages).
+    Unlike :func:`resolve`, this does NOT handle ``wrap-ref`` cycle markers.
+    It is a lightweight tree walk suitable for records written without
+    cross-field shared references (i.e. after the RefTracker was removed from
+    the callback).
     """
-    # Resolve the entire raw record first so all wrap-ref targets are indexed,
-    # even if they live in fields we will subsequently ignore.
-    resolved_rec = resolve(rec, strings)
+    if isinstance(obj, str):
+        return strings.get(obj, obj)
+    if isinstance(obj, dict):
+        return {k: _resolve_hashes(v, strings) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_hashes(v, strings) for v in obj]
+    return obj
 
-    request = resolved_rec.get("request") or {}
+
+def _has_wrap_refs(obj: Any) -> bool:
+    """Return True if *obj* contains any ``"wrap-ref:"`` pointer strings."""
+    if isinstance(obj, str):
+        return obj.startswith(_WRAP_REF_PREFIX) and len(obj) > _WRAP_REF_PREFIX_LEN
+    if isinstance(obj, dict):
+        return any(_has_wrap_refs(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_wrap_refs(v) for v in obj)
+    return False
+
+
+def _extract_record_fields(
+    rec: Any,
+) -> tuple[dict[str, Any], str | None, dict[str, Any], dict[str, Any]]:
+    """Extract (data, agent_id, reply, usage) from a raw or resolved record."""
+    request = rec.get("request") or {}
     psr = request.get("proxy_server_request")
     data: dict[str, Any] = {}
     agent_id: str | None = None
@@ -243,18 +260,15 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
         body = psr.get("body")
         if isinstance(body, dict):
             data = body["data"] if isinstance(body.get("data"), dict) else body
-        # Subagent turns carry an ``x-claude-code-agent-id`` request header; the
-        # main loop's requests have none. The id is short and unhashed, so it is
-        # read straight from the headers dict. It groups a subagent's turns in
-        # the viewer, which otherwise interleaves them with the main thread.
         headers = psr.get("headers")
         if isinstance(headers, dict):
             hdr_id = headers.get("x-claude-code-agent-id")
             if isinstance(hdr_id, str) and hdr_id:
                 agent_id = hdr_id
 
-    response = resolved_rec.get("response")
+    response = rec.get("response")
     reply: dict[str, Any] = {}
+    usage: dict[str, Any] = {}
     if isinstance(response, dict):
         choices = response.get("choices")
         if isinstance(choices, list) and choices:
@@ -262,21 +276,37 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
             if isinstance(first, dict) and isinstance(first.get("message"), dict):
                 reply = first["message"]
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-    else:
-        usage = {}
+    return data, agent_id, reply, usage
+
+
+def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
+    """
+    Reduce one raw log record to the shape the UI consumes.
+
+    Pure (no I/O) so it can be unit-tested directly. Pulls the real prompt
+    from ``request.proxy_server_request.body.data`` and the reply from
+    ``response.choices[0].message``, resolving hashes and wrap-refs.
+
+    Records written without cross-field shared references (no ``wrap-ref``
+    pointers in the message content) take a fast path that only resolves
+    hash strings — skipping the expensive full-record wrap-ref tree walk.
+    """
+    resolved = resolve(rec, strings) if _has_wrap_refs(rec) else _resolve_hashes(rec, strings)
+
+    data, agent_id, reply, usage = _extract_record_fields(resolved)
 
     return {
-        "ts": resolved_rec.get("ts"),
-        "end_ts": resolved_rec.get("end_ts"),
-        "status": resolved_rec.get("status"),
-        "model": resolved_rec.get("model"),
+        "ts": resolved.get("ts"),
+        "end_ts": resolved.get("end_ts"),
+        "status": resolved.get("status"),
+        "model": resolved.get("model"),
         "agent_id": agent_id,
         "messages": data.get("messages") or [],
         "system": data.get("system"),
         "tools": data.get("tools") or [],
         "response": reply,
         "usage": usage,
-        "error": resolved_rec.get("error"),
+        "error": resolved.get("error"),
     }
 
 

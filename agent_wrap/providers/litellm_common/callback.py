@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 try:
-    from .helpers import RefTracker, get_response_content_str, get_session_hasher, json_safe
+    from .helpers import get_response_content_str, get_session_hasher, json_safe
 except ImportError:
     # Fallback for sidecar container execution where callback.py is mounted
     # as a top-level module in /etc/litellm/ alongside helpers.py
@@ -32,7 +32,6 @@ except ImportError:
     if _current_dir not in sys.path:
         sys.path.insert(0, _current_dir)
     from helpers import (  # type: ignore[no-redef]
-        RefTracker,
         get_response_content_str,
         get_session_hasher,
         json_safe,
@@ -92,27 +91,24 @@ def build_record(  # noqa: PLR0913
     Build a JSON-serializable log record from a LiteLLM callback's arguments.
 
     Pure function (no I/O) so it can be unit-tested directly. All values are run
-    through ``_json_safe`` so the result has no cycles and no non-serializable
+    through ``json_safe`` so the result has no cycles and no non-serializable
     leaves. String values meeting the length threshold are replaced with
-    "hash:<sha256_hex>" format to reduce space bloat. Circular references are
-    replaced with "wrap-ref:<id>" and the canonical object is annotated with its
-    reference ID.
+    "hash:<sha256_hex>" format to reduce space bloat. The self-referencing
+    ``body.proxy_server_request`` key is deleted before serialization to
+    break the only cycle in LiteLLM's data structure.
     """
     session_id = _get_session_id(kwargs)
     hasher = get_session_hasher(session_id)
 
-    # Pass a dict containing all top-level objects to the tracker so it can
-    # find references across any of them.
-    tracker = RefTracker(
-        {
-            "model": kwargs.get("model"),
-            "messages": kwargs.get("messages"),
-            "proxy_server_request": kwargs.get("litellm_params", {}).get("proxy_server_request"),
-            "response": response_obj,
-        }
-    )
-
     litellm_params = kwargs.get("litellm_params") or {}
+    psr = litellm_params.get("proxy_server_request")
+
+    # Break the self-cycle: LiteLLM's proxy_server_request.body contains a key
+    # ("proxy_server_request") that points back to the parent dict.  Deleting it
+    # makes the structure a DAG, which json.dumps handles without issue.
+    if isinstance(psr, dict) and isinstance(psr.get("body"), dict):
+        psr["body"].pop("proxy_server_request", None)
+
     model = kwargs.get("model")
     record: LogRecord = {
         "ts": start_ts.isoformat(),
@@ -120,12 +116,10 @@ def build_record(  # noqa: PLR0913
         "status": status,
         "model": model or "undefined",
         "request": {
-            "messages": json_safe(kwargs.get("messages"), tracker, hasher),
-            "proxy_server_request": json_safe(
-                litellm_params.get("proxy_server_request"), tracker, hasher
-            ),
+            "messages": json_safe(kwargs.get("messages"), hasher),
+            "proxy_server_request": json_safe(psr, hasher),
         },
-        "response": json_safe(response_obj, tracker, hasher),
+        "response": json_safe(response_obj, hasher),
         "error": None,
     }
     if exc is not None:

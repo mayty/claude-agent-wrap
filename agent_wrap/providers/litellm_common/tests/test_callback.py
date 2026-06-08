@@ -167,42 +167,97 @@ def test_build_record_is_json_serializable_with_default_str() -> None:
     assert "weird-obj" in line
 
 
-def test_build_record_breaks_circular_references() -> None:
-    # LiteLLM's response objects contain cycles; build_record must not raise.
-    cyclic: dict[str, object] = {"a": 1}
-    cyclic["self"] = cyclic
+def test_build_record_drops_proxy_server_request_cycle() -> None:
+    """body.proxy_server_request is a self-cycle — build_record must delete it."""
+    psr = {
+        "url": "http://example.com",
+        "method": "POST",
+        "headers": {},
+        "body": {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    }
+    # Create the self-cycle that LiteLLM's data structure has
+    psr["body"]["proxy_server_request"] = psr  # type: ignore[index]
 
-    record = build_record({"model": "m"}, cyclic, status="success", start_ts=_TS, end_ts=_TS)
+    kwargs = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "litellm_params": {"proxy_server_request": psr},
+    }
+    record = build_record(kwargs, {}, status="success", start_ts=_TS, end_ts=_TS)
 
-    # The root object gets a wrap-ref-id, and the self-reference becomes wrap-ref:<id>
-    assert "wrap-ref-id" in record["response"]
-    root_ref_id = record["response"]["wrap-ref-id"]
-    assert record["response"]["self"] == f"wrap-ref:{root_ref_id}"
-    assert record["response"]["a"] == 1
+    # The cycle should be broken — body.proxy_server_request must not appear
+    body = record["request"]["proxy_server_request"]["body"]
+    assert "proxy_server_request" not in body
+
+    # The rest of the record is intact
+    assert record["request"]["proxy_server_request"]["url"] == "http://example.com"
+    assert record["request"]["messages"][0]["content"] == "hello"
 
 
-def test_build_record_breaks_circular_list_references() -> None:
-    # Test that circular references in lists are handled correctly
-    # with wrap-ref-id inserted at index 0.
-    cyclic_list: list[object] = [1, 2]
-    cyclic_list.append(cyclic_list)
+def test_build_record_handles_shared_references() -> None:
+    """Shared references serialize normally — duplicated, no wrap-ref pointers."""
+    shared_content = [{"type": "text", "text": "shared text block"}]
+    messages = [{"role": "user", "content": shared_content}]
+
+    psr = {
+        "url": "http://example.com",
+        "method": "POST",
+        "headers": {},
+        "body": {
+            "model": "m",
+            "messages": messages,  # same Python list as kwargs["messages"]
+        },
+    }
+
+    kwargs = {
+        "model": "m",
+        "messages": messages,
+        "litellm_params": {"proxy_server_request": psr},
+    }
+    record = build_record(kwargs, {}, status="success", start_ts=_TS, end_ts=_TS)
+
+    # Both copies of the shared list are serialized inline — no wrap-ref pointers
+    req_json = json.dumps(record)
+    assert "wrap-ref" not in req_json
+
+    # Both request.messages and body.messages have the content
+    assert record["request"]["messages"] == messages
+    assert record["request"]["proxy_server_request"]["body"]["messages"] == messages
+
+
+def test_build_record_no_wrap_refs_in_output() -> None:
+    """The output JSON must contain no wrap-ref strings at all."""
+    kwargs = {
+        "model": "test-model",
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hello"},
+        ],
+        "litellm_params": {
+            "proxy_server_request": {
+                "url": "http://example.com",
+                "method": "POST",
+                "headers": {"x-claude-code-session-id": "test-session"},
+                "body": {
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            },
+        },
+    }
 
     record = build_record(
-        {"model": "m"}, {"data": cyclic_list}, status="success", start_ts=_TS, end_ts=_TS
+        kwargs,
+        {"choices": [{"message": {"content": "hi"}}]},
+        status="success",
+        start_ts=_TS,
+        end_ts=_TS,
     )
-
-    # The outer dict is only referenced once, so it does NOT get a wrap-ref-id.
-    assert "wrap-ref-id" not in record["response"]
-
-    # The list is referenced twice (once in the dict, once inside itself), so it gets a wrap-ref-id.
-    data_list = record["response"]["data"]
-    assert data_list[0] == "wrap-ref-id:0"  # The list's wrap-ref-id is at index 0
-    list_ref_id = data_list[0].split(":")[1]
-
-    # The circular reference to the list becomes wrap-ref:<id>
-    assert data_list[3] == f"wrap-ref:{list_ref_id}"
-    assert data_list[1] == 1
-    assert data_list[2] == 2
+    record_json = json.dumps(record)
+    assert "wrap-ref" not in record_json
 
 
 def test_build_record_uses_model_dump_for_pydantic_like() -> None:

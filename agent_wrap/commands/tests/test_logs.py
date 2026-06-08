@@ -8,10 +8,12 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.commands.logs import (
+    _has_wrap_refs,
     _lightweight_project_summary,
     _parse_port,
     _read_last_record_ts,
     _read_meta_json,
+    _resolve_hashes,
     _scan_session_meta,
     _write_meta_json,
     extract_alias,
@@ -235,6 +237,143 @@ def test_normalize_agent_id_none_without_header():
     # Main-loop requests have no x-claude-code-agent-id header.
     out = normalize_record(_raw_record(), {})
     assert out["agent_id"] is None
+
+
+# --- _resolve_hashes ---
+
+
+def test_resolve_hashes_replaces_known_hashes():
+    obj = {"msg": "hash:abc123", "nested": ["hash:def456"]}
+    strings = {"hash:abc123": "hello", "hash:def456": "world"}
+    result = _resolve_hashes(obj, strings)
+    assert result == {"msg": "hello", "nested": ["world"]}
+
+
+def test_resolve_hashes_leaves_unknown_hashes():
+    obj = {"msg": "hash:unknown"}
+    strings = {"hash:abc123": "hello"}
+    result = _resolve_hashes(obj, strings)
+    assert result == {"msg": "hash:unknown"}
+
+
+def test_resolve_hashes_leaves_primitives_unchanged():
+    assert _resolve_hashes(None, {}) is None
+    assert _resolve_hashes(42, {}) == 42
+    assert _resolve_hashes(True, {}) is True  # noqa: FBT003
+    assert _resolve_hashes("plain string", {}) == "plain string"
+
+
+# --- _has_wrap_refs ---
+
+
+def test_has_wrap_refs_detects_wrap_ref_pointer():
+    assert _has_wrap_refs("wrap-ref:0") is True
+    assert _has_wrap_refs("wrap-ref:123") is True
+
+
+def test_has_wrap_refs_ignores_short_prefix():
+    # "wrap-ref:" alone is not a valid pointer (no ID after colon)
+    assert _has_wrap_refs("wrap-ref:") is False
+
+
+def test_has_wrap_refs_detects_in_nested_structures():
+    assert _has_wrap_refs({"content": "wrap-ref:5"}) is True
+    assert _has_wrap_refs([{"msg": "hello"}, {"content": "wrap-ref:0"}]) is True
+
+
+def test_has_wrap_refs_returns_false_without_refs():
+    assert _has_wrap_refs({}) is False
+    assert _has_wrap_refs([]) is False
+    assert _has_wrap_refs("hash:abc123") is False
+    assert _has_wrap_refs({"msg": "hello", "list": [1, 2, 3]}) is False
+
+
+# --- normalize_record fast path ---
+
+
+def test_normalize_record_takes_fast_path_without_wrap_refs():
+    """Records with no wrap-ref pointers take the hash-only fast path."""
+    strings = {"hash:abc123": "resolved content"}
+    rec = {
+        "ts": "t1",
+        "end_ts": "t2",
+        "status": "success",
+        "model": "m",
+        "request": {
+            "messages": [],
+            "proxy_server_request": {
+                "body": {
+                    "messages": [{"role": "user", "content": "hash:abc123"}],
+                    "system": "hash:abc123",
+                },
+            },
+        },
+        "response": {
+            "choices": [{"message": {"content": "hello"}}],
+            "usage": {"prompt_tokens": 10},
+        },
+        "error": None,
+    }
+    out = normalize_record(rec, strings)
+    assert out["messages"] == [{"role": "user", "content": "resolved content"}]
+    assert out["system"] == "resolved content"
+
+
+def test_normalize_record_fast_path_and_slow_path_produce_same_result():
+    """Fast path and slow path must return identical output for the same input."""
+    strings = {"hash:abc123": "resolved"}
+    # A record WITHOUT cross-field wrap-refs (new format)
+    rec = {
+        "ts": "t1",
+        "end_ts": "t2",
+        "status": "success",
+        "model": "m",
+        "request": {
+            "messages": [],
+            "proxy_server_request": {
+                "body": {
+                    "messages": [{"role": "user", "content": "hash:abc123"}],
+                },
+            },
+        },
+        "response": {
+            "choices": [{"message": {"content": "hash:abc123"}}],
+            "usage": {"prompt_tokens": 1},
+        },
+        "error": None,
+    }
+    # The fast path is taken automatically (no wrap-refs in messages)
+    out = normalize_record(rec, strings)
+    # Verify hash resolution happened
+    assert out["messages"][0]["content"] == "resolved"
+    assert out["response"]["content"] == "resolved"
+
+
+def test_normalize_record_slow_path_still_works_with_wrap_refs():
+    """Records WITH wrap-ref pointers still take the slow path correctly."""
+    strings = {"hash:abc": "canonical"}
+    # A record WITH cross-field wrap-refs (old format)
+    rec = {
+        "ts": "t1",
+        "end_ts": "t2",
+        "status": "success",
+        "model": "m",
+        "request": {
+            "messages": [{"wrap-ref-id": "0", "content": "canonical"}],
+            "proxy_server_request": {
+                "body": {
+                    "data": {
+                        "messages": ["wrap-ref:0"],
+                    },
+                },
+            },
+        },
+        "response": {},
+        "error": None,
+    }
+    out = normalize_record(rec, strings)
+    # The slow path resolves the wrap-ref:0 pointer
+    assert out["messages"] == [{"content": "canonical"}]
 
 
 # --- extract_alias ---
