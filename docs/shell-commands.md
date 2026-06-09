@@ -47,14 +47,14 @@ Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current dire
 ## `agent stats`
 
 ```
-agent stats [--days N] [--region LABEL] [--refresh]
+agent stats [--days N]
 ```
 
-Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` and walks each project's `.claude/sessions/*.jsonl` files. Pricing is fetched from AWS Bedrock and cached for 7 days.
+Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` and walks each project's `.claude/litellm-logs/` directory (organized by provider and session). Pricing is fetched dynamically per provider as logs are scanned.
 
 - **`--days N`** — widens the per-day breakdown window (default 30; `0` = all active days).
-- **`--region LABEL`** — overrides the pricing region (defaults to "US East (N. Virginia)").
-- **`--refresh`** — forces a fresh pricing fetch, bypassing the cache.
+
+> A `legacy_stats` verb also exists — the previous-generation stats command that aggregates from each project's `.claude/sessions/*.jsonl` files with AWS Bedrock pricing. Retained for backward compatibility; prefer `stats`.
 
 ## `agent logs`
 
@@ -68,7 +68,7 @@ Sessions are labelled with their Claude Code alias (the short kebab-case name, e
 
 The server binds to `127.0.0.1` only and attempts to open your browser. Press Ctrl-C to stop.
 
-- **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, the next free port is used.
+- **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one.
 
 ## `agent update`
 

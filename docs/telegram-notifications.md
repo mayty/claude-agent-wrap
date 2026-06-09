@@ -16,7 +16,7 @@ Claude Code can send you a Telegram message when it asks for permission to run a
    }
    ```
 
-On the next `agent run` launch, the wrapper idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and forwards the credentials as env vars into the container. No `agent rebuild` needed — the [telegram-notify.sh](../ops/telegram-notify.sh) script and its [md_to_html.js](../ops/md_to_html.js) converter are bind-mounted live.
+Once both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, the next `agent run` launch idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and forwards the credentials as env vars into the container. No `agent rebuild` needed — the [telegram-notify.sh](../ops/telegram-notify.sh) script and its [md_to_html.js](../ops/md_to_html.js) converter are bind-mounted live.
 
 ## How it works
 

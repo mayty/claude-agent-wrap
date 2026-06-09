@@ -44,7 +44,7 @@ The wrapper's own source files are mounted at `/opt/agent-wrap/` so the in-conta
 
 ## WSLg (conditional)
 
-On WSL2 hosts with WSLg (detected when `/mnt/wslg` exists), three additional mounts enable clipboard passthrough:
+On WSL2 hosts with WSLg (detected when `/mnt/wslg` is a directory), three additional mounts enable clipboard passthrough:
 
 | Host | Container |
 | --- | --- |

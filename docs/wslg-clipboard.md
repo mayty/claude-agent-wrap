@@ -17,8 +17,8 @@ When `/mnt/wslg` exists on the host, `agent run`:
 
 WSLg advertises Windows-clipboard images as `image/bmp` only, but Claude Code's paste handler asks for `image/png`. The shim intercepts two cases:
 
-- `--list-types` — advertises `image/png` when only BMP is on the clipboard
-- `--type image/png` — fetches BMP and pipes it through ImageMagick's `convert bmp:- png:-`
+- `--list-types` (or `-l`) — advertises `image/png` when only BMP is on the clipboard
+- `--type image/png` (or `--type=image/png` / `-t image/png`) — fetches BMP and pipes it through ImageMagick's `convert bmp:- png:-`
 
 Everything else falls through to the real `wl-paste`.
 

@@ -9,7 +9,7 @@
 
 ## Setup
 
-Source the wrapper in your shell (add it to `~/.bashrc` or `~/.zshrc` to make it permanent):
+Source the wrapper in your bash shell (add it to `~/.bashrc` to make it permanent):
 
 ```bash
 source /path/to/claude-agent-wrap/agent-wrap.bashrc

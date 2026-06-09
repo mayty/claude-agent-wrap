@@ -69,11 +69,11 @@ See this project's own [Dockerfile.agent](../Dockerfile.agent), which installs t
   # agent-run-args: --device /dev/fuse
   # agent-run-args: --cap-add SYS_ADMIN
   ```
-- **`EXPOSE <port>`** — any standard `EXPOSE` directives cause the wrapper to publish those ports on `127.0.0.1`.
+- **`EXPOSE <port>`** — any standard `EXPOSE` directives cause the wrapper to publish those ports on `127.0.0.1`. A protocol suffix, if present, is stripped (`EXPOSE 8080/tcp` is published as `127.0.0.1:8080`).
 
 ## Build Args
 
-`agent rebuild` always passes `--build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)`. A `Dockerfile.agent` that needs these at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory) can declare `ARG HOST_UID` / `ARG HOST_GID` and consume them. Because the baked-in UID differs per host user, each user on a shared host builds their own image variant under the same tag.
+`agent rebuild` always passes `--build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)`. These are *available* build args: a `Dockerfile.agent` that needs them at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory) can declare `ARG HOST_UID` / `ARG HOST_GID` and consume them. The shipped base image does **not** bake in a per-host UID — it runs as the default `ubuntu` user. Per-user isolation happens at runtime: every `docker run` is invoked with `--user $(id -u):$(id -g)`, so the agent process matches the host user's UID/GID regardless of what is baked into the image.
 
 ## Security Note
 

@@ -32,11 +32,12 @@ Agent container (injected by `get_agent_env`):
 
 - `ANTHROPIC_API_KEY` — the sidecar's master key
 - `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm:4000`
-- `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` — `qwen3.6-plus[1m]`
+- `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` — `qwen3.7-plus[1m]`
 - `ANTHROPIC_DEFAULT_OPUS_MODEL` — `qwen3.7-max[1m]`
 - `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `qwen3.6-flash`
 - `CLAUDE_CODE_SUBAGENT_MODEL` — `qwen3.6-flash`
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
+- `DISABLE_PROMPT_CACHING` — `1`
 
 Sidecar container (injected by `get_sidecar_env`):
 

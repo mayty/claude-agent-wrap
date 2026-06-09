@@ -3,7 +3,7 @@
 
 The wrapper routes Claude Code through a pluggable provider. Each provider implements the [Provider ABC](../agent_wrap/providers/base.py) — four abstract methods (`ensure`, `release`, `get_run_args`, `get_label_args`) — with no assumption about sidecars, proxies, or network topology.
 
-Select a provider via the `AGENT_PROVIDER` environment variable (default: `litellm-bedrock`):
+Select a provider via the `AGENT_PROVIDER` environment variable (default: `litellm-bedrock`). An unknown provider name is a hard error — the wrapper exits and lists the available providers:
 
 ```sh
 source agent-wrap.bashrc

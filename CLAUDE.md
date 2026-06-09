@@ -13,7 +13,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | --- | --- |
 | [docs/getting-started.md](docs/getting-started.md) | Never — already handled on every `agent run` launch |
 | [docs/docker-sandboxing.md](docs/docker-sandboxing.md) | Writing/editing a `Dockerfile.agent` or its directives |
-| [docs/telegram-notifications.md](docs/telegram-notifications.md) | Debugging Telegram hooks or adding new notification events |
+| [docs/telegram-notifications.md](docs/telegram-notifications.md) | Debugging Telegram notification hooks |
 | [docs/wslg-clipboard.md](docs/wslg-clipboard.md) | Debugging clipboard passthrough on WSL2 |
 | [docs/providers.md](docs/providers.md) | Adding a new provider or switching providers |
 | [docs/configuration.md](docs/configuration.md) | Debugging wrapper env vars like `AGENT_PROVIDER`, `AGENT_USE_HOST_NETWORK` |
@@ -54,7 +54,7 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 A `Makefile` provides all QA targets. Follow these rules:
 
-- **`make check` must pass before handing off.** Never conclude a task until `make check` (lintcheck + format-check + test + typecheck) passes cleanly.
+- **`make check` must pass before handing off.** Never conclude a task until `make check` (lintcheck + format-check + test + typecheck + markdown-check) passes cleanly.
 - **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck`.
 - **Fix lint/format errors with `make` first.** Auto-fix via `make lint` or `make format` before manual edits.
 - **Never `pip install` dependencies.** Add them to the `dev` dependency group in `pyproject.toml` and prompt the user to run `agent rebuild`.
