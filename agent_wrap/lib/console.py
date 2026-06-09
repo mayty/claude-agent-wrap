@@ -8,6 +8,8 @@ from enum import Enum
 class Ansi(str, Enum):
     """Terminal control sequences."""
 
+    # Empty sentinel for "no styling" — falsy, so `if style:` guards skip it.
+    NONE = ""
     RESET = "\033[0m"
     BOLD_GREEN = "\033[1;32m"
     BOLD_YELLOW = "\033[1;33m"

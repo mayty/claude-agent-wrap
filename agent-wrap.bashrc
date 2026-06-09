@@ -36,7 +36,9 @@ _agent_complete() {
     case "$verb" in
         rebuild) flags="--full" ;;
         run)     flags="--base" ;;
-        stats)   flags="--days --refresh --region" ;;
+        stats)         flags="--days" ;;
+        legacy_stats)  flags="--days" ;;
+        logs)          flags="--port" ;;
         create|update) flags="" ;;
     esac
 

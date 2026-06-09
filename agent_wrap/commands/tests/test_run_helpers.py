@@ -180,7 +180,7 @@ def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 def test_build_env_args_basic() -> None:
     result = _build_env_args("token123", "chat456", "myagent", "myagent-uuid", "/home/ubuntu")
     assert "-e" in result
-    assert "DISABLE_AUTOUPDATER=1" in result
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in result
     assert "TELEGRAM_BOT_TOKEN=token123" in result
     assert "TELEGRAM_CHAT_ID=chat456" in result
     assert "AGENT_NAME=myagent" in result

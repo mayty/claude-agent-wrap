@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 import pytest_mock
 
+from agent_wrap.lib.utils import project_path_hash
 from agent_wrap.providers.litellm_common.provider import LiteLLMProvider
 
 
 class ConcreteTestProvider(LiteLLMProvider):
     """Concrete subclass for testing abstract LiteLLMProvider."""
 
+    name = "litellm-test"
     image = "test-image:latest"
     lock_file = "lock"
     refcount_file = "refcount"
@@ -263,6 +265,48 @@ def test_connectivity_bridge_sidecar_custom_agent_network() -> None:
     assert "-e" in result
 
 
+# --- log-prefix header injection ---
+
+
+def test_connectivity_injects_log_prefix_header(mocker: pytest_mock.MockFixture) -> None:
+    """The project-hash header is injected via ANTHROPIC_CUSTOM_HEADERS (hash only)."""
+    p = ConcreteTestProvider()
+    p._master_key = "sk-test-abc"
+    cwd = Path("/some/project")
+    mocker.patch("agent_wrap.providers.litellm_common.provider.Path.cwd", return_value=cwd)
+    result = p._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    expected = f"ANTHROPIC_CUSTOM_HEADERS=x-agent-wrap-log-prefix: {project_path_hash(cwd)}"
+    assert expected in result
+
+
+def test_connectivity_merges_existing_custom_header(mocker: pytest_mock.MockFixture) -> None:
+    """A subclass-provided ANTHROPIC_CUSTOM_HEADERS is preserved and appended to."""
+
+    class CustomHeaderProvider(ConcreteTestProvider):
+        def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
+            env = super().get_agent_env(master_key, base_url)
+            env["ANTHROPIC_CUSTOM_HEADERS"] = "x-foo: bar"
+            return env
+
+    p = CustomHeaderProvider()
+    p._master_key = "sk-test-abc"
+    cwd = Path("/some/project")
+    mocker.patch("agent_wrap.providers.litellm_common.provider.Path.cwd", return_value=cwd)
+    result = p._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    value = f"x-foo: bar\nx-agent-wrap-log-prefix: {project_path_hash(cwd)}"
+    assert f"ANTHROPIC_CUSTOM_HEADERS={value}" in result
+
+
+# --- _log_dir / _tool_dir ---
+
+
+def test_log_dir_is_project_independent() -> None:
+    """The log dir is the shared tool-dir store, not under the project's .claude."""
+    p = ConcreteTestProvider()
+    assert p._log_dir() == p._tool_dir() / "litellm-logs"
+    assert ".claude" not in p._log_dir().parts
+
+
 # --- _health_end ---
 
 
@@ -497,6 +541,7 @@ def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text("model: test")
     mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+    mocker.patch.object(p, "_log_dir", return_value=tmp_path / "logs")
 
     mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
@@ -515,6 +560,7 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text("model: test")
     mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+    mocker.patch.object(p, "_log_dir", return_value=tmp_path / "logs")
 
     mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
     mock_docker.side_effect = [
@@ -526,6 +572,33 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
     # Should have called rm -f before run
     calls = [c.args[0] for c in mock_docker.call_args_list if c.args]
     assert "rm" in calls
+
+
+def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    """_start mounts the logging callback and the host log dir into the sidecar."""
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("model: test")
+    mocker.patch.object(p, "_config_path", return_value=config_dir / "config.yaml")
+    log_dir = tmp_path / "logs"
+    mocker.patch.object(p, "_log_dir", return_value=log_dir)
+
+    mock_docker = mocker.patch("agent_wrap.providers.litellm_common.provider.docker_run")
+    mock_docker.side_effect = [
+        ("", 1),  # container inspect fails
+        ("", 0),  # docker run
+    ]
+    p._start("upstream-key", "sk-test-master", "bridge")
+
+    run_call = next(c for c in mock_docker.call_args_list if c.args and c.args[0] == "run")
+    run_args = list(run_call.args)
+    assert any(a.endswith("/etc/litellm/callback.py:ro") for a in run_args)
+    assert f"{log_dir}:/var/log/agent-wrap" in run_args
+    # The provider name is passed to the sidecar so the callback can route logs.
+    assert "AGENT_WRAP_PROVIDER=litellm-test" in run_args
+    # The host log dir is created so the bind mount has a source.
+    assert log_dir.is_dir()
 
 
 # --- _recover_master_key ---

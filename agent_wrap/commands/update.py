@@ -64,8 +64,41 @@ def _git_full(
         return "", 1, ""
 
 
-def _get_behind_count(tool_dir: Path) -> tuple[str, int] | None:
-    """Return (branch, commits_behind) if there are upstream updates, else None."""
+def _latest_tag(tool_dir: Path, ref: str) -> str | None:
+    """Return the newest tag reachable from *ref*, or None if none/unavailable."""
+    tag, rc = _git("describe", "--tags", "--abbrev=0", ref, cwd=str(tool_dir))
+    if rc != 0 or not tag:
+        return None
+    return tag
+
+
+def _resolve_target(tool_dir: Path, branch: str) -> str | None:
+    """
+    Resolve the ref `apply()` should fast-forward to, or None if no update fits.
+
+    Non-master branches update to the branch tip on any upstream commit. master
+    is gated on a newer tag: the target is the newest tag reachable from
+    origin/master, and None when that tag is absent or unchanged.
+    """
+    if branch != "master":
+        return f"origin/{branch}"
+
+    local_tag = _latest_tag(tool_dir, "HEAD")
+    upstream_tag = _latest_tag(tool_dir, f"origin/{branch}")
+    if not upstream_tag or upstream_tag == local_tag:
+        return None
+    return upstream_tag
+
+
+def _get_behind_count(tool_dir: Path) -> tuple[str, int, str] | None:
+    """
+    Return (branch, commits_behind, target_ref) if an update should be offered.
+
+    The target_ref is what `apply()` should fast-forward to (see
+    `_resolve_target`). Returns None whenever no suitable update exists — not a
+    git repo, detached HEAD, fetch failure, no commits behind, or (on master) no
+    newer tag.
+    """
     _, rc = _git("rev-parse", "--git-dir", cwd=str(tool_dir))
     if rc != 0:
         return None
@@ -74,7 +107,7 @@ def _get_behind_count(tool_dir: Path) -> tuple[str, int] | None:
     if rc != 0 or not branch:
         return None
 
-    _, rc = _git("fetch", "--quiet", "origin", branch, cwd=str(tool_dir), timeout=10)
+    _, rc = _git("fetch", "--quiet", "--tags", "origin", branch, cwd=str(tool_dir), timeout=10)
     if rc != 0:
         return None
 
@@ -82,7 +115,11 @@ def _get_behind_count(tool_dir: Path) -> tuple[str, int] | None:
     if rc != 0 or not behind or behind == "0":
         return None
 
-    return branch, int(behind)
+    target_ref = _resolve_target(tool_dir, branch)
+    if target_ref is None:
+        return None
+
+    return branch, int(behind), target_ref
 
 
 def check(tool_dir: Path) -> bool:
@@ -92,7 +129,7 @@ def check(tool_dir: Path) -> bool:
     Best-effort: any error (no network, detached HEAD, non-git dir, fetch
     failure) returns False so the caller's original command runs.
     """
-    env_val = os.environ.get("CLAUDE_AGENT_SKIP_UPDATE_CHECK", "")
+    env_val = os.environ.get("AGENT_SKIP_UPDATE_CHECK", "")
     if is_truthy_env(env_val):
         return False
 
@@ -100,10 +137,17 @@ def check(tool_dir: Path) -> bool:
     if result is None:
         return False
 
-    branch, behind = result
-    print(
-        f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} agent-wrap is {behind} commit(s) behind origin/{branch}."
-    )
+    branch, behind, target_ref = result
+    if branch == "master":
+        print(
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} a new agent-wrap release "
+            f"({target_ref}) is available."
+        )
+    else:
+        print(
+            f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} agent-wrap is {behind} commit(s) "
+            f"behind origin/{branch}."
+        )
     try:
         ans = input("Update agent-wrap now? [y/N] ")
     except (EOFError, KeyboardInterrupt):
@@ -112,7 +156,7 @@ def check(tool_dir: Path) -> bool:
     if ans.lower() != "y":
         return False
 
-    apply(tool_dir)
+    apply(tool_dir, target_ref)
     return True
 
 
@@ -218,27 +262,11 @@ def _print_status(tool_dir: Path, before: str, after: str, pre_state: _MdState) 
         )
 
 
-def apply(tool_dir: Path) -> int:
-    """
-    Pull updates and handle default-CLAUDE.md propagation.
-
-    Returns 0 on success, 1 on failure.
-    """
-    branch, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(tool_dir))
-    if rc != 0:
-        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
-        print("could not determine current branch", file=sys.stderr)
-        return 1
-
-    before, rc = _git("rev-parse", "HEAD", cwd=str(tool_dir))
-    if rc != 0:
-        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
-        print("could not get current HEAD", file=sys.stderr)
-        return 1
-
-    pre_state = _detect_claude_md_state(tool_dir)
-
-    _, rc, stderr = _git_full("pull", "--ff-only", "origin", branch, cwd=str(tool_dir))
+def _fast_forward(tool_dir: Path, target_ref: str, before: str, pre_state: _MdState) -> int:
+    """Fast-forward to *target_ref* and report. Returns 0 on success, 1 on failure."""
+    # The fetch already ran (via _get_behind_count or the auto-check), so a
+    # local fast-forward merge to the resolved target is sufficient.
+    _, rc, stderr = _git_full("merge", "--ff-only", target_ref, cwd=str(tool_dir))
     if rc != 0:
         print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}")
         if stderr:
@@ -255,6 +283,37 @@ def apply(tool_dir: Path) -> int:
 
     _print_status(tool_dir, before, after, pre_state)
     return 0
+
+
+def apply(tool_dir: Path, target_ref: str | None = None) -> int:
+    """
+    Fast-forward to *target_ref* and handle default-CLAUDE.md propagation.
+
+    When *target_ref* is None (direct `agent update`), the update target is
+    recomputed via `_get_behind_count` so direct invocation honours the same
+    tag-gating as the automatic check. Returns 0 on success, 1 on failure.
+    """
+    _, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(tool_dir))
+    if rc != 0:
+        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
+        print("could not determine current branch", file=sys.stderr)
+        return 1
+
+    if target_ref is None:
+        result = _get_behind_count(tool_dir)
+        if result is None:
+            print(f"{Ansi.BOLD_GREEN}Already up to date{Ansi.RESET}")
+            return 0
+        target_ref = result[2]
+
+    before, rc = _git("rev-parse", "HEAD", cwd=str(tool_dir))
+    if rc != 0:
+        print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
+        print("could not get current HEAD", file=sys.stderr)
+        return 1
+
+    pre_state = _detect_claude_md_state(tool_dir)
+    return _fast_forward(tool_dir, target_ref, before, pre_state)
 
 
 def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001

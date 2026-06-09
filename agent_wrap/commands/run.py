@@ -194,9 +194,9 @@ def _build_env_args(
     claude_home: str,
 ) -> list[str]:
     """Build -e flags for the docker run command."""
-    return [
+    args = [
         "-e",
-        "DISABLE_AUTOUPDATER=1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         "-e",
         f"TELEGRAM_BOT_TOKEN={telegram_bot_token}",
         "-e",
@@ -212,6 +212,10 @@ def _build_env_args(
         "-e",
         f"HOME={claude_home}",
     ]
+    auto_mode_flag = os.environ.get("CLAUDE_CODE_ENABLE_AUTO_MODE", None)
+    if auto_mode_flag is not None:
+        args.extend(["-e", f"CLAUDE_CODE_ENABLE_AUTO_MODE={auto_mode_flag}"])
+    return args
 
 
 def _build_volume_mounts(
@@ -322,6 +326,7 @@ def run(args: list[str], tool_dir: Path) -> int:
         telegram_chat_id,
     )
     config.prepare_project_dirs(cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
+    config.link_litellm_logs(cwd, tool_dir)
     config.record_project(tool_dir)
 
     wslg_args = _build_wslg_args(tool_dir)
