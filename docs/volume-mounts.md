@@ -34,6 +34,8 @@ The following subdirectories and files are mapped to the same path on both sides
 - **Directories**: `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`
 - **Files**: `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`
 
+On launch the wrapper also creates `$(pwd)/.claude/litellm-logs` as a **symlink** (not a bind mount) pointing at this project's slice of the shared LiteLLM request logs under `<wrap-dir>/litellm-logs/<project_hash>/`, so the `agent logs` viewer reads them through the project's own `.claude/`.
+
 ## Read-only tool mounts
 
 The wrapper's own source files are mounted at `/opt/agent-wrap/` so the in-container agent can inspect and invoke them (the validator, status line, Telegram script, etc.):
@@ -44,7 +46,7 @@ The wrapper's own source files are mounted at `/opt/agent-wrap/` so the in-conta
 
 ## WSLg (conditional)
 
-On WSL2 hosts with WSLg (detected when `/mnt/wslg` exists), three additional mounts enable clipboard passthrough:
+On WSL2 hosts with WSLg (detected when `/mnt/wslg` is a directory), three additional mounts enable clipboard passthrough:
 
 | Host | Container |
 | --- | --- |

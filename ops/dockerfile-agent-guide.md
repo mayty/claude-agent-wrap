@@ -14,7 +14,7 @@ FROM claude-agent
 # project-specific RUN steps here
 ```
 
-Use the `$AGENT_NAME` env variable as the name — the launcher exports it already lowercased and sanitized to `[a-z0-9_.-]+`. Do **not** use `workspace`: that's the in-container mount path, not the project name.
+Set a literal name in the `# agent-name:` directive (lowercase, matching `[a-z0-9_.-]+`); it cannot reference a build-time variable. The launcher exposes the resolved name as the `$AGENT_NAME` env var at *runtime* inside the container, not during the image build. Do **not** use `workspace`: that's the in-container mount path, not the project name.
 
 ## Directives
 

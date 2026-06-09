@@ -9,7 +9,7 @@
 
 ## Setup
 
-Source the wrapper in your shell (add it to `~/.bashrc` or `~/.zshrc` to make it permanent):
+Source the wrapper in your bash shell (add it to `~/.bashrc` to make it permanent):
 
 ```bash
 source /path/to/claude-agent-wrap/agent-wrap.bashrc
@@ -21,7 +21,7 @@ Build the base image once:
 agent rebuild
 ```
 
-This creates a `claude-agent` image tagged with your host UID/GID so the container can write to mounted directories without permission issues.
+This creates a `claude-agent` image. Your host UID/GID are passed in as build args (`HOST_UID`/`HOST_GID`) so the container can write to mounted directories without permission issues.
 
 ## Usage
 

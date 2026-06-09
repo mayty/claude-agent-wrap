@@ -8,10 +8,10 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 | Var | Value |
 | --- | --- |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `1` |
-| `AGENT_INSTANCE_ID` | `<agent-name>-<uuid>` (also container name + Docker label) |
+| `AGENT_INSTANCE_ID` | `<agent-name>-<uuid>` — also the value of the `agent-wrap.instance-id` Docker label; the container itself is named `claude-agent-<agent-name>-<uuid>` |
 | `AGENT_NAME` | from `# agent-name:` or sanitized project dir |
 | `HOME` | `/home/<agent-user>` (default `/home/ubuntu`) |
-| `TERM`, `COLORTERM` | forwarded from host shell |
+| `TERM`, `COLORTERM` | forwarded from host shell, defaulting to `xterm-256color` / `truecolor` if unset |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | always passed (empty if not configured in `~/claude_keys.json`). The notification script checks that both are non-empty before sending. |
 
 ## Provider-injected vars
@@ -35,4 +35,4 @@ CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
 
 ## WSLg (conditional)
 
-On WSL2+WSLg hosts, `DISPLAY`, `WAYLAND_DISPLAY`, and `XDG_RUNTIME_DIR` are forwarded. See [Clipboard / WSLg](wslg-clipboard.md).
+On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. See [Clipboard / WSLg](wslg-clipboard.md).

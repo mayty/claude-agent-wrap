@@ -6,7 +6,7 @@ The shared base class for all LiteLLM-based providers. Subclass this (not the ba
 
 ## Sidecar lifecycle
 
-- **Lazy start**: first `agent` launch creates the `agent-wrap-net` bridge and starts the sidecar (under `flock`), waits for Docker healthcheck, up to ~90 s.
+- **Lazy start**: first `agent` launch creates the `agent-wrap-net` bridge and starts the sidecar (under `flock`), waits for Docker healthcheck, up to 90 s.
 - **Refcount**: each running agent registers its `AGENT_INSTANCE_ID` in the provider's `refcount` file. Parallel agents share one sidecar.
 - **Refcount-based stop**: last agent exits → sidecar stopped. Stale entries reconciled against `docker ps`.
 - **Master key**: minted in memory on first start, passed via `-e LITELLM_MASTER_KEY`. Recovered via `docker inspect` on subsequent launches. Never written to disk.
@@ -21,7 +21,7 @@ Subclass `LiteLLMProvider` and override:
 | Method | Purpose |
 | --- | --- |
 | `image` (class attr) | Pinned container image (tag + digest) |
-| `master_key_prefix` (class attr) | Prefix for the auto-generated master key (e.g. `sk-aw-`) |
+| `master_key_prefix` (class attr) | Prefix for the auto-generated master key, per provider (e.g. `sk-aw-` for Bedrock, `sk-ds-` for DashScope/DeepSeek) |
 | `read_secret_key(secrets)` | Extract the upstream API key from `~/claude_keys.json` |
 | `get_sidecar_env(secrets)` | Env vars for the sidecar container |
 | `get_agent_env(master_key, base_url)` | Env vars for the agent container |
@@ -29,9 +29,11 @@ Subclass `LiteLLMProvider` and override:
 
 The base class implements `ensure()`, `release()`, `get_run_args()`, and `get_label_args()`.
 
+Providers may also override the optional `get_pricing()` / `get_tiered_pricing()` hooks (defined on the base `Provider` ABC) to feed `agent stats`.
+
 ## Request/response logging
 
-`_start()` mounts a shared logging callback (`callback.py`) into the sidecar next to the config (`/etc/litellm/callback.py` — LiteLLM resolves callback modules relative to the config file's directory) and bind-mounts a host log dir into it. Each provider's `config.yaml` references the callback via `litellm_settings.callbacks: callback.file_logger_instance`.
+`_start()` mounts the shared logging callback and its helpers (`callback.py`, `string_hasher.py`, `helpers.py`) into the sidecar next to the config (`/etc/litellm/` — LiteLLM resolves callback modules relative to the config file's directory) and bind-mounts a host log dir into it. Each provider's `config.yaml` references the callback via `litellm_settings.callbacks: callback.file_logger_instance`.
 
 - **What it does**: appends one JSON line per LLM call (request messages + `proxy_server_request` + full response) to a session-specific log file.
 - **Shared mount**: because a single sidecar (first-launch-wins) serves *every* project on the host, the bind-mounted host dir is project-independent: `<tool_dir>/litellm-logs` → `/var/log/agent-wrap`. The callback writes to `/var/log/agent-wrap/<project_hash>/<provider>/<session_id>/messages.jsonl`.

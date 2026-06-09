@@ -44,4 +44,4 @@ Sidecar container (injected by `get_sidecar_env`):
 
 ## Config
 
-See [`config.yaml`](config.yaml) for the LiteLLM proxy config — a Bedrock wildcard passthrough (`bedrock/*`) with master-key authentication. Langfuse callback support is prepared but commented out.
+See [`config.yaml`](config.yaml) for the LiteLLM proxy config — a Bedrock wildcard passthrough (`bedrock/*`) with master-key authentication. It also enables the shared request/response JSONL logging callback (`callback.file_logger_instance`).
