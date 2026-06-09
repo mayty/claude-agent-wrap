@@ -1,7 +1,8 @@
-// This file has been created with the assistance of an AI tool.
+// This file has been edited with the assistance of an AI tool.
 "use strict";
 const $ = (id) => document.getElementById(id);
 const chatBody = () => document.querySelector("#chat .chat-body");
+const chatHead = () => document.querySelector("#chat .chat-head");
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
               poll: null, fp: null, gen: 0,
               listPoll: null, projectsFp: null, sessionsFp: null };
@@ -161,6 +162,7 @@ async function selectProject(p, item) {
   state.sessionsFp = null;
   document.querySelectorAll("#proj-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
+  chatHead().innerHTML = "";
   chatBody().innerHTML = '<div class="hint">Loading sessions…</div>';
   try {
     const sessions = await getJSON(`/api/sessions?project=${p.id}`);
@@ -193,6 +195,7 @@ async function selectSession(s, item) {
   state.session = s.session_id;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
+  chatHead().innerHTML = "";
   chatBody().innerHTML = '<div class="hint">Loading…</div>';
   try {
     const data = await getJSON(`/api/session?${sessionQuery(s)}`);
