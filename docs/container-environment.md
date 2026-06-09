@@ -8,7 +8,7 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 | Var | Value |
 | --- | --- |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `1` |
-| `AGENT_INSTANCE_ID` | `<agent-name>-<uuid>` (also container name + Docker label) |
+| `AGENT_INSTANCE_ID` | `<agent-name>-<uuid>` — also the value of the `agent-wrap.instance-id` Docker label; the container itself is named `claude-agent-<agent-name>-<uuid>` |
 | `AGENT_NAME` | from `# agent-name:` or sanitized project dir |
 | `HOME` | `/home/<agent-user>` (default `/home/ubuntu`) |
 | `TERM`, `COLORTERM` | forwarded from host shell, defaulting to `xterm-256color` / `truecolor` if unset |

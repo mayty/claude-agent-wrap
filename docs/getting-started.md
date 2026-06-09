@@ -21,7 +21,7 @@ Build the base image once:
 agent rebuild
 ```
 
-This creates a `claude-agent` image tagged with your host UID/GID so the container can write to mounted directories without permission issues.
+This creates a `claude-agent` image. Your host UID/GID are passed in as build args (`HOST_UID`/`HOST_GID`) so the container can write to mounted directories without permission issues.
 
 ## Usage
 

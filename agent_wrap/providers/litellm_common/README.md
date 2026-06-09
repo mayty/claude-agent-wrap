@@ -29,6 +29,8 @@ Subclass `LiteLLMProvider` and override:
 
 The base class implements `ensure()`, `release()`, `get_run_args()`, and `get_label_args()`.
 
+Providers may also override the optional `get_pricing()` / `get_tiered_pricing()` hooks (defined on the base `Provider` ABC) to feed `agent stats`.
+
 ## Request/response logging
 
 `_start()` mounts the shared logging callback and its helpers (`callback.py`, `string_hasher.py`, `helpers.py`) into the sidecar next to the config (`/etc/litellm/` — LiteLLM resolves callback modules relative to the config file's directory) and bind-mounts a host log dir into it. Each provider's `config.yaml` references the callback via `litellm_settings.callbacks: callback.file_logger_instance`.
