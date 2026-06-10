@@ -2,7 +2,8 @@
 # Changelog
 
 Full release notes live per version under [`releases/`](releases/). Each entry below
-links to the complete notes for that release, newest first.
+links to the complete notes for that release, newest first. New notes should follow
+the [release notes style guide](releases/styleguide.md).
 
 ## [0.5.0](releases/0.5.0.md) — 2026-06-09
 
