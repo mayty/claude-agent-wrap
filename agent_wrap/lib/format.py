@@ -68,4 +68,4 @@ def epoch_to_dt(x: float | None) -> datetime | None:
 def fmt_ts(dt: datetime | None) -> str:
     if dt is None:
         return "—"
-    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    return dt.astimezone().strftime("%Y-%m-%d")
