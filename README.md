@@ -14,6 +14,7 @@ It packages Claude Code into a reproducible container image and exposes a single
 | Providers | [Provider Setup](docs/providers.md) |
 | Configuration | [Configuration](docs/configuration.md) |
 | Reference | [Volume Mounts](docs/volume-mounts.md) · [Shell Commands](docs/shell-commands.md) · [Container Environment](docs/container-environment.md) |
+| Changelog | [Release history](CHANGELOG.md) |
 
 ## Quick Start
 
