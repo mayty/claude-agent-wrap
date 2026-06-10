@@ -166,7 +166,10 @@ def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     result = _build_wslg_args(Path("/tool"))
     assert "-v" in result
-    assert "/mnt/wslg:/mnt/wslg" in result
+    assert "/mnt/wslg/runtime-dir:/mnt/wslg/runtime-dir" in result
+    assert "/mnt/wslg/.X11-unix:/tmp/.X11-unix" in result
+    # The full tree must NOT be mounted — /mnt/wslg/distro is the host root filesystem.
+    assert "/mnt/wslg:/mnt/wslg" not in result
     assert f"{Path('/tool')}/ops/wl-paste-shim:/usr/local/bin/wl-paste:ro" in result
     assert "-e" in result
     assert "DISPLAY" in result
