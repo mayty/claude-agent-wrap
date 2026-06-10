@@ -9,9 +9,11 @@ This is a no-op on macOS and native Linux hosts.
 
 When `/mnt/wslg` exists on the host, `agent run`:
 
-- bind-mounts `/mnt/wslg` and `/mnt/wslg/.X11-unix` (at `/tmp/.X11-unix`),
+- bind-mounts `/mnt/wslg/.X11-unix` (at `/tmp/.X11-unix`) and `/mnt/wslg/runtime-dir` (the Wayland socket),
 - forwards `DISPLAY` and `WAYLAND_DISPLAY` from the host shell and sets `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir`, and
 - bind-mounts `wl-paste-shim` read-only over `/usr/local/bin/wl-paste` so it shadows the real binary via PATH order.
+
+The wrapper deliberately mounts only those two sub-paths, **not** the whole `/mnt/wslg` tree: on WSL2 `/mnt/wslg/distro` is the host distro's entire root filesystem, and exposing it inside the container would loosen the sandbox's isolation.
 
 ## Why the shim is needed
 
