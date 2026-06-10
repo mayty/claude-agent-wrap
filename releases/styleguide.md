@@ -40,7 +40,10 @@ A complete skeleton looks like this:
 - Form: `### <Category>: <short description>`.
 - The description is lowercase (except code spans, identifiers, and proper
   nouns) and has no trailing punctuation.
-- Categories, in rough order of prominence:
+- Sections appear in the file in **exactly** the order the categories are listed
+  below — `Breaking`, then `Added`, then `Changed`, then `Improved`, then
+  `Fixed`, then `Other`. Group every section of a given category together; never
+  interleave categories. Omit any category that has no entries.
 
   | Category   | Use for |
   |------------|---------|
