@@ -5,6 +5,11 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.5.1](releases/0.5.1.md) — 2026-06-10
+
+Added this changelog: an index plus full per-version notes under [`releases/`](releases/),
+backfilled for every prior release, with a style guide for future entries.
+
 ## [0.5.0](releases/0.5.0.md) — 2026-06-09
 
 Request logging in the LiteLLM sidecar plus a new `agent logs` web viewer, a DeepSeek
