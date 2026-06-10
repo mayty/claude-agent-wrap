@@ -58,7 +58,7 @@ def _scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[
     src = src.replace('\\"', '"')
 
     row_re = re.compile(r"<tr[^>]*>(?P<row>.*?</tr>)", re.DOTALL)
-    name_re = re.compile(r"Claude\s+(Opus|Sonnet|Haiku)\s+(\d+(?:\.\d+)*)")
+    name_re = re.compile(r"Claude\s+([A-Za-z]+)\s+(\d+(?:\.\d+)*)")
     key_re = re.compile(
         r"priceOf!bedrockfoundationmodels/bedrockfoundationmodels!"
         r"([A-Za-z0-9_-]+)"

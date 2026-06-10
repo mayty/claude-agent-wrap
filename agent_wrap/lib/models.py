@@ -6,11 +6,11 @@ from __future__ import annotations
 import re
 
 _MODEL_FAMILY_RE_V_FIRST = re.compile(
-    r"claude[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)[-\s.]*(?P<tier>opus|sonnet|haiku)",
+    r"claude[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)[-\s.]*(?P<tier>[a-z]+)",
     re.IGNORECASE,
 )
 _MODEL_FAMILY_RE_T_FIRST = re.compile(
-    r"claude[-\s.]*(?P<tier>opus|sonnet|haiku)[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)",
+    r"claude[-\s.]*(?P<tier>[a-z]+)[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)",
     re.IGNORECASE,
 )
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
