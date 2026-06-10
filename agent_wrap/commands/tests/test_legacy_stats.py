@@ -51,6 +51,17 @@ def test_display_name_haiku():
     assert normalize_model("Claude Haiku 3.5") == "claude-haiku-3-5"
 
 
+def test_fable_family_canonical():
+    # Family token is no longer a fixed opus|sonnet|haiku enumeration; new
+    # families like Fable must normalize too.
+    assert normalize_model("claude-fable-5") == "claude-fable-5"
+
+
+def test_fable_family_bedrock_form():
+    # The form actually recorded for Bedrock Fable sessions.
+    assert normalize_model("us.anthropic.claude-fable-5") == "claude-fable-5"
+
+
 def test_empty_string():
     assert normalize_model("") is None
 

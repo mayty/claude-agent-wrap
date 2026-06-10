@@ -10,8 +10,9 @@ the [release notes style guide](releases/styleguide.md).
 Hardens the WSLg clipboard mount so it no longer exposes the host filesystem inside the
 sandbox. Added this changelog: an index plus full per-version notes under
 [`releases/`](releases/), backfilled for every prior release, with a style guide for future
-entries. Also trims the `agent stats` LAST LAUNCH column to a date-only display, and fixes it
-rendering `?` instead of `$0.00` for projects whose requests all trully zero-cost.
+entries. Also trims the `agent stats` LAST LAUNCH column to a date-only display, fixes it
+rendering `?` instead of `$0.00` for projects whose requests all trully zero-cost, and makes
+Bedrock pricing cover the Fable model family.
 
 ## [0.5.0](releases/0.5.0.md) — 2026-06-09
 
