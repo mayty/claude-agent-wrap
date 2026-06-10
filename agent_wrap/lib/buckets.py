@@ -5,7 +5,7 @@ from __future__ import annotations
 
 
 class Bucket:
-    __slots__ = ("cost", "cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
+    __slots__ = ("cost", "cost_unknown", "cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
 
     def __init__(self) -> None:
         self.msgs = 0
@@ -15,8 +15,13 @@ class Bucket:
         self.cw_1h = 0
         self.cr = 0
         self.cost = 0.0
+        # True once any request folded in had no known price. This is distinct
+        # from a `cost` of 0.0, which is a *known* zero (e.g. a project whose
+        # requests all errored out and so were never billable). Callers must
+        # use this flag — not `cost <= 0.0` — to decide whether to render "?".
+        self.cost_unknown = False
 
-    def add(self, usage: dict, request_cost: float = 0.0) -> None:
+    def add(self, usage: dict, request_cost: float | None = 0.0) -> None:
         self.msgs += 1
         self.in_ += usage.get("input_tokens", 0) or 0
         self.out += usage.get("output_tokens", 0) or 0
@@ -31,7 +36,12 @@ class Bucket:
             # `cache_creation_input_tokens` total. Charge those at the 5m rate.
             self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
         self.cr += usage.get("cache_read_input_tokens", 0) or 0
-        self.cost += request_cost
+        # A None cost means pricing was unavailable for this request; track that
+        # as unknown rather than silently treating it as a $0.00 contribution.
+        if request_cost is None:
+            self.cost_unknown = True
+        else:
+            self.cost += request_cost
 
     def merge(self, other: Bucket) -> None:
         self.msgs += other.msgs
@@ -41,6 +51,7 @@ class Bucket:
         self.cw_1h += other.cw_1h
         self.cr += other.cr
         self.cost += other.cost
+        self.cost_unknown = self.cost_unknown or other.cost_unknown
 
     @property
     def cw(self) -> int:
