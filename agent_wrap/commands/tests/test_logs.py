@@ -8,14 +8,21 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from agent_wrap.commands import logs as logs_mod
 from agent_wrap.commands.logs import (
     _lightweight_project_summary,
     _parse_port,
+    _pid_alive,
     _read_last_record_ts,
     _read_meta_json,
+    _read_state,
     _resolve_hashes,
+    _running_server,
     _scan_session_meta,
+    _state_file,
+    _stop,
     _write_meta_json,
+    _write_state,
     extract_alias,
     list_projects,
     list_sessions,
@@ -24,6 +31,7 @@ from agent_wrap.commands.logs import (
     projects_fingerprint,
     read_session,
     resolve_static,
+    run,
     session_fingerprint,
     sessions_fingerprint,
 )
@@ -995,3 +1003,214 @@ def test_write_and_read_meta_json_round_trip(tmp_path: Path):
     assert cached["models"] == ["x", "y"]
     assert cached["alias"] == "test-alias"
     assert cached["title"] == "Test Title"
+
+
+# --- background server: state file + liveness ------------------------------
+
+
+def test_state_file_path(tmp_path: Path):
+    assert _state_file(tmp_path) == tmp_path / ".agent-launches" / "logs-server.json"
+
+
+def test_read_state_missing_returns_none(tmp_path: Path):
+    assert _read_state(tmp_path) is None
+
+
+def test_read_state_corrupt_returns_none(tmp_path: Path):
+    (tmp_path / ".agent-launches").mkdir()
+    _state_file(tmp_path).write_text("not json {{{", encoding="utf-8")
+    assert _read_state(tmp_path) is None
+
+
+def test_read_state_rejects_wrong_shape(tmp_path: Path):
+    (tmp_path / ".agent-launches").mkdir()
+    # Missing/wrong-typed pid and port must be rejected.
+    _state_file(tmp_path).write_text(json.dumps({"pid": "x", "port": 8765}), encoding="utf-8")
+    assert _read_state(tmp_path) is None
+
+
+def test_write_then_read_state_round_trip(tmp_path: Path):
+    _write_state(tmp_path, pid=4242, port=8765)
+    state = _read_state(tmp_path)
+    assert state == {"pid": 4242, "port": 8765}
+
+
+def test_pid_alive_true_for_running(monkeypatch):
+    monkeypatch.setattr(logs_mod.os, "kill", lambda pid, sig: None)
+    assert _pid_alive(123) is True
+
+
+def test_pid_alive_false_for_dead(monkeypatch):
+    def _kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(logs_mod.os, "kill", _kill)
+    assert _pid_alive(123) is False
+
+
+def test_pid_alive_true_for_permission_error(monkeypatch):
+    def _kill(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(logs_mod.os, "kill", _kill)
+    assert _pid_alive(123) is True
+
+
+def test_running_server_returns_state_when_alive(tmp_path: Path, monkeypatch):
+    _write_state(tmp_path, pid=4242, port=9001)
+    monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: True)
+    state = _running_server(tmp_path)
+    assert state == {"pid": 4242, "port": 9001}
+
+
+def test_running_server_removes_stale_file_when_dead(tmp_path: Path, monkeypatch):
+    _write_state(tmp_path, pid=4242, port=9001)
+    monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: False)
+    assert _running_server(tmp_path) is None
+    assert not _state_file(tmp_path).exists()
+
+
+def test_running_server_none_when_no_file(tmp_path: Path):
+    assert _running_server(tmp_path) is None
+
+
+# --- background server: run() dispatch -------------------------------------
+
+
+def test_run_stop_dispatches_to_stop(tmp_path: Path, monkeypatch):
+    called = {}
+
+    def _fake_stop(td):
+        called["stop"] = td
+        return 0
+
+    monkeypatch.setattr(logs_mod, "_stop", _fake_stop)
+    assert run(["--stop"], tmp_path) == 0
+    assert called["stop"] == tmp_path
+
+
+def test_run_stop_rejects_extra_args(tmp_path: Path):
+    assert run(["--stop", "--port", "9000"], tmp_path) == 1
+
+
+def test_run_foreground_dispatches_to_serve_foreground(tmp_path: Path, monkeypatch):
+    called = {}
+
+    def _fake_fg(td, port):
+        called["fg"] = (td, port)
+        return 0
+
+    monkeypatch.setattr(logs_mod, "_serve_foreground", _fake_fg)
+    assert run(["--foreground", "--port", "9000"], tmp_path) == 0
+    assert called["fg"] == (tmp_path, 9000)
+
+
+def test_run_already_running_prints_connect_line_and_skips_spawn(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.setattr(logs_mod, "_running_server", lambda td: {"pid": 1, "port": 9123})
+    spawned = {}
+
+    def _fake_spawn(td, port):
+        spawned["x"] = 1
+        return 0
+
+    monkeypatch.setattr(logs_mod, "_spawn_background", _fake_spawn)
+    assert run(["--port", "8765"], tmp_path) == 0
+    assert "x" not in spawned
+    out = capsys.readouterr().out
+    assert out.strip() == "LiteLLM log viewer running at http://127.0.0.1:9123"
+
+
+def test_run_spawns_when_not_running(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(logs_mod, "_running_server", lambda td: None)
+    called = {}
+
+    def _fake_spawn(td, port):
+        called["spawn"] = (td, port)
+        return 0
+
+    monkeypatch.setattr(logs_mod, "_spawn_background", _fake_spawn)
+    assert run(["--port", "9000"], tmp_path) == 0
+    assert called["spawn"] == (tmp_path, 9000)
+
+
+def test_run_help_returns_zero(tmp_path: Path):
+    assert run(["-h"], tmp_path) == 0
+
+
+# --- background server: _stop ----------------------------------------------
+
+
+def test_stop_when_not_running(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setattr(logs_mod, "_running_server", lambda td: None)
+    assert _stop(tmp_path) == 0
+    assert "no viewer is running" in capsys.readouterr().out
+
+
+def test_stop_sends_sigterm_and_removes_state(tmp_path: Path, monkeypatch, capsys):
+    _write_state(tmp_path, pid=4242, port=9001)
+    monkeypatch.setattr(logs_mod, "_running_server", lambda td: {"pid": 4242, "port": 9001})
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(logs_mod.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    # Report the PID as dead immediately so _stop doesn't spin on the wait loop.
+    monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: False)
+    assert _stop(tmp_path) == 0
+    assert (4242, logs_mod.signal.SIGTERM) in signals
+    assert not _state_file(tmp_path).exists()
+    assert "viewer stopped" in capsys.readouterr().out
+
+
+# --- background server: end-to-end (spawns real processes) -----------------
+
+
+def test_background_server_start_and_stop(tmp_path: Path):
+    """
+    Full handshake: `agent logs` spawns a detached child that records a live
+    PID/port, then `agent logs stop` terminates it and clears the state file.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    # Re-run the real CLI against a temp tool_dir on an unusual base port to
+    # avoid colliding with a developer's own running viewer.
+    env = {**os.environ, "AGENT_LOGS_TOOL_DIR": str(tmp_path)}
+    start = subprocess.run(
+        [sys.executable, "-m", "agent_wrap", "logs", "--port", "8801"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+    state_file = tmp_path / ".agent-launches" / "logs-server.json"
+    try:
+        assert start.returncode == 0, start.stderr
+        assert "LiteLLM log viewer running at http://127.0.0.1:" in start.stdout
+        assert state_file.is_file()
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        pid = state["pid"]
+        # The child should be alive.
+        assert _pid_alive(pid)
+    finally:
+        stop = subprocess.run(
+            [sys.executable, "-m", "agent_wrap", "logs", "--stop"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+
+    assert stop.returncode == 0, stop.stderr
+    assert "viewer stopped" in stop.stdout
+    assert not state_file.exists()
+
+    # The child process should be gone (a zombie counts as dead — it may linger
+    # unreaped briefly when its launching parent has already exited).
+    deadline = time.monotonic() + 5.0
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _pid_alive(pid), f"viewer pid {pid} still alive after stop"

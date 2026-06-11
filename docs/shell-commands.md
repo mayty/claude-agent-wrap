@@ -59,16 +59,17 @@ Aggregates token usage and estimated USD cost across every project where you've 
 ## `agent logs`
 
 ```
-agent logs [--port N]
+agent logs [--port N] [--stop]
 ```
 
 Starts a local, read-only web viewer for the LiteLLM request logs written under each project's `.claude/litellm-logs/` directory. (That path is now a symlink into the shared per-project log store at `<wrap-dir>/litellm-logs/<project_hash>/`, since a single sidecar serves every project; the viewer follows it transparently.) Reads the same project registry as `agent stats` (`<wrap-dir>/.agent-launches/projects.txt`), then lets you pick a project, pick a session, and read every logged request chat-style: the system prompt, the message thread (including `tool_use`/`tool_result` blocks), the tool definitions, the response, and per-request token usage. Hashed strings (`hash:<sha256>`) are resolved from each session's `strings.jsonl` for display.
 
 Sessions are labelled with their Claude Code alias (the short kebab-case name, e.g. `agent-logs-web-viewer`) when available. The alias is detected from Claude Code's own session-naming call as it passes through the sidecar and persisted to an `alias` file beside the logs; for older logs it is derived on the fly from the same call, falling back to the session UUID when no name exists yet.
 
-The server binds to `127.0.0.1` only and attempts to open your browser. Press Ctrl-C to stop.
+The viewer is a host-level singleton that runs **in the background**: `agent logs` prints its connect line (`http://127.0.0.1:<port>`) and returns the shell to you immediately. The server binds to `127.0.0.1` only. Running `agent logs` again while a viewer is already running just reprints the existing connect line — the running port is reused and `--port` is ignored. The background process records its PID and port in `<wrap-dir>/.agent-launches/logs-server.json` (its stdout/stderr go to `logs-server.log` beside it).
 
-- **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one.
+- **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one. Ignored when a viewer is already running.
+- **`--stop`** — stops the background viewer (no-op with a friendly message if none is running).
 
 ## `agent update`
 
