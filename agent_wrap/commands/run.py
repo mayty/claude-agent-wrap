@@ -151,12 +151,17 @@ def _load_secrets() -> tuple[str, str]:
 
 
 def _build_wslg_args(tool_dir: Path) -> list[str]:
-    """Build WSLg-related volume mounts and env vars."""
+    """
+    Build WSLg-related volume mounts and env vars.
+
+    Mounts only the X11 and Wayland runtime sockets — NOT all of /mnt/wslg, which
+    on WSL2 exposes the host distro root filesystem (/mnt/wslg/distro) read-only.
+    """
     if not Path("/mnt/wslg").is_dir():
         return []
     return [
         "-v",
-        "/mnt/wslg:/mnt/wslg",
+        "/mnt/wslg/runtime-dir:/mnt/wslg/runtime-dir",
         "-v",
         "/mnt/wslg/.X11-unix:/tmp/.X11-unix",
         "-v",

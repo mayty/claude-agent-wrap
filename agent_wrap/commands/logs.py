@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 The `logs` subcommand — a local web viewer for the LiteLLM request logs.
 
@@ -35,8 +35,11 @@ import contextlib
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
-import webbrowser
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,7 +51,7 @@ from agent_wrap.lib.usage_args import load_projects
 if TYPE_CHECKING:
     from agent_wrap.providers.litellm_common.callback import LogRecord, MetaData
 
-USAGE = "[--port N]"
+USAGE = "[--port N] [--stop]"
 SUMMARY = "Browse LiteLLM request logs in a local web viewer"
 
 # The web UI ships as static assets under the repo-root ``logs_page/`` dir
@@ -69,6 +72,22 @@ _DEFAULT_PORT = 8765
 _PORT_SCAN_LIMIT = 50
 _MIN_PORT = 1
 _MAX_PORT = 65535
+
+# Global, gitignored runtime state for the background viewer. The viewer is a
+# host-level singleton (it serves every registered project), so a single state
+# file under .agent-launches/ — alongside projects.txt — is the right home.
+_STATE_FILE_NAME = "logs-server.json"
+_STATE_DIR_NAME = ".agent-launches"
+_LOG_FILE_NAME = "logs-server.log"
+
+# Set by _spawn_background on the detached child so it resolves the same
+# tool_dir (and thus the same state file) as the parent that launched it.
+_TOOL_DIR_ENV = "AGENT_LOGS_TOOL_DIR"
+
+# Parent → child handshake / stop-wait timing.
+_SPAWN_TIMEOUT_SEC = 5.0
+_STOP_TIMEOUT_SEC = 3.0
+_POLL_INTERVAL_SEC = 0.05
 
 _PRICES = PriceSource()
 
@@ -850,7 +869,7 @@ def resolve_static(page_dir: Path, url_path: str) -> Path | None:
 class _Handler(BaseHTTPRequestHandler):
     """Serves the static web UI and the read-only JSON API."""
 
-    # Both bound as class attributes in serve().
+    # Both bound as class attributes in _serve_foreground().
     tool_dir: Path
     page_dir: Path
 
@@ -956,8 +975,118 @@ def _bind(port: int) -> tuple[ThreadingHTTPServer, int] | None:
     return None
 
 
-def serve(tool_dir: Path, port: int) -> int:
-    """Start the viewer and block until interrupted. Returns an exit code."""
+# ---------------------------------------------------------------------------
+# Background-server state (PID/port handshake)
+# ---------------------------------------------------------------------------
+#
+# The viewer now runs detached: `agent logs` re-execs itself with the hidden
+# `--foreground` flag via subprocess (mirroring ops/statusline.py's detached
+# Popen idiom), and the two processes coordinate through a small JSON state
+# file under .agent-launches/. The parent prints the connect line; the child
+# is silent (its stdout/stderr go to a logfile).
+
+
+def _state_dir(tool_dir: Path) -> Path:
+    return tool_dir / _STATE_DIR_NAME
+
+
+def _state_file(tool_dir: Path) -> Path:
+    return _state_dir(tool_dir) / _STATE_FILE_NAME
+
+
+def _read_state(tool_dir: Path) -> dict[str, Any] | None:
+    """Read the viewer state file, or None when missing/corrupt."""
+    try:
+        raw = _state_file(tool_dir).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("pid"), int)
+        and isinstance(data.get("port"), int)
+    ):
+        return data
+    return None
+
+
+def _write_state(tool_dir: Path, pid: int, port: int) -> None:
+    """Write the viewer state file atomically (tmp + replace)."""
+    state_dir = _state_dir(tool_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = state_dir / (_STATE_FILE_NAME + ".tmp")
+    tmp.write_text(json.dumps({"pid": pid, "port": port}), encoding="utf-8")
+    tmp.replace(_state_file(tool_dir))
+
+
+def _pid_alive(pid: int) -> bool:
+    """
+    Return True if *pid* refers to a live process we can see.
+
+    A zombie (terminated but not yet reaped — common when the launching parent
+    has already exited and the orphan's reaper is slow) still answers
+    ``os.kill(pid, 0)``, so it is explicitly treated as dead via /proc. The
+    wrapper only runs on Linux, where /proc is always present.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists but is owned by someone else — still "alive".
+        return True
+    except OSError:
+        return False
+    # Treat a zombie as dead: its server socket is already closed, but the PID
+    # lingers in the table until reaped. Best-effort — if /proc is unreadable,
+    # fall back to "alive" (the os.kill above already confirmed the PID exists).
+    with contextlib.suppress(OSError, IndexError):
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        # Fields: "pid (comm) state ..."; comm may contain spaces/parens, so
+        # split after the final ')' to read the single-char state code.
+        state = stat.rpartition(")")[2].split()[0]
+        if state == "Z":
+            return False
+    return True
+
+
+def _running_server(tool_dir: Path) -> dict[str, Any] | None:
+    """
+    Return the state dict if a live viewer is running, else None.
+
+    A state file whose PID is dead is treated as stale and removed so the
+    caller can spawn a fresh server.
+    """
+    state = _read_state(tool_dir)
+    if state is None:
+        return None
+    if _pid_alive(state["pid"]):
+        return state
+    with contextlib.suppress(OSError):
+        _state_file(tool_dir).unlink()
+    return None
+
+
+def _connect_line(port: int) -> str:
+    return f"LiteLLM log viewer running at http://127.0.0.1:{port}"
+
+
+def _serve_foreground(tool_dir: Path, port: int) -> int:
+    """
+    Run the viewer in the foreground until SIGTERM/SIGINT. Returns an exit code.
+
+    This is the body of the detached child (`agent logs --foreground`). It binds
+    the server, records {pid, port} in the state file, then blocks. It stays
+    silent on stdout — the parent prints the user-facing connect line.
+
+    serve_forever() runs on a daemon thread while the main thread blocks on a
+    stop Event; the signal handler sets the Event and the main thread performs
+    shutdown(). Calling shutdown() from a handler running *on* the serve_forever
+    thread would deadlock, hence the split.
+    """
     if not _LOGS_PAGE_DIR.is_dir():
         print(f"agent logs: cannot find UI assets at {_LOGS_PAGE_DIR}", file=sys.stderr)
         return 1
@@ -976,19 +1105,102 @@ def serve(tool_dir: Path, port: int) -> int:
         return 1
     server, actual_port = bound
 
-    url = f"http://127.0.0.1:{actual_port}"
-    print(f"agent logs: serving LiteLLM log viewer at {url}")
-    print("Press Ctrl-C to stop.")
-    # Best-effort: headless hosts have no browser.
-    with contextlib.suppress(Exception):
-        webbrowser.open(url)
+    _write_state(tool_dir, os.getpid(), actual_port)
+
+    stop = threading.Event()
+
+    def _handle(_signum: int, _frame: Any) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
+
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        stop.wait()
+    finally:
+        server.shutdown()
+        server.server_close()
+        with contextlib.suppress(OSError):
+            _state_file(tool_dir).unlink()
+    return 0
+
+
+def _spawn_background(tool_dir: Path, port: int) -> int:
+    """
+    Spawn the detached viewer and print the connect line. Returns an exit code.
+
+    Re-execs `python -m agent_wrap logs --foreground --port <port>` detached,
+    then waits for the child to record {pid, port} in the state file before
+    reporting the actual bound port.
+    """
+    state_dir = _state_dir(tool_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    log_path = state_dir / _LOG_FILE_NAME
 
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nagent logs: shutting down.")
-    finally:
-        server.server_close()
+        logfile = log_path.open("ab")
+    except OSError as exc:
+        print(f"agent logs: cannot open log file {log_path}: {exc}", file=sys.stderr)
+        return 1
+
+    # Pin the child to the parent's tool_dir so both sides agree on where the
+    # state file lives (the child would otherwise re-derive it from __main__).
+    child_env = {**os.environ, _TOOL_DIR_ENV: str(tool_dir)}
+    with logfile:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "agent_wrap", "logs", "--foreground", "--port", str(port)],
+            stdin=subprocess.DEVNULL,
+            stdout=logfile,
+            stderr=logfile,
+            start_new_session=True,
+            env=child_env,
+        )
+
+    # Wait for the child to publish its state, distinguishing success from an
+    # early exit (missing assets, no free port) and from a timeout.
+    deadline = time.monotonic() + _SPAWN_TIMEOUT_SEC
+    while time.monotonic() < deadline:
+        state = _read_state(tool_dir)
+        if state is not None and state["pid"] == proc.pid:
+            print(_connect_line(state["port"]))
+            return 0
+        if proc.poll() is not None:
+            print(
+                f"agent logs: viewer exited on startup (see {log_path})",
+                file=sys.stderr,
+            )
+            return 1
+        time.sleep(_POLL_INTERVAL_SEC)
+
+    print(
+        f"agent logs: viewer did not start within {_SPAWN_TIMEOUT_SEC:g}s (see {log_path})",
+        file=sys.stderr,
+    )
+    with contextlib.suppress(OSError):
+        proc.terminate()
+    return 1
+
+
+def _stop(tool_dir: Path) -> int:
+    """Stop the background viewer. Returns an exit code (always 0)."""
+    state = _running_server(tool_dir)
+    if state is None:
+        print("agent logs: no viewer is running.")
+        return 0
+
+    pid = state["pid"]
+    with contextlib.suppress(ProcessLookupError, OSError):
+        os.kill(pid, signal.SIGTERM)
+
+    deadline = time.monotonic() + _STOP_TIMEOUT_SEC
+    while time.monotonic() < deadline and _pid_alive(pid):
+        time.sleep(_POLL_INTERVAL_SEC)
+
+    with contextlib.suppress(OSError):
+        _state_file(tool_dir).unlink()
+    print("agent logs: viewer stopped.")
     return 0
 
 
@@ -997,12 +1209,16 @@ def serve(tool_dir: Path, port: int) -> int:
 # ---------------------------------------------------------------------------
 
 _USAGE_TEXT = (
-    "Usage: agent logs [--port N]\n\n"
+    "Usage: agent logs [--port N] [--stop]\n\n"
     "Starts a local web viewer for the LiteLLM request logs written under each\n"
     "project's .claude/litellm-logs/ directory. Pick a project, then a session,\n"
     "and read every logged request chat-style.\n\n"
+    "The viewer runs in the background and prints its connect line; if one is\n"
+    "already running, the existing connect line is reprinted (the port is\n"
+    "ignored).\n\n"
     "--port N binds the viewer to port N (default 8765); if busy, the next free\n"
-    "port is used. The server binds to 127.0.0.1 only and is read-only."
+    "port is used. The server binds to 127.0.0.1 only and is read-only.\n"
+    "--stop stops the background viewer."
 )
 
 
@@ -1039,7 +1255,35 @@ def _parse_port(args: list[str]) -> int | None:
 
 def run(args: list[str], tool_dir: Path) -> int:
     """Execute the `logs` subcommand."""
+    # A detached child is pinned to its launching parent's tool_dir so both
+    # sides resolve the same state file (see _TOOL_DIR_ENV / _spawn_background).
+    env_dir = os.environ.get(_TOOL_DIR_ENV)
+    if env_dir:
+        tool_dir = Path(env_dir)
+
+    if "--stop" in args:
+        if args != ["--stop"]:
+            print("usage: agent logs --stop (takes no other arguments)", file=sys.stderr)
+            return 1
+        return _stop(tool_dir)
+
+    # `--foreground` is a hidden internal flag: the re-exec'd child that actually
+    # runs the blocking server. Strip it before port parsing so _parse_port (and
+    # its tests) stay unchanged, and keep it out of USAGE/bashrc completion.
+    foreground = "--foreground" in args
+    if foreground:
+        args = [a for a in args if a != "--foreground"]
+
     port = _parse_port(args)
     if port is None:
         return 0 if (args and args[0] in ("-h", "--help")) else 1
-    return serve(tool_dir, port)
+
+    if foreground:
+        return _serve_foreground(tool_dir, port)
+
+    running = _running_server(tool_dir)
+    if running is not None:
+        print(_connect_line(running["port"]))
+        return 0
+
+    return _spawn_background(tool_dir, port)

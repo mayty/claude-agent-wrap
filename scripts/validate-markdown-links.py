@@ -41,7 +41,7 @@ def get_md_files(root_dir: Path) -> list[Path]:
     md_files.extend(root_md_files)
 
     # Recursive directories
-    for subdir in ("docs", "agent_wrap", "ops"):
+    for subdir in ("docs", "agent_wrap", "ops", "releases"):
         subdir_path = root_dir / subdir
         if subdir_path.is_dir():
             md_files.extend(subdir_path.rglob("*.md"))

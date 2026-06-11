@@ -178,6 +178,29 @@ def test_prepare_global_config_creates_structure(tmp_path: Path) -> None:
     assert (tmp_path / ".claude" / "projects" / "-workspace").exists()
 
 
+def test_prepare_global_config_seeds_valid_json(tmp_path: Path) -> None:
+    # Claude Code aborts on startup if .claude.json is empty/invalid, so the
+    # seeded files must be parseable JSON, not zero-byte touch() output.
+    prepare_global_config(tmp_path, tmp_path)
+    assert json.loads((tmp_path / ".claude.json").read_text()) == {}
+
+
+def test_prepare_global_config_repairs_empty_claude_json(tmp_path: Path) -> None:
+    # A pre-existing zero-byte .claude.json (e.g. from an older wrapper that
+    # touch()ed it) must be repaired, not left to crash Claude Code.
+    empty = tmp_path / ".claude.json"
+    empty.touch()
+    prepare_global_config(tmp_path, tmp_path)
+    assert json.loads(empty.read_text()) == {}
+
+
+def test_prepare_global_config_preserves_existing_claude_json(tmp_path: Path) -> None:
+    existing = tmp_path / ".claude.json"
+    existing.write_text('{"foo": "bar"}\n')
+    prepare_global_config(tmp_path, tmp_path)
+    assert json.loads(existing.read_text()) == {"foo": "bar"}
+
+
 def test_prepare_global_config_with_telegram(tmp_path: Path) -> None:
     prepare_global_config(tmp_path, tmp_path, telegram_bot_token="abc", telegram_chat_id="123")  # noqa: S106
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())

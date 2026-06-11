@@ -263,7 +263,7 @@ def _model_display_rows(totals_by_model: dict[str, Bucket]) -> list[DisplayRow]:
             "sessions": 0,
             "last_ts": None,
             "total": bucket,
-            "cost": bucket.cost if bucket.cost > 0.0 else None,
+            "cost": None if bucket.cost_unknown else bucket.cost,
         }
         for model, bucket in totals_by_model.items()
     ]
@@ -321,7 +321,9 @@ def _cost_record(
     day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
 
     usage = extract_usage(rec.get("response"))
-    cost = prices.compute_cost(provider_name, model, rec.get("response")) or 0.0
+    # Pass the raw result through: None means pricing was unknown for this
+    # request, which the Bucket records distinctly from a known-zero cost.
+    cost = prices.compute_cost(provider_name, model, rec.get("response"))
 
     by_day[day_key][display_model].add(usage, cost)
     return ts
@@ -381,14 +383,15 @@ def render(
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     days_window: int,
 ) -> str:
-    # Per-request cost is baked into `Bucket.cost` during the scan; a bucket
-    # with non-positive cost had no known price (rendered as "?").
+    # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
+    # `cost_unknown` flag (set when a billable request had no known price) is the
+    # authoritative "?" signal — a 0.0 cost without that flag is a known zero.
     return render_core(
         rows,
         totals_by_model,
         totals_by_day_by_model,
         days_window,
-        cost_fn=lambda _model, b: (b.cost, b.cost <= 0.0),
+        cost_fn=lambda _model, b: (b.cost, b.cost_unknown),
         build_model_section=_build_model_section,
     )
 
@@ -434,8 +437,10 @@ def _aggregate_projects(
                 totals_by_day_by_model[day][model].merge(b)
 
         # total.cost is the sum of per-request costs computed during the scan;
-        # a non-positive total means no price was known (rendered as "?").
-        proj_cost = total.cost if total.cost > 0.0 else None
+        # `cost_unknown` (set when a billable request had no known price) marks
+        # the project cost as "?", keeping a known-zero total (e.g. all requests
+        # errored out) distinct from genuinely-unknown pricing.
+        proj_cost = None if total.cost_unknown else total.cost
 
         if sessions > 0 or exists:
             rows.append(
