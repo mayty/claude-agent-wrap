@@ -7,8 +7,9 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.5.1](releases/0.5.1.md) — 2026-06-10
 
-Hardens the WSLg clipboard mount so it no longer exposes the host filesystem inside the
-sandbox. Added this changelog: an index plus full per-version notes under
+Makes `agent logs` run the viewer in the background (with a new `--stop` flag) instead of
+holding the terminal open. Hardens the WSLg clipboard mount so it no longer exposes the host
+filesystem inside the sandbox. Added this changelog: an index plus full per-version notes under
 [`releases/`](releases/), backfilled for every prior release, with a style guide for future
 entries. Also trims the `agent stats` LAST LAUNCH column to a date-only display, fixes it
 rendering `?` instead of `$0.00` for projects whose requests all trully zero-cost, and makes
