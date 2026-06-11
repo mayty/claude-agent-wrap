@@ -129,11 +129,15 @@ def prepare_global_config(
     claude_dir = global_config_dir / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create and secure config files
+    # Create and secure config files. These are bind-mounted into the
+    # container, so they must exist on the host before launch. Seed them with
+    # an empty JSON object rather than a zero-byte file: Claude Code parses
+    # .claude.json on startup and aborts with a "Configuration error" prompt
+    # ("invalid JSON … Unexpected EOF") if it finds an empty file.
     for name in (".claude.json", "settings.json"):
         path = global_config_dir / name if name == ".claude.json" else claude_dir / name
-        if not path.exists():
-            path.touch()
+        if not path.exists() or path.stat().st_size == 0:
+            path.write_text("{}\n")
         path.chmod(0o600)
 
     settings_path = claude_dir / "settings.json"
