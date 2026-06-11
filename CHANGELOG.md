@@ -5,7 +5,7 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.5.1](releases/0.5.1.md) — 2026-06-10
+## [0.6.0](releases/0.6.0.md) — 2026-06-11
 
 Fixes a cold-start crash where a fresh install aborted into Claude Code's configuration-error
 prompt because `.claude.json` was seeded empty. Makes `agent logs` run the viewer in the
