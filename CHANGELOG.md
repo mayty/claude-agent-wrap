@@ -5,6 +5,11 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.7.0](releases/0.7.0.md) — 2026-06-13
+
+Fixes infinite recursion in `json_safe` when it encountered self-referencing
+object graphs.
+
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 
 Fixes a cold-start crash where a fresh install aborted into Claude Code's configuration-error
