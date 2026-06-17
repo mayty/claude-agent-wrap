@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 MARKER_NAME = ".agent_stats_leaf"
 
+# The shared sidecar writes every project's logs under
+# ``<tool_dir>/litellm-logs/<project_hash>/<provider>/<session>/`` and points each
+# project's ``.claude/litellm-logs`` symlink at its own ``<hash>`` subtree.
+CENTRAL_LOGS_DIRNAME = "litellm-logs"
+
 
 def _read_marker_name(marker: Path) -> str | None:
     """Return the marker's first non-empty line, or None when empty/unreadable."""
@@ -66,3 +71,43 @@ def resolve_group(path: Path) -> tuple[Path, str, bool]:
             name = _read_marker_name(marker)
             return candidate, name if name is not None else candidate.name, True
     return path, path.name, False
+
+
+def orphaned_log_dirs(tool_dir: Path, projects: list[Path]) -> list[Path]:
+    """
+    Central ``<hash>`` log dirs not reachable from a registered, existing project.
+
+    The sidecar writes logs under ``<tool_dir>/litellm-logs/<hash>/`` and each
+    project's ``.claude/litellm-logs`` symlink resolves to its own ``<hash>`` dir.
+    Any central child whose resolved path matches a registered project's resolved
+    logs dir is reachable and excluded; the rest are orphaned — left behind by a
+    deleted project, a stale ``projects.txt`` entry, or the sidecar's default-hash
+    fallback bucket. Returned sorted for stable ordering.
+
+    Best-effort: filesystem errors are swallowed so a single bad entry can never
+    break stats or the viewer.
+    """
+    reachable: set[Path] = set()
+    for project in projects:
+        link = project / ".claude" / CENTRAL_LOGS_DIRNAME
+        try:
+            if link.is_dir():
+                reachable.add(link.resolve())
+        except OSError:
+            continue
+
+    central = tool_dir / CENTRAL_LOGS_DIRNAME
+    orphaned: list[Path] = []
+    try:
+        children = list(central.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+            if child.resolve() not in reachable:
+                orphaned.append(child)
+        except OSError:
+            continue
+    return sorted(orphaned)

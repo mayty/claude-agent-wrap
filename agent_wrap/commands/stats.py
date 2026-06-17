@@ -15,7 +15,7 @@ from agent_wrap.lib.format import (
     epoch_to_dt,
     fmt_count,
 )
-from agent_wrap.lib.grouping import resolve_group
+from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
 from agent_wrap.lib.models import normalize_model
 from agent_wrap.lib.render import render_core
 from agent_wrap.lib.tree import (
@@ -330,18 +330,17 @@ def _cost_record(
     return ts
 
 
-def _scan_project(  # noqa: C901
-    path: Path,
+def _scan_logs_dir(  # noqa: C901
+    logs_dir: Path,
     prices: PriceSource,
-) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], bool]:
+) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]]]:
     """
-    Scan one project's LiteLLM logs line-by-line, costing each request as it
-    is read. Returns (sessions, last_ts, by_day_by_model_buckets, exists).
-    """
-    logs_dir = path / ".claude" / "litellm-logs"
-    if not logs_dir.is_dir():
-        return 0, None, {}, False
+    Scan a LiteLLM logs dir (``<provider>/<session>/messages.jsonl``) line-by-line,
+    costing each request as it is read. Returns (sessions, last_ts, by_day_by_model).
 
+    Works on both a project's ``.claude/litellm-logs`` symlink and a central
+    orphaned ``<hash>`` dir, since they share the same internal layout.
+    """
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
     last_ts: datetime | None = None
     session_count = 0
@@ -375,7 +374,62 @@ def _scan_project(  # noqa: C901
             except OSError:
                 continue
 
-    return session_count, last_ts, {d: dict(m) for d, m in by_day.items()}, True
+    return session_count, last_ts, {d: dict(m) for d, m in by_day.items()}
+
+
+def _scan_project(
+    path: Path,
+    prices: PriceSource,
+) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], bool]:
+    """
+    Scan one project's LiteLLM logs. Returns (sessions, last_ts, by_day, exists).
+
+    ``exists`` is False when the project's ``.claude/litellm-logs`` is gone (a
+    deleted project / stale registry entry), in which case nothing is scanned.
+    """
+    logs_dir = path / ".claude" / "litellm-logs"
+    if not logs_dir.is_dir():
+        return 0, None, {}, False
+    sessions, last_ts, by_day = _scan_logs_dir(logs_dir, prices)
+    return sessions, last_ts, by_day, True
+
+
+def _collect_orphaned(
+    tool_dir: Path,
+    projects: list[Path],
+    prices: PriceSource,
+    totals_by_model: dict[str, Bucket],
+    totals_by_day_by_model: dict[str, dict[str, Bucket]],
+) -> dict | None:
+    """
+    Aggregate central log dirs not reachable from any registered project.
+
+    These are real spend whose project dir is gone, so each request is folded into
+    the passed-in per-model and per-day totals (exactly like a project), and a
+    single summary ``{"sessions", "last_ts", "total"}`` is returned for the
+    synthetic ``<orphaned>`` row. Returns None when there are no orphaned sessions.
+    """
+    total = Bucket()
+    sessions = 0
+    last_ts: datetime | None = None
+
+    for logs_dir in orphaned_log_dirs(tool_dir, projects):
+        d_sessions, d_last_ts, by_day = _scan_logs_dir(logs_dir, prices)
+        sessions += d_sessions
+        if d_last_ts is not None and (last_ts is None or d_last_ts > last_ts):
+            last_ts = d_last_ts
+        for day, by_model in by_day.items():
+            for model, b in by_model.items():
+                total.merge(b)
+                # The totals are the plain dicts returned by _aggregate_projects;
+                # orphaned logs may introduce a model/day not seen in any project,
+                # so create the bucket on demand rather than assuming it exists.
+                totals_by_model.setdefault(model, Bucket()).merge(b)
+                totals_by_day_by_model.setdefault(day, {}).setdefault(model, Bucket()).merge(b)
+
+    if sessions == 0:
+        return None
+    return {"sessions": sessions, "last_ts": last_ts, "total": total}
 
 
 def render(
@@ -383,6 +437,7 @@ def render(
     totals_by_model: dict[str, Bucket],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     days_window: int,
+    orphaned: dict | None = None,
 ) -> str:
     # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
     # `cost_unknown` flag (set when a billable request had no known price) is the
@@ -394,6 +449,7 @@ def render(
         days_window,
         cost_fn=lambda _model, b: (b.cost, b.cost_unknown),
         build_model_section=_build_model_section,
+        orphaned=orphaned,
     )
 
 
@@ -519,7 +575,14 @@ def run(args: list[str], tool_dir: Path) -> int:
 
     # Filter out projects with no logs
     rows = [r for r in rows if r["sessions"] > 0]
-    if not rows:
+
+    # Logs left behind by deleted projects / stale registry entries surface under
+    # a synthetic <orphaned> row; their usage also folds into the totals above.
+    orphaned = _collect_orphaned(
+        tool_dir, projects, prices, totals_by_model, totals_by_day_by_model
+    )
+
+    if not rows and orphaned is None:
         print("usage: no LiteLLM logs found for any registered project.", file=sys.stderr)
         return 0
 
@@ -529,6 +592,7 @@ def run(args: list[str], tool_dir: Path) -> int:
             totals_by_model,
             totals_by_day_by_model,
             parsed.days_window,
+            orphaned=orphaned,
         )
     )
     return 0

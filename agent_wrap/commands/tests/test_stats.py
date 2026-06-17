@@ -11,7 +11,9 @@ from agent_wrap.commands.stats import (
     PriceSource,
     _aggregate_projects,
     _best_prefix_key,
+    _collect_orphaned,
     _cost_record,
+    render,
 )
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.tree import build_project_tree, flatten_tree
@@ -223,3 +225,72 @@ def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path)
     rows, _totals, _by_day = _aggregate_projects([a, b], prices)
     assert {r["name"] for r in rows} == {"proj-a", "proj-b"}
     assert all(r["transient"] is False for r in rows)
+
+
+# --- orphaned central logs -------------------------------------------------
+
+
+def _write_central_log(
+    tool_dir: Path, hash_name: str, session_id: str, records: list[dict]
+) -> Path:
+    """Write a central <hash> log dir directly (no project symlink points at it)."""
+    sdir = tool_dir / "litellm-logs" / hash_name / "litellm-bedrock" / session_id
+    sdir.mkdir(parents=True)
+    with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+    return tool_dir / "litellm-logs" / hash_name
+
+
+def test_collect_orphaned_folds_into_totals(monkeypatch, tmp_path: Path):
+    """Orphaned usage is summarized and folded into the passed-in totals."""
+    prices = _make_prices(monkeypatch, priced=True)
+    tool_dir = tmp_path / "tool"
+    _write_central_log(tool_dir, "hashB", "s2", [_success_rec(), _success_rec()])
+
+    # Plain dicts, matching what _aggregate_projects returns — an orphaned model
+    # not already present must be created on demand, not raise KeyError.
+    totals_by_model: dict[str, Bucket] = {}
+    totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
+
+    orphaned = _collect_orphaned(tool_dir, [], prices, totals_by_model, totals_by_day_by_model)
+    assert orphaned is not None
+    assert orphaned["sessions"] == 1
+    assert orphaned["total"].msgs == 2
+    # The two requests were folded into the global per-model totals.
+    assert sum(b.msgs for b in totals_by_model.values()) == 2
+
+
+def test_collect_orphaned_none_when_all_reachable(monkeypatch, tmp_path: Path):
+    """A central dir reachable from a registered project is not orphaned."""
+    prices = _make_prices(monkeypatch, priced=True)
+    tool_dir = tmp_path / "tool"
+    hash_a = _write_central_log(tool_dir, "hashA", "s1", [_success_rec()])
+
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
+
+    orphaned = _collect_orphaned(tool_dir, [project], prices, {}, {})
+    assert orphaned is None
+
+
+def test_render_includes_orphaned_row_without_star(monkeypatch, tmp_path: Path):
+    """render() shows an <orphaned> row, and it carries no ` *` transient marker."""
+    prices = _make_prices(monkeypatch, priced=True)
+    tool_dir = tmp_path / "tool"
+    _write_central_log(tool_dir, "hashB", "s2", [_success_rec()])
+
+    totals_by_model: dict[str, Bucket] = {}
+    totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
+    orphaned = _collect_orphaned(tool_dir, [], prices, totals_by_model, totals_by_day_by_model)
+
+    out = render([], totals_by_model, totals_by_day_by_model, 30, orphaned=orphaned)
+    assert "<orphaned>" in out
+    assert "<orphaned> *" not in out
+
+
+def test_render_without_orphaned_has_no_row(monkeypatch):
+    """When orphaned is None, no <orphaned> row appears."""
+    out = render([], {}, {}, 30, orphaned=None)
+    assert "<orphaned>" not in out

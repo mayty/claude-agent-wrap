@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.commands.stats import PriceSource, extract_usage
-from agent_wrap.lib.grouping import resolve_group
+from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
 from agent_wrap.lib.usage_args import load_projects
 
 if TYPE_CHECKING:
@@ -356,16 +356,15 @@ def _read_last_record_ts(messages_file: Path) -> float | None:
     return None
 
 
-def _lightweight_project_summary(project: Path) -> tuple[int, float | None]:
+def _lightweight_logs_summary(logs_dir: Path) -> tuple[int, float | None]:
     """
-    Return ``(session_count, max_last_ts)`` for *project* using minimal I/O.
+    Return ``(session_count, max_last_ts)`` for a logs dir using minimal I/O.
 
     Counts session directories (deduplicating across providers) and reads
     the last record's timestamp only from the single ``messages.jsonl``
     with the highest modification time — the file most recently appended to,
     which is where the latest timestamp lives.
     """
-    logs_dir = _logs_dir(project)
     if not logs_dir.is_dir():
         return 0, None
 
@@ -400,20 +399,26 @@ def _lightweight_project_summary(project: Path) -> tuple[int, float | None]:
     return len(seen_sessions), max_last_ts
 
 
+def _lightweight_project_summary(project: Path) -> tuple[int, float | None]:
+    """Lightweight summary for a project, via its ``.claude/litellm-logs`` dir."""
+    return _lightweight_logs_summary(_logs_dir(project))
+
+
 def _logs_dir(project: Path) -> Path:
     return project / ".claude" / "litellm-logs"
 
 
-def _as_paths(project: Path | list[Path]) -> list[Path]:
+def _as_logs_dirs(project: Path | list[Path]) -> list[Path]:
     """
-    Normalize a project argument to a list of member paths.
+    Normalize a reader argument to a list of LiteLLM logs dirs to scan.
 
-    Session readers accept either a single project :class:`~pathlib.Path` (the
-    historical, per-project API still used by tests) or the list of member paths
-    that make up a grouped transient project (what the HTTP handler resolves an
-    ``.agent_stats_leaf`` group id into).
+    Accepts either a single project :class:`~pathlib.Path` (the historical,
+    per-project API still used by tests) — mapped to its ``.claude/litellm-logs``
+    — or a list of logs dirs already resolved by the HTTP handler (a grouped
+    transient project's members, or the synthetic ``<orphaned>`` group's central
+    ``<hash>`` dirs, which *are* logs dirs and have no ``.claude`` wrapper).
     """
-    return project if isinstance(project, list) else [project]
+    return project if isinstance(project, list) else [_logs_dir(project)]
 
 
 def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
@@ -426,18 +431,23 @@ def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
     * ``root`` — the group root :class:`~pathlib.Path` (marker dir, or the
       project itself when unmarked),
     * ``name`` — the custom marker name or the root's directory name,
-    * ``paths`` — every member project :class:`~pathlib.Path` in the group.
+    * ``paths`` — every member project :class:`~pathlib.Path` in the group,
+    * ``logs_dirs`` — the LiteLLM logs dirs to scan for the group.
 
     Projects without a ``.claude/litellm-logs`` directory are skipped, mirroring
-    the pre-grouping behaviour. Members are kept in registry order.
+    the pre-grouping behaviour. Members are kept in registry order. A synthetic
+    ``<orphaned>`` group is appended last (when present) for central log dirs left
+    behind by deleted projects / stale registry entries — its ``logs_dirs`` are the
+    central ``<hash>`` dirs themselves and it has no member ``paths``.
     """
     registry = tool_dir / ".agent-launches" / "projects.txt"
     if not registry.is_file():
         return []
 
+    projects = load_projects(registry)
     names: dict[Path, str] = {}
     members: dict[Path, list[Path]] = {}
-    for path in load_projects(registry):
+    for path in projects:
         if not _logs_dir(path).is_dir():
             continue
         root, name, _transient = resolve_group(path)
@@ -448,7 +458,27 @@ def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
 
     # Sort by group-root path so ids are stable; callers re-sort the *public*
     # list (by recency) without disturbing this id assignment.
-    return [{"root": root, "name": names[root], "paths": members[root]} for root in sorted(members)]
+    groups: list[dict[str, Any]] = [
+        {
+            "root": root,
+            "name": names[root],
+            "paths": members[root],
+            "logs_dirs": [_logs_dir(p) for p in members[root]],
+        }
+        for root in sorted(members)
+    ]
+
+    orphaned = orphaned_log_dirs(tool_dir, projects)
+    if orphaned:
+        groups.append(
+            {
+                "root": Path("<orphaned>"),
+                "name": "<orphaned>",
+                "paths": [],
+                "logs_dirs": orphaned,
+            }
+        )
+    return groups
 
 
 def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
@@ -457,8 +487,8 @@ def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
     for idx, group in enumerate(list_groups(tool_dir)):
         session_count = 0
         max_last_ts: float | None = None
-        for path in group["paths"]:
-            count, last_ts = _lightweight_project_summary(path)
+        for logs_dir in group["logs_dirs"]:
+            count, last_ts = _lightweight_logs_summary(logs_dir)
             session_count += count
             if last_ts is not None and (max_last_ts is None or last_ts > max_last_ts):
                 max_last_ts = last_ts
@@ -478,10 +508,16 @@ def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
 
 
 def _group_by_id(tool_dir: Path, group_id: int) -> list[Path] | None:
-    """Return the member project paths for a group index, or None if unknown."""
+    """
+    Return the logs dirs to scan for a group index, or None if unknown.
+
+    The session readers take logs dirs directly (see :func:`_as_logs_dirs`), so
+    this returns the group's ``logs_dirs`` — a project's ``.claude/litellm-logs``
+    for normal groups, or the central ``<hash>`` dirs for the ``<orphaned>`` group.
+    """
     groups = list_groups(tool_dir)
     if 0 <= group_id < len(groups):
-        return groups[group_id]["paths"]
+        return groups[group_id]["logs_dirs"]
     return None
 
 
@@ -657,8 +693,7 @@ def list_sessions(project: Path | list[Path]) -> list[dict[str, Any]]:
     rows in the viewer.
     """
     by_session: dict[str, dict[str, Any]] = {}
-    for member in _as_paths(project):
-        logs_dir = _logs_dir(member)
+    for logs_dir in _as_logs_dirs(project):
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -695,8 +730,7 @@ def session_fingerprint(project: Path | list[Path], session_id: str) -> dict[str
     total_size: int | None = None
     found = False
 
-    for member in _as_paths(project):
-        logs_dir = _logs_dir(member)
+    for logs_dir in _as_logs_dirs(project):
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -734,8 +768,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> dict[str, Any]:
     total_size: int | None = None
     found = False
 
-    for member in _as_paths(project):
-        logs_dir = _logs_dir(member)
+    for logs_dir in _as_logs_dirs(project):
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -867,8 +900,7 @@ def read_session(project: Path | list[Path], session_id: str) -> dict[str, Any]:
     all_records: list[dict[str, Any]] = []
     combined_meta: dict[str, Any] | None = None
 
-    for member in _as_paths(project):
-        logs_dir = _logs_dir(member)
+    for logs_dir in _as_logs_dirs(project):
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():

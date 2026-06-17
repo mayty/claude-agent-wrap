@@ -46,6 +46,7 @@ def _build_total_body(
     tree_root: Node,
     display_rows: list,
     build_model_section: BuildModelSection,
+    orphaned: dict | None = None,
 ) -> list:
     body: list = []
 
@@ -89,6 +90,29 @@ def _build_total_body(
                 ],
                 style,
                 dr.prefix_len,
+            )
+        )
+
+    if orphaned is not None:
+        # A sibling of the "/" root (prefix_len 0, not under the fs tree): logs
+        # left behind by deleted projects. Its usage is already folded into the
+        # per-model section above.
+        b = orphaned["total"]
+        body.append(
+            (
+                [
+                    "<orphaned>",
+                    str(orphaned["sessions"]),
+                    fmt_ts(orphaned["last_ts"]),
+                    fmt_count(b.msgs),
+                    fmt_count(b.in_),
+                    fmt_count(b.out),
+                    fmt_count(b.cw),
+                    fmt_count(b.cr),
+                    fmt_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                ],
+                Ansi.NONE,
+                0,
             )
         )
 
@@ -229,6 +253,7 @@ def render_core(  # noqa: PLR0913
     *,
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
+    orphaned: dict | None = None,
 ) -> str:
     # Two stacked tables: "Total" (all-time per-model + per-project tree) and
     # "Recent" (per-model + per-day, both restricted to the days_window). Each
@@ -246,7 +271,9 @@ def render_core(  # noqa: PLR0913
     tree_root = build_project_tree(rows)
     display_rows = flatten_tree(tree_root)
 
-    total_body = _build_total_body(totals_by_model, tree_root, display_rows, build_model_section)
+    total_body = _build_total_body(
+        totals_by_model, tree_root, display_rows, build_model_section, orphaned
+    )
 
     # === Recent table: models (in window) + per-day (in window) + TOTAL ===
     recent_headers = ["MODEL / DATE", *shared_headers]

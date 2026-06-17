@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agent_wrap.lib.grouping import MARKER_NAME, resolve_group
+from agent_wrap.lib.grouping import (
+    CENTRAL_LOGS_DIRNAME,
+    MARKER_NAME,
+    orphaned_log_dirs,
+    resolve_group,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -107,3 +112,59 @@ def test_symlinked_projects_group_by_literal_path(tmp_path: Path):
     assert custom_a is custom_b is True
     # ...even though their physical (resolved) paths are distinct.
     assert real_a.resolve() != real_b.resolve()
+
+
+# --- orphaned_log_dirs -----------------------------------------------------
+
+
+def _central(tool_dir: Path, name: str) -> Path:
+    """Create a central <hash> log dir under <tool_dir>/litellm-logs/."""
+    d = tool_dir / CENTRAL_LOGS_DIRNAME / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_orphaned_excludes_reachable_central_dir(tmp_path: Path):
+    # A registered project whose .claude/litellm-logs symlink points at hashA must
+    # exclude hashA; the unreferenced hashB is orphaned.
+    tool_dir = tmp_path / "tool"
+    hash_a = _central(tool_dir, "hashA")
+    _central(tool_dir, "hashB")
+
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / CENTRAL_LOGS_DIRNAME).symlink_to(hash_a, target_is_directory=True)
+
+    orphaned = orphaned_log_dirs(tool_dir, [project])
+    assert orphaned == [tool_dir / CENTRAL_LOGS_DIRNAME / "hashB"]
+
+
+def test_orphaned_includes_all_when_no_projects(tmp_path: Path):
+    # No registered projects → every central dir is orphaned (deleted projects).
+    tool_dir = tmp_path / "tool"
+    _central(tool_dir, "hashA")
+    _central(tool_dir, "hashB")
+
+    orphaned = orphaned_log_dirs(tool_dir, [])
+    assert orphaned == [
+        tool_dir / CENTRAL_LOGS_DIRNAME / "hashA",
+        tool_dir / CENTRAL_LOGS_DIRNAME / "hashB",
+    ]
+
+
+def test_orphaned_empty_without_central_dir(tmp_path: Path):
+    # No <tool_dir>/litellm-logs at all → nothing orphaned.
+    tool_dir = tmp_path / "tool"
+    tool_dir.mkdir()
+    assert orphaned_log_dirs(tool_dir, []) == []
+
+
+def test_orphaned_ignores_deleted_project_symlink(tmp_path: Path):
+    # A registered project whose dir was deleted (no logs dir) cannot reach its
+    # central hash, so that hash is orphaned.
+    tool_dir = tmp_path / "tool"
+    _central(tool_dir, "hashA")
+    gone = tmp_path / "deleted-proj"  # never created
+
+    orphaned = orphaned_log_dirs(tool_dir, [gone])
+    assert orphaned == [tool_dir / CENTRAL_LOGS_DIRNAME / "hashA"]
