@@ -54,6 +54,10 @@ Aggregates token usage and estimated USD cost across every project where you've 
 
 - **`--days N`** — widens the per-day breakdown window (default 30; `0` = all active days).
 
+Create an `.agent_stats_leaf` file in a directory to aggregate every registered project at or beneath it into a single **transient project** row, instead of one row per project — handy when a script launches many agents in per-run subdirectories. The first non-empty line of the file is the project's display name (falling back to the marker directory's name when the file is empty), and the aggregated row is flagged with a trailing ` *`. The lookup walks the path literally (symlinks are not resolved), so a directory that holds an `.agent_stats_leaf` plus symlinks to several unrelated projects groups them all together.
+
+Logs left behind by a deleted or unregistered project — request logs that survive under `<wrap-dir>/litellm-logs/` after their project is gone from the registry — are gathered into a synthetic `<orphaned>` row so their usage is not silently lost. It appears as its own line (not under the project tree), and its tokens and cost are still included in the per-model and per-day totals.
+
 > A `legacy_stats` verb also exists — the previous-generation stats command that aggregates from each project's `.claude/sessions/*.jsonl` files with AWS Bedrock pricing. Retained for backward compatibility; prefer `stats`.
 
 ## `agent logs`
@@ -67,6 +71,8 @@ Starts a local, read-only web viewer for the LiteLLM request logs written under 
 Sessions are labelled with their Claude Code alias (the short kebab-case name, e.g. `agent-logs-web-viewer`) when available. The alias is detected from Claude Code's own session-naming call as it passes through the sidecar and persisted to an `alias` file beside the logs; for older logs it is derived on the fly from the same call, falling back to the session UUID when no name exists yet.
 
 The viewer is a host-level singleton that runs **in the background**: `agent logs` prints its connect line (`http://127.0.0.1:<port>`) and returns the shell to you immediately. The server binds to `127.0.0.1` only. Running `agent logs` again while a viewer is already running just reprints the existing connect line — the running port is reused and `--port` is ignored. The background process records its PID and port in `<wrap-dir>/.agent-launches/logs-server.json` (its stdout/stderr go to `logs-server.log` beside it).
+
+The viewer applies the same grouping as `agent stats`: projects under an `.agent_stats_leaf` marker appear as one project whose session list is the union of its members, and an `<orphaned>` project collects sessions from logs with no registered project so you can still read them.
 
 - **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one. Ignored when a viewer is already running.
 - **`--stop`** — stops the background viewer (no-op with a friendly message if none is running).
