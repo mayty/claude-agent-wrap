@@ -14,6 +14,7 @@ from agent_wrap.commands.stats import (
     _cost_record,
 )
 from agent_wrap.lib.buckets import Bucket
+from agent_wrap.lib.tree import build_project_tree, flatten_tree
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -183,9 +184,32 @@ def test_aggregate_projects_merges_marked_group(monkeypatch, tmp_path: Path):
     row = rows[0]
     assert row["path"] == runs
     assert row["name"] == "batch-feb"
-    assert row["custom"] is True
+    assert row["transient"] is True
     assert row["sessions"] == 2
     assert row["total"].msgs == 2
+
+
+def test_aggregate_projects_empty_marker_is_transient(monkeypatch, tmp_path: Path):
+    """An empty .agent_stats_leaf still flags the group transient (dir-named)."""
+    prices = _make_prices(monkeypatch, priced=True)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / ".agent_stats_leaf").write_text("", encoding="utf-8")
+
+    a = runs / "agent-a"
+    b = runs / "agent-b"
+    _write_session_log(a, "s1", [_success_rec()])
+    _write_session_log(b, "s2", [_success_rec()])
+
+    rows, _totals, _by_day = _aggregate_projects([a, b], prices)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "runs"
+    assert row["transient"] is True
+
+    # The rendered tree must flag the group with a trailing " *".
+    labels = [dr.label for dr in flatten_tree(build_project_tree(rows))]
+    assert any(label.rstrip().endswith("runs *") for label in labels)
 
 
 def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path):
@@ -198,4 +222,4 @@ def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path)
 
     rows, _totals, _by_day = _aggregate_projects([a, b], prices)
     assert {r["name"] for r in rows} == {"proj-a", "proj-b"}
-    assert all(r["custom"] is False for r in rows)
+    assert all(r["transient"] is False for r in rows)

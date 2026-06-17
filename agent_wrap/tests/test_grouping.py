@@ -19,10 +19,10 @@ def _marker(directory: Path, contents: str = "") -> None:
 def test_no_marker_keeps_project_standalone(tmp_path: Path):
     proj = tmp_path / "solo"
     proj.mkdir()
-    root, name, custom = resolve_group(proj)
+    root, name, transient = resolve_group(proj)
     assert root == proj
     assert name == "solo"
-    assert custom is False
+    assert transient is False
 
 
 def test_marker_with_content_uses_first_nonempty_line(tmp_path: Path):
@@ -30,30 +30,32 @@ def test_marker_with_content_uses_first_nonempty_line(tmp_path: Path):
     _marker(runs, "\n  batch-feb \nignored second line\n")
     child = runs / "agent-xyz"
     child.mkdir()
-    root, name, custom = resolve_group(child)
+    root, name, transient = resolve_group(child)
     assert root == runs
     assert name == "batch-feb"
-    assert custom is True
+    assert transient is True
 
 
 def test_empty_marker_falls_back_to_dir_name(tmp_path: Path):
+    # An empty marker still forms a transient group (named after its directory);
+    # `transient` reflects marker presence, not name customization.
     runs = tmp_path / "runs"
     _marker(runs, "   \n\n")
     child = runs / "agent-xyz"
     child.mkdir()
-    root, name, custom = resolve_group(child)
+    root, name, transient = resolve_group(child)
     assert root == runs
     assert name == "runs"
-    assert custom is False
+    assert transient is True
 
 
 def test_marker_on_project_itself_is_found(tmp_path: Path):
     proj = tmp_path / "proj"
     _marker(proj, "self-named")
-    root, name, custom = resolve_group(proj)
+    root, name, transient = resolve_group(proj)
     assert root == proj
     assert name == "self-named"
-    assert custom is True
+    assert transient is True
 
 
 def test_nearest_marker_wins_when_nested(tmp_path: Path):
@@ -63,10 +65,10 @@ def test_nearest_marker_wins_when_nested(tmp_path: Path):
     _marker(inner, "inner-group")
     leaf = inner / "agent-1"
     leaf.mkdir()
-    root, name, custom = resolve_group(leaf)
+    root, name, transient = resolve_group(leaf)
     assert root == inner
     assert name == "inner-group"
-    assert custom is True
+    assert transient is True
 
 
 def test_two_projects_under_one_marker_share_a_group(tmp_path: Path):

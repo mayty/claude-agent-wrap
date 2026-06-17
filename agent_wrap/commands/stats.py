@@ -421,12 +421,12 @@ def _parse_usage_args(args: list[str]) -> UsageArgs | None:
 class _Group:
     """Per-transient-project accumulator across one or more physical paths."""
 
-    __slots__ = ("custom", "exists", "last_ts", "name", "root", "sessions", "total")
+    __slots__ = ("exists", "last_ts", "name", "root", "sessions", "total", "transient")
 
-    def __init__(self, root: Path, name: str, *, custom: bool) -> None:
+    def __init__(self, root: Path, name: str, *, transient: bool) -> None:
         self.root = root
         self.name = name
-        self.custom = custom
+        self.transient = transient
         self.total = Bucket()
         self.sessions = 0
         self.last_ts: datetime | None = None
@@ -452,10 +452,10 @@ def _aggregate_projects(
     for path in projects:
         sessions, last_ts, by_day, exists = _scan_project(path, prices)
 
-        root, name, custom = resolve_group(path)
+        root, name, transient = resolve_group(path)
         group = groups.get(root)
         if group is None:
-            group = groups[root] = _Group(root, name, custom=custom)
+            group = groups[root] = _Group(root, name, transient=transient)
 
         group.sessions += sessions
         group.exists = group.exists or exists
@@ -480,7 +480,7 @@ def _aggregate_projects(
                 {
                     "path": group.root,
                     "name": group.name,
-                    "custom": group.custom,
+                    "transient": group.transient,
                     "exists": group.exists,
                     "sessions": group.sessions,
                     "last_ts": group.last_ts,

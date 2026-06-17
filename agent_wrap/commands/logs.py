@@ -440,7 +440,7 @@ def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
     for path in load_projects(registry):
         if not _logs_dir(path).is_dir():
             continue
-        root, name, _custom = resolve_group(path)
+        root, name, _transient = resolve_group(path)
         if root not in members:
             members[root] = []
             names[root] = name

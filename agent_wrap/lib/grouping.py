@@ -45,22 +45,24 @@ def resolve_group(path: Path) -> tuple[Path, str, bool]:
 
     Walks up from ``path`` (inclusive) along its **literal** components looking
     for the nearest ``.agent_stats_leaf``. Returns
-    ``(group_root, display_name, is_custom)``:
+    ``(group_root, display_name, is_transient)``:
 
-    * With a marker — ``group_root`` is the marker's directory. If the marker's
-      first non-empty line is non-empty, ``display_name`` is that line and
-      ``is_custom`` is True; otherwise ``display_name`` falls back to the marker
-      directory's name and ``is_custom`` is False.
+    * With a marker — ``group_root`` is the marker's directory and
+      ``is_transient`` is True (the group is an aggregated transient project,
+      flagged with ``*`` in the UI). ``display_name`` is the marker's first
+      non-empty line when present, otherwise the marker directory's name.
     * Without a marker anywhere up the tree — ``group_root`` is ``path`` itself,
-      ``display_name`` is ``path.name``, and ``is_custom`` is False (each project
-      stays on its own, matching the pre-grouping behaviour).
+      ``display_name`` is ``path.name``, and ``is_transient`` is False (each
+      project stays on its own, matching the pre-grouping behaviour).
+
+    ``is_transient`` reflects *marker presence*, not whether the name was
+    customized: an empty marker still produces a transient group (named after its
+    directory), and that group must be flagged just like a custom-named one.
     """
     # `path` first (a project dir can itself hold the marker), then ancestors.
     for candidate in (path, *path.parents):
         marker = candidate / MARKER_NAME
         if marker.is_file():
-            custom = _read_marker_name(marker)
-            if custom is not None:
-                return candidate, custom, True
-            return candidate, candidate.name, False
+            name = _read_marker_name(marker)
+            return candidate, name if name is not None else candidate.name, True
     return path, path.name, False

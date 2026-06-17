@@ -200,19 +200,21 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
             prefix_len = len(prefix)
 
             # A grouped transient project (`.agent_stats_leaf`) overrides the
-            # final path segment with its custom name and is flagged with " *".
+            # final path segment with its group name and is flagged with " *".
+            # The override is a no-op when the name is just the directory name
+            # (empty marker), but still earns the " *" flag.
             seg = child.name
-            custom = bool(child.row is not None and child.row.get("custom"))
-            if child.row is not None and custom:
+            transient = bool(child.row is not None and child.row.get("transient"))
+            if child.row is not None and transient:
                 head, _, _ = seg.rpartition("/")
-                custom_name = child.row["name"]
-                seg = f"{head}/{custom_name}" if head else custom_name
+                group_name = child.row["name"]
+                seg = f"{head}/{group_name}" if head else group_name
             label = prefix + seg
             if child.children:
                 label += "/"
             if child.row is not None and not child.row["exists"]:
                 label += " (missing)"
-            if custom:
+            if transient:
                 label += " *"
 
             if child.row is not None:
