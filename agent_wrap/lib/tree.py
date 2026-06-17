@@ -199,11 +199,21 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
             prefix = "".join("│" if cont else " " for cont in ancestors_continue) + connector
             prefix_len = len(prefix)
 
-            label = prefix + child.name
+            # A grouped transient project (`.agent_stats_leaf`) overrides the
+            # final path segment with its custom name and is flagged with " *".
+            seg = child.name
+            custom = bool(child.row is not None and child.row.get("custom"))
+            if child.row is not None and custom:
+                head, _, _ = seg.rpartition("/")
+                custom_name = child.row["name"]
+                seg = f"{head}/{custom_name}" if head else custom_name
+            label = prefix + seg
             if child.children:
                 label += "/"
             if child.row is not None and not child.row["exists"]:
                 label += " (missing)"
+            if custom:
+                label += " *"
 
             if child.row is not None:
                 r = child.row

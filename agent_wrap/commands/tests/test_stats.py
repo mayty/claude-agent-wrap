@@ -3,10 +3,20 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
-from agent_wrap.commands.stats import PriceSource, _best_prefix_key, _cost_record
+from agent_wrap.commands.stats import (
+    PriceSource,
+    _aggregate_projects,
+    _best_prefix_key,
+    _cost_record,
+)
 from agent_wrap.lib.buckets import Bucket
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # --- _best_prefix_key ---
 
@@ -143,3 +153,49 @@ def test_successful_request_with_price_known_cost(monkeypatch):
     (bucket,) = next(iter(by_day.values())).values()
     assert bucket.cost > 0.0
     assert bucket.cost_unknown is False
+
+
+# --- .agent_stats_leaf grouping in _aggregate_projects ---------------------
+
+
+def _write_session_log(project: Path, session_id: str, records: list[dict]) -> None:
+    sdir = project / ".claude" / "litellm-logs" / "litellm-bedrock" / session_id
+    sdir.mkdir(parents=True)
+    with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+
+def test_aggregate_projects_merges_marked_group(monkeypatch, tmp_path: Path):
+    """Two projects under a .agent_stats_leaf marker yield a single named row."""
+    prices = _make_prices(monkeypatch, priced=True)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / ".agent_stats_leaf").write_text("batch-feb\n", encoding="utf-8")
+
+    a = runs / "agent-a"
+    b = runs / "agent-b"
+    _write_session_log(a, "s1", [_success_rec()])
+    _write_session_log(b, "s2", [_success_rec()])
+
+    rows, _totals, _by_day = _aggregate_projects([a, b], prices)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["path"] == runs
+    assert row["name"] == "batch-feb"
+    assert row["custom"] is True
+    assert row["sessions"] == 2
+    assert row["total"].msgs == 2
+
+
+def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path):
+    """Without a marker each project remains its own row (regression guard)."""
+    prices = _make_prices(monkeypatch, priced=True)
+    a = tmp_path / "proj-a"
+    b = tmp_path / "proj-b"
+    _write_session_log(a, "s1", [_success_rec()])
+    _write_session_log(b, "s2", [_success_rec()])
+
+    rows, _totals, _by_day = _aggregate_projects([a, b], prices)
+    assert {r["name"] for r in rows} == {"proj-a", "proj-b"}
+    assert all(r["custom"] is False for r in rows)

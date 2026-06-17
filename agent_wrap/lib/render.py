@@ -267,6 +267,8 @@ def render_core(  # noqa: PLR0913
     lines.extend(
         render_table("Total:", total_headers, total_aligns, total_body, 3, shared_widths, _DIV)
     )
+    if any(r.get("custom") for r in rows):
+        lines.append(color("  * aggregated transient project (.agent_stats_leaf)", Ansi.DIM))
     if recent_body:
         recent_title = "Recent:" if days_window == 0 else f"Recent (last {days_window} days):"
         lines.append("")

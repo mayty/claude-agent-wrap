@@ -15,6 +15,7 @@ from agent_wrap.lib.format import (
     epoch_to_dt,
     fmt_count,
 )
+from agent_wrap.lib.grouping import resolve_group
 from agent_wrap.lib.models import normalize_model
 from agent_wrap.lib.render import render_core
 from agent_wrap.lib.tree import (
@@ -417,39 +418,73 @@ def _parse_usage_args(args: list[str]) -> UsageArgs | None:
     return parse_usage_args(args, usage_line=_USAGE_LINE, usage_text=_USAGE_TEXT)
 
 
+class _Group:
+    """Per-transient-project accumulator across one or more physical paths."""
+
+    __slots__ = ("custom", "exists", "last_ts", "name", "root", "sessions", "total")
+
+    def __init__(self, root: Path, name: str, *, custom: bool) -> None:
+        self.root = root
+        self.name = name
+        self.custom = custom
+        self.total = Bucket()
+        self.sessions = 0
+        self.last_ts: datetime | None = None
+        self.exists = False
+
+
 def _aggregate_projects(
     projects: list[Path],
     prices: PriceSource,
 ) -> tuple[list[dict], dict[str, Bucket], dict[str, dict[str, Bucket]]]:
-    """Scan every project and roll its buckets up into the render inputs."""
-    rows: list[dict] = []
+    """
+    Scan every project and roll its buckets up into the render inputs.
+
+    Physical projects sharing a ``.agent_stats_leaf`` group root are merged into
+    a single row (see :func:`agent_wrap.lib.grouping.resolve_group`); the global
+    per-model and per-day totals are unaffected by grouping and are accumulated
+    straight from each project's scan.
+    """
+    groups: dict[Path, _Group] = {}
     totals_by_model: dict[str, Bucket] = defaultdict(Bucket)
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     for path in projects:
         sessions, last_ts, by_day, exists = _scan_project(path, prices)
 
-        total = Bucket()
+        root, name, custom = resolve_group(path)
+        group = groups.get(root)
+        if group is None:
+            group = groups[root] = _Group(root, name, custom=custom)
+
+        group.sessions += sessions
+        group.exists = group.exists or exists
+        if last_ts is not None and (group.last_ts is None or last_ts > group.last_ts):
+            group.last_ts = last_ts
+
         for day, by_model in by_day.items():
             for model, b in by_model.items():
-                total.merge(b)
+                group.total.merge(b)
                 totals_by_model[model].merge(b)
                 totals_by_day_by_model[day][model].merge(b)
 
+    rows: list[dict] = []
+    for group in groups.values():
         # total.cost is the sum of per-request costs computed during the scan;
         # `cost_unknown` (set when a billable request had no known price) marks
-        # the project cost as "?", keeping a known-zero total (e.g. all requests
-        # errored out) distinct from genuinely-unknown pricing.
-        proj_cost = None if total.cost_unknown else total.cost
-
-        if sessions > 0 or exists:
+        # the cost as "?", keeping a known-zero total (e.g. all requests errored
+        # out) distinct from genuinely-unknown pricing.
+        proj_cost = None if group.total.cost_unknown else group.total.cost
+        if group.sessions > 0 or group.exists:
             rows.append(
                 {
-                    "path": path,
-                    "exists": exists,
-                    "sessions": sessions,
-                    "last_ts": last_ts,
-                    "total": total,
+                    "path": group.root,
+                    "name": group.name,
+                    "custom": group.custom,
+                    "exists": group.exists,
+                    "sessions": group.sessions,
+                    "last_ts": group.last_ts,
+                    "total": group.total,
                     "cost": proj_cost,
                 }
             )

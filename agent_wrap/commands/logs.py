@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.commands.stats import PriceSource, extract_usage
+from agent_wrap.lib.grouping import resolve_group
 from agent_wrap.lib.usage_args import load_projects
 
 if TYPE_CHECKING:
@@ -403,24 +404,71 @@ def _logs_dir(project: Path) -> Path:
     return project / ".claude" / "litellm-logs"
 
 
-def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
-    """List registered projects that have a LiteLLM logs directory."""
+def _as_paths(project: Path | list[Path]) -> list[Path]:
+    """
+    Normalize a project argument to a list of member paths.
+
+    Session readers accept either a single project :class:`~pathlib.Path` (the
+    historical, per-project API still used by tests) or the list of member paths
+    that make up a grouped transient project (what the HTTP handler resolves an
+    ``.agent_stats_leaf`` group id into).
+    """
+    return project if isinstance(project, list) else [project]
+
+
+def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
+    """
+    Group registered projects into transient projects by ``.agent_stats_leaf``.
+
+    Returns one dict per group, ordered deterministically by group-root path so
+    that a group's index is a stable id across requests. Each entry carries:
+
+    * ``root`` — the group root :class:`~pathlib.Path` (marker dir, or the
+      project itself when unmarked),
+    * ``name`` — the custom marker name or the root's directory name,
+    * ``paths`` — every member project :class:`~pathlib.Path` in the group.
+
+    Projects without a ``.claude/litellm-logs`` directory are skipped, mirroring
+    the pre-grouping behaviour. Members are kept in registry order.
+    """
     registry = tool_dir / ".agent-launches" / "projects.txt"
     if not registry.is_file():
         return []
 
-    out: list[dict[str, Any]] = []
-    for idx, path in enumerate(load_projects(registry)):
+    names: dict[Path, str] = {}
+    members: dict[Path, list[Path]] = {}
+    for path in load_projects(registry):
         if not _logs_dir(path).is_dir():
             continue
-        session_count, max_last_ts = _lightweight_project_summary(path)
+        root, name, _custom = resolve_group(path)
+        if root not in members:
+            members[root] = []
+            names[root] = name
+        members[root].append(path)
+
+    # Sort by group-root path so ids are stable; callers re-sort the *public*
+    # list (by recency) without disturbing this id assignment.
+    return [{"root": root, "name": names[root], "paths": members[root]} for root in sorted(members)]
+
+
+def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
+    """List transient projects (grouped) that have LiteLLM logs."""
+    out: list[dict[str, Any]] = []
+    for idx, group in enumerate(list_groups(tool_dir)):
+        session_count = 0
+        max_last_ts: float | None = None
+        for path in group["paths"]:
+            count, last_ts = _lightweight_project_summary(path)
+            session_count += count
+            if last_ts is not None and (max_last_ts is None or last_ts > max_last_ts):
+                max_last_ts = last_ts
         if session_count == 0:
             continue
         out.append(
             {
                 "id": idx,
-                "path": str(path),
-                "name": path.name,
+                "path": str(group["root"]),
+                "name": group["name"],
                 "sessions": session_count,
                 "last_ts": max_last_ts,
             }
@@ -429,13 +477,11 @@ def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _project_by_id(tool_dir: Path, project_id: int) -> Path | None:
-    registry = tool_dir / ".agent-launches" / "projects.txt"
-    if not registry.is_file():
-        return None
-    projects = load_projects(registry)
-    if 0 <= project_id < len(projects):
-        return projects[project_id]
+def _group_by_id(tool_dir: Path, group_id: int) -> list[Path] | None:
+    """Return the member project paths for a group index, or None if unknown."""
+    groups = list_groups(tool_dir)
+    if 0 <= group_id < len(groups):
+        return groups[group_id]["paths"]
     return None
 
 
@@ -601,102 +647,62 @@ def _merge_session_meta(existing: dict[str, Any], meta: dict[str, Any]) -> None:
         existing["title"] = meta["title"]
 
 
-def list_sessions(project: Path) -> list[dict[str, Any]]:
+def list_sessions(project: Path | list[Path]) -> list[dict[str, Any]]:
     """
     List sessions (newest first) across every provider in a project.
 
-    Sessions with the same ``session_id`` across different providers are merged
-    into a single entry so a mid-session provider switch doesn't produce
-    duplicate rows in the viewer.
+    Sessions with the same ``session_id`` across different providers — or across
+    the member projects of a grouped transient project — are merged into a single
+    entry so a mid-session provider switch (or grouping) doesn't produce duplicate
+    rows in the viewer.
     """
-    logs_dir = _logs_dir(project)
-    if not logs_dir.is_dir():
-        return []
-
     by_session: dict[str, dict[str, Any]] = {}
-    for provider_dir in logs_dir.iterdir():
-        if not provider_dir.is_dir():
+    for member in _as_paths(project):
+        logs_dir = _logs_dir(member)
+        if not logs_dir.is_dir():
             continue
-        for session_dir in provider_dir.iterdir():
-            if not session_dir.is_dir():
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
                 continue
-            meta = _scan_session_meta(session_dir, provider_dir.name)
-            if meta is None:
-                continue
-            sid = meta["session_id"]
-            if sid in by_session:
-                _merge_session_meta(by_session[sid], meta)
-            else:
-                meta["providers"] = [meta.pop("provider")]
-                by_session[sid] = meta
+            for session_dir in provider_dir.iterdir():
+                if not session_dir.is_dir():
+                    continue
+                meta = _scan_session_meta(session_dir, provider_dir.name)
+                if meta is None:
+                    continue
+                sid = meta["session_id"]
+                if sid in by_session:
+                    _merge_session_meta(by_session[sid], meta)
+                else:
+                    meta["providers"] = [meta.pop("provider")]
+                    by_session[sid] = meta
 
     out = list(by_session.values())
     out.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
     return out
 
 
-def session_fingerprint(project: Path, session_id: str) -> dict[str, Any]:
+def session_fingerprint(project: Path | list[Path], session_id: str) -> dict[str, Any]:
     """
     Return a combined change-marker for a session across all providers.
 
-    Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every
-    provider directory that holds this session, so a new record from any
-    provider triggers a refresh in the polling loop.  Returns
+    Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every provider
+    directory (and every member project of a group) that holds this session, so a
+    new record from any provider triggers a refresh in the polling loop.  Returns
     ``{"mtime": None, "size": None}`` when no provider has the session.
     """
-    logs_dir = _logs_dir(project)
-    if not logs_dir.is_dir():
-        return {"mtime": None, "size": None}
-
     best_mtime: int | None = None
     total_size: int | None = None
     found = False
 
-    for provider_dir in logs_dir.iterdir():
-        if not provider_dir.is_dir():
+    for member in _as_paths(project):
+        logs_dir = _logs_dir(member)
+        if not logs_dir.is_dir():
             continue
-        messages_file = provider_dir / session_id / "messages.jsonl"
-        try:
-            st = messages_file.stat()
-        except OSError:
-            continue
-        found = True
-        if best_mtime is None or st.st_mtime_ns > best_mtime:
-            best_mtime = st.st_mtime_ns
-        total_size = (total_size or 0) + st.st_size
-
-    if not found:
-        return {"mtime": None, "size": None}
-    return {"mtime": best_mtime, "size": total_size}
-
-
-def sessions_fingerprint(project: Path) -> dict[str, Any]:
-    """
-    Return a change-marker for all sessions in a project.
-
-    Like :func:`session_fingerprint` but across every session directory so the
-    frontend's sessions-list poll can detect new sessions, new records, and
-    metadata changes without re-reading every messages.jsonl.
-
-    Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every
-    ``messages.jsonl`` under the project's logs directory.  Returns
-    ``{"mtime": None, "size": None}`` when no sessions exist.
-    """
-    logs_dir = _logs_dir(project)
-    if not logs_dir.is_dir():
-        return {"mtime": None, "size": None}
-
-    best_mtime: int | None = None
-    total_size: int | None = None
-    found = False
-
-    for provider_dir in logs_dir.iterdir():
-        if not provider_dir.is_dir():
-            continue
-        for session_dir in provider_dir.iterdir():
-            if not session_dir.is_dir():
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
                 continue
-            messages_file = session_dir / "messages.jsonl"
+            messages_file = provider_dir / session_id / "messages.jsonl"
             try:
                 st = messages_file.stat()
             except OSError:
@@ -705,6 +711,48 @@ def sessions_fingerprint(project: Path) -> dict[str, Any]:
             if best_mtime is None or st.st_mtime_ns > best_mtime:
                 best_mtime = st.st_mtime_ns
             total_size = (total_size or 0) + st.st_size
+
+    if not found:
+        return {"mtime": None, "size": None}
+    return {"mtime": best_mtime, "size": total_size}
+
+
+def sessions_fingerprint(project: Path | list[Path]) -> dict[str, Any]:
+    """
+    Return a change-marker for all sessions in a project.
+
+    Like :func:`session_fingerprint` but across every session directory (and every
+    member project of a group) so the frontend's sessions-list poll can detect new
+    sessions, new records, and metadata changes without re-reading every
+    messages.jsonl.
+
+    Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every
+    ``messages.jsonl`` under the project's logs directory.  Returns
+    ``{"mtime": None, "size": None}`` when no sessions exist.
+    """
+    best_mtime: int | None = None
+    total_size: int | None = None
+    found = False
+
+    for member in _as_paths(project):
+        logs_dir = _logs_dir(member)
+        if not logs_dir.is_dir():
+            continue
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
+                continue
+            for session_dir in provider_dir.iterdir():
+                if not session_dir.is_dir():
+                    continue
+                messages_file = session_dir / "messages.jsonl"
+                try:
+                    st = messages_file.stat()
+                except OSError:
+                    continue
+                found = True
+                if best_mtime is None or st.st_mtime_ns > best_mtime:
+                    best_mtime = st.st_mtime_ns
+                total_size = (total_size or 0) + st.st_size
 
     if not found:
         return {"mtime": None, "size": None}
@@ -803,38 +851,39 @@ def _read_provider_session(
     return records, entry
 
 
-def read_session(project: Path, session_id: str) -> dict[str, Any]:
+def read_session(project: Path | list[Path], session_id: str) -> dict[str, Any]:
     """
     Read and normalize every request in one session across all providers.
 
-    When a session spans multiple providers (e.g. the user switched mid-session),
-    records from every provider directory are loaded and merge-sorted by ``ts``
-    so the chat view shows a single chronological thread.
+    When a session spans multiple providers (e.g. the user switched mid-session) —
+    or multiple member projects of a grouped transient project — records from every
+    provider directory are loaded and merge-sorted by ``ts`` so the chat view shows
+    a single chronological thread.
 
     Returns ``{"reqs": [...], "session_meta": {...}}`` where *session_meta* has
     the same shape as one entry from :func:`list_sessions` (or ``None`` when no
     records exist).
     """
-    logs_dir = _logs_dir(project)
-    if not logs_dir.is_dir():
-        return {"reqs": [], "session_meta": None}
-
     all_records: list[dict[str, Any]] = []
     combined_meta: dict[str, Any] | None = None
 
-    for provider_dir in logs_dir.iterdir():
-        if not provider_dir.is_dir():
+    for member in _as_paths(project):
+        logs_dir = _logs_dir(member)
+        if not logs_dir.is_dir():
             continue
-        records, entry = _read_provider_session(
-            provider_dir / session_id, provider_dir.name, session_id
-        )
-        all_records.extend(records)
-        if entry is not None:
-            if combined_meta is None:
-                combined_meta = entry
-                combined_meta["providers"] = [combined_meta.pop("provider")]
-            else:
-                _merge_session_meta(combined_meta, entry)
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
+                continue
+            records, entry = _read_provider_session(
+                provider_dir / session_id, provider_dir.name, session_id
+            )
+            all_records.extend(records)
+            if entry is not None:
+                if combined_meta is None:
+                    combined_meta = entry
+                    combined_meta["providers"] = [combined_meta.pop("provider")]
+                else:
+                    _merge_session_meta(combined_meta, entry)
 
     all_records.sort(key=lambda r: (r.get("timing") or {}).get("start") or 0)
     return {"reqs": all_records, "session_meta": combined_meta}
@@ -928,7 +977,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._serve_static(path)
 
-    def _resolve_session(self, params: dict[str, list[str]]) -> tuple[Path, str] | None:
+    def _resolve_session(self, params: dict[str, list[str]]) -> tuple[list[Path], str] | None:
         """Resolve a (project, session) pair; 400 + None if incomplete."""
         project = self._resolve_project(params)
         session = (params.get("session") or [""])[0]
@@ -951,13 +1000,14 @@ class _Handler(BaseHTTPRequestHandler):
         content_type = _CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
         self._send(200, body, content_type)
 
-    def _resolve_project(self, params: dict[str, list[str]]) -> Path | None:
+    def _resolve_project(self, params: dict[str, list[str]]) -> list[Path] | None:
+        """Resolve the ``project`` query param (a group id) to its member paths."""
         raw = (params.get("project") or [""])[0]
         try:
-            project_id = int(raw)
+            group_id = int(raw)
         except ValueError:
             return None
-        return _project_by_id(self.tool_dir, project_id)
+        return _group_by_id(self.tool_dir, group_id)
 
 
 def _bind(port: int) -> tuple[ThreadingHTTPServer, int] | None:

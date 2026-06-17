@@ -590,6 +590,58 @@ def test_list_projects_empty_without_registry(tmp_path: Path):
     assert list_projects(tmp_path / "nope") == []
 
 
+# --- .agent_stats_leaf grouping --------------------------------------------
+
+
+def test_list_projects_aggregates_marked_group(tmp_path: Path):
+    """Two projects under a .agent_stats_leaf marker collapse to one entry."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / ".agent_stats_leaf").write_text("batch-feb\n", encoding="utf-8")
+
+    a = runs / "agent-a"
+    b = runs / "agent-b"
+    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
+    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
+
+    projects = list_projects(tool_dir)
+    assert len(projects) == 1
+    p = projects[0]
+    assert p["name"] == "batch-feb"
+    assert p["path"] == str(runs)
+    assert p["sessions"] == 2
+    assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
+
+
+def test_list_sessions_unions_group_members(tmp_path: Path):
+    """list_sessions over a member-path list merges sessions from every member."""
+    runs = tmp_path / "runs"
+    a = runs / "agent-a"
+    b = runs / "agent-b"
+    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
+    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
+
+    sessions = list_sessions([a, b])
+    assert [s["session_id"] for s in sessions] == ["s2", "s1"]
+
+
+def test_unmarked_projects_stay_separate(tmp_path: Path):
+    """Without a marker, each project remains its own entry (regression guard)."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    a = tmp_path / "proj-a"
+    b = tmp_path / "proj-b"
+    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
+    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
+
+    projects = list_projects(tool_dir)
+    assert {p["name"] for p in projects} == {"proj-a", "proj-b"}
+
+
 # --- _read_last_record_ts ---
 
 
