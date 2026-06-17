@@ -74,7 +74,12 @@ def _build_total_body(
         )
     )
     for dr in display_rows:
-        style = Ansi.DIM if dr.is_structural else Ansi.NONE
+        if dr.transient:
+            style = Ansi.CYAN
+        elif dr.is_structural:
+            style = Ansi.DIM
+        else:
+            style = Ansi.NONE
         body.append(
             (
                 [
@@ -111,7 +116,7 @@ def _build_total_body(
                     fmt_count(b.cr),
                     fmt_cost_with_unknown(b.cost, unknown=b.cost_unknown),
                 ],
-                Ansi.NONE,
+                Ansi.CYAN,
                 0,
             )
         )
@@ -294,8 +299,6 @@ def render_core(  # noqa: PLR0913
     lines.extend(
         render_table("Total:", total_headers, total_aligns, total_body, 3, shared_widths, _DIV)
     )
-    if any(r.get("transient") for r in rows):
-        lines.append(color("  * aggregated transient project (.agent_stats_leaf)", Ansi.DIM))
     if recent_body:
         recent_title = "Recent:" if days_window == 0 else f"Recent (last {days_window} days):"
         lines.append("")

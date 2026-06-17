@@ -209,9 +209,12 @@ def test_aggregate_projects_empty_marker_is_transient(monkeypatch, tmp_path: Pat
     assert row["name"] == "runs"
     assert row["transient"] is True
 
-    # The rendered tree must flag the group with a trailing " *".
-    labels = [dr.label for dr in flatten_tree(build_project_tree(rows))]
-    assert any(label.rstrip().endswith("runs *") for label in labels)
+    # The rendered tree must flag the group transient (accented in color by the
+    # renderer) and label it with the group name — no " *" text marker.
+    display = flatten_tree(build_project_tree(rows))
+    group = next(dr for dr in display if dr.label.rstrip().endswith("runs"))
+    assert group.transient is True
+    assert " *" not in group.label
 
 
 def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path):
@@ -275,8 +278,8 @@ def test_collect_orphaned_none_when_all_reachable(monkeypatch, tmp_path: Path):
     assert orphaned is None
 
 
-def test_render_includes_orphaned_row_without_star(monkeypatch, tmp_path: Path):
-    """render() shows an <orphaned> row, and it carries no ` *` transient marker."""
+def test_render_includes_orphaned_row(monkeypatch, tmp_path: Path):
+    """render() shows an <orphaned> row (accented in color, no text marker)."""
     prices = _make_prices(monkeypatch, priced=True)
     tool_dir = tmp_path / "tool"
     _write_central_log(tool_dir, "hashB", "s2", [_success_rec()])

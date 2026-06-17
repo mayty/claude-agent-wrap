@@ -57,6 +57,7 @@ class DisplayRow:
         "last_ts",
         "prefix_len",
         "sessions",
+        "transient",
     )
 
     def __init__(  # noqa: PLR0913
@@ -69,6 +70,7 @@ class DisplayRow:
         bucket: Bucket,
         last_ts: datetime | None,
         cost_str: str,
+        transient: bool = False,
     ) -> None:
         self.label = label
         self.prefix_len = prefix_len
@@ -77,6 +79,7 @@ class DisplayRow:
         self.bucket = bucket
         self.last_ts = last_ts
         self.cost_str = cost_str
+        self.transient = transient
 
 
 def build_project_tree(rows: list[dict]) -> Node:
@@ -200,9 +203,10 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
             prefix_len = len(prefix)
 
             # A grouped transient project (`.agent_stats_leaf`) overrides the
-            # final path segment with its group name and is flagged with " *".
-            # The override is a no-op when the name is just the directory name
-            # (empty marker), but still earns the " *" flag.
+            # final path segment with its group name; such rows are accented in
+            # color by the renderer via the DisplayRow.transient flag. The
+            # override is a no-op when the name is just the directory name
+            # (empty marker), but the row is still flagged transient.
             seg = child.name
             transient = bool(child.row is not None and child.row.get("transient"))
             if child.row is not None and transient:
@@ -214,8 +218,6 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
                 label += "/"
             if child.row is not None and not child.row["exists"]:
                 label += " (missing)"
-            if transient:
-                label += " *"
 
             if child.row is not None:
                 r = child.row
@@ -229,6 +231,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
                         bucket=r["total"],
                         last_ts=r["last_ts"],
                         cost_str=cost_str,
+                        transient=transient,
                     )
                 )
             else:
