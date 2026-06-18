@@ -17,6 +17,7 @@ from agent_wrap.commands.run import (
     _load_secrets,
     _load_telegram_creds,
     _parse_dockerfile_directives,
+    _release_sidecars,
     _resolve_agent_name,
     _resolve_host_network,
     build_agent_labels,
@@ -27,6 +28,7 @@ from agent_wrap.commands.run import (
     run as agent_run,
 )
 from agent_wrap.lib.utils import ResolvedImage
+from agent_wrap.sidecars import SidecarTracker
 
 # --- _is_wsl ---
 
@@ -368,7 +370,6 @@ def test_run_happy_path(
     mock_provider = mocker.MagicMock()
     mock_provider.sidecars.return_value = [mock_sidecar]
     mocker.patch("agent_wrap.commands.run.get_provider", return_value=mock_provider)
-    mocker.patch("agent_wrap.commands.run.SidecarTracker.should_stop", return_value=True)
 
     mock_result = mocker.MagicMock()
     mock_result.returncode = 0
@@ -444,10 +445,13 @@ def _run_with_sidecars(
     monkeypatch: pytest.MonkeyPatch,
     mocker: pytest_mock.MockFixture,
     sidecars: list,
-    *,
-    should_stop: bool = True,
 ) -> None:
-    """Drive run() to the lifecycle block with a provider declaring *sidecars*."""
+    """
+    Drive run() to the lifecycle block with a provider declaring *sidecars*.
+
+    The real SidecarTracker is used, operating on its lock-file registries under
+    ``tmp_path/.agent-launches``; with no other run registered, teardown proceeds.
+    """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "claude_keys.json").write_text(
         json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}})
@@ -467,7 +471,6 @@ def _run_with_sidecars(
     mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
     mocker.patch("agent_wrap.commands.run.config.record_project")
     mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
-    mocker.patch("agent_wrap.commands.run.SidecarTracker.should_stop", return_value=should_stop)
 
     provider = mocker.MagicMock()
     provider.sidecars.return_value = sidecars
@@ -514,31 +517,56 @@ def test_run_prepares_all_before_ensure_then_releases_reverse(
     ]
 
 
-def test_run_skips_release_when_should_stop_false(
+def test_run_skips_release_when_another_runner_live(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
-    """When the tracker says don't stop, no sidecar is released."""
-    a = _sidecar_mock(mocker, "a")
-    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a], should_stop=False)
-    agent_run(["--base"], tmp_path)
-    a.release.assert_not_called()
-
-
-def test_run_skips_release_when_lock_held(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
-) -> None:
-    """If the shared lock is held at release time, the whole teardown is skipped."""
+    """When another run's running registration is still held, no sidecar is released."""
     a = _sidecar_mock(mocker, "a")
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
-    # try_file_lock yields False → release-all (and should_stop) are skipped entirely.
-    cm = mocker.MagicMock()
-    cm.__enter__ = mocker.MagicMock(return_value=False)
-    cm.__exit__ = mocker.MagicMock(return_value=False)
-    should_stop = mocker.patch("agent_wrap.commands.run.SidecarTracker.should_stop")
-    mocker.patch("agent_wrap.commands.run.try_file_lock", return_value=cm)
+    # A concurrent agent holds its running registration for the whole of our run.
+    other = SidecarTracker(tmp_path)
+    other_handle = other.register_running("other-inst")
+    try:
+        agent_run(["--base"], tmp_path)
+        a.release.assert_not_called()
+    finally:
+        other.clear_running(other_handle, "other-inst")
+
+
+def test_run_releases_when_no_other_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """With no other run registered, the finishing run is last out and tears down."""
+    a = _sidecar_mock(mocker, "a")
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
     agent_run(["--base"], tmp_path)
-    a.release.assert_not_called()
-    should_stop.assert_not_called()
+    a.release.assert_called_once_with()
+
+
+def test_release_yields_to_live_waiter_then_proceeds(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """A stopping run yields the lock while a starter waits, then tears down once gone."""
+    tracker = SidecarTracker(tmp_path)
+    a = _sidecar_mock(mocker, "a")
+    # A starter holds its waiter ticket; the stopper must yield (loop) until it clears.
+    waiter_handle = tracker.register_waiter("starter-inst")
+
+    sleeps: list[float] = []
+
+    def _release_on_third_sleep(_secs: float) -> None:
+        sleeps.append(_secs)
+        # After two yields, the starter finishes waiting and clears its ticket.
+        if len(sleeps) == 2:
+            tracker.clear_waiter(waiter_handle, "starter-inst")
+
+    mocker.patch("agent_wrap.commands.run.time.sleep", side_effect=_release_on_third_sleep)
+
+    _release_sidecars([a], tracker, "stopper-inst", running_handle=None)
+
+    # It looped (yielded) while the waiter was live, then released once it cleared.
+    assert len(sleeps) == 2
+    a.release.assert_called_once_with()
 
 
 def test_run_uses_summed_lock_timeout(
@@ -550,8 +578,10 @@ def test_run_uses_summed_lock_timeout(
     fl = mocker.patch("agent_wrap.commands.run.file_lock")
     monkeypatch.setenv("AGENT_EXPECTED_QUEUE_DEPTH", "10")
     agent_run(["--base"], tmp_path)
+    # The ensure-all lock is the timed one (the release lock blocks with no timeout).
+    timeouts = [c.kwargs["timeout"] for c in fl.call_args_list if "timeout" in c.kwargs]
     # 120 + 10·2 = 140
-    assert fl.call_args.kwargs["timeout"] == 140.0
+    assert timeouts == [140.0]
 
 
 def test_run_partial_ensure_failure_releases_full_set(

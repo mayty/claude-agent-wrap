@@ -1,18 +1,15 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/sidecars/tracker.py."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest_mock
-
-from agent_wrap.sidecars.tracker import ActivityRecord, SidecarTracker
+from agent_wrap.sidecars.tracker import SidecarTracker
 
 
-def _tracker(tmp_path: Path, *, grace: float = 30.0) -> SidecarTracker:
-    return SidecarTracker(tmp_path, idle_grace_sec=grace)
+def _tracker(tmp_path: Path) -> SidecarTracker:
+    return SidecarTracker(tmp_path)
 
 
 # --- paths ---
@@ -21,99 +18,103 @@ def _tracker(tmp_path: Path, *, grace: float = 30.0) -> SidecarTracker:
 def test_paths_under_agent_launches(tmp_path: Path) -> None:
     t = _tracker(tmp_path)
     assert t.lock_path == tmp_path / ".agent-launches" / "sidecars.lock"
-    assert t.activity_path == tmp_path / ".agent-launches" / "sidecars-activity.json"
+    assert t.start_waiters_dir == tmp_path / ".agent-launches" / "start-waiters"
+    assert t.running_dir == tmp_path / ".agent-launches" / "running"
 
 
-# --- announce / read_activity ---
+# --- register / clear waiters ---
 
 
-def test_announce_then_read(tmp_path: Path) -> None:
+def test_register_waiter_creates_held_file(tmp_path: Path) -> None:
     t = _tracker(tmp_path)
-    t.announce("inst-1", now=123.5)
-    assert t.read_activity() == ActivityRecord(timestamp=123.5, fingerprint="inst-1")
+    handle = t.register_waiter("inst-1")
+    assert handle is not None
+    assert (t.start_waiters_dir / "inst-1").is_file()
+    # A live (held) ticket → a stopper must yield.
+    assert t.has_live_waiters() is True
+    t.clear_waiter(handle, "inst-1")
 
 
-def test_announce_writes_json(tmp_path: Path) -> None:
+def test_clear_waiter_removes_file(tmp_path: Path) -> None:
     t = _tracker(tmp_path)
-    t.announce("inst-1", now=10.0)
-    data = json.loads((tmp_path / ".agent-launches" / "sidecars-activity.json").read_text())
-    assert data == {"timestamp": 10.0, "fingerprint": "inst-1"}
+    handle = t.register_waiter("inst-1")
+    t.clear_waiter(handle, "inst-1")
+    assert not (t.start_waiters_dir / "inst-1").exists()
+    assert t.has_live_waiters() is False
 
 
-def test_read_activity_missing(tmp_path: Path) -> None:
-    assert _tracker(tmp_path).read_activity() is None
+# --- register / clear runners ---
 
 
-def test_read_activity_malformed(tmp_path: Path) -> None:
+def test_register_running_creates_held_file(tmp_path: Path) -> None:
     t = _tracker(tmp_path)
-    t.activity_path.parent.mkdir(parents=True)
-    t.activity_path.write_text("not json")
-    assert t.read_activity() is None
+    handle = t.register_running("inst-1")
+    assert handle is not None
+    assert (t.running_dir / "inst-1").is_file()
+    # Held by someone OTHER than the excluded id → live.
+    assert t.has_live_runners(exclude_id="inst-2") is True
+    t.clear_running(handle, "inst-1")
 
 
-def test_read_activity_missing_keys(tmp_path: Path) -> None:
+def test_has_live_runners_excludes_self(tmp_path: Path) -> None:
+    """The finishing run's own held registration does not count as a live other."""
     t = _tracker(tmp_path)
-    t.activity_path.parent.mkdir(parents=True)
-    t.activity_path.write_text('{"timestamp": 1.0}')
-    assert t.read_activity() is None
+    handle = t.register_running("inst-1")
+    assert t.has_live_runners(exclude_id="inst-1") is False
+    t.clear_running(handle, "inst-1")
 
 
-# --- live_agent_count (role-only filter) ---
-
-
-def test_live_agent_count_filters_by_role_only(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
+def test_clear_running_removes_file(tmp_path: Path) -> None:
     t = _tracker(tmp_path)
-    mock_count = mocker.patch(
-        "agent_wrap.sidecars.tracker.count_labeled_containers",
-        return_value=3,
-    )
-    assert t.live_agent_count() == 3
-    labels = mock_count.call_args.args[0]
-    # One common count of all agents — no per-sidecar label.
-    assert labels == {"agent-wrap.role": "claude-agent"}
+    handle = t.register_running("inst-1")
+    t.clear_running(handle, "inst-1")
+    assert not (t.running_dir / "inst-1").exists()
+    assert t.has_live_runners(exclude_id="other") is False
 
 
-# --- should_stop matrix ---
+# --- liveness by lockability, immune to PID recycling ---
 
 
-def test_should_stop_when_agents_live(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_probe_reaps_stale_file_when_owner_gone(tmp_path: Path) -> None:
+    """
+    A registration whose lock has been released (owner 'died') is takeable, so the
+    probe treats it as stale: it reaps the file and reports no live runner — without
+    ever consulting a PID.
+    """
     t = _tracker(tmp_path)
-    mocker.patch.object(t, "live_agent_count", return_value=1)
-    assert t.should_stop("inst-1", now=1000.0) is False
+    handle = t.register_running("dead-inst")
+    assert handle is not None
+    # Simulate the owner exiting: close the handle, which drops the flock but (unlike
+    # the run's clear_running) leaves the file behind, as a crash would.
+    handle.close()
+    assert (t.running_dir / "dead-inst").is_file()
+    assert t.has_live_runners(exclude_id="other") is False
+    # The stale file was reaped as a side effect of the probe.
+    assert not (t.running_dir / "dead-inst").exists()
 
 
-def test_should_stop_fingerprint_is_me(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """count==0 and I am the last starter → stop immediately, no grace wait."""
+def test_probe_reaps_stale_keeps_live(tmp_path: Path) -> None:
+    """In one pass, a stale sibling is reaped while a live registration is reported."""
     t = _tracker(tmp_path)
-    mocker.patch.object(t, "live_agent_count", return_value=0)
-    t.announce("inst-1", now=1000.0)
-    assert t.should_stop("inst-1", now=1001.0) is True
+    dead = t.register_running("dead-inst")
+    assert dead is not None
+    dead.close()  # owner gone, file lingers
+    live = t.register_running("live-inst")
+    assert t.has_live_runners(exclude_id="other") is True
+    assert not (t.running_dir / "dead-inst").exists()
+    assert (t.running_dir / "live-inst").is_file()
+    t.clear_running(live, "live-inst")
 
 
-def test_should_stop_other_fingerprint_fresh(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
-    """count==0 but a newer start announced within grace → keep alive."""
-    t = _tracker(tmp_path, grace=30.0)
-    mocker.patch.object(t, "live_agent_count", return_value=0)
-    t.announce("inst-2", now=1000.0)
-    assert t.should_stop("inst-1", now=1005.0) is False
-
-
-def test_should_stop_other_fingerprint_stale(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
-    """count==0 and last start was long ago → batch drained, stop (grace backstop)."""
-    t = _tracker(tmp_path, grace=30.0)
-    mocker.patch.object(t, "live_agent_count", return_value=0)
-    t.announce("inst-2", now=1000.0)
-    assert t.should_stop("inst-1", now=1040.0) is True
-
-
-def test_should_stop_no_activity_file(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """count==0 and no heartbeat (failed start that never announced) → clean up."""
+def test_probes_false_when_dirs_absent(tmp_path: Path) -> None:
+    """No registry directories yet (no run has started) → nothing live."""
     t = _tracker(tmp_path)
-    mocker.patch.object(t, "live_agent_count", return_value=0)
-    assert t.should_stop("inst-1", now=1000.0) is True
+    assert t.has_live_waiters() is False
+    assert t.has_live_runners(exclude_id="inst-1") is False
+
+
+def test_clear_tolerates_missing_handle_and_file(tmp_path: Path) -> None:
+    """clear_* is a safe no-op when there is nothing registered (e.g. failed start)."""
+    t = _tracker(tmp_path)
+    t.clear_waiter(None, "inst-1")
+    t.clear_running(None, "inst-1")

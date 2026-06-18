@@ -1,19 +1,22 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 The one common per-run sidecar tracker.
 
 Whether the shared sidecars should be torn down is a single decision about the whole
 launch, not something each sidecar re-derives. ``SidecarTracker`` owns that
-host-wide coordination state — one activity heartbeat, one live-agent count, one
-stop decision — keyed off the install root, and the runner consults it once per run:
+host-wide coordination state — keyed off the install root — as two directories of
+**lock-held registration files**, one file per run named by its ``instance_id``:
 
-* ``announce()`` stamps ``{timestamp, fingerprint}`` as the last action under the
-  shared lock (success only), so a releaser in the ensure→docker-run gap sees a fresh
-  fingerprint and won't tear down;
-* ``live_agent_count()`` counts running agents from ``docker ps`` (the single source
-  of truth) by the common ``agent-wrap.role`` label;
-* ``should_stop()`` is the pure decision of whether the releasing run may stop the
-  sidecars, given the live count, the heartbeat, the releaser's own id, and grace.
+* ``start-waiters/`` — a ticket a starting run holds while it waits for (and briefly
+  after taking) the shared lock. A still-locked ticket is the signal that makes a
+  stopping run yield: starts have priority.
+* ``running/`` — a registration a run holds for its whole lifetime, from just before
+  it launches the agent until it exits. A still-locked entry means an agent is live.
+
+Liveness is tested by **lockability**, never by PID: a file whose ``flock`` can be
+taken has lost its owner (the kernel drops the lock on process death), so it is
+stale and gets reaped; a file that cannot be locked has a live owner. This is immune
+to PID recycling and needs no explicit crash cleanup.
 
 The shared lock itself lives at ``lock_path``; the runner takes it directly via
 ``agent_wrap.lib.flock`` (one lock for the whole ensure-all / release-all phase).
@@ -21,41 +24,30 @@ The shared lock itself lives at ``lock_path``; the runner takes it directly via
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+import contextlib
+from typing import TYPE_CHECKING, ClassVar, TextIO
 
-from agent_wrap.lib.atomic import atomic_write_json
-from agent_wrap.lib.docker_utils import count_labeled_containers
+from agent_wrap.lib.flock import lock_and_hold, try_file_lock
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-@dataclass(frozen=True)
-class ActivityRecord:
-    """The run's activity heartbeat: when, and by which agent instance."""
-
-    timestamp: float
-    fingerprint: str
-
-
 class SidecarTracker:
     """Host-wide coordination state shared by every sidecar in a run."""
 
-    #: Label marking an agent container (the common live-count filter).
+    #: Label marking an agent container (used by the runner's --label flags).
     role_label: ClassVar[str] = "agent-wrap.role"
     role_value: ClassVar[str] = "claude-agent"
 
     #: Sub-directory of the install root holding host-wide launch state.
     state_dirname: ClassVar[str] = ".agent-launches"
     lock_filename: ClassVar[str] = "sidecars.lock"
-    activity_filename: ClassVar[str] = "sidecars-activity.json"
+    #: Directories of lock-held per-run registration files (named by instance id).
+    waiters_dirname: ClassVar[str] = "start-waiters"
+    running_dirname: ClassVar[str] = "running"
 
-    def __init__(self, tool_dir: Path, *, idle_grace_sec: float = 30.0) -> None:
-        #: Grace window covering the ensure→docker-run launch gap and batch
-        #: zero-crossings, before a releasing run may stop idle sidecars.
-        self.idle_grace_sec = idle_grace_sec
+    def __init__(self, tool_dir: Path) -> None:
         self._state_dir = tool_dir / self.state_dirname
 
     @property
@@ -63,56 +55,72 @@ class SidecarTracker:
         return self._state_dir / self.lock_filename
 
     @property
-    def activity_path(self) -> Path:
-        return self._state_dir / self.activity_filename
+    def start_waiters_dir(self) -> Path:
+        return self._state_dir / self.waiters_dirname
 
-    # --- activity heartbeat ---
+    @property
+    def running_dir(self) -> Path:
+        return self._state_dir / self.running_dirname
 
-    def announce(self, instance_id: str, *, now: float) -> None:
-        """Atomically stamp the activity file with this run's time + fingerprint."""
-        atomic_write_json(
-            self.activity_path,
-            {"timestamp": now, "fingerprint": instance_id},
-        )
+    # --- registration (the caller holds the returned handle for the lock's life) ---
 
-    def read_activity(self) -> ActivityRecord | None:
-        """Read the activity heartbeat, or None if absent/unreadable/malformed."""
-        path = self.activity_path
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text())
-            return ActivityRecord(
-                timestamp=float(data["timestamp"]),
-                fingerprint=str(data["fingerprint"]),
-            )
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            return None
+    def register_waiter(self, instance_id: str) -> TextIO | None:
+        """Create + lock this run's start-waiter ticket; return its open handle."""
+        return lock_and_hold(self.start_waiters_dir / instance_id)
 
-    # --- live agent count (docker is the source of truth) ---
+    def register_running(self, instance_id: str) -> TextIO | None:
+        """Create + lock this run's running registration; return its open handle."""
+        return lock_and_hold(self.running_dir / instance_id)
 
-    def live_agent_count(self) -> int:
-        """Return the number of running agent containers, by the common role label."""
-        return count_labeled_containers({self.role_label: self.role_value})
+    @staticmethod
+    def clear(handle: TextIO | None, path: Path) -> None:
+        """Release (close) a held registration handle and remove its file."""
+        if handle is not None:
+            handle.close()
+        with contextlib.suppress(OSError):
+            path.unlink()
 
-    # --- stop decision (pure) ---
+    def clear_waiter(self, handle: TextIO | None, instance_id: str) -> None:
+        """Release this run's start-waiter ticket and remove it."""
+        self.clear(handle, self.start_waiters_dir / instance_id)
 
-    def should_stop(self, instance_id: str, *, now: float) -> bool:
+    def clear_running(self, handle: TextIO | None, instance_id: str) -> None:
+        """Release this run's running registration and remove it."""
+        self.clear(handle, self.running_dir / instance_id)
+
+    # --- liveness probes (lockability, reaping stale files as a side effect) ---
+
+    def has_live_waiters(self) -> bool:
+        """Whether any start-waiter ticket is still held (its owner alive)."""
+        return self._any_live(self.start_waiters_dir, exclude_id=None)
+
+    def has_live_runners(self, exclude_id: str) -> bool:
+        """Whether any running registration other than *exclude_id* is still held."""
+        return self._any_live(self.running_dir, exclude_id=exclude_id)
+
+    def _any_live(self, directory: Path, *, exclude_id: str | None) -> bool:
         """
-        Whether the run *instance_id*, on exit, may stop the shared sidecars.
+        Walk *directory*, reaping registration files whose lock is free (owner gone),
+        and report whether any remaining file is still locked (owner alive).
 
-        Stop only when no agents are live AND either this run was the last to
-        announce a start (so nothing newer is in flight) or the heartbeat is older
-        than the grace window (the batch has drained). Otherwise a newer start is
-        in flight (or mid-launch) and the sidecars must stay up.
+        Files are probed with a non-blocking lock: acquiring it proves the owner has
+        exited, so the stale file is unlinked while the lock is held. The whole walk
+        runs each file once; a single live holder is enough to answer ``True``, but we
+        keep going so stale siblings are cleaned up in the same pass.
         """
-        if self.live_agent_count() != 0:
+        if not directory.is_dir():
             return False
-        record = self.read_activity()
-        if record is None:
-            # No heartbeat (e.g. a start that never announced) and nothing live →
-            # safe to clean up.
-            return True
-        if record.fingerprint == instance_id:
-            return True
-        return (now - record.timestamp) > self.idle_grace_sec
+        live = False
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+            if exclude_id is not None and path.name == exclude_id:
+                continue
+            with try_file_lock(path) as acquired:
+                if acquired:
+                    # Lock was free → owner gone → stale; reap while holding the lock.
+                    with contextlib.suppress(OSError):
+                        path.unlink()
+                else:
+                    live = True
+        return live

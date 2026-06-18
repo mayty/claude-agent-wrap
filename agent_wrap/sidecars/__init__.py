@@ -9,11 +9,11 @@ and releases each on exit.
 
 `Sidecar` (``base.py``) is the narrow interface every sidecar implements — pure
 container mechanics. `SidecarTracker` (``tracker.py``) is the one common per-run
-coordinator the runner consults under that lock: the activity heartbeat, the live
-agent count, and the single stop decision.
+coordinator the runner consults under that lock: the lock-held registries of
+starting and running agents that drive the single teardown decision.
 """
 
 from agent_wrap.sidecars.base import Sidecar
-from agent_wrap.sidecars.tracker import ActivityRecord, SidecarTracker
+from agent_wrap.sidecars.tracker import SidecarTracker
 
-__all__ = ["ActivityRecord", "Sidecar", "SidecarTracker"]
+__all__ = ["Sidecar", "SidecarTracker"]

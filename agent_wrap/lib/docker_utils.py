@@ -83,8 +83,3 @@ def list_labeled_instance_ids(
     if rc != 0:
         return []
     return [line for line in stdout.splitlines() if line.strip()]
-
-
-def count_labeled_containers(labels: Mapping[str, str]) -> int:
-    """Return how many running containers match all *labels* (0 on docker error)."""
-    return len(list_labeled_instance_ids(labels))

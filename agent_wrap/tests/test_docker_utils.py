@@ -9,7 +9,6 @@ import pytest
 import pytest_mock
 
 from agent_wrap.lib.docker_utils import (
-    count_labeled_containers,
     docker_run,
     get_user_args,
     image_exists,
@@ -127,7 +126,7 @@ def test_user_args_returns_uid_gid_when_not_rootless(mocker: pytest_mock.MockFix
     assert get_user_args() == ["--user", "1000:1000"]
 
 
-# --- list_labeled_instance_ids / count_labeled_containers ---
+# --- list_labeled_instance_ids ---
 
 
 def test_list_labeled_instance_ids_parses(mocker: pytest_mock.MockFixture) -> None:
@@ -161,15 +160,3 @@ def test_list_labeled_instance_ids_builds_and_filters(mocker: pytest_mock.MockFi
     assert "label=agent-wrap.role=claude-agent" in args
     assert "label=agent-wrap.sidecar=litellm" in args
     assert '{{.Label "agent-wrap.instance-id"}}' in args
-
-
-def test_count_labeled_containers(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("agent_wrap.lib.docker_utils.docker_run")
-    mock_run.return_value = ("inst-1\ninst-2\ninst-3\n", 0)
-    assert count_labeled_containers({"agent-wrap.role": "claude-agent"}) == 3
-
-
-def test_count_labeled_containers_zero_on_error(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("agent_wrap.lib.docker_utils.docker_run")
-    mock_run.return_value = ("", 1)
-    assert count_labeled_containers({"agent-wrap.role": "claude-agent"}) == 0

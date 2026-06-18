@@ -1,18 +1,23 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
-File-locking context managers built on ``fcntl.flock``.
+File-locking helpers built on ``fcntl.flock``.
 
-Two flavours, matching the two call sites in the sidecar lifecycle:
+Three flavours, matching the call sites in the sidecar lifecycle:
 
-* :func:`file_lock` — blocking with an optional timeout; raises
+* :func:`file_lock` — blocking context manager with an optional timeout; raises
   :class:`LockTimeoutError` if the lock can't be taken in time. Used by the start
   path (``ensure``), which must win the lock and is given a generous timeout.
-* :func:`try_file_lock` — non-blocking; yields ``True`` if the lock was taken,
-  ``False`` if someone else holds it. Used by the stop path (``release``), which
-  must never block a concurrent start: if it can't get the lock it simply skips.
+* :func:`try_file_lock` — non-blocking context manager; yields ``True`` if the lock
+  was taken, ``False`` if someone else holds it. Used to probe registration files:
+  acquiring the lock means the owner is gone (stale, reap it).
+* :func:`lock_and_hold` — non-blocking; takes the lock and returns the *open handle*
+  so the caller can hold it open across an arbitrary span (e.g. a whole agent run)
+  rather than just one ``with`` block. The kernel drops the lock automatically when
+  the holding process dies, which is what makes liveness immune to PID recycling.
 
-Both open the lock file in write mode (``flock`` needs a real fd) and always
-release + close on exit, even when the body raises.
+All open the lock file in write mode (``flock`` needs a real fd). The two context
+managers release + close on exit, even when the body raises; :func:`lock_and_hold`
+hands ownership of the handle to the caller.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from __future__ import annotations
 import fcntl
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -85,3 +90,26 @@ def try_file_lock(path: Path) -> Iterator[bool]:
         if acquired:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
+
+
+def lock_and_hold(path: Path) -> TextIO | None:
+    """
+    Take an exclusive ``flock`` on *path* and return the open handle, without blocking.
+
+    Returns the open file handle if the lock was acquired — the caller must keep it
+    open for as long as the lock should be held, and close it (releasing the lock) to
+    let go. Returns ``None`` if another holder already has the lock.
+
+    Unlike the context managers, the lock outlives this call: it is released only when
+    the handle is closed or the owning process exits (the kernel reclaims ``flock``s on
+    process death). This is the primitive behind crash-safe, PID-recycle-immune
+    liveness — a still-locked file means its owner is alive.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w")  # noqa: SIM115 -- handle ownership is handed to the caller
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
