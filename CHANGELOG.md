@@ -9,8 +9,11 @@ the [release notes style guide](releases/styleguide.md).
 
 Adds an `.agent_stats_leaf` marker that aggregates many projects into one transient
 project in `agent stats` and the `agent logs` viewer, and a synthetic `<orphaned>`
-project that surfaces request logs left behind by deleted projects. Also fixes
-infinite recursion in `json_safe` when it encountered self-referencing object graphs.
+project that surfaces request logs left behind by deleted projects. Hardens the shared
+LiteLLM sidecar so hundreds of parallel `agent run` jobs share it without racing on
+start/teardown or the master-key approval. Also fixes infinite recursion in `json_safe`
+when it encountered self-referencing object graphs. **Breaking:** custom provider forks
+must move from the old four-method contract to a single `sidecars()` method.
 
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 
