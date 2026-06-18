@@ -42,8 +42,6 @@ class LiteLLMProvider(Provider):
 
     #: Pinned Docker image with tag + digest.
     image: ClassVar[str] = ""
-    #: Stable sidecar key — labels the sidecar and names provider-specific resources.
-    sidecar_key: ClassVar[str] = "litellm"
     #: Prefix for generated master keys (e.g. "sk-aw-" for bedrock).
     master_key_prefix: ClassVar[str] = "sk-aw-"
 
@@ -72,7 +70,6 @@ class LiteLLMProvider(Provider):
     def _sidecar_config(self) -> LiteLLMSidecarConfig:
         """Build the sidecar config, closing over this provider's hooks and paths."""
         return LiteLLMSidecarConfig(
-            key=self.sidecar_key,
             image=self.image,
             container_name=self.container_name,
             network_name=self.network_name,

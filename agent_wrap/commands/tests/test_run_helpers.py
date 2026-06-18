@@ -363,7 +363,6 @@ def test_run_happy_path(
 
     # Mock provider with a single sidecar.
     mock_sidecar = mocker.MagicMock()
-    mock_sidecar.key = "litellm"
     mock_sidecar.ensure.return_value = []
     mock_sidecar.cold_start_time = 120.0
     mock_sidecar.short_circuit_time = 2.0
@@ -484,7 +483,6 @@ def _run_with_sidecars(
 def _sidecar_mock(mocker: pytest_mock.MockFixture, key: str, order: list[str] | None = None):
     """Return a MagicMock Sidecar with timing knobs + optional ordered lifecycle."""
     sc = mocker.MagicMock()
-    sc.key = key
     sc.cold_start_time = 120.0
     sc.short_circuit_time = 2.0
     if order is None:

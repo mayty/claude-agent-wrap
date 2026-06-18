@@ -28,9 +28,6 @@ from abc import ABC, abstractmethod
 class Sidecar(ABC):
     """A shared helper container an agent run depends on."""
 
-    #: Stable identity. Labels the sidecar and names provider-specific resources.
-    key: str
-
     @property
     @abstractmethod
     def cold_start_time(self) -> float:

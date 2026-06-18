@@ -20,7 +20,6 @@ from agent_wrap.providers.litellm_common.litellm_sidecar import (
 def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
     """Build a LiteLLMSidecarConfig with simple hooks, rooted at *tmp_path*."""
     defaults: dict = {
-        "key": "litellm",
         "image": "test-image:latest",
         "container_name": "agent-wrap-litellm",
         "network_name": "agent-wrap-net",
@@ -56,9 +55,8 @@ _IMAGE_EXISTS = "agent_wrap.providers.litellm_common.litellm_sidecar.image_exist
 # --- identity / timing ---
 
 
-def test_key_and_timing(tmp_path: Path) -> None:
+def test_timing(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
-    assert sc.key == "litellm"
     assert sc.cold_start_time == 300.0
     assert sc.short_circuit_time == 30.0
 

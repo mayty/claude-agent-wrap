@@ -8,7 +8,7 @@ from agent_wrap.providers.litellm_bedrock.provider import (
     _build_pricing_table,
     _scrape_model_keys,
 )
-from agent_wrap.providers.litellm_common import LiteLLMProvider
+from agent_wrap.providers.litellm_common import LiteLLMProvider, LiteLLMSidecar
 
 
 def _bedrock() -> LiteLLMProvider:
@@ -26,7 +26,7 @@ def test_bedrock_declares_litellm_sidecar():
     p = _bedrock()
     sidecars = p.sidecars()
     assert len(sidecars) == 1
-    assert sidecars[0].key == "litellm"
+    assert isinstance(sidecars[0], LiteLLMSidecar)
 
 
 # --- Provider method implementations ---

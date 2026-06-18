@@ -48,7 +48,6 @@ def test_sidecars_returns_one_litellm_sidecar(tmp_path: Path) -> None:
     assert len(sidecars) == 1
     sc = sidecars[0]
     assert isinstance(sc, LiteLLMSidecar)
-    assert sc.key == "litellm"
 
 
 def test_sidecar_config_carries_provider_bits(tmp_path: Path) -> None:

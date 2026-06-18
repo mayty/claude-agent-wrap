@@ -39,7 +39,6 @@ class LiteLLMSidecarConfig:
     """Immutable configuration for a ``LiteLLMSidecar``, built by the provider."""
 
     # --- identity ---
-    key: str
     image: str
     container_name: str
     network_name: str
@@ -73,7 +72,6 @@ class LiteLLMSidecar(Sidecar):
 
     def __init__(self, config: LiteLLMSidecarConfig) -> None:
         self.config = config
-        self.key = config.key
         self._master_key: str = ""
 
     @property

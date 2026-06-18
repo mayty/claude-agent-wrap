@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent_wrap.providers import get_provider
+from agent_wrap.providers.litellm_common import LiteLLMSidecar
 from agent_wrap.providers.litellm_dashscope.provider import DashscopeProvider
 
 
@@ -27,7 +28,7 @@ def test_dashscope_declares_litellm_sidecar():
     p = _dashscope()
     sidecars = p.sidecars()
     assert len(sidecars) == 1
-    assert sidecars[0].key == "litellm"
+    assert isinstance(sidecars[0], LiteLLMSidecar)
 
 
 # --- Provider method implementations ---
