@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 def docker_run(
@@ -52,3 +56,35 @@ def get_user_args() -> list[str]:
     if is_rootless():
         return []
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
+
+
+def list_labeled_instance_ids(
+    labels: Mapping[str, str],
+    *,
+    id_label: str = "agent-wrap.instance-id",
+) -> list[str]:
+    """
+    Return the *id_label* value of every running container matching all *labels*.
+
+    Each ``key=value`` pair in *labels* becomes a ``--filter label=key=value``
+    (Docker ANDs repeated label filters). The printed field is *id_label*. On any
+    docker error returns an empty list. Blank lines (containers missing the label)
+    are dropped.
+    """
+    filters: list[str] = []
+    for key, value in labels.items():
+        filters.extend(["--filter", f"label={key}={value}"])
+    stdout, rc = docker_run(
+        "ps",
+        *filters,
+        "--format",
+        f'{{{{.Label "{id_label}"}}}}',
+    )
+    if rc != 0:
+        return []
+    return [line for line in stdout.splitlines() if line.strip()]
+
+
+def count_labeled_containers(labels: Mapping[str, str]) -> int:
+    """Return how many running containers match all *labels* (0 on docker error)."""
+    return len(list_labeled_instance_ids(labels))
