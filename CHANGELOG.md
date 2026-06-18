@@ -5,10 +5,12 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.7.0](releases/0.7.0.md) — 2026-06-13
+## [0.7.0](releases/0.7.0.md) — 2026-06-17
 
-Fixes infinite recursion in `json_safe` when it encountered self-referencing
-object graphs.
+Adds an `.agent_stats_leaf` marker that aggregates many projects into one transient
+project in `agent stats` and the `agent logs` viewer, and a synthetic `<orphaned>`
+project that surfaces request logs left behind by deleted projects. Also fixes
+infinite recursion in `json_safe` when it encountered self-referencing object graphs.
 
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 

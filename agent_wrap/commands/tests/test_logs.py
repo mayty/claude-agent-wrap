@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.commands import logs as logs_mod
 from agent_wrap.commands.logs import (
+    _group_by_id,
     _lightweight_project_summary,
+    _logs_dir,
     _parse_port,
     _pid_alive,
     _read_last_record_ts,
@@ -24,6 +26,7 @@ from agent_wrap.commands.logs import (
     _write_meta_json,
     _write_state,
     extract_alias,
+    list_groups,
     list_projects,
     list_sessions,
     load_strings,
@@ -588,6 +591,123 @@ def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
 
 def test_list_projects_empty_without_registry(tmp_path: Path):
     assert list_projects(tmp_path / "nope") == []
+
+
+# --- .agent_stats_leaf grouping --------------------------------------------
+
+
+def test_list_projects_aggregates_marked_group(tmp_path: Path):
+    """Two projects under a .agent_stats_leaf marker collapse to one entry."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / ".agent_stats_leaf").write_text("batch-feb\n", encoding="utf-8")
+
+    a = runs / "agent-a"
+    b = runs / "agent-b"
+    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
+    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
+
+    projects = list_projects(tool_dir)
+    assert len(projects) == 1
+    p = projects[0]
+    assert p["name"] == "batch-feb"
+    assert p["path"] == str(runs)
+    assert p["sessions"] == 2
+    assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
+
+
+def test_list_sessions_unions_group_members(tmp_path: Path):
+    """list_sessions over a list of logs dirs merges sessions from every member."""
+    runs = tmp_path / "runs"
+    a = runs / "agent-a"
+    b = runs / "agent-b"
+    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
+    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
+
+    sessions = list_sessions([_logs_dir(a), _logs_dir(b)])
+    assert [s["session_id"] for s in sessions] == ["s2", "s1"]
+
+
+def test_unmarked_projects_stay_separate(tmp_path: Path):
+    """Without a marker, each project remains its own entry (regression guard)."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    a = tmp_path / "proj-a"
+    b = tmp_path / "proj-b"
+    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
+    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
+
+    projects = list_projects(tool_dir)
+    assert {p["name"] for p in projects} == {"proj-a", "proj-b"}
+
+
+# --- <orphaned> synthetic group --------------------------------------------
+
+
+def _write_central(tool_dir: Path, hash_name: str, session_id: str, records: list[Any]) -> Path:
+    """Write a session directly under a central <hash> dir (no .claude wrapper)."""
+    sdir = tool_dir / "litellm-logs" / hash_name / "litellm-bedrock" / session_id
+    sdir.mkdir(parents=True)
+    with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+    return tool_dir / "litellm-logs" / hash_name
+
+
+def test_orphaned_group_exposed_and_readable(tmp_path: Path):
+    """Central log dirs with no registered project surface as an <orphaned> group."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+
+    # Registered project symlinked to its central hashA dir.
+    hash_a = _write_central(
+        tool_dir, "hashA", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")]
+    )
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
+
+    # Orphaned hashB — no project points at it.
+    hash_b = _write_central(
+        tool_dir, "hashB", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")]
+    )
+
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    # The orphaned group is appended last with the synthetic name.
+    groups = list_groups(tool_dir)
+    assert groups[-1]["name"] == "<orphaned>"
+    assert groups[-1]["logs_dirs"] == [hash_b]
+
+    projects = list_projects(tool_dir)
+    assert "<orphaned>" in {p["name"] for p in projects}
+    orphaned = next(p for p in projects if p["name"] == "<orphaned>")
+    assert orphaned["sessions"] == 1
+
+    # Resolving the group id yields the central dirs; reading them returns s2.
+    dirs = _group_by_id(tool_dir, orphaned["id"])
+    assert dirs is not None
+    assert dirs == [hash_b]
+    assert [s["session_id"] for s in list_sessions(dirs)] == ["s2"]
+
+
+def test_no_orphaned_group_when_all_reachable(tmp_path: Path):
+    """No orphaned group is appended when every central dir is project-reachable."""
+    tool_dir = tmp_path / "tool"
+    (tool_dir / ".agent-launches").mkdir(parents=True)
+    hash_a = _write_central(
+        tool_dir, "hashA", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")]
+    )
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    assert all(g["name"] != "<orphaned>" for g in list_groups(tool_dir))
 
 
 # --- _read_last_record_ts ---
