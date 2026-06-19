@@ -519,12 +519,13 @@ def run(args: list[str], tool_dir: Path) -> int:
 
         volume_mounts = _build_volume_mounts(global_config_dir, cwd, tool_dir, claude_home)
         user_args = docker_utils.get_user_args()
+        tty_args = docker_utils.get_tty_args()
 
         cmd = [
             "docker",
             "run",
             "--rm",
-            "-it",
+            *tty_args,
             *user_args,
             *volume_mounts,
             *_build_env_args(

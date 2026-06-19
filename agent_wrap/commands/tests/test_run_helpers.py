@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for internal helpers in agent_wrap/commands/run.py."""
 
 from __future__ import annotations
@@ -356,6 +356,7 @@ def test_run_happy_path(
     )
     mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=True)
     mocker.patch("agent_wrap.commands.run.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_tty_args", return_value=["-it"])
     mocker.patch("agent_wrap.commands.run.config.prepare_global_config")
     mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
     mocker.patch("agent_wrap.commands.run.config.record_project")
@@ -466,6 +467,7 @@ def _run_with_sidecars(
     )
     mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=True)
     mocker.patch("agent_wrap.commands.run.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_tty_args", return_value=["-it"])
     mocker.patch("agent_wrap.commands.run.config.prepare_global_config")
     mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
     mocker.patch("agent_wrap.commands.run.config.record_project")

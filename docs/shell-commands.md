@@ -24,6 +24,8 @@ Launches Claude Code in a Docker container against the resolved image for the cu
 
 - **`--base`** — ignores any `Dockerfile.agent` in the current directory and launches the base `claude-agent` image instead. Project-specific `EXPOSE`, `agent-user`, and `agent-run-args` directives are skipped.
 
+TTY allocation is auto-detected: the container gets a pseudo-TTY (`docker run -it`) only when the wrapper's own stdin is a terminal. When stdin is not a terminal — for example when launched from a script or `subprocess` with `stdin=DEVNULL` or a pipe — it runs non-interactively (`docker run -i`), so `agent run` can be driven headlessly to launch fleets of agents without the `cannot attach stdin to a TTY-enabled container` error.
+
 ## `agent rebuild`
 
 ```

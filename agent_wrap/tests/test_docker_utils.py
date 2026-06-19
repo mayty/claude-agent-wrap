@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/lib/docker_utils.py."""
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import pytest_mock
 
 from agent_wrap.lib.docker_utils import (
     docker_run,
+    get_tty_args,
     get_user_args,
     image_exists,
     is_rootless,
@@ -123,3 +124,16 @@ def test_user_args_returns_uid_gid_when_not_rootless(mocker: pytest_mock.MockFix
     mocker.patch("os.getuid", return_value=1000)
     mocker.patch("os.getgid", return_value=1000)
     assert get_user_args() == ["--user", "1000:1000"]
+
+
+# --- get_tty_args ---
+
+
+def test_tty_args_interactive_when_stdin_is_tty(mocker: pytest_mock.MockFixture) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.sys.stdin.isatty", return_value=True)
+    assert get_tty_args() == ["-it"]
+
+
+def test_tty_args_no_tty_when_stdin_not_terminal(mocker: pytest_mock.MockFixture) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.sys.stdin.isatty", return_value=False)
+    assert get_tty_args() == ["-i"]
