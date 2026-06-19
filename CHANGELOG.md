@@ -14,8 +14,10 @@ LiteLLM sidecar so hundreds of parallel `agent run` jobs share it without racing
 start/teardown or the master-key approval. Also fixes infinite recursion in `json_safe`
 when it encountered self-referencing object graphs, and turns `agent` into a standalone
 executable so it can be launched programmatically (e.g. from a script or `subprocess`)
-without sourcing the wrapper into a shell first. **Breaking:** custom provider forks
-must move from the old four-method contract to a single `sidecars()` method.
+without sourcing the wrapper into a shell first. Sidecar startup and shutdown now both
+show a smoother animated spinner, so a run no longer appears to hang while the sidecar
+stops. **Breaking:** custom provider forks must move from the old four-method contract
+to a single `sidecars()` method.
 
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 
