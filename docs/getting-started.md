@@ -15,6 +15,8 @@ Source the wrapper in your bash shell (add it to `~/.bashrc` to make it permanen
 source /path/to/claude-agent-wrap/agent-wrap.bashrc
 ```
 
+This adds `bin/agent` to your `PATH` and registers tab-completion. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required. See [Shell Commands](shell-commands.md).
+
 Build the base image once:
 
 ```bash

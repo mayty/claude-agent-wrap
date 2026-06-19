@@ -1,10 +1,11 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Docker-related utility functions."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 
 def docker_run(
@@ -52,3 +53,17 @@ def get_user_args() -> list[str]:
     if is_rootless():
         return []
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
+
+
+def get_tty_args() -> list[str]:
+    """
+    Return docker stdin/tty flags.
+
+    Allocate a pseudo-TTY (-t) only when our own stdin is a terminal; Docker
+    rejects -t when stdin is not a TTY (e.g. launched from a subprocess with
+    stdin=DEVNULL or a pipe). Always pass -i so piped stdin still reaches the
+    container.
+    """
+    if sys.stdin.isatty():
+        return ["-it"]
+    return ["-i"]

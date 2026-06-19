@@ -19,19 +19,21 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
+from agent_wrap.lib.spinner import PollResult, Spinner
 from agent_wrap.lib.utils import generate_uuid, project_path_hash
 from agent_wrap.sidecars.base import Sidecar
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+_SPINNER = Spinner("litellm-sidecar")
 
 
 @dataclass(frozen=True)
@@ -242,7 +244,11 @@ class LiteLLMSidecar(Sidecar):
             self._master_key = ""
         if self._master_key:
             self.config.on_stopping(self._master_key)
-        docker_run("stop", self.container_name)
+        _SPINNER.spin_while(
+            message="stopping…",
+            done_message="stopped",
+            work=lambda: docker_run("stop", self.container_name),
+        )
 
     # --- Internal helpers ---
 
@@ -413,60 +419,27 @@ class LiteLLMSidecar(Sidecar):
             raise SystemExit(msg)
 
     def _health_poll(self) -> bool:
-        deadline = time.monotonic() + self.health_timeout_sec
-        is_tty = sys.stderr.isatty()
-        spinner = ["|", "/", "-", "\\"]
-        frame = 0
-        last_status = ""
-        start = time.monotonic()
-
-        while time.monotonic() < deadline:
+        def poll() -> tuple[PollResult, str]:
             stdout, rc = docker_run(
                 "inspect",
                 self.container_name,
                 "--format={{.State.Health.Status}}",
             )
             if rc != 0:
-                self._health_end(is_tty=is_tty, success=False, elapsed=time.monotonic() - start)
-                return False
-
+                return PollResult.FAILURE, ""
             status = stdout.strip()
-
-            if is_tty:
-                elapsed = int(time.monotonic() - start)
-                print(
-                    f"{Ansi.CR}{Ansi.ERASE_LINE}litellm-sidecar: {spinner[frame]} waiting for "
-                    f"healthy [{status or '?'}] ({elapsed}s)",
-                    end="",
-                    file=sys.stderr,
-                )
-                frame = (frame + 1) % len(spinner)
-            elif status and status != last_status:
-                print(f"litellm-sidecar: {status}", file=sys.stderr)
-                last_status = status
-
             if status == "healthy":
-                self._health_end(is_tty=is_tty, success=True, elapsed=time.monotonic() - start)
-                return True
+                return PollResult.SUCCESS, status
             if status == "unhealthy" or not self._is_running():
-                self._health_end(is_tty=is_tty, success=False, elapsed=time.monotonic() - start)
-                return False
+                return PollResult.FAILURE, status
+            return PollResult.PENDING, status
 
-            time.sleep(0.5)
-
-        self._health_end(is_tty=is_tty, success=False, elapsed=time.monotonic() - start)
-        return False
-
-    @staticmethod
-    def _health_end(*, is_tty: bool, success: bool, elapsed: float) -> None:
-        if is_tty:
-            if success:
-                print(
-                    f"{Ansi.CR}{Ansi.ERASE_LINE}litellm-sidecar: ready ({int(elapsed)}s)",
-                    file=sys.stderr,
-                )
-            else:
-                print(file=sys.stderr)
+        return _SPINNER.poll_until(
+            poll=poll,
+            message="waiting for healthy",
+            done_message="ready",
+            timeout=self.health_timeout_sec,
+        )
 
     def _attach_to_network(self, network: str) -> None:
         _, rc = docker_run("network", "inspect", network)

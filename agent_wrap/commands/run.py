@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -335,21 +336,56 @@ def sidecar_lock_timeout(sidecars: list[Sidecar], queue_depth: int) -> float:
     return sum(sc.cold_start_time + queue_depth * sc.short_circuit_time for sc in sidecars)
 
 
-def _ensure_sidecars(
+@dataclass(frozen=True)
+class _ConfigContext:
+    """Inputs for the config-prep step of a launch (see :func:`_prepare_config`)."""
+
+    global_config_dir: Path
+    tool_dir: Path
+    cwd: Path
+    telegram: tuple[str, str]
+
+
+def _prepare_config(ctx: _ConfigContext) -> None:
+    """
+    Prepare global and per-project config. Caller must hold the launch lock.
+
+    Concurrent launches share one global config dir, so the read-modify-write of
+    settings.json/.claude.json (and the project registry) must be serialized. This
+    helper takes no lock of its own — it runs inside :func:`_prepare_for_launch`'s
+    critical section.
+    """
+    telegram_bot_token, telegram_chat_id = ctx.telegram
+    config.prepare_global_config(
+        ctx.global_config_dir, ctx.tool_dir, telegram_bot_token, telegram_chat_id
+    )
+    config.prepare_project_dirs(ctx.cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
+    config.link_litellm_logs(ctx.cwd, ctx.tool_dir)
+    config.record_project(ctx.tool_dir)
+
+
+def _prepare_for_launch(
     sidecars: list[Sidecar],
     tracker: SidecarTracker,
     *,
     net: tuple[bool, str | None],
     instance_id: str,
+    config_ctx: _ConfigContext,
 ) -> tuple[list[str], TextIO | None]:
     """
-    Prepare (lock-free) then ensure all sidecars under one shared lock.
+    Prepare a launch under one shared lock: config first, then ensure all sidecars.
 
-    *net* is ``(use_host_net, agent_network)``. Returns ``(run_args, running_handle)``:
-    the merged `docker run` connectivity flags, and the open handle of this run's
-    *running* registration. That handle must stay open until the run exits — its held
-    ``flock`` is what tells a stopping run an agent is still live — and is released by
-    :func:`_release_sidecars` in the runner's ``finally``.
+    A single acquisition of ``tracker.lock_path`` covers both the global-config
+    read-modify-write (which concurrent launches would otherwise race on, since they
+    share one config dir) and the sidecar ensure. Config prep runs no lock of its own
+    — it is done here so there is exactly one lock per launch.
+
+    *net* is ``(use_host_net, agent_network)``; *config_ctx* carries the config-prep
+    inputs. Returns ``(run_args, running_handle)``: the merged `docker run` flags,
+    and the open handle of this run's *running* registration. That handle must stay
+    open until the run exits — its held ``flock`` is what tells a stopping run an agent
+    is still live — and is released by :func:`_release_sidecars` in the runner's
+    ``finally``.
 
     Holds a *start-waiter* ticket from before the shared lock is taken (so a stopping
     run yields to us) until the moment the lock is acquired, then registers *running*
@@ -371,6 +407,8 @@ def _ensure_sidecars(
             # it first so yielding stoppers stop spinning on us (matches lock.sh).
             tracker.clear_waiter(waiter_handle, instance_id)
             waiter_handle = None
+            # Config prep shares this lock: it is the read-modify-write that raced.
+            _prepare_config(config_ctx)
             for sidecar in sidecars:
                 run_args += sidecar.ensure(use_host_net=use_host_net, agent_network=agent_network)
             # Register as running as the LAST action under the lock, on success only:
@@ -479,38 +517,35 @@ def run(args: list[str], tool_dir: Path) -> int:
     instance_uuid = generate_uuid()
     instance_id = f"{agent_name}-{instance_uuid}"
 
-    # Prepare config
     cwd = Path.cwd()
     global_config_dir = tool_dir / ".claude_config"
-    config.prepare_global_config(
-        global_config_dir,
-        tool_dir,
-        telegram_bot_token,
-        telegram_chat_id,
-    )
-    config.prepare_project_dirs(cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
-    config.link_litellm_logs(cwd, tool_dir)
-    config.record_project(tool_dir)
+    tracker = SidecarTracker(tool_dir)
 
     wslg_args = _build_wslg_args(tool_dir)
 
     print(f"--- Agent instance: {instance_id} ---")
 
-    # Sidecar lifecycle. One shared lock (held by the runner) makes the whole launch
+    # Launch lifecycle. One shared lock (held by the runner) makes the whole launch
     # an atomic critical section, and one SidecarTracker holds the lock-file registries
     # that drive the teardown decision. Lock-free prepare() (image pull) runs BEFORE the
-    # lock. The whole block is in the try so the last-light-out teardown always runs,
-    # even on a failed start — and it releases the FULL declared set, reaping orphans.
+    # lock; config prep and sidecar ensure run inside it. The whole block is in the try
+    # so the last-light-out teardown always runs, even on a failed start — and it
+    # releases the FULL declared set, reaping orphans.
     provider = get_provider()
     sidecars = collect_sidecars(provider)
-    tracker = SidecarTracker(tool_dir)
     running_handle: TextIO | None = None
     try:
-        provider_run_args, running_handle = _ensure_sidecars(
+        provider_run_args, running_handle = _prepare_for_launch(
             sidecars,
             tracker,
             net=(use_host_net, agent_network),
             instance_id=instance_id,
+            config_ctx=_ConfigContext(
+                global_config_dir=global_config_dir,
+                tool_dir=tool_dir,
+                cwd=cwd,
+                telegram=(telegram_bot_token, telegram_chat_id),
+            ),
         )
 
         label_args = build_agent_labels(instance_id)
@@ -519,12 +554,13 @@ def run(args: list[str], tool_dir: Path) -> int:
 
         volume_mounts = _build_volume_mounts(global_config_dir, cwd, tool_dir, claude_home)
         user_args = docker_utils.get_user_args()
+        tty_args = docker_utils.get_tty_args()
 
         cmd = [
             "docker",
             "run",
             "--rm",
-            "-it",
+            *tty_args,
             *user_args,
             *volume_mounts,
             *_build_env_args(
