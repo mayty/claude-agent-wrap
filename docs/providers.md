@@ -1,7 +1,7 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # Providers
 
-The wrapper routes Claude Code through a pluggable provider. Each provider implements the [Provider ABC](../agent_wrap/providers/base.py) — four abstract methods (`ensure`, `release`, `get_run_args`, `get_label_args`) — with no assumption about sidecars, proxies, or network topology.
+The wrapper routes Claude Code through a pluggable provider. Each provider implements the [Provider ABC](../agent_wrap/providers/base.py): a single `sidecars()` method that declares the sidecars an `agent run` depends on. The launcher ensures each before `docker run`, splices the connectivity flags each returns into the agent's launch command, and releases each after the agent exits — with no assumption baked into the ABC about proxies or network topology.
 
 Select a provider via the `AGENT_PROVIDER` environment variable (default: `litellm-bedrock`). An unknown provider name is a hard error — the wrapper exits and lists the available providers:
 

@@ -43,3 +43,15 @@ What counts as "an update available" depends on the branch. On `master`, the pro
 Set `AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. The check is also auto-skipped on any error path — non-git wrap-dir, detached HEAD, fetch failure, or 10-second fetch timeout — so a flaky or offline network never blocks a launch.
 
 Other verbs (`agent stats`, `agent create`, and `agent update` itself) do not perform the check.
+
+## `AGENT_EXPECTED_QUEUE_DEPTH` (parallel-launch tuning)
+
+All providers share a single LiteLLM sidecar container, and each `agent run` briefly coordinates with any other simultaneous launches while the sidecar is started or torn down. `AGENT_EXPECTED_QUEUE_DEPTH` is the expected number of agents queued behind that coordination at once; it sizes how long a launch waits before treating itself as genuinely stuck rather than merely queued.
+
+The default (128) comfortably covers ordinary use, including dozens of agents launching together — you do not need to set it. Raise it only when a script fans out far more simultaneous `agent run` jobs than that, so the extra agents at the back of the queue don't time out while waiting their turn:
+
+```sh
+AGENT_EXPECTED_QUEUE_DEPTH=512 agent run
+```
+
+Set it to a positive integer; a non-numeric or non-positive value is ignored and the default applies.

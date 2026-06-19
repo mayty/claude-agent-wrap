@@ -16,7 +16,7 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 
 ## Provider-injected vars
 
-The active provider injects additional vars via `get_agent_env()` and `get_run_args()`. See the provider's README:
+The active provider injects additional vars via its `get_agent_env()`, plus the connectivity flags its sidecar(s) supply to the agent's `docker run`. See the provider's README:
 
 - [litellm-bedrock](../agent_wrap/providers/litellm_bedrock/README.md)
 - [litellm-dashscope](../agent_wrap/providers/litellm_dashscope/README.md)

@@ -17,13 +17,18 @@ from agent_wrap.commands.run import (
     _load_secrets,
     _load_telegram_creds,
     _parse_dockerfile_directives,
+    _release_sidecars,
     _resolve_agent_name,
     _resolve_host_network,
+    build_agent_labels,
+    collect_sidecars,
+    sidecar_lock_timeout,
 )
 from agent_wrap.commands.run import (
     run as agent_run,
 )
 from agent_wrap.lib.utils import ResolvedImage
+from agent_wrap.sidecars import SidecarTracker
 
 # --- _is_wsl ---
 
@@ -356,10 +361,13 @@ def test_run_happy_path(
     mocker.patch("agent_wrap.commands.run.config.record_project")
     mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
 
-    # Mock provider
+    # Mock provider with a single sidecar.
+    mock_sidecar = mocker.MagicMock()
+    mock_sidecar.ensure.return_value = []
+    mock_sidecar.cold_start_time = 120.0
+    mock_sidecar.short_circuit_time = 2.0
     mock_provider = mocker.MagicMock()
-    mock_provider.get_run_args.return_value = []
-    mock_provider.get_label_args.return_value = []
+    mock_provider.sidecars.return_value = [mock_sidecar]
     mocker.patch("agent_wrap.commands.run.get_provider", return_value=mock_provider)
 
     mock_result = mocker.MagicMock()
@@ -368,8 +376,9 @@ def test_run_happy_path(
 
     rc = agent_run(["--base"], tmp_path)
     assert rc == 0
-    assert mock_provider.ensure.call_count == 1
-    assert mock_provider.release.call_count == 1
+    assert mock_sidecar.prepare.call_count == 1
+    assert mock_sidecar.ensure.call_count == 1
+    assert mock_sidecar.release.call_count == 1
     assert mock_run.called
     # Verify the docker run command structure
     cmd = mock_run.call_args[0][0]
@@ -380,3 +389,231 @@ def test_run_happy_path(
     assert "claude-agent-test" in cmd
     assert any("AGENT_INSTANCE_ID=" in v for v in cmd)
     assert any("/workspace" in v for v in cmd if isinstance(v, str))
+    # One common role label; NO per-sidecar label.
+    assert "agent-wrap.role=claude-agent" in cmd
+    assert not any(c.startswith("agent-wrap.sidecar.") for c in cmd if isinstance(c, str))
+
+
+# --- collect_sidecars ---
+
+
+def test_collect_sidecars_returns_provider_sidecars(mocker: pytest_mock.MockFixture) -> None:
+    sentinel = [mocker.MagicMock(), mocker.MagicMock()]
+    provider = mocker.MagicMock()
+    provider.sidecars.return_value = sentinel
+    assert collect_sidecars(provider) == sentinel
+
+
+# --- build_agent_labels ---
+
+
+def test_build_agent_labels_empty_instance() -> None:
+    assert build_agent_labels("") == []
+
+
+def test_build_agent_labels_role_id_name_only() -> None:
+    result = build_agent_labels("inst-1")
+    assert "agent-wrap.role=claude-agent" in result
+    assert "agent-wrap.instance-id=inst-1" in result
+    # No per-sidecar label — the tracker counts all agents by role.
+    assert not any(c.startswith("agent-wrap.sidecar.") for c in result)
+    assert result.count("--name") == 1
+    assert "claude-agent-inst-1" in result
+
+
+# --- sidecar_lock_timeout ---
+
+
+def test_sidecar_lock_timeout_sums_over_sidecars(mocker: pytest_mock.MockFixture) -> None:
+    a = mocker.MagicMock(cold_start_time=120.0, short_circuit_time=2.0)
+    b = mocker.MagicMock(cold_start_time=30.0, short_circuit_time=1.0)
+    # Σ(cold_start + X·short_circuit): (120+10·2) + (30+10·1) = 140 + 40 = 180
+    assert sidecar_lock_timeout([a, b], 10) == 180.0
+
+
+def test_sidecar_lock_timeout_zero_queue(mocker: pytest_mock.MockFixture) -> None:
+    a = mocker.MagicMock(cold_start_time=120.0, short_circuit_time=2.0)
+    assert sidecar_lock_timeout([a], 0) == 120.0
+
+
+# --- lifecycle: ensure-all / release-all ---
+
+
+def _run_with_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: pytest_mock.MockFixture,
+    sidecars: list,
+) -> None:
+    """
+    Drive run() to the lifecycle block with a provider declaring *sidecars*.
+
+    The real SidecarTracker is used, operating on its lock-file registries under
+    ``tmp_path/.agent-launches``; with no other run registered, teardown proceeds.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "claude_keys.json").write_text(
+        json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}})
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=True)
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.run.config.prepare_global_config")
+    mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
+    mocker.patch("agent_wrap.commands.run.config.record_project")
+    mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
+
+    provider = mocker.MagicMock()
+    provider.sidecars.return_value = sidecars
+    mocker.patch("agent_wrap.commands.run.get_provider", return_value=provider)
+
+    result = mocker.MagicMock()
+    result.returncode = 0
+    mocker.patch("agent_wrap.commands.run.subprocess.run", return_value=result)
+
+
+def _sidecar_mock(mocker: pytest_mock.MockFixture, key: str, order: list[str] | None = None):
+    """Return a MagicMock Sidecar with timing knobs + optional ordered lifecycle."""
+    sc = mocker.MagicMock()
+    sc.cold_start_time = 120.0
+    sc.short_circuit_time = 2.0
+    if order is None:
+        sc.ensure.return_value = []
+    else:
+        sc.prepare.side_effect = lambda: order.append(f"prepare-{key}")
+        sc.ensure.side_effect = lambda **_: order.append(f"ensure-{key}") or []
+        sc.release.side_effect = lambda: order.append(f"release-{key}")
+    return sc
+
+
+def test_run_prepares_all_before_ensure_then_releases_reverse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    order: list[str] = []
+    a = _sidecar_mock(mocker, "a", order)
+    b = _sidecar_mock(mocker, "b", order)
+
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a, b])
+    agent_run(["--base"], tmp_path)
+
+    # All prepare() (lock-free) before any ensure(); ensured in order; released reverse.
+    assert order == [
+        "prepare-a",
+        "prepare-b",
+        "ensure-a",
+        "ensure-b",
+        "release-b",
+        "release-a",
+    ]
+
+
+def test_run_skips_release_when_another_runner_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """When another run's running registration is still held, no sidecar is released."""
+    a = _sidecar_mock(mocker, "a")
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
+    # A concurrent agent holds its running registration for the whole of our run.
+    other = SidecarTracker(tmp_path)
+    other_handle = other.register_running("other-inst")
+    try:
+        agent_run(["--base"], tmp_path)
+        a.release.assert_not_called()
+    finally:
+        other.clear_running(other_handle, "other-inst")
+
+
+def test_run_releases_when_no_other_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """With no other run registered, the finishing run is last out and tears down."""
+    a = _sidecar_mock(mocker, "a")
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
+    agent_run(["--base"], tmp_path)
+    a.release.assert_called_once_with()
+
+
+def test_release_yields_to_live_waiter_then_proceeds(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """A stopping run yields the lock while a starter waits, then tears down once gone."""
+    tracker = SidecarTracker(tmp_path)
+    a = _sidecar_mock(mocker, "a")
+    # A starter holds its waiter ticket; the stopper must yield (loop) until it clears.
+    waiter_handle = tracker.register_waiter("starter-inst")
+
+    sleeps: list[float] = []
+
+    def _release_on_third_sleep(_secs: float) -> None:
+        sleeps.append(_secs)
+        # After two yields, the starter finishes waiting and clears its ticket.
+        if len(sleeps) == 2:
+            tracker.clear_waiter(waiter_handle, "starter-inst")
+
+    mocker.patch("agent_wrap.commands.run.time.sleep", side_effect=_release_on_third_sleep)
+
+    _release_sidecars([a], tracker, "stopper-inst", running_handle=None)
+
+    # It looped (yielded) while the waiter was live, then released once it cleared.
+    assert len(sleeps) == 2
+    a.release.assert_called_once_with()
+
+
+def test_run_uses_summed_lock_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """ensure-all is wrapped in file_lock with the summed timeout."""
+    a = _sidecar_mock(mocker, "a")  # cold 120, short 2
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
+    fl = mocker.patch("agent_wrap.commands.run.file_lock")
+    monkeypatch.setenv("AGENT_EXPECTED_QUEUE_DEPTH", "10")
+    agent_run(["--base"], tmp_path)
+    # The ensure-all lock is the timed one (the release lock blocks with no timeout).
+    timeouts = [c.kwargs["timeout"] for c in fl.call_args_list if "timeout" in c.kwargs]
+    # 120 + 10·2 = 140
+    assert timeouts == [140.0]
+
+
+def test_run_partial_ensure_failure_releases_full_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """If sidecar #2's ensure raises, the FULL declared set is still released."""
+    a = _sidecar_mock(mocker, "a")
+    b = _sidecar_mock(mocker, "b")
+    b.ensure.side_effect = SystemExit("boom")
+
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a, b])
+    with pytest.raises(SystemExit):
+        agent_run(["--base"], tmp_path)
+
+    # Last-light-out releases every declared sidecar (release is a no-op when a
+    # container isn't running), so no orphan is left behind.
+    assert a.release.call_count == 1
+    assert b.release.call_count == 1
+
+
+def test_run_releases_sidecars_ensure_never_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """release() iterates the full declared set, even sidecars ensure() never reached."""
+    # `a`'s ensure raises first, so the loop never calls `b.ensure()` at all. `b` could
+    # still be an orphan a prior run left running, so it must be released regardless.
+    a = _sidecar_mock(mocker, "a")
+    b = _sidecar_mock(mocker, "b")
+    a.ensure.side_effect = SystemExit("boom on first")
+
+    _run_with_sidecars(tmp_path, monkeypatch, mocker, [a, b])
+    with pytest.raises(SystemExit):
+        agent_run(["--base"], tmp_path)
+
+    b.ensure.assert_not_called()  # the ensure loop never reached b
+    b.release.assert_called_once_with()  # ...yet last-light-out still releases it
+    a.release.assert_called_once_with()

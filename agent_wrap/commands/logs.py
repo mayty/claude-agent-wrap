@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.commands.stats import PriceSource, extract_usage
+from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
 from agent_wrap.lib.usage_args import load_projects
 
@@ -588,12 +589,8 @@ def _read_meta_json(session_dir: Path) -> MetaData | None:
 
 def _write_meta_json(session_dir: Path, meta: MetaData) -> None:
     """Write ``meta.json`` atomically.  Best-effort; never raises."""
-    try:
-        tmp = session_dir / "meta.json.tmp"
-        tmp.write_text(json.dumps(meta), encoding="utf-8")
-        tmp.replace(session_dir / "meta.json")
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        atomic_write_json(session_dir / "meta.json", meta)
 
 
 def _scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | None:
@@ -1097,11 +1094,7 @@ def _read_state(tool_dir: Path) -> dict[str, Any] | None:
 
 def _write_state(tool_dir: Path, pid: int, port: int) -> None:
     """Write the viewer state file atomically (tmp + replace)."""
-    state_dir = _state_dir(tool_dir)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    tmp = state_dir / (_STATE_FILE_NAME + ".tmp")
-    tmp.write_text(json.dumps({"pid": pid, "port": port}), encoding="utf-8")
-    tmp.replace(_state_file(tool_dir))
+    atomic_write_json(_state_file(tool_dir), {"pid": pid, "port": port})
 
 
 def _pid_alive(pid: int) -> bool:

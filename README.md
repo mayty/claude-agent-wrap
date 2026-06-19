@@ -42,7 +42,7 @@ See the [Getting Started](docs/getting-started.md) guide for full setup instruct
 
 ```
 .
-├── .agent-launches/      # Project registry and pricing cache (git-ignored)
+├── .agent-launches/      # Project registry, pricing cache, launch coordination state (git-ignored)
 ├── .claude_config/       # Global Claude config (git-ignored)
 ├── agent_wrap/           # Python orchestration (commands, providers, config)
 ├── docs/                 # Documentation (linked from this file)

@@ -8,10 +8,13 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent_wrap import config
 from agent_wrap.lib import docker_utils
+from agent_wrap.lib.flock import file_lock
 from agent_wrap.lib.utils import (
     generate_uuid,
     is_truthy_env,
@@ -20,9 +23,27 @@ from agent_wrap.lib.utils import (
     sanitize_name,
 )
 from agent_wrap.providers import get_provider
+from agent_wrap.sidecars.tracker import SidecarTracker
+
+if TYPE_CHECKING:
+    from typing import TextIO
+
+    from agent_wrap.providers.base import Provider
+    from agent_wrap.sidecars.base import Sidecar
 
 USAGE = "[--base] [claude-args...]"
 SUMMARY = "Launch Claude Code in Docker"
+
+#: Expected number of agents queued behind the shared sidecar lock (the in-flight
+#: launch concurrency, e.g. an external "N simultaneous jobs" semaphore). Multiplied
+#: by each sidecar's hot-path walk time to size the lock timeout. Overridable via
+#: AGENT_EXPECTED_QUEUE_DEPTH for very large fan-outs.
+EXPECTED_QUEUE_DEPTH = 128
+
+#: How long a releasing (stopping) run sleeps before re-acquiring the shared lock
+#: when it has yielded to a live starter. Stops are low priority and may wait
+#: indefinitely, so this only bounds the busy-wait granularity, not total wait.
+STOP_YIELD_POLL_SEC = 0.1
 
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
@@ -259,6 +280,143 @@ def _build_volume_mounts(
     return mounts
 
 
+def collect_sidecars(provider: Provider) -> list[Sidecar]:
+    """
+    Gather every sidecar an agent run depends on.
+
+    Today this is exactly the selected provider's sidecars; it is the single place a
+    runner-level sidecar (e.g. a future decision-maker, independent of the model
+    backend) would be appended.
+    """
+    return list(provider.sidecars())
+
+
+def build_agent_labels(instance_id: str) -> list[str]:
+    """
+    Build the agent container's --label / --name flags.
+
+    One common role label (the tracker's host-wide live-agent count filter), the
+    instance id, and the container name — all belonging to the agent once. There is
+    no per-sidecar label: the shared SidecarTracker counts all agents together.
+    """
+    if not instance_id:
+        return []
+    return [
+        "--label",
+        f"{SidecarTracker.role_label}={SidecarTracker.role_value}",
+        "--label",
+        f"agent-wrap.instance-id={instance_id}",
+        "--name",
+        f"claude-agent-{instance_id}",
+    ]
+
+
+def _expected_queue_depth() -> int:
+    """Return the expected queue depth — EXPECTED_QUEUE_DEPTH or its env override."""
+    raw = os.environ.get("AGENT_EXPECTED_QUEUE_DEPTH")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return EXPECTED_QUEUE_DEPTH
+
+
+def sidecar_lock_timeout(sidecars: list[Sidecar], queue_depth: int) -> float:
+    """
+    Total seconds a launcher waits for the shared sidecar lock.
+
+    Σ(cold_start_time + queue_depth · short_circuit_time): one cold start per sidecar
+    plus the whole queue draining the hot path sequentially — the poll-inside-lock
+    worst case. A launcher that waits longer is genuinely stuck, not merely queued.
+    """
+    return sum(sc.cold_start_time + queue_depth * sc.short_circuit_time for sc in sidecars)
+
+
+def _ensure_sidecars(
+    sidecars: list[Sidecar],
+    tracker: SidecarTracker,
+    *,
+    net: tuple[bool, str | None],
+    instance_id: str,
+) -> tuple[list[str], TextIO | None]:
+    """
+    Prepare (lock-free) then ensure all sidecars under one shared lock.
+
+    *net* is ``(use_host_net, agent_network)``. Returns ``(run_args, running_handle)``:
+    the merged `docker run` connectivity flags, and the open handle of this run's
+    *running* registration. That handle must stay open until the run exits — its held
+    ``flock`` is what tells a stopping run an agent is still live — and is released by
+    :func:`_release_sidecars` in the runner's ``finally``.
+
+    Holds a *start-waiter* ticket from before the shared lock is taken (so a stopping
+    run yields to us) until the moment the lock is acquired, then registers *running*
+    as the last action under the lock, just before the agent launches.
+    """
+    use_host_net, agent_network = net
+    for sidecar in sidecars:
+        sidecar.prepare()
+
+    run_args: list[str] = []
+    running_handle: TextIO | None = None
+    # Claim priority before contending for the lock: a stopping run that sees this
+    # held ticket yields the lock to us.
+    waiter_handle = tracker.register_waiter(instance_id)
+    timeout = sidecar_lock_timeout(sidecars, _expected_queue_depth())
+    try:
+        with file_lock(tracker.lock_path, timeout=timeout):
+            # The ticket's only job — signalling "waiting for the lock" — is done; clear
+            # it first so yielding stoppers stop spinning on us (matches lock.sh).
+            tracker.clear_waiter(waiter_handle, instance_id)
+            waiter_handle = None
+            for sidecar in sidecars:
+                run_args += sidecar.ensure(use_host_net=use_host_net, agent_network=agent_network)
+            # Register as running as the LAST action under the lock, on success only:
+            # from here until this run exits its held flock keeps a releaser in the
+            # ensure→docker-run gap from tearing down.
+            running_handle = tracker.register_running(instance_id)
+    finally:
+        # On any early exit (lock timeout, ensure failure) the ticket may still be held.
+        tracker.clear_waiter(waiter_handle, instance_id)
+    return run_args, running_handle
+
+
+def _release_sidecars(
+    sidecars: list[Sidecar],
+    tracker: SidecarTracker,
+    instance_id: str,
+    running_handle: TextIO | None,
+) -> None:
+    """
+    Last-light-out teardown: release ALL declared sidecars when this is the last agent.
+
+    Stops are low priority: this blocks on the shared lock for as long as needed, but
+    always yields it to a live starter (a still-held start-waiter ticket) — starts
+    keep priority. Once no starter is waiting, teardown happens only if no *other*
+    run's *running* registration is still held (no agent live anywhere). The teardown
+    is a host-wide decision, so it releases *every* declared sidecar (in reverse),
+    reaping orphans a failed or earlier run left running; ``release()`` is a no-op when
+    a container isn't running, so this is safe.
+    """
+    # This run is finishing — drop our own running registration first so we don't count
+    # ourselves as alive.
+    tracker.clear_running(running_handle, instance_id)
+    if not sidecars:
+        return
+    while True:
+        with file_lock(tracker.lock_path):
+            if not tracker.has_live_waiters():
+                if not tracker.has_live_runners(exclude_id=instance_id):
+                    for sidecar in reversed(sidecars):
+                        sidecar.release()
+                return
+        # A starter has priority — we released the lock by leaving the block; wait a
+        # beat and retry. Low priority: this may loop indefinitely while starts arrive.
+        time.sleep(STOP_YIELD_POLL_SEC)
+
+
 def run(args: list[str], tool_dir: Path) -> int:
     """
     Execute the `run` subcommand.
@@ -338,17 +496,24 @@ def run(args: list[str], tool_dir: Path) -> int:
 
     print(f"--- Agent instance: {instance_id} ---")
 
-    # Provider lifecycle
+    # Sidecar lifecycle. One shared lock (held by the runner) makes the whole launch
+    # an atomic critical section, and one SidecarTracker holds the lock-file registries
+    # that drive the teardown decision. Lock-free prepare() (image pull) runs BEFORE the
+    # lock. The whole block is in the try so the last-light-out teardown always runs,
+    # even on a failed start — and it releases the FULL declared set, reaping orphans.
     provider = get_provider()
-    provider.ensure(
-        use_host_net=use_host_net,
-        instance_id=instance_id,
-        agent_network=agent_network,
-    )
-
+    sidecars = collect_sidecars(provider)
+    tracker = SidecarTracker(tool_dir)
+    running_handle: TextIO | None = None
     try:
-        label_args = provider.get_label_args(instance_id)
-        provider_run_args = provider.get_run_args()
+        provider_run_args, running_handle = _ensure_sidecars(
+            sidecars,
+            tracker,
+            net=(use_host_net, agent_network),
+            instance_id=instance_id,
+        )
+
+        label_args = build_agent_labels(instance_id)
 
         print(f"--- Launching Claude (Image: {resolved.image}, Config: {global_config_dir}) ---")
 
@@ -384,4 +549,4 @@ def run(args: list[str], tool_dir: Path) -> int:
         result = subprocess.run(cmd)
         return result.returncode
     finally:
-        provider.release(instance_id)
+        _release_sidecars(sidecars, tracker, instance_id, running_handle)
