@@ -1,7 +1,7 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # Shell Commands
 
-`agent` is an executable (`bin/agent`) whose first argument is a verb that selects the operation. All verbs forward to `python3 -m agent_wrap` and run on the host. Sourcing `agent-wrap.bashrc` adds `bin/` to your `PATH` (so `agent` resolves) and registers bash tab-completion for the verbs and their flags. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required.
+`agent` is an executable (`bin/agent`) whose first argument is a verb that selects the operation. All verbs forward to `python3 -m agent_wrap` and run on the host. Sourcing `agent-wrap.bashrc` adds `bin/` to your `PATH` (so `agent` resolves) and, under bash only, registers tab-completion for the verbs and their flags. Completion reads its data from the git-tracked `agent-wrap-completion.bash`, which is compiled from each command module's `USAGE` by `scripts/gen-bash-completion.py` (run `make gen-completion` after changing a command's flags). Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required.
 
 | Verb | Purpose |
 | --- | --- |
