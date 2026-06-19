@@ -2,14 +2,19 @@
 #
 # agent-wrap: Docker-based wrapper for running Claude Code CLI.
 #
-# Thin dispatcher — all logic lives in agent_wrap/ (via __main__.py). This
-# function just forwards to the Python implementation.
+# The `agent` command itself is the bin/agent executable; all logic lives in
+# agent_wrap/ (via __main__.py). Sourcing this file does two things: it puts
+# bin/ on PATH so `agent` resolves (including for child/subprocess callers),
+# and it registers the bash completion below.
 
 _agent_wrap_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-agent() {
-    PYTHONPATH="$_agent_wrap_dir" python3 -m agent_wrap "$@"
-}
+# Prepend bin/ to PATH if absent (idempotent — re-sourcing won't duplicate it).
+case ":$PATH:" in
+    *":$_agent_wrap_dir/bin:"*) ;;
+    *) PATH="$_agent_wrap_dir/bin:$PATH" ;;
+esac
+export PATH
 
 # Bash completion for `agent`. Verbs are discovered dynamically by globbing
 # agent_wrap/commands/, mirroring _discover_commands() in __main__.py. Flag

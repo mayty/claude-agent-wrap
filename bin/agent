@@ -1,0 +1,23 @@
+#!/bin/sh
+# This file has been created with the assistance of an AI tool.
+#
+# agent-wrap: the `agent` launcher. Sets PYTHONPATH and dispatches to the
+# agent_wrap Python package. Works whether invoked via PATH (sourcing the
+# bashrc adds bin/ to PATH) or directly (e.g. from a subprocess / cron job).
+# POSIX sh — works under any caller shell.
+
+# Resolve this script's real path, following symlinks (portable; readlink -f
+# is unavailable on some platforms).
+src="$0"
+while [ -h "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    case "$src" in
+        /*) ;;
+        *) src="$dir/$src" ;;
+    esac
+done
+bin_dir=$(cd -P "$(dirname "$src")" && pwd)
+wrap_dir=$(dirname "$bin_dir")
+
+exec env PYTHONPATH="$wrap_dir" python3 -m agent_wrap "$@"
