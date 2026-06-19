@@ -218,24 +218,6 @@ def test_connectivity_merges_existing_custom_header(
     assert f"ANTHROPIC_CUSTOM_HEADERS={value}" in result
 
 
-# --- _health_end ---
-
-
-def test_health_end_tty_success(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    _sidecar(tmp_path)._health_end(is_tty=True, success=True, elapsed=5.3)
-    assert "ready" in capsys.readouterr().err
-
-
-def test_health_end_tty_failure(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    _sidecar(tmp_path)._health_end(is_tty=True, success=False, elapsed=90.0)
-    assert capsys.readouterr().err == "\n"
-
-
-def test_health_end_non_tty_no_output(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    _sidecar(tmp_path)._health_end(is_tty=False, success=True, elapsed=5.0)
-    assert capsys.readouterr().err == ""
-
-
 # --- ensure (happy path) ---
 
 
@@ -359,6 +341,38 @@ def test_release_no_stop_when_not_running(tmp_path: Path, mocker: pytest_mock.Mo
     stopping.assert_not_called()
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert stop_calls == []
+
+
+def test_release_non_tty_prints_plain_line(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
+) -> None:
+    """Non-TTY stop prints a single plain status line and still stops the container."""
+    sc = _sidecar(tmp_path)
+    mocker.patch("sys.stderr.isatty", return_value=False)
+    mocker.patch.object(sc, "_is_running", return_value=True)
+    mocker.patch.object(sc, "_recover_master_key", return_value="sk-test-key")
+    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    sc.release()
+    assert "litellm-sidecar: stopping…" in capsys.readouterr().err
+    stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
+    assert len(stop_calls) == 1
+
+
+def test_release_tty_finalizes(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
+) -> None:
+    """TTY stop animates then clears the line and prints the 'stopped' finalize line."""
+    sc = _sidecar(tmp_path)
+    mocker.patch("sys.stderr.isatty", return_value=True)
+    mocker.patch.object(sc, "_is_running", return_value=True)
+    mocker.patch.object(sc, "_recover_master_key", return_value="sk-test-key")
+    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    sc.release()
+    err = capsys.readouterr().err
+    assert "litellm-sidecar: stopped" in err
+    assert "\033[2K" in err
+    stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
+    assert len(stop_calls) == 1
 
 
 # --- _health_poll ---
