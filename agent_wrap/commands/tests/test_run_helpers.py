@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 import pytest_mock
 
+from agent_wrap.commands import run as run_mod
 from agent_wrap.commands.run import (
     _build_env_args,
     _build_volume_mounts,
@@ -393,6 +395,67 @@ def test_run_happy_path(
     # One common role label; NO per-sidecar label.
     assert "agent-wrap.role=claude-agent" in cmd
     assert not any(c.startswith("agent-wrap.sidecar.") for c in cmd if isinstance(c, str))
+
+
+def test_run_prepares_config_inside_single_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """Config prep runs inside the ONE launch-lock acquisition (no double-acquire)."""
+    monkeypatch.chdir(tmp_path)
+    keys = tmp_path / "claude_keys.json"
+    keys.write_text(json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=True)
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_tty_args", return_value=["-it"])
+    mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
+    mocker.patch("agent_wrap.commands.run.config.record_project")
+    mocker.patch("agent_wrap.commands.run.config.link_litellm_logs")
+    mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
+
+    mock_provider = mocker.MagicMock()
+    mock_provider.sidecars.return_value = []
+    mocker.patch("agent_wrap.commands.run.get_provider", return_value=mock_provider)
+    mock_result = mocker.MagicMock()
+    mock_result.returncode = 0
+    mocker.patch("agent_wrap.commands.run.subprocess.run", return_value=mock_result)
+
+    # Record the interleaving of lock enter/exit with the config-prep call.
+    lock_name = SidecarTracker(tmp_path).lock_path.name
+    events: list[str] = []
+    real_file_lock = run_mod.file_lock
+
+    @contextmanager
+    def tracking_file_lock(path: Path, *, timeout: float | None = None, poll: float = 0.1):  # type: ignore[no-untyped-def]
+        events.append(f"lock-enter:{path.name}")
+        with real_file_lock(path, timeout=timeout, poll=poll):
+            yield
+        events.append(f"lock-exit:{path.name}")
+
+    mocker.patch("agent_wrap.commands.run.file_lock", side_effect=tracking_file_lock)
+    mocker.patch(
+        "agent_wrap.commands.run.config.prepare_global_config",
+        side_effect=lambda *a, **k: events.append("prepare-global-config"),
+    )
+
+    rc = agent_run(["--base"], tmp_path)
+    assert rc == 0
+
+    # Exactly ONE acquisition of the launch lock (regression guard: no double-acquire),
+    # and config prep happens between that single enter and its exit.
+    assert events.count(f"lock-enter:{lock_name}") == 1
+    enter = events.index(f"lock-enter:{lock_name}")
+    exit_ = events.index(f"lock-exit:{lock_name}")
+    prep = events.index("prepare-global-config")
+    assert enter < prep < exit_
 
 
 # --- collect_sidecars ---
