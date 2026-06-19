@@ -29,10 +29,10 @@ def test_final_clears_line() -> None:
     assert line.endswith("my-op: done")
 
 
-def test_fps_sets_interval() -> None:
-    assert Spinner("my-op", fps=10)._interval == 0.1
-    # Default cadence is 2 fps → 0.5s, preserving prior behavior.
-    assert Spinner("my-op")._interval == 0.5
+def test_fps_sets_render_interval() -> None:
+    assert Spinner("my-op", fps=10)._render_interval == 0.1
+    # Default cadence is 12 fps for a fluid animation.
+    assert Spinner("my-op")._render_interval == 1.0 / 12.0
 
 
 def test_spin_while_runs_work_non_tty(
@@ -58,6 +58,25 @@ def test_spin_while_runs_work_tty(
     )
     assert ran == [True]
     assert "my-op: done" in capsys.readouterr().err
+
+
+def test_spin_while_dynamic_message_non_tty(
+    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
+) -> None:
+    mocker.patch("sys.stderr.isatty", return_value=False)
+    Spinner("my-op").spin_while(message=lambda: "computed", done_message="done", work=lambda: None)
+    assert "my-op: computed" in capsys.readouterr().err
+
+
+def test_spin_while_done_message_none(
+    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
+) -> None:
+    mocker.patch("sys.stderr.isatty", return_value=True)
+    Spinner("my-op").spin_while(message="doing…", done_message=lambda: None, work=lambda: None)
+    err = capsys.readouterr().err
+    # None finalize: the line is ended with a bare newline, no extra text.
+    assert err.endswith("\n")
+    assert "done" not in err
 
 
 # --- poll_until ---
@@ -115,10 +134,9 @@ def test_poll_until_pending_then_success(
         timeout=10,
     )
     assert result is True
-    err = capsys.readouterr().err
-    # A spinner frame was drawn for the pending tick before the finalize line.
-    assert "my-op: " + Spinner.FRAMES[0] in err
-    assert "my-op: ready" in err
+    # Outcome only: with the poll loop on its own thread, whether a transient
+    # frame is drawn before success is non-deterministic.
+    assert "my-op: ready" in capsys.readouterr().err
 
 
 def test_poll_until_non_tty_prints_status_changes(
