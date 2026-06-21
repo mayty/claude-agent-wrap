@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import random
 import sys
 import threading
 import time
 from enum import Enum, auto
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from agent_wrap.lib.console import Ansi
 
@@ -26,20 +27,59 @@ class PollResult(Enum):
 class Spinner:
     """Animated, label-prefixed stderr spinner for long-running operations."""
 
-    FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    SPINNERS: ClassVar[dict[str, tuple[tuple[str, ...], float | None]]] = {
+        "default": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), None),
+        "braille": (("⡠⠂", "⡤⠀", "⡆⠀", "⠇⠀", "⠓⠀", "⠑⠄", "⠐⢄", "⠀⢤", "⠀⢰", "⠀⠸", "⠀⠚", "⠠⠊"), None),
+        "blinking": (("( ●_●)", "( -_-)", "(●_● )", "( -_-)"), None),
+        "pulsing": (("  ", "░░", "▒▒", "▓▓", "██", "▓▓", "▒▒", "░░"), 0.5),
+        "pump": (
+            ("▁█", "▂▇", "▃▆", "▄▅", "▅▄", "▆▃", "▇▂", "█▁", "▇▂", "▆▃", "▅▄", "▄▅", "▃▆", "▂▇"),
+            None,
+        ),
+        "aliens": (
+            (
+                "🐄      🛸  ",
+                " 🐄     🛸  ",
+                "  🐄    🛸  ",
+                "   🐄   🛸  ",
+                "    🐄  🛸  ",
+                "     🐄 🛸  ",
+                "      🐄🛸  ",
+                "        🛸  ",
+                "        🛸💨",
+                "       🛸   ",
+                "      🛸    ",
+                "     🛸     ",
+                "    🛸      ",
+                "   🛸       ",
+                "  🛸        ",
+                " 🛸         ",
+                "🛸          ",
+                "            ",
+                "            ",
+            ),
+            2.0,
+        ),
+    }
 
-    def __init__(self, label: str, *, fps: float = 12.0) -> None:
+    def __init__(self, label: str) -> None:
         self.label = label
-        self._render_interval = 1.0 / fps
 
-    def _frame(self, n: int, message: str) -> str:
+    def _frame(self, frames: tuple[str, ...], n: int, message: str) -> str:
         """In-place redraw of one spinner frame (caller prints with end='')."""
-        glyph = self.FRAMES[n % len(self.FRAMES)]
+        glyph = frames[n % len(frames)]
         return f"{Ansi.CR}{Ansi.ERASE_LINE}{self.label}: {glyph} {message}"
 
     def _final(self, message: str) -> str:
         """Clear the line and render the final text (caller prints normally)."""
         return f"{Ansi.CR}{Ansi.ERASE_LINE}{self.label}: {message}"
+
+    def _choose_spinner(self) -> tuple[tuple[str, ...], float]:
+        frames, duration = random.choice(list(self.SPINNERS.values()))  # noqa: S311
+        duration = duration or 1.0
+        fps = len(frames) / duration
+        sleep_time = 1 / fps
+        return frames, sleep_time
 
     def spin_while(
         self,
@@ -69,15 +109,18 @@ class Spinner:
             print(f"{self.label}: {msg_fn()}", file=sys.stderr)
             work()
             return
+
+        frames, render_interval = self._choose_spinner()
+
         start = time.monotonic()
         thread = threading.Thread(target=work)
         thread.start()
         n = 0
         while thread.is_alive():
             elapsed = int(time.monotonic() - start)
-            print(self._frame(n, f"{msg_fn()} ({elapsed}s)"), end="", file=sys.stderr)
+            print(self._frame(frames, n, f"{msg_fn()} ({elapsed}s)"), end="", file=sys.stderr)
             n += 1
-            thread.join(timeout=self._render_interval)
+            thread.join(timeout=render_interval)
         elapsed = int(time.monotonic() - start)
         final = done_fn()
         if final is None:

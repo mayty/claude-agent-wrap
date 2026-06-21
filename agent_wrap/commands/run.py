@@ -24,6 +24,7 @@ from agent_wrap.lib.utils import (
     sanitize_name,
 )
 from agent_wrap.providers import get_provider
+from agent_wrap.sidecars.telegram import TelegramSidecar, TelegramSidecarConfig
 from agent_wrap.sidecars.tracker import SidecarTracker
 
 if TYPE_CHECKING:
@@ -214,8 +215,6 @@ def _parse_dockerfile_directives(
 
 
 def _build_env_args(
-    telegram_bot_token: str,
-    telegram_chat_id: str,
     agent_name: str,
     instance_id: str,
     claude_home: str,
@@ -224,10 +223,6 @@ def _build_env_args(
     args = [
         "-e",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        "-e",
-        f"TELEGRAM_BOT_TOKEN={telegram_bot_token}",
-        "-e",
-        f"TELEGRAM_CHAT_ID={telegram_chat_id}",
         "-e",
         f"AGENT_NAME={agent_name}",
         "-e",
@@ -533,6 +528,27 @@ def run(args: list[str], tool_dir: Path) -> int:
     # releases the FULL declared set, reaping orphans.
     provider = get_provider()
     sidecars = collect_sidecars(provider)
+
+    # Runner-level sidecar: Telegram decision sidecar (independent of model backend).
+    if telegram_bot_token and telegram_chat_id:
+        sidecars.append(
+            TelegramSidecar(
+                TelegramSidecarConfig(
+                    image="claude-tg:latest",
+                    container_name="agent-wrap-telegram",
+                    network_name="agent-wrap-net",
+                    internal_port=6837,
+                    bot_token=telegram_bot_token,
+                    chat_id=telegram_chat_id,
+                    agent_name=agent_name,
+                    instance_id=instance_id,
+                    health_timeout_sec=30,
+                    cold_start_time=45.0,
+                    short_circuit_time=2.0,
+                )
+            )
+        )
+
     running_handle: TextIO | None = None
     try:
         provider_run_args, running_handle = _prepare_for_launch(
@@ -564,8 +580,6 @@ def run(args: list[str], tool_dir: Path) -> int:
             *user_args,
             *volume_mounts,
             *_build_env_args(
-                telegram_bot_token,
-                telegram_chat_id,
                 agent_name,
                 instance_id,
                 claude_home,

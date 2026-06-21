@@ -11,3 +11,4 @@ agent_wrap/providers/*/pricing.json
 *.egg-info
 .coverage
 /litellm-logs
+.telegram-sidecar/

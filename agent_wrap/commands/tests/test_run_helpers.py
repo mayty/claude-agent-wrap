@@ -188,11 +188,9 @@ def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 def test_build_env_args_basic() -> None:
-    result = _build_env_args("token123", "chat456", "myagent", "myagent-uuid", "/home/ubuntu")
+    result = _build_env_args("myagent", "myagent-uuid", "/home/ubuntu")
     assert "-e" in result
     assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in result
-    assert "TELEGRAM_BOT_TOKEN=token123" in result
-    assert "TELEGRAM_CHAT_ID=chat456" in result
     assert "AGENT_NAME=myagent" in result
     assert "AGENT_INSTANCE_ID=myagent-uuid" in result
     assert "HOME=/home/ubuntu" in result
@@ -201,7 +199,7 @@ def test_build_env_args_basic() -> None:
 def test_build_env_args_term_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TERM", raising=False)
     monkeypatch.delenv("COLORTERM", raising=False)
-    result = _build_env_args("", "", "a", "b", "/h")
+    result = _build_env_args("a", "b", "/h")
     assert "TERM=xterm-256color" in result
     assert "COLORTERM=truecolor" in result
 
@@ -209,7 +207,7 @@ def test_build_env_args_term_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_build_env_args_term_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TERM", "screen")
     monkeypatch.setenv("COLORTERM", "16color")
-    result = _build_env_args("", "", "a", "b", "/h")
+    result = _build_env_args("a", "b", "/h")
     assert "TERM=screen" in result
     assert "COLORTERM=16color" in result
 
