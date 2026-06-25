@@ -8,14 +8,16 @@ import os
 import re
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_wrap import config
 from agent_wrap.lib import docker_utils
-from agent_wrap.lib.flock import file_lock
+from agent_wrap.lib.sidecar_lock import (
+    SidecarPriority,
+    sidecar_lock,
+)
 from agent_wrap.lib.utils import (
     generate_uuid,
     is_truthy_env,
@@ -36,18 +38,13 @@ if TYPE_CHECKING:
 USAGE = "[--base] [claude-args...]"
 SUMMARY = "Launch Claude Code in Docker"
 
+AGENT_WRAP_MOUNT = "/opt/agent-wrap"
+
 #: Expected number of agents queued behind the shared sidecar lock (the in-flight
 #: launch concurrency, e.g. an external "N simultaneous jobs" semaphore). Multiplied
 #: by each sidecar's hot-path walk time to size the lock timeout. Overridable via
 #: AGENT_EXPECTED_QUEUE_DEPTH for very large fan-outs.
 EXPECTED_QUEUE_DEPTH = 128
-
-#: How long a releasing (stopping) run sleeps before re-acquiring the shared lock
-#: when it has yielded to a live starter. Stops are low priority and may wait
-#: indefinitely, so this only bounds the busy-wait granularity, not total wait.
-STOP_YIELD_POLL_SEC = 0.1
-
-AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
 # Per-project state directories mounted into the container.
 # Keys are the host subdirectory names under $(pwd)/.claude/;
@@ -370,10 +367,11 @@ def _prepare_for_launch(
     """
     Prepare a launch under one shared lock: config first, then ensure all sidecars.
 
-    A single acquisition of ``tracker.lock_path`` covers both the global-config
-    read-modify-write (which concurrent launches would otherwise race on, since they
-    share one config dir) and the sidecar ensure. Config prep runs no lock of its own
-    — it is done here so there is exactly one lock per launch.
+    Uses :func:`agent_wrap.lib.sidecar_lock.sidecar_lock` with ``HI`` priority to
+    acquire the lock: a start-waiter ticket is registered before contending (so a
+    stopping run yields), and the lock is taken with a computed timeout. Config prep
+    and sidecar ensure run inside the held lock; ``register_running`` is called as
+    the last action before the lock is released, just before the agent launches.
 
     *net* is ``(use_host_net, agent_network)``; *config_ctx* carries the config-prep
     inputs. Returns ``(run_args, running_handle)``: the merged `docker run` flags,
@@ -381,10 +379,6 @@ def _prepare_for_launch(
     open until the run exits — its held ``flock`` is what tells a stopping run an agent
     is still live — and is released by :func:`_release_sidecars` in the runner's
     ``finally``.
-
-    Holds a *start-waiter* ticket from before the shared lock is taken (so a stopping
-    run yields to us) until the moment the lock is acquired, then registers *running*
-    as the last action under the lock, just before the agent launches.
     """
     use_host_net, agent_network = net
     for sidecar in sidecars:
@@ -392,27 +386,16 @@ def _prepare_for_launch(
 
     run_args: list[str] = []
     running_handle: TextIO | None = None
-    # Claim priority before contending for the lock: a stopping run that sees this
-    # held ticket yields the lock to us.
-    waiter_handle = tracker.register_waiter(instance_id)
     timeout = sidecar_lock_timeout(sidecars, _expected_queue_depth())
-    try:
-        with file_lock(tracker.lock_path, timeout=timeout):
-            # The ticket's only job — signalling "waiting for the lock" — is done; clear
-            # it first so yielding stoppers stop spinning on us (matches lock.sh).
-            tracker.clear_waiter(waiter_handle, instance_id)
-            waiter_handle = None
-            # Config prep shares this lock: it is the read-modify-write that raced.
-            _prepare_config(config_ctx)
-            for sidecar in sidecars:
-                run_args += sidecar.ensure(use_host_net=use_host_net, agent_network=agent_network)
-            # Register as running as the LAST action under the lock, on success only:
-            # from here until this run exits its held flock keeps a releaser in the
-            # ensure→docker-run gap from tearing down.
-            running_handle = tracker.register_running(instance_id)
-    finally:
-        # On any early exit (lock timeout, ensure failure) the ticket may still be held.
-        tracker.clear_waiter(waiter_handle, instance_id)
+    with sidecar_lock(SidecarPriority.HI, tracker, instance_id, timeout=timeout):
+        # Config prep shares this lock: it is the read-modify-write that raced.
+        _prepare_config(config_ctx)
+        for sidecar in sidecars:
+            run_args += sidecar.ensure(use_host_net=use_host_net, agent_network=agent_network)
+        # Register as running as the LAST action under the lock, on success only:
+        # from here until this run exits its held flock keeps a releaser in the
+        # ensure→docker-run gap from tearing down.
+        running_handle = tracker.register_running(instance_id)
     return run_args, running_handle
 
 
@@ -441,13 +424,12 @@ def _release_sidecars(
     """
     Last-light-out teardown: release ALL declared sidecars when this is the last agent.
 
-    Stops are low priority: this blocks on the shared lock for as long as needed, but
-    always yields it to a live starter (a still-held start-waiter ticket) — starts
-    keep priority. Once no starter is waiting, teardown happens only if no *other*
-    run's *running* registration is still held (no agent live anywhere). The teardown
-    is a host-wide decision, so it releases *every* declared sidecar (in reverse),
-    reaping orphans a failed or earlier run left running; ``release()`` is a no-op when
-    a container isn't running, so this is safe.
+    Uses :func:`agent_wrap.lib.sidecar_lock.sidecar_lock` with ``LO`` priority:
+    it loops internally yielding to live start-waiters, and only enters the
+    critical section once the lock is held without contention. The teardown is a
+    host-wide decision, so it releases *every* declared sidecar (in reverse),
+    reaping orphans a failed or earlier run left running; ``release()`` is a no-op
+    when a container isn't running, so this is safe.
     """
     # This run is finishing — drop our own running registration first so we don't count
     # ourselves as alive.
@@ -456,16 +438,10 @@ def _release_sidecars(
         return
     for sidecar in reversed(sidecars):
         _safe_sidecar_on_exit(sidecar)
-    while True:
-        with file_lock(tracker.lock_path):
-            if not tracker.has_live_waiters():
-                if not tracker.has_live_runners(exclude_id=instance_id):
-                    for sidecar in reversed(sidecars):
-                        sidecar.release()
-                return
-        # A starter has priority — we released the lock by leaving the block; wait a
-        # beat and retry. Low priority: this may loop indefinitely while starts arrive.
-        time.sleep(STOP_YIELD_POLL_SEC)
+    with sidecar_lock(SidecarPriority.LO, tracker, instance_id):
+        if not tracker.has_live_runners(exclude_id=instance_id):
+            for sidecar in reversed(sidecars):
+                sidecar.release()
 
 
 def run(args: list[str], tool_dir: Path) -> int:

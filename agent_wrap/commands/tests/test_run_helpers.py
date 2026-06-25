@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 import pytest_mock
 
-from agent_wrap.commands import run as run_mod
 from agent_wrap.commands.run import (
     _build_env_args,
     _build_volume_mounts,
@@ -429,7 +428,7 @@ def test_run_prepares_config_inside_single_lock(
     # Record the interleaving of lock enter/exit with the config-prep call.
     lock_name = SidecarTracker(tmp_path).lock_path.name
     events: list[str] = []
-    real_file_lock = run_mod.file_lock
+    from agent_wrap.lib.flock import file_lock as real_file_lock
 
     @contextmanager
     def tracking_file_lock(path: Path, *, timeout: float | None = None, poll: float = 0.1):  # type: ignore[no-untyped-def]
@@ -438,7 +437,7 @@ def test_run_prepares_config_inside_single_lock(
             yield
         events.append(f"lock-exit:{path.name}")
 
-    mocker.patch("agent_wrap.commands.run.file_lock", side_effect=tracking_file_lock)
+    mocker.patch("agent_wrap.lib.sidecar_lock.file_lock", side_effect=tracking_file_lock)
     mocker.patch(
         "agent_wrap.commands.run.config.prepare_global_config",
         side_effect=lambda *a, **k: events.append("prepare-global-config"),
@@ -621,7 +620,7 @@ def test_release_yields_to_live_waiter_then_proceeds(
         if len(sleeps) == 2:
             tracker.clear_waiter(waiter_handle, "starter-inst")
 
-    mocker.patch("agent_wrap.commands.run.time.sleep", side_effect=_release_on_third_sleep)
+    mocker.patch("agent_wrap.lib.sidecar_lock.time.sleep", side_effect=_release_on_third_sleep)
 
     _release_sidecars([a], tracker, "stopper-inst", running_handle=None)
 
@@ -636,7 +635,7 @@ def test_run_uses_summed_lock_timeout(
     """ensure-all is wrapped in file_lock with the summed timeout."""
     a = _sidecar_mock(mocker, "a")  # cold 120, short 2
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
-    fl = mocker.patch("agent_wrap.commands.run.file_lock")
+    fl = mocker.patch("agent_wrap.lib.sidecar_lock.file_lock")
     monkeypatch.setenv("AGENT_EXPECTED_QUEUE_DEPTH", "10")
     agent_run(["--base"], tmp_path)
     # The ensure-all lock is the timed one (the release lock blocks with no timeout).
