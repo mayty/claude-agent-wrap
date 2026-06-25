@@ -56,9 +56,27 @@ summarise() {
 
 # The "terminal wins" race: if the user answers the terminal permission
 # prompt before tapping a Telegram button, Claude sends SIGTERM to this
-# process. The held /decision HTTP connection drops, and we exit cleanly
-# so Claude proceeds with the terminal answer.
-trap 'log "SIGTERM — terminal won, exiting"; echo "{}"; exit 0' TERM
+# process. We run curl in the background (instead of command substitution)
+# so we can track its PID and kill it from the trap — this prevents
+# orphaned HTTP connections to the sidecar.
+CURL_PID=""
+CURL_OUT=""
+
+# Clean up temp file on any exit path.
+cleanup_temp() {
+    [ -n "$CURL_OUT" ] && rm -f "$CURL_OUT" 2>/dev/null || true
+}
+
+term_handler() {
+    log "SIGTERM — terminal won, exiting"
+    # Kill curl if still running (SIGKILL needed — curl may be blocked on TCP read)
+    [ -n "$CURL_PID" ] && kill -9 "$CURL_PID" 2>/dev/null || true
+    echo "{}"
+    exit 0
+}
+
+trap term_handler TERM
+trap cleanup_temp EXIT
 
 # --- main ---
 
@@ -78,31 +96,44 @@ fi
 AUTH="Authorization: Bearer ${TELEGRAM_SIDECAR_TOKEN}"
 HOST="${TELEGRAM_SIDECAR_URL}"
 
+# Temp file to capture curl output when run in background
+CURL_OUT=$(mktemp) || { log "error=mktemp-failed"; echo "{}"; exit 1; }
+
 case "$HOOK_MODE" in
     stop|stopfailure)
         # Fire-and-forget notification — forward raw stdin as-is.
+        # Run curl in background so the SIGTERM trap can kill it.
         log "request POST $HOST/notify"
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        curl -s -o /dev/null -w "%{http_code}" \
             --max-time 10 \
             -H "$AUTH" \
             -H "Content-Type: application/json" \
             -d "$HOOK_STDIN" \
-            "$HOST/notify" 2>/dev/null || true)
+            "$HOST/notify" >"$CURL_OUT" 2>/dev/null &
+        CURL_PID=$!
+        wait "$CURL_PID" 2>/dev/null || true
+        CURL_PID=""
+        http_code=$(cat "$CURL_OUT")
         log "stop-reason=notified http-status=${http_code:-0}"
         ;;
     *)
         # PermissionRequest — held-open decision, raw stdin forwarded as-is.
-        # Connection: close ensures clean socket teardown on SIGTERM.
+        # Run curl in background so the SIGTERM trap can kill it, preventing
+        # orphaned connections on the "terminal wins" race.
         log "request POST $HOST/decision"
-        response=$(curl -s -w "\n%{http_code}" \
+        curl -s -w "\n%{http_code}" \
             --max-time 540 \
             -H "$AUTH" \
             -H "Content-Type: application/json" \
             -H "Connection: close" \
             -d "$HOOK_STDIN" \
-            "$HOST/decision" 2>/dev/null || true)
+            "$HOST/decision" >"$CURL_OUT" 2>/dev/null &
+        CURL_PID=$!
+        wait "$CURL_PID" 2>/dev/null || true
+        CURL_PID=""
 
         # Split response: last line is the HTTP status code
+        response=$(cat "$CURL_OUT")
         http_code=$(echo "$response" | tail -1)
         body=$(echo "$response" | sed '$d')
 
