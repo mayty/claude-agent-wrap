@@ -426,7 +426,7 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
 
     sc.release()
 
-    mock_unreg.assert_called_once()
+    mock_unreg.assert_not_called()
     mock_spin.assert_called_once()
 
 
@@ -439,19 +439,29 @@ def test_release_skips_when_not_running(mocker: pytest_mock.MockFixture) -> None
 
     sc.release()
 
-    mock_unreg.assert_called_once()
+    mock_unreg.assert_not_called()
     mock_spin.assert_not_called()
 
 
-def test_release_unregister_called_even_without_token(
+def test_on_exit_unregister_called_even_without_token(
     mocker: pytest_mock.MockFixture,
 ) -> None:
-    """Unregister is always called; it's a no-op internally when token is empty."""
+    """Unregister is always called via on_exit; it's a no-op internally when token is empty."""
     sc = _sidecar()
     sc._auth_token = ""
-    mocker.patch.object(sc, "_is_running", return_value=False)
     mock_unreg = mocker.patch.object(sc, "_unregister")
 
-    sc.release()
+    sc.on_exit()
+
+    mock_unreg.assert_called_once()
+
+
+def test_on_exit_calls_unregister(mocker: pytest_mock.MockFixture) -> None:
+    """on_exit delegates to _unregister to tear down the per-agent session."""
+    sc = _sidecar()
+    sc._auth_token = "tok-exit"
+    mock_unreg = mocker.patch.object(sc, "_unregister")
+
+    sc.on_exit()
 
     mock_unreg.assert_called_once()

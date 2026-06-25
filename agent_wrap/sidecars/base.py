@@ -72,3 +72,13 @@ class Sidecar(ABC):
         is not running (the runner releases every sidecar it began ensuring, in
         reverse order, including one whose ``ensure()`` raised mid-start).
         """
+
+    def on_exit(self) -> None:  # noqa: B027 -- intentional optional no-op hook
+        """
+        Per-agent cleanup, run by the runner *before* the shared lock is taken.
+
+        Called in reverse ensure order for every sidecar this agent began ensuring.
+        Default no-op. ``TelegramSidecar`` overrides it to tear down the per-run
+        auth token via ``/unregister``. Must not raise — a failure here must not
+        prevent the runner from reaching ``release()``.
+        """

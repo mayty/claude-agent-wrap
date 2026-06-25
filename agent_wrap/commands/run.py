@@ -416,6 +416,22 @@ def _prepare_for_launch(
     return run_args, running_handle
 
 
+def _safe_sidecar_on_exit(sidecar: Sidecar) -> None:
+    """
+    Call ``sidecar.on_exit()``, logging and swallowing any exception.
+
+    ``on_exit()`` is best-effort per-agent cleanup — a failure must not block
+    the runner from eventually calling ``release()`` for this sidecar.
+    """
+    try:
+        sidecar.on_exit()
+    except Exception:  # noqa: BLE001
+        print(
+            f"sidecar.on_exit() failed for {type(sidecar).__name__}, continuing with release",
+            file=sys.stderr,
+        )
+
+
 def _release_sidecars(
     sidecars: list[Sidecar],
     tracker: SidecarTracker,
@@ -438,6 +454,8 @@ def _release_sidecars(
     tracker.clear_running(running_handle, instance_id)
     if not sidecars:
         return
+    for sidecar in reversed(sidecars):
+        _safe_sidecar_on_exit(sidecar)
     while True:
         with file_lock(tracker.lock_path):
             if not tracker.has_live_waiters():

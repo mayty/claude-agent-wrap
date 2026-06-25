@@ -141,7 +141,6 @@ class TelegramSidecar(Sidecar):
         decided the run may stop. Idempotent — a no-op when the container is
         not running.
         """
-        self._unregister()
         if self._is_running():
             _SPINNER.spin_while(
                 message="stopping…",
@@ -331,3 +330,6 @@ class TelegramSidecar(Sidecar):
                 args.extend(["--add-host", f"{self.config.container_name}:{sidecar_ip}"])
 
         return args
+
+    def on_exit(self) -> None:
+        self._unregister()
