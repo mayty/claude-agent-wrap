@@ -20,6 +20,8 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.spinner import PollResult, Spinner
@@ -52,6 +54,9 @@ class TelegramSidecarConfig:
     cold_start_time: float
     #: Seconds one agent takes to walk the lock on the hot path.
     short_circuit_time: float
+
+    # --- paths ---
+    log_dir: Path
 
 
 class TelegramSidecar(Sidecar):
@@ -206,6 +211,13 @@ class TelegramSidecar(Sidecar):
         if rc == 0:
             docker_run("rm", "-f", self.config.container_name)
 
+        # Prepare log directory and LOG_LOCATION
+        dt = datetime.now().strftime("%Y%m%dT%H%M%S")
+        log_dir = self.config.log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_filename = f"{dt}.log"
+        container_log_path = f"/var/log/telegram-sidecar/{log_filename}"
+
         cmd = [
             "run",
             "-d",
@@ -221,6 +233,10 @@ class TelegramSidecar(Sidecar):
             f"TELEGRAM_BOT_TOKEN={self.config.bot_token}",
             "-e",
             f"TELEGRAM_CHAT_ID={self.config.chat_id}",
+            "-e",
+            f"LOG_LOCATION={container_log_path}",
+            "-v",
+            f"{log_dir}:/var/log/telegram-sidecar",
             self.config.image,
         ]
         _, rc = docker_run(*cmd)

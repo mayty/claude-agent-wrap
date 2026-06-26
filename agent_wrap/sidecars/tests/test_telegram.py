@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,6 +32,7 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
         "health_timeout_sec": 30,
         "cold_start_time": 45.0,
         "short_circuit_time": 2.0,
+        "log_dir": Path("/tmp/test-tg-logs"),
     }
     defaults.update(overrides)
     return TelegramSidecarConfig(**defaults)  # type: ignore[arg-type]
@@ -61,6 +63,7 @@ def test_config_fields() -> None:
     assert cfg.health_timeout_sec == 30
     assert cfg.cold_start_time == 45.0
     assert cfg.short_circuit_time == 2.0
+    assert cfg.log_dir == Path("/tmp/test-tg-logs")
 
 
 def test_timing() -> None:
@@ -201,6 +204,15 @@ def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
     assert "TELEGRAM_CHAT_ID=test-chat-id" in args
     assert "-p" in args
     assert "127.0.0.1:6837:6837" in args
+    # Volume mount for logs
+    assert "-v" in args
+    v_idx = args.index("-v")
+    assert args[v_idx + 1] == "/tmp/test-tg-logs:/var/log/telegram-sidecar"
+    # LOG_LOCATION env var should be present (timestamp varies)
+    log_loc_args = [a for a in args if a.startswith("LOG_LOCATION=")]
+    assert len(log_loc_args) == 1
+    assert log_loc_args[0].startswith("LOG_LOCATION=/var/log/telegram-sidecar/")
+    assert log_loc_args[0].endswith(".log")
 
 
 def test_start_reaps_existing_container(mocker: pytest_mock.MockFixture) -> None:
@@ -217,6 +229,16 @@ def test_start_failure_raises(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("agent_wrap.sidecars.telegram.get_user_args", return_value=[])
     with pytest.raises(SystemExit):
         _sidecar()._start()
+
+
+def test_start_creates_log_dir(mocker: pytest_mock.MockFixture, tmp_path: Path) -> None:
+    log_dir = tmp_path / "tg-logs"
+    assert not log_dir.exists()
+    mocker.patch(_DOCKER, return_value=("", 0))
+    mocker.patch("agent_wrap.sidecars.telegram.get_user_args", return_value=[])
+    _sidecar(log_dir=log_dir)._start()
+    assert log_dir.exists()
+    assert log_dir.is_dir()
 
 
 # --- health pollution ---

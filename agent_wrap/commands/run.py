@@ -539,6 +539,7 @@ def run(args: list[str], tool_dir: Path) -> int:
                     health_timeout_sec=30,
                     cold_start_time=45.0,
                     short_circuit_time=2.0,
+                    log_dir=tool_dir / ".agent-launches" / "telegram-sidecar-logs",
                 )
             )
         )
