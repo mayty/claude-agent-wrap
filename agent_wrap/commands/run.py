@@ -528,7 +528,7 @@ def run(args: list[str], tool_dir: Path) -> int:
         sidecars.append(
             TelegramSidecar(
                 TelegramSidecarConfig(
-                    image="claude-tg:latest",
+                    image="mayty/claude-agent-wrap-telegram:pr-1",
                     container_name="agent-wrap-telegram",
                     network_name="agent-wrap-net",
                     internal_port=6837,

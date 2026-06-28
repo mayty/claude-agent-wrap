@@ -20,8 +20,11 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.spinner import PollResult, Spinner
@@ -212,7 +215,7 @@ class TelegramSidecar(Sidecar):
             docker_run("rm", "-f", self.config.container_name)
 
         # Prepare log directory and LOG_LOCATION
-        dt = datetime.now().strftime("%Y%m%dT%H%M%S")
+        dt = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
         log_dir = self.config.log_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         log_filename = f"{dt}.log"

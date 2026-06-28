@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -17,11 +18,13 @@ from agent_wrap.sidecars.telegram import (
 
 # --- test fixtures ---
 
+_TEST_LOG_DIR = Path(tempfile.gettempdir(), "test-tg-logs")
+
 
 def _config(**overrides: object) -> TelegramSidecarConfig:
     """Build a TelegramSidecarConfig with simple defaults."""
     defaults: dict = {
-        "image": "agent-wrap-telegram:latest",
+        "image": "mayty/claude-agent-wrap-telegram:pr-1",
         "container_name": "agent-wrap-telegram",
         "network_name": "agent-wrap-net",
         "internal_port": 6837,
@@ -32,7 +35,7 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
         "health_timeout_sec": 30,
         "cold_start_time": 45.0,
         "short_circuit_time": 2.0,
-        "log_dir": Path("/tmp/test-tg-logs"),
+        "log_dir": _TEST_LOG_DIR,
     }
     defaults.update(overrides)
     return TelegramSidecarConfig(**defaults)  # type: ignore[arg-type]
@@ -52,7 +55,7 @@ _URLOPEN = "urllib.request.urlopen"
 
 def test_config_fields() -> None:
     cfg = _config()
-    assert cfg.image == "agent-wrap-telegram:latest"
+    assert cfg.image == "mayty/claude-agent-wrap-telegram:pr-1"
     assert cfg.container_name == "agent-wrap-telegram"
     assert cfg.network_name == "agent-wrap-net"
     assert cfg.internal_port == 6837
@@ -63,7 +66,7 @@ def test_config_fields() -> None:
     assert cfg.health_timeout_sec == 30
     assert cfg.cold_start_time == 45.0
     assert cfg.short_circuit_time == 2.0
-    assert cfg.log_dir == Path("/tmp/test-tg-logs")
+    assert cfg.log_dir == _TEST_LOG_DIR
 
 
 def test_timing() -> None:
@@ -207,7 +210,7 @@ def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
     # Volume mount for logs
     assert "-v" in args
     v_idx = args.index("-v")
-    assert args[v_idx + 1] == "/tmp/test-tg-logs:/var/log/telegram-sidecar"
+    assert args[v_idx + 1] == f"{_TEST_LOG_DIR}:/var/log/telegram-sidecar"
     # LOG_LOCATION env var should be present (timestamp varies)
     log_loc_args = [a for a in args if a.startswith("LOG_LOCATION=")]
     assert len(log_loc_args) == 1
