@@ -277,9 +277,9 @@ def collect_sidecars(provider: Provider) -> list[Sidecar]:
     """
     Gather every sidecar an agent run depends on.
 
-    Today this is exactly the selected provider's sidecars; it is the single place a
-    runner-level sidecar (e.g. a future decision-maker, independent of the model
-    backend) would be appended.
+    Today this is exactly the selected provider's sidecars. Runner-level sidecars
+    (e.g. a Telegram decision-maker, independent of the model backend) are appended
+    later in `run()`.
     """
     return list(provider.sidecars())
 
