@@ -32,8 +32,10 @@ class Bucket:
             self.cw_5m += h5
             self.cw_1h += h1
         else:
-            # Older sessions / non-Anthropic providers may only set the flat
-            # `cache_creation_input_tokens` total. Charge those at the 5m rate.
+            # No ephemeral 5m/1h split was available — neither from the response
+            # nor inferred from the request's cache_control TTL (see
+            # stats.extract_usage / request_cache_ttl). Charge the flat
+            # `cache_creation_input_tokens` total at the 5m rate as a last resort.
             self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
         self.cr += usage.get("cache_read_input_tokens", 0) or 0
         # A None cost means pricing was unavailable for this request; track that

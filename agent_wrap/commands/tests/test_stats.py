@@ -7,13 +7,16 @@ import json
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import agent_wrap.commands.stats as stats_mod
 from agent_wrap.commands.stats import (
     PriceSource,
     _aggregate_projects,
     _best_prefix_key,
     _collect_orphaned,
     _cost_record,
+    extract_usage,
     render,
+    request_cache_ttl,
 )
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.tree import build_project_tree, flatten_tree
@@ -297,3 +300,150 @@ def test_render_without_orphaned_has_no_row(monkeypatch):
     """When orphaned is None, no <orphaned> row appears."""
     out = render([], {}, {}, 30, orphaned=None)
     assert "<orphaned>" not in out
+
+
+# --- request_cache_ttl: extracting the cache TTL tier from a request ---------
+
+
+def _request_with_ttls(*ttls: str | None) -> dict:
+    """Build a request whose system blocks carry one cache_control per `ttls`."""
+    system = []
+    for ttl in ttls:
+        cc: dict = {"type": "ephemeral"}
+        if ttl is not None:
+            cc["ttl"] = ttl
+        system.append({"type": "text", "text": "x", "cache_control": cc})
+    return {"body": {"data": {"system": system}}}
+
+
+def test_request_cache_ttl_default_is_5m():
+    # A bare {"type": "ephemeral"} marker (no ttl) is the 5-minute default.
+    assert request_cache_ttl(_request_with_ttls(None, None)) == "5m"
+
+
+def test_request_cache_ttl_one_hour():
+    assert request_cache_ttl(_request_with_ttls("1h", "1h")) == "1h"
+
+
+def test_request_cache_ttl_mixed():
+    assert request_cache_ttl(_request_with_ttls(None, "1h")) == "mixed"
+
+
+def test_request_cache_ttl_none_without_markers():
+    assert request_cache_ttl({"body": {"data": {"system": []}}}) is None
+    assert request_cache_ttl(None) is None
+    assert request_cache_ttl({}) is None
+
+
+# --- extract_usage: request-TTL attribution of a flat cache-write total -------
+
+
+def _flat_cache_response(cw: int = 1000) -> dict:
+    """Build a response carrying only the flat cache_creation_input_tokens (Bedrock)."""
+    return {
+        "usage": {
+            "prompt_tokens": 5000,
+            "completion_tokens": 100,
+            "cache_creation_input_tokens": cw,
+            "cache_read_input_tokens": 0,
+        }
+    }
+
+
+def test_extract_usage_attributes_flat_total_to_1h():
+    usage = extract_usage(_flat_cache_response(1000), "1h")
+    assert usage["cache_creation"] == {"ephemeral_1h_input_tokens": 1000}
+
+
+def test_extract_usage_attributes_flat_total_to_5m():
+    usage = extract_usage(_flat_cache_response(1000), "5m")
+    assert usage["cache_creation"] == {"ephemeral_5m_input_tokens": 1000}
+
+
+def test_extract_usage_defaults_to_5m_without_request_ttl():
+    # No request TTL → no attribution; the flat total is left for the downstream
+    # 5m fallback in _cost_for_tiers / Bucket.add (unchanged legacy behavior).
+    usage = extract_usage(_flat_cache_response(1000))
+    assert usage["cache_creation"] == {}
+    assert usage["cache_creation_input_tokens"] == 1000
+
+
+def test_extract_usage_trusts_response_split_over_request_ttl():
+    # When the response already reports the ephemeral split, the request TTL is
+    # ignored — the response is authoritative.
+    response = {
+        "usage": {
+            "prompt_tokens": 5000,
+            "completion_tokens": 100,
+            "cache_creation_input_tokens": 1000,
+            "ephemeral_5m_input_tokens": 600,
+            "ephemeral_1h_input_tokens": 400,
+        }
+    }
+    usage = extract_usage(response, "1h")
+    assert usage["cache_creation"] == {
+        "ephemeral_5m_input_tokens": 600,
+        "ephemeral_1h_input_tokens": 400,
+    }
+
+
+def test_extract_usage_reads_nested_cache_creation_split():
+    # Anthropic's documented shape nests the split under usage.cache_creation.
+    # That response-provided split wins over a conflicting request TTL.
+    response = {
+        "usage": {
+            "input_tokens": 2048,
+            "cache_read_input_tokens": 1800,
+            "cache_creation_input_tokens": 248,
+            "output_tokens": 503,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 148,
+                "ephemeral_1h_input_tokens": 100,
+            },
+        }
+    }
+    usage = extract_usage(response, "5m")
+    assert usage["cache_creation"] == {
+        "ephemeral_5m_input_tokens": 148,
+        "ephemeral_1h_input_tokens": 100,
+    }
+
+
+def test_extract_usage_mixed_ttl_falls_back_to_5m_and_warns(monkeypatch, capsys):
+    monkeypatch.setattr(stats_mod, "_mixed_cache_ttl_warned", False)
+    usage = extract_usage(_flat_cache_response(1000), "mixed")
+    # Unattributed: left flat for the 5m fallback, and warned once.
+    assert usage["cache_creation"] == {}
+    assert usage["cache_creation_input_tokens"] == 1000
+    assert "mixed 5m and 1h cache TTLs" in capsys.readouterr().err
+
+    # Second call is silent (warn-once).
+    extract_usage(_flat_cache_response(1000), "mixed")
+    assert capsys.readouterr().err == ""
+
+
+def test_cost_record_uses_request_ttl_for_1h_rate(monkeypatch):
+    # End-to-end through _cost_record: a 1h request bills cache writes at the
+    # higher 1h rate, proving the TTL threads through to the cost math.
+    prices = _make_prices(monkeypatch, priced=True)  # cw_5m=6.875, cw_1h=11.0
+    rec_1h = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": 1_700_000_000.0},
+        "request": _request_with_ttls("1h"),
+        "response": _flat_cache_response(1_000_000),
+    }
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    _cost_record(rec_1h, "bedrock", prices, by_day)
+    (bucket_1h,) = next(iter(by_day.values())).values()
+    assert bucket_1h.cw_1h == 1_000_000
+    assert bucket_1h.cw_5m == 0
+
+    rec_5m = {**rec_1h, "request": _request_with_ttls(None)}
+    by_day_5m: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    _cost_record(rec_5m, "bedrock", prices, by_day_5m)
+    (bucket_5m,) = next(iter(by_day_5m.values())).values()
+    assert bucket_5m.cw_5m == 1_000_000
+    assert bucket_5m.cw_1h == 0
+    # Higher TTL ⇒ strictly higher cost for the same token count.
+    assert bucket_1h.cost > bucket_5m.cost

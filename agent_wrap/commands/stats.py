@@ -64,19 +64,85 @@ def _best_prefix_key(query: str, keys: Iterable[str]) -> str | None:
     return best
 
 
-def extract_usage(response: dict | None) -> dict[str, Any]:
-    """Extract and normalize usage dict from LiteLLM response object."""
+def _collect_cache_ttls(node: Any, out: set[str]) -> None:
+    """Recursively gather every ``cache_control`` breakpoint's TTL into ``out``."""
+    if isinstance(node, dict):
+        cc = node.get("cache_control")
+        if isinstance(cc, dict):
+            # Per the Anthropic/Bedrock protocol, a "ttl": "1h" field selects the
+            # 1-hour cache; its absence (or "5m") means the 5-minute default.
+            out.add("1h" if cc.get("ttl") == "1h" else "5m")
+        for key, value in node.items():
+            if key == "cache_control":
+                continue
+            _collect_cache_ttls(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_cache_ttls(item, out)
+
+
+def request_cache_ttl(request: dict | None) -> str | None:
+    """
+    Determine the cache-write TTL tier a request asked for from its markers.
+
+    The real Anthropic request lives at ``request.body.data`` (see
+    ``providers/litellm_common/callback.py``). Each cache breakpoint carries a
+    ``cache_control`` object whose optional ``"ttl": "1h"`` selects the 1-hour
+    cache (absent → 5-minute default). Bedrock/LiteLLM responses report only a
+    flat cache-write total with no 5m/1h split, so this request-side marker is the
+    authoritative source for attributing that total to a tier.
+
+    Returns "5m" or "1h" when all breakpoints agree, "mixed" when they disagree,
+    or None when the request carries no ``cache_control`` markers at all.
+    """
+    if not isinstance(request, dict):
+        return None
+    body = request.get("body")
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        return None
+    ttls: set[str] = set()
+    _collect_cache_ttls(data, ttls)
+    if not ttls:
+        return None
+    if len(ttls) > 1:
+        return "mixed"
+    return ttls.pop()
+
+
+def _response_cache_split(usage: dict) -> dict[str, int]:
+    """
+    Read the response's ephemeral 5m/1h cache-write split, if it reports one.
+
+    Anthropic documents the split nested under ``usage.cache_creation``; some paths
+    surface it as top-level ``usage`` keys instead. Both shapes are read (nested
+    first, top-level overriding) so a response-provided split is authoritative over
+    request-TTL inference. Returns an empty dict when no split is present.
+    """
+    split: dict[str, int] = {}
+    for source in (usage.get("cache_creation"), usage):
+        if not isinstance(source, dict):
+            continue
+        for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"):
+            if key in source:
+                split[key] = source[key]
+    return split
+
+
+def extract_usage(response: dict | None, request_ttl: str | None = None) -> dict[str, Any]:
+    """
+    Extract and normalize usage dict from a LiteLLM response object.
+
+    ``request_ttl`` (from :func:`request_cache_ttl`) attributes the cache-write
+    tokens to a 5m/1h tier when the response itself omits the split.
+    """
     if not response or not isinstance(response, dict):
         return {}
     usage = response.get("usage")
     if not usage or not isinstance(usage, dict):
         return {}
 
-    cache_creation = {}
-    if "ephemeral_5m_input_tokens" in usage:
-        cache_creation["ephemeral_5m_input_tokens"] = usage["ephemeral_5m_input_tokens"]
-    if "ephemeral_1h_input_tokens" in usage:
-        cache_creation["ephemeral_1h_input_tokens"] = usage["ephemeral_1h_input_tokens"]
+    cache_creation = _response_cache_split(usage)
 
     # LiteLLM standardizes to prompt_tokens/completion_tokens, but some
     # providers or older versions might use input_tokens/output_tokens.
@@ -84,6 +150,18 @@ def extract_usage(response: dict | None) -> dict[str, Any]:
     out_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or 0
     cw_tokens = usage.get("cache_creation_input_tokens") or 0
     cr_tokens = usage.get("cache_read_input_tokens") or 0
+
+    # When the response gave no ephemeral breakdown (the Bedrock/LiteLLM case),
+    # attribute the flat cache-write total to the tier the request asked for. A
+    # request that mixed TTLs across breakpoints can't be split from a single
+    # total, so it falls through to the 5m default with a one-shot warning.
+    if not cache_creation and cw_tokens and request_ttl:
+        if request_ttl == "mixed":
+            _warn_mixed_cache_ttl()
+        elif request_ttl == "1h":
+            cache_creation["ephemeral_1h_input_tokens"] = cw_tokens
+        else:
+            cache_creation["ephemeral_5m_input_tokens"] = cw_tokens
 
     return {
         "input_tokens": in_tokens,
@@ -134,19 +212,27 @@ class PriceSource:
                 return table[match]
         return None
 
-    def compute_cost(self, provider: str, model: str, raw_response: dict | None) -> float | None:
+    def compute_cost(
+        self,
+        provider: str,
+        model: str,
+        raw_response: dict | None,
+        request_ttl: str | None = None,
+    ) -> float | None:
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
 
         Encapsulates the full pipeline: model-to-tier lookup, usage extraction,
-        and the per-tier cost formula. Callers that also need the usage dict for
+        and the per-tier cost formula. ``request_ttl`` (from
+        :func:`request_cache_ttl`) attributes cache writes to a 5m/1h tier when
+        the response omits the split. Callers that also need the usage dict for
         accumulation should call ``get_pricing`` + ``extract_usage`` +
         ``_cost_for_tiers`` directly instead.
         """
         tiers = self.get_pricing(provider, model.rsplit("/", 1)[-1])
         if tiers is None:
             return None
-        usage = extract_usage(raw_response)
+        usage = extract_usage(raw_response, request_ttl)
         return _cost_for_tiers(tiers, usage)
 
     def _fetch(self, provider: str) -> dict[str, list[dict]]:
@@ -179,6 +265,29 @@ class PriceSource:
 
 
 _usage_convention_warned = False
+_mixed_cache_ttl_warned = False
+
+
+def _warn_mixed_cache_ttl() -> None:
+    """
+    Emit a one-shot warning when a request mixed 5m and 1h cache TTLs.
+
+    The response reports only a flat cache-write total, so when a single request
+    used both 5-minute and 1-hour cache breakpoints we cannot split that total
+    between the two tiers. Such requests fall back to the 5m rate; warn once so
+    the (rare) imprecision is visible without spamming a line per record.
+    """
+    global _mixed_cache_ttl_warned  # noqa: PLW0603
+    if _mixed_cache_ttl_warned:
+        return
+    _mixed_cache_ttl_warned = True
+    print(
+        "warning: a request mixed 5m and 1h cache TTLs, but the response reports "
+        "only a flat cache-write total. Those writes are priced at the 5m rate; "
+        "reported cache-write cost may be slightly low. See "
+        "agent_wrap/commands/stats.py:request_cache_ttl.",
+        file=sys.stderr,
+    )
 
 
 def _warn_usage_convention_drift(in_tokens: int, cw_5m: int, cw_1h: int, cr_tokens: int) -> None:
@@ -212,6 +321,10 @@ def _cost_for_tiers(tiers: list[dict], usage: dict) -> float:
     out_tokens = usage.get("output_tokens", 0) or 0
     cr_tokens = usage.get("cache_read_input_tokens", 0) or 0
 
+    # `cache_creation` is populated either from the response's ephemeral split or,
+    # when that's absent, from the request's cache_control TTL (see extract_usage /
+    # request_cache_ttl). Only when neither source resolved a tier do we fall back
+    # to charging the flat total at the 5m rate.
     cc = usage.get("cache_creation") or {}
     cw_5m = cc.get("ephemeral_5m_input_tokens", 0) or 0
     cw_1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
@@ -321,10 +434,13 @@ def _cost_record(
     ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
     day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
 
-    usage = extract_usage(rec.get("response"))
+    # The request's cache_control TTL attributes the flat cache-write total to a
+    # 5m/1h tier when the response omits the breakdown (the Bedrock case).
+    request_ttl = request_cache_ttl(rec.get("request"))
+    usage = extract_usage(rec.get("response"), request_ttl)
     # Pass the raw result through: None means pricing was unknown for this
     # request, which the Bucket records distinctly from a known-zero cost.
-    cost = prices.compute_cost(provider_name, model, rec.get("response"))
+    cost = prices.compute_cost(provider_name, model, rec.get("response"), request_ttl)
 
     by_day[day_key][display_model].add(usage, cost)
     return ts
