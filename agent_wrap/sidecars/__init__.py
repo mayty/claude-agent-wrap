@@ -14,6 +14,7 @@ starting and running agents that drive the single teardown decision.
 """
 
 from agent_wrap.sidecars.base import Sidecar
+from agent_wrap.sidecars.telegram import TelegramSidecar, TelegramSidecarConfig
 from agent_wrap.sidecars.tracker import SidecarTracker
 
-__all__ = ["Sidecar", "SidecarTracker"]
+__all__ = ["Sidecar", "SidecarTracker", "TelegramSidecar", "TelegramSidecarConfig"]

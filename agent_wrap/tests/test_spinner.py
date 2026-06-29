@@ -10,17 +10,19 @@ from agent_wrap.lib.spinner import PollResult, Spinner
 
 
 def test_frame_includes_label_and_glyph() -> None:
-    line = Spinner("my-op")._frame(0, "working")
+    frames = Spinner.SPINNERS["default"][0]
+    line = Spinner("my-op")._frame(frames, 0, "working")
     assert "my-op: " in line
-    assert Spinner.FRAMES[0] in line
+    assert frames[0] in line
     assert "\033[2K" in line  # erase-line, redrawn in place
     assert line.endswith("working")
 
 
 def test_frame_cycles_glyphs() -> None:
     spin = Spinner("my-op")
+    frames = Spinner.SPINNERS["default"][0]
     # Index wraps around the frame tuple.
-    assert spin.FRAMES[0] in spin._frame(len(spin.FRAMES), "x")
+    assert frames[0] in spin._frame(frames, len(frames), "x")
 
 
 def test_final_clears_line() -> None:
@@ -29,10 +31,12 @@ def test_final_clears_line() -> None:
     assert line.endswith("my-op: done")
 
 
-def test_fps_sets_render_interval() -> None:
-    assert Spinner("my-op", fps=10)._render_interval == 0.1
-    # Default cadence is 12 fps for a fluid animation.
-    assert Spinner("my-op")._render_interval == 1.0 / 12.0
+def test_choose_spinner_returns_frames_and_interval() -> None:
+    frames, interval = Spinner("my-op")._choose_spinner()
+    assert isinstance(frames, tuple)
+    assert len(frames) > 0
+    assert isinstance(interval, float)
+    assert interval > 0
 
 
 def test_spin_while_runs_work_non_tty(

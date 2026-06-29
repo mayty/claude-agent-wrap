@@ -12,7 +12,6 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 | `AGENT_NAME` | from `# agent-name:` or sanitized project dir |
 | `HOME` | `/home/<agent-user>` (default `/home/ubuntu`) |
 | `TERM`, `COLORTERM` | forwarded from host shell, defaulting to `xterm-256color` / `truecolor` if unset |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | always passed (empty if not configured in `~/claude_keys.json`). The notification script checks that both are non-empty before sending. |
 
 ## Provider-injected vars
 
