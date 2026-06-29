@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 The Telegram decision sidecar as a ``Sidecar``.
 
@@ -61,6 +61,13 @@ class TelegramSidecarConfig:
     # --- paths ---
     log_dir: Path
 
+    # --- headless ---
+    #: When true, Claude Code runs in a mode that never exercises the sidecar
+    #: (--bare/--safe-mode disable hooks; -p/--print is non-interactive). The
+    #: sidecar is still *declared* so last-light-out teardown reaps the shared
+    #: container, but its startup (prepare/ensure) is skipped.
+    headless: bool = False
+
 
 class TelegramSidecar(Sidecar):
     """The shared Telegram decision sidecar container, managed as a singleton sidecar."""
@@ -83,6 +90,8 @@ class TelegramSidecar(Sidecar):
 
     def prepare(self) -> None:
         """Pull the sidecar image lock-free, before the runner takes the shared lock."""
+        if self.config.headless:
+            return  # headless run never uses the sidecar — don't pull
         if image_exists(self.config.image):
             return
         print(
@@ -107,6 +116,13 @@ class TelegramSidecar(Sidecar):
         (``TELEGRAM_SIDECAR_URL``, ``TELEGRAM_SIDECAR_TOKEN``) plus network
         connectivity flags so the agent can reach the sidecar.
         """
+        if self.config.headless:
+            # Headless run never fires hooks/permission prompts — don't start the
+            # container or hand the agent any sidecar env. release() stays active
+            # (it is _is_running()-gated) so this run still reaps the shared
+            # singleton if it is the last one out.
+            return []
+
         agent_in_host_netns = bool(use_host_net) or agent_network == "host"
 
         self._ensure_network()
