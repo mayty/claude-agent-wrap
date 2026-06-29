@@ -24,7 +24,10 @@ _TEST_LOG_DIR = Path(tempfile.gettempdir(), "test-tg-logs")
 def _config(**overrides: object) -> TelegramSidecarConfig:
     """Build a TelegramSidecarConfig with simple defaults."""
     defaults: dict = {
-        "image": "mayty/claude-agent-wrap-telegram:pr-1",
+        "image": (
+            "mayty/claude-agent-wrap-telegram:0.1.0"
+            "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
+        ),
         "container_name": "agent-wrap-telegram",
         "network_name": "agent-wrap-net",
         "internal_port": 6837,
@@ -55,7 +58,10 @@ _URLOPEN = "urllib.request.urlopen"
 
 def test_config_fields() -> None:
     cfg = _config()
-    assert cfg.image == "mayty/claude-agent-wrap-telegram:pr-1"
+    assert cfg.image == (
+        "mayty/claude-agent-wrap-telegram:0.1.0"
+        "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
+    )
     assert cfg.container_name == "agent-wrap-telegram"
     assert cfg.network_name == "agent-wrap-net"
     assert cfg.internal_port == 6837
