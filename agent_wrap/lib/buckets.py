@@ -5,7 +5,17 @@ from __future__ import annotations
 
 
 class Bucket:
-    __slots__ = ("cost", "cost_unknown", "cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
+    __slots__ = (
+        "cost",
+        "cost_unknown",
+        "cr",
+        "cw_1h",
+        "cw_5m",
+        "in_",
+        "msgs",
+        "out",
+        "unrecorded",
+    )
 
     def __init__(self) -> None:
         self.msgs = 0
@@ -20,9 +30,19 @@ class Bucket:
         # requests all errored out and so were never billable). Callers must
         # use this flag — not `cost <= 0.0` — to decide whether to render "?".
         self.cost_unknown = False
+        # Count of successful requests whose usage was never recorded (response
+        # logged as a bare "<Response ...>" string before the callback fix, or
+        # tagged "_usage_source": "unrecoverable" after it). These fold in as
+        # zero-token / $0 contributions, so their cost is silently missing —
+        # tracked here so `agent stats` can footnote the count rather than hide it.
+        self.unrecorded = 0
 
-    def add(self, usage: dict, request_cost: float | None = 0.0) -> None:
+    def add(
+        self, usage: dict, request_cost: float | None = 0.0, *, unrecorded: bool = False
+    ) -> None:
         self.msgs += 1
+        if unrecorded:
+            self.unrecorded += 1
         self.in_ += usage.get("input_tokens", 0) or 0
         self.out += usage.get("output_tokens", 0) or 0
         cc = usage.get("cache_creation") or {}
@@ -54,6 +74,7 @@ class Bucket:
         self.cr += other.cr
         self.cost += other.cost
         self.cost_unknown = self.cost_unknown or other.cost_unknown
+        self.unrecorded += other.unrecorded
 
     @property
     def cw(self) -> int:

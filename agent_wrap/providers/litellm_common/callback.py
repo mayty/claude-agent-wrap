@@ -40,6 +40,7 @@ except ImportError:
 
 
 if TYPE_CHECKING:
+    from .string_hasher import StringHasher
 
     class MetaData(TypedDict):
         count: int
@@ -120,6 +121,84 @@ def _get_provider() -> str:
     return name if _PROVIDER_RE.match(name) else _DEFAULT_PROVIDER
 
 
+def _usage_from_slo(logging_object: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Synthesize a usage dict from LiteLLM's standard_logging_object token fields.
+
+    The SLO exposes flat ``prompt_tokens``/``completion_tokens`` (and may carry a
+    cache split). Returns a ``{"usage": {...}}`` dict the cost path can read, or
+    None when the SLO holds no usable token counts.
+    """
+    if not isinstance(logging_object, dict):
+        return None
+    in_tokens = logging_object.get("prompt_tokens")
+    out_tokens = logging_object.get("completion_tokens")
+    cw_tokens = logging_object.get("cache_creation_input_tokens")
+    cr_tokens = logging_object.get("cache_read_input_tokens")
+    if not any((in_tokens, out_tokens, cw_tokens, cr_tokens)):
+        return None
+    usage: dict[str, Any] = {}
+    if in_tokens:
+        usage["prompt_tokens"] = in_tokens
+    if out_tokens:
+        usage["completion_tokens"] = out_tokens
+    if cw_tokens:
+        usage["cache_creation_input_tokens"] = cw_tokens
+    if cr_tokens:
+        usage["cache_read_input_tokens"] = cr_tokens
+    return {"usage": usage}
+
+
+def _usable_response(
+    response_obj: Any,
+    logging_object: dict[str, Any],
+    hasher: StringHasher,
+) -> Any:
+    """
+    Return the response to log, recovering usage from the SLO when it was lost.
+
+    LiteLLM usually hands the success hook a parsed response dict, which we keep
+    verbatim. But it sometimes passes a raw httpx ``Response`` object instead;
+    ``json_safe`` then stringifies it (e.g. ``"<Response [200 OK]>"``) and the
+    usage is lost, which silently under-counts cost in ``agent stats``. Only in
+    that non-dict case do we fall back to ``standard_logging_object`` and tag the
+    source, so the three outcomes — native / recovered / unrecoverable — stay
+    distinguishable and greppable in the logs.
+    """
+    serialized = json_safe(response_obj, hasher)
+    if isinstance(serialized, dict):
+        return serialized  # native: a parsed response dict, kept verbatim
+
+    # The response didn't serialize to a dict (the raw-Response case): its usage is
+    # gone. Recover from the SLO, preserving its response *content* and only filling
+    # in a usage block when the SLO response lacks one. Replacing the whole dict
+    # would drop choices/message content that alias/title extraction and the viewer
+    # still read (see get_response_content_str / extract_session_alias).
+    slo_response = logging_object.get("response")
+    recovered = json_safe(slo_response, hasher) if isinstance(slo_response, dict) else None
+    if not isinstance(recovered, dict):
+        recovered = None
+    if recovered is None or not isinstance(recovered.get("usage"), dict):
+        synthesized = _usage_from_slo(logging_object)
+        if synthesized is not None:
+            # Merge usage onto the content dict rather than supplanting it.
+            recovered = {**(recovered or {}), "usage": synthesized["usage"]}
+
+    if recovered is not None and isinstance(recovered.get("usage"), dict):
+        recovered["_usage_source"] = "standard_logging_object"
+        return recovered
+
+    # Neither the response nor the SLO had usable usage: this request's cost is
+    # genuinely lost. Mark it loudly (rather than silently as a $0 record), keep the
+    # original serialized response, and capture the SLO we failed to recover from so
+    # the failure is debuggable (empty? missing token keys? unexpected shape?).
+    return {
+        "_usage_source": "unrecoverable",
+        "_raw_response": serialized,
+        "_standard_logging_object": json_safe(logging_object, hasher),
+    }
+
+
 def build_record(
     kwargs: dict[str, Any],
     response_obj: Any,
@@ -154,6 +233,13 @@ def build_record(
 
     logging_object = kwargs.get("standard_logging_object", {})
     model = kwargs.get("model")
+    # Successful calls must retain usage for cost accounting; recover it from the
+    # standard_logging_object when the raw response_obj doesn't serialize to a
+    # usable usage dict (see _usable_response). Failures carry no usage to lose.
+    if status == "success":
+        response = _usable_response(response_obj, logging_object, hasher)
+    else:
+        response = json_safe(response_obj, hasher)
     record: LogRecord = {
         "timing": {
             "start": logging_object.get("startTime"),
@@ -163,7 +249,7 @@ def build_record(
         "status": status,
         "model": model or "undefined",
         "request": json_safe(psr, hasher),
-        "response": json_safe(response_obj, hasher),
+        "response": response,
         "error": None,
     }
     if exc is not None:

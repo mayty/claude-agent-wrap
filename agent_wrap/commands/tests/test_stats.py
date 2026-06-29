@@ -14,12 +14,16 @@ from agent_wrap.commands.stats import (
     _best_prefix_key,
     _collect_orphaned,
     _cost_record,
+    _usage_source,
+    _usage_unrecorded,
     extract_usage,
     render,
+    render_source_breakdown,
     request_cache_ttl,
 )
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.tree import build_project_tree, flatten_tree
+from agent_wrap.lib.usage_args import parse_usage_args
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -161,6 +165,50 @@ def test_successful_request_with_price_known_cost(monkeypatch):
     assert bucket.cost_unknown is False
 
 
+def test_unrecorded_usage_string_response_counted(monkeypatch):
+    # A legacy success record whose response is a bare "<Response ...>" string has
+    # no usage; it must be counted as unrecorded (not silently a $0 row).
+    prices = _make_prices(monkeypatch, priced=True)
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": 1_700_000_000.0},
+        "response": "<Response [200 OK]>",
+    }
+    _cost_record(rec, "bedrock", prices, by_day)
+    (bucket,) = next(iter(by_day.values())).values()
+    assert bucket.unrecorded == 1
+    assert bucket.cost == 0.0
+
+
+def test_unrecorded_usage_unrecoverable_marker_counted(monkeypatch):
+    # A post-fix record the callback tagged "unrecoverable" is likewise counted.
+    prices = _make_prices(monkeypatch, priced=True)
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": 1_700_000_000.0},
+        "response": {"_usage_source": "unrecoverable", "_raw_response": "<Response [200 OK]>"},
+    }
+    _cost_record(rec, "bedrock", prices, by_day)
+    (bucket,) = next(iter(by_day.values())).values()
+    assert bucket.unrecorded == 1
+
+
+def test_normal_success_not_counted_unrecorded(monkeypatch):
+    # A normal priced success must not be flagged unrecorded.
+    prices = _make_prices(monkeypatch, priced=True)
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+
+    _cost_record(_success_rec(), "bedrock", prices, by_day)
+    (bucket,) = next(iter(by_day.values())).values()
+    assert bucket.unrecorded == 0
+
+
 # --- .agent_stats_leaf grouping in _aggregate_projects ---------------------
 
 
@@ -184,7 +232,7 @@ def test_aggregate_projects_merges_marked_group(monkeypatch, tmp_path: Path):
     _write_session_log(a, "s1", [_success_rec()])
     _write_session_log(b, "s2", [_success_rec()])
 
-    rows, _totals, _by_day = _aggregate_projects([a, b], prices)
+    rows, _totals, _by_day, _by_source = _aggregate_projects([a, b], prices)
     assert len(rows) == 1
     row = rows[0]
     assert row["path"] == runs
@@ -206,7 +254,7 @@ def test_aggregate_projects_empty_marker_is_transient(monkeypatch, tmp_path: Pat
     _write_session_log(a, "s1", [_success_rec()])
     _write_session_log(b, "s2", [_success_rec()])
 
-    rows, _totals, _by_day = _aggregate_projects([a, b], prices)
+    rows, _totals, _by_day, _by_source = _aggregate_projects([a, b], prices)
     assert len(rows) == 1
     row = rows[0]
     assert row["name"] == "runs"
@@ -228,7 +276,7 @@ def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path)
     _write_session_log(a, "s1", [_success_rec()])
     _write_session_log(b, "s2", [_success_rec()])
 
-    rows, _totals, _by_day = _aggregate_projects([a, b], prices)
+    rows, _totals, _by_day, _by_source = _aggregate_projects([a, b], prices)
     assert {r["name"] for r in rows} == {"proj-a", "proj-b"}
     assert all(r["transient"] is False for r in rows)
 
@@ -447,3 +495,164 @@ def test_cost_record_uses_request_ttl_for_1h_rate(monkeypatch):
     assert bucket_5m.cw_1h == 0
     # Higher TTL ⇒ strictly higher cost for the same token count.
     assert bucket_1h.cost > bucket_5m.cost
+
+
+# --- _usage_source: provenance classification --------------------------------
+
+
+def _slo_rec(model="claude-opus-4-8"):
+    """Build a success record whose usage was recovered from the standard logging object."""
+    return {
+        "status": "success",
+        "model": model,
+        "timing": {"start": 1_700_000_000.0},
+        "response": {
+            "_usage_source": "standard_logging_object",
+            "usage": {"prompt_tokens": 800, "completion_tokens": 200},
+        },
+    }
+
+
+def _unrecoverable_rec(model="claude-opus-4-8"):
+    """Build a success record the callback could not recover any usage for."""
+    return {
+        "status": "success",
+        "model": model,
+        "timing": {"start": 1_700_000_000.0},
+        "response": {"_usage_source": "unrecoverable", "_raw_response": "<Response [200 OK]>"},
+    }
+
+
+def test_usage_source_native():
+    # A parsed response dict with no _usage_source key is native.
+    assert _usage_source(_success_rec()) == "native"
+
+
+def test_usage_source_standard_logging_object():
+    assert _usage_source(_slo_rec()) == "standard_logging_object"
+
+
+def test_usage_source_unrecoverable_marker():
+    assert _usage_source(_unrecoverable_rec()) == "unrecoverable"
+
+
+def test_usage_source_legacy_string():
+    # A bare legacy "<Response ...>" string carries no usage → unrecoverable.
+    rec = {"status": "success", "model": "claude-opus-4-8", "response": "<Response [200 OK]>"}
+    assert _usage_source(rec) == "unrecoverable"
+
+
+def test_usage_unrecorded_agrees_with_source():
+    # Drift guard: _usage_unrecorded is exactly the "unrecoverable" classification.
+    assert _usage_unrecorded(_success_rec()) is False
+    assert _usage_unrecorded(_slo_rec()) is False
+    assert _usage_unrecorded(_unrecoverable_rec()) is True
+
+
+def test_cost_record_populates_by_source(monkeypatch):
+    # _cost_record routes the same usage/cost into by_day_by_source[day][source].
+    prices = _make_prices(monkeypatch, priced=True)
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+
+    _cost_record(_slo_rec(), "bedrock", prices, by_day, by_source)
+    (day_sources,) = by_source.values()
+    assert set(day_sources) == {"standard_logging_object"}
+    assert day_sources["standard_logging_object"].msgs == 1
+
+
+def test_aggregate_projects_returns_per_source_totals(monkeypatch, tmp_path: Path):
+    # A project mixing all three sources yields a per-source breakdown.
+    prices = _make_prices(monkeypatch, priced=True)
+    proj = tmp_path / "proj"
+    _write_session_log(proj, "s1", [_success_rec(), _slo_rec(), _unrecoverable_rec()])
+
+    _rows, _totals, _by_day, by_source = _aggregate_projects([proj], prices)
+
+    # All three records land on the same day (shared timing.start); flatten it.
+    merged: dict[str, Bucket] = defaultdict(Bucket)
+    for day_sources in by_source.values():
+        for source, b in day_sources.items():
+            merged[source].merge(b)
+
+    assert merged["native"].msgs == 1
+    assert merged["standard_logging_object"].msgs == 1
+    assert merged["unrecoverable"].msgs == 1
+    assert merged["unrecoverable"].unrecorded == 1
+
+
+# --- render_source_breakdown -------------------------------------------------
+
+
+def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
+    b = Bucket()
+    for _ in range(msgs):
+        b.add({"input_tokens": in_}, 0.0)
+    return b
+
+
+def test_render_source_breakdown_lists_active_sources():
+    by_day_by_source = {
+        "2026-06-29": {
+            "native": _source_bucket(3, in_=1000),
+            "standard_logging_object": _source_bucket(2, in_=500),
+            "unrecoverable": _source_bucket(1),  # zero tokens, still counted
+        }
+    }
+    out = render_source_breakdown(by_day_by_source, 0)
+    assert "Usage source breakdown:" in out
+    assert "native" in out
+    assert "standard_logging_object" in out
+    assert "unrecoverable" in out
+    assert "TOTAL" in out
+
+
+def test_render_source_breakdown_omits_zero_msg_sources():
+    by_day_by_source = {"2026-06-29": {"native": _source_bucket(2, in_=100)}}
+    out = render_source_breakdown(by_day_by_source, 0)
+    assert "native" in out
+    assert "standard_logging_object" not in out
+
+
+def test_render_source_breakdown_empty_when_no_activity():
+    assert render_source_breakdown({}, 0) == ""
+
+
+def test_render_source_breakdown_honors_window():
+    # An old day is dropped by a narrow window but kept when the window is 0 (all).
+    by_day_by_source = {
+        "2000-01-01": {"unrecoverable": _source_bucket(1)},
+        "2026-06-29": {"native": _source_bucket(1, in_=1)},
+    }
+    windowed = render_source_breakdown(by_day_by_source, 30)
+    assert "unrecoverable" not in windowed  # 2000-01-01 is outside the window
+
+    full = render_source_breakdown(by_day_by_source, 0)
+    assert "unrecoverable" in full  # all days shown
+
+
+# --- verbose arg parsing -----------------------------------------------------
+
+
+def test_parse_usage_args_verbose_short_flag(tmp_path: Path):
+    reg = tmp_path / "projects.txt"
+    reg.write_text("/x\n", encoding="utf-8")
+    parsed = parse_usage_args([str(reg), "-v"], usage_line="u", usage_text="u")
+    assert parsed is not None
+    assert parsed.verbose is True
+
+
+def test_parse_usage_args_verbose_long_flag(tmp_path: Path):
+    reg = tmp_path / "projects.txt"
+    reg.write_text("/x\n", encoding="utf-8")
+    parsed = parse_usage_args([str(reg), "--verbose"], usage_line="u", usage_text="u")
+    assert parsed is not None
+    assert parsed.verbose is True
+
+
+def test_parse_usage_args_verbose_defaults_false(tmp_path: Path):
+    reg = tmp_path / "projects.txt"
+    reg.write_text("/x\n", encoding="utf-8")
+    parsed = parse_usage_args([str(reg)], usage_line="u", usage_text="u")
+    assert parsed is not None
+    assert parsed.verbose is False

@@ -11,12 +11,14 @@ from pathlib import Path
 @dataclass
 class UsageArgsBuilder:
     days_window: int = 30
+    verbose: bool = False
 
 
 @dataclass
 class UsageArgs:
     registry_path: Path
     days_window: int = 30
+    verbose: bool = False
 
 
 def _parse_days(value: str) -> int | None:
@@ -47,6 +49,10 @@ def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> Us
         if a in ("-h", "--help"):
             print(usage_text, file=sys.stderr)
             return None
+        if a in ("-v", "--verbose"):
+            parsed.verbose = True
+            i += 1
+            continue
         if a == "--days" and i + 1 < len(args):
             days = _parse_days(args[i + 1])
             if days is None:

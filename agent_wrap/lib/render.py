@@ -25,7 +25,7 @@ except two things, which are injected by the caller:
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 
 from agent_wrap.lib.buckets import Bucket
@@ -39,6 +39,23 @@ CostFn = Callable[[str, Bucket], tuple[float, bool]]
 BuildModelSection = Callable[[dict[str, Bucket], int], list]
 
 _DIV = "__div__"
+
+
+def window_days(day_keys: Iterable[str], days_window: int) -> list[str]:
+    """
+    Return the day keys within the Recent window, newest first.
+
+    The synthetic "?" key (records with no timestamp) is always excluded. When
+    ``days_window`` is 0 every dated day is returned; otherwise only days on or
+    after the (days_window - 1)-days-ago cutoff (host-local) survive. Shared by
+    the Recent table and the verbose source breakdown so both honor the same
+    window.
+    """
+    dated = sorted((d for d in day_keys if d != "?"), reverse=True)
+    if not dated or days_window <= 0:
+        return dated
+    cutoff = (datetime.now().astimezone().date() - timedelta(days=days_window - 1)).isoformat()
+    return [d for d in dated if d >= cutoff]
 
 
 def _build_total_body(
@@ -167,11 +184,7 @@ def _build_recent_body(
 
     dated = {d: m for d, m in totals_by_day_by_model.items() if d != "?"}
     all_days_sorted = sorted(dated.keys(), reverse=True) if dated else []
-    if dated and days_window > 0:
-        cutoff = (datetime.now().astimezone().date() - timedelta(days=days_window - 1)).isoformat()
-        shown_days = [d for d in all_days_sorted if d >= cutoff]
-    else:
-        shown_days = all_days_sorted
+    shown_days = window_days(dated.keys(), days_window)
 
     recent_models: dict[str, Bucket] = defaultdict(Bucket)
     for d in shown_days:
