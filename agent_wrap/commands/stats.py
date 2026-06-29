@@ -12,13 +12,14 @@ from typing import TYPE_CHECKING, Any
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import (
+    day_in_range,
     epoch_to_dt,
     fmt_cost_with_unknown,
     fmt_count,
 )
 from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
 from agent_wrap.lib.models import normalize_model
-from agent_wrap.lib.render import render_core, window_days
+from agent_wrap.lib.render import range_label, render_core
 from agent_wrap.lib.table import compute_shared_widths, render_table
 from agent_wrap.lib.tree import (
     DisplayRow,
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
-USAGE = "[-v|--verbose] [--days N]"
+USAGE = "[-v|--verbose] [--from D] [--until D] [--days N]"
 SUMMARY = "Show token usage stats (reads from .claude/litellm-logs/)"
 
 _MODEL_CONTEXT_SUFFIX_RE = re.compile(r"\[(?:1m|128k|32k|8k)\]$", re.IGNORECASE)
@@ -416,32 +417,43 @@ def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int
     return body
 
 
-def _cost_record(
+def _cost_record(  # noqa: PLR0913
     rec: dict,
     provider_name: str,
     prices: PriceSource,
     by_day: dict[str, dict[str, Bucket]],
     by_day_by_source: dict[str, dict[str, Bucket]] | None = None,
-) -> datetime | None:
+    *,
+    from_iso: str | None = None,
+    until_iso: str | None = None,
+) -> tuple[bool, datetime | None]:
     """
-    Cost one log record into `by_day`. Returns its timestamp, if any.
+    Cost one log record into `by_day`. Returns ``(accumulated, timestamp)``.
 
-    When `by_day_by_source` is provided, the same usage/cost is also accumulated
-    into ``by_day_by_source[day_key][source]`` (source from :func:`_usage_source`)
-    so the verbose breakdown can attribute totals to their provenance.
+    ``accumulated`` is True when the record was a billable success whose day fell
+    within the inclusive ``[from_iso, until_iso]`` window — used to decide whether
+    its session should be counted. Out-of-window or non-success records are skipped
+    (nothing accumulated, ``(False, None)``). ``timestamp`` is the record's start
+    time when it has one (None for accumulated-but-timestamp-less records, which
+    only occur in the all-time view). When `by_day_by_source` is provided, the same
+    usage/cost is also accumulated into ``by_day_by_source[day_key][source]``
+    (source from :func:`_usage_source`) so the verbose breakdown can attribute
+    totals to their provenance.
     """
     if rec.get("status") != "success":
-        return None
+        return False, None
     model = rec.get("model")
     if not model:
-        return None
+        return False, None
+
+    ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
+    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
+    if not day_in_range(day_key, from_iso, until_iso):
+        return False, None
 
     clean_model = model.rsplit("/", 1)[-1]
     norm_model = normalize_model(clean_model) or clean_model
     display_model = f"{provider_name}/{norm_model}"
-
-    ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
-    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
 
     # The request's cache_control TTL attributes the flat cache-write total to a
     # 5m/1h tier when the response omits the breakdown (the Bedrock case).
@@ -455,7 +467,7 @@ def _cost_record(
     by_day[day_key][display_model].add(usage, cost, unrecorded=unrecorded)
     if by_day_by_source is not None:
         by_day_by_source[day_key][_usage_source(rec)].add(usage, cost, unrecorded=unrecorded)
-    return ts
+    return True, ts
 
 
 _USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")
@@ -500,14 +512,46 @@ def _usage_unrecorded(rec: dict) -> bool:
     return _usage_source(rec) == "unrecoverable"
 
 
+def _file_predates_range(messages_file: Path, from_iso: str | None) -> bool:
+    """
+    Report whether a log file can be culled (skipped unread) for the lower bound.
+
+    LiteLLM message logs are append-only and written live, so every record's event
+    time is ``<= the file's mtime``. If the file's mtime (as a host-local date) is
+    before ``from_iso``, no record in it can be in range, so it is safe to skip
+    without parsing. Only the lower bound is cullable this way — a recent mtime
+    says nothing about a file's *earliest* record, so ``--until`` cannot cull via
+    metadata. Returns False when ``from_iso`` is None (no lower bound) or on any
+    stat error (fall through to parsing, which stays the authority).
+    """
+    if from_iso is None:
+        return False
+    try:
+        mtime = messages_file.stat().st_mtime
+    except OSError:
+        return False
+    mtime_day = epoch_to_dt(mtime)
+    if mtime_day is None:
+        return False
+    return mtime_day.astimezone().strftime("%Y-%m-%d") < from_iso
+
+
 def _scan_logs_dir(  # noqa: C901
     logs_dir: Path,
     prices: PriceSource,
+    *,
+    from_iso: str | None = None,
+    until_iso: str | None = None,
 ) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]]]:
     """
     Scan a LiteLLM logs dir (``<provider>/<session>/messages.jsonl``) line-by-line,
-    costing each request as it is read. Returns
+    costing each in-window request as it is read. Returns
     (sessions, last_ts, by_day_by_model, by_day_by_source).
+
+    Only records whose day falls within ``[from_iso, until_iso]`` are counted, and
+    a session is counted only when it contributed at least one such record. Files
+    whose mtime predates the lower bound are skipped unread (see
+    :func:`_file_predates_range`).
 
     ``by_day_by_source`` mirrors ``by_day_by_model`` but keys the inner dict by
     usage source (see :func:`_usage_source`), feeding the verbose breakdown.
@@ -528,11 +572,13 @@ def _scan_logs_dir(  # noqa: C901
         for session_dir in provider_dir.iterdir():
             if not session_dir.is_dir():
                 continue
-            session_count += 1
             messages_file = session_dir / "messages.jsonl"
             if not messages_file.is_file():
                 continue
+            if _file_predates_range(messages_file, from_iso):
+                continue
 
+            session_had_record = False
             try:
                 with messages_file.open("r", encoding="utf-8", errors="replace") as f:
                     for raw_line in f:
@@ -543,11 +589,24 @@ def _scan_logs_dir(  # noqa: C901
                             rec = json.loads(stripped)
                         except json.JSONDecodeError:
                             continue
-                        ts = _cost_record(rec, provider_name, prices, by_day, by_day_by_source)
+                        accumulated, ts = _cost_record(
+                            rec,
+                            provider_name,
+                            prices,
+                            by_day,
+                            by_day_by_source,
+                            from_iso=from_iso,
+                            until_iso=until_iso,
+                        )
+                        session_had_record = session_had_record or accumulated
                         if ts is not None and (last_ts is None or ts > last_ts):
                             last_ts = ts
             except OSError:
                 continue
+            # Count a session only when it contributed an in-window record, so the
+            # session column reflects the selected range, not all-time directories.
+            if session_had_record:
+                session_count += 1
 
     return (
         session_count,
@@ -560,6 +619,9 @@ def _scan_logs_dir(  # noqa: C901
 def _scan_project(
     path: Path,
     prices: PriceSource,
+    *,
+    from_iso: str | None = None,
+    until_iso: str | None = None,
 ) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]], bool]:
     """
     Scan one project's LiteLLM logs. Returns
@@ -571,7 +633,9 @@ def _scan_project(
     logs_dir = path / ".claude" / "litellm-logs"
     if not logs_dir.is_dir():
         return 0, None, {}, {}, False
-    sessions, last_ts, by_day, by_day_by_source = _scan_logs_dir(logs_dir, prices)
+    sessions, last_ts, by_day, by_day_by_source = _scan_logs_dir(
+        logs_dir, prices, from_iso=from_iso, until_iso=until_iso
+    )
     return sessions, last_ts, by_day, by_day_by_source, True
 
 
@@ -582,6 +646,9 @@ def _collect_orphaned(  # noqa: PLR0913
     totals_by_model: dict[str, Bucket],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     totals_by_day_by_source: dict[str, dict[str, Bucket]] | None = None,
+    *,
+    from_iso: str | None = None,
+    until_iso: str | None = None,
 ) -> dict | None:
     """
     Aggregate central log dirs not reachable from any registered project.
@@ -599,7 +666,9 @@ def _collect_orphaned(  # noqa: PLR0913
     last_ts: datetime | None = None
 
     for logs_dir in orphaned_log_dirs(tool_dir, projects):
-        d_sessions, d_last_ts, by_day, by_day_by_source = _scan_logs_dir(logs_dir, prices)
+        d_sessions, d_last_ts, by_day, by_day_by_source = _scan_logs_dir(
+            logs_dir, prices, from_iso=from_iso, until_iso=until_iso
+        )
         sessions += d_sessions
         if d_last_ts is not None and (last_ts is None or d_last_ts > last_ts):
             last_ts = d_last_ts
@@ -625,9 +694,9 @@ def _collect_orphaned(  # noqa: PLR0913
 
 def render(
     rows: list[dict],
-    totals_by_model: dict[str, Bucket],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    days_window: int,
+    from_iso: str | None,
+    until_iso: str | None,
     orphaned: dict | None = None,
 ) -> str:
     # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
@@ -635,9 +704,9 @@ def render(
     # authoritative "?" signal — a 0.0 cost without that flag is a known zero.
     return render_core(
         rows,
-        totals_by_model,
         totals_by_day_by_model,
-        days_window,
+        from_iso,
+        until_iso,
         cost_fn=lambda _model, b: (b.cost, b.cost_unknown),
         build_model_section=_build_model_section,
         orphaned=orphaned,
@@ -646,28 +715,27 @@ def render(
 
 def render_source_breakdown(
     totals_by_day_by_source: dict[str, dict[str, Bucket]],
-    days_window: int,
+    from_iso: str | None,
+    until_iso: str | None,
 ) -> str:
     """
-    Render the verbose "usage source breakdown" table for the Recent window.
+    Render the verbose "usage source breakdown" table for the selected window.
 
     One row per usage source (native / standard_logging_object / unrecoverable,
     see :func:`_usage_source`) showing how much of the reported totals came
     straight from responses vs. were recovered from LiteLLM's standard logging
     object fallback vs. were lost — so a reader can judge how far the headline
-    cost depends on the recovery path. Restricted to the same day window as the
-    Recent table (via :func:`agent_wrap.lib.render.window_days`) and rendered
+    cost depends on the recovery path. The source dict is already restricted to
+    the window at scan time, so every day present is merged here; rendered
     standalone (its own column widths) since it prints after the main tables.
 
     Cost reads ``Bucket.cost`` / ``cost_unknown`` directly, valid here because
     ``stats`` bakes per-request cost into the bucket at scan time (same basis as
     :func:`render`). Returns "" when no source has activity in the window.
     """
-    shown_days = window_days(totals_by_day_by_source.keys(), days_window)
-
     merged: dict[str, Bucket] = {}
-    for day in shown_days:
-        for source, b in totals_by_day_by_source[day].items():
+    for by_source in totals_by_day_by_source.values():
+        for source, b in by_source.items():
             merged.setdefault(source, Bucket()).merge(b)
 
     headers = ["SOURCE", "MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
@@ -707,24 +775,26 @@ def render_source_breakdown(
     body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
 
     shared_widths = compute_shared_widths([(headers, body, 1)], 6, div)
-    title = (
-        "Usage source breakdown:"
-        if days_window == 0
-        else f"Usage source breakdown (last {days_window} days):"
-    )
+    title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
     return "\n".join(render_table(title, headers, aligns, body, 1, shared_widths, div))
 
 
 _USAGE_TEXT = (
-    "Usage: agent stats [-v|--verbose] [--days N] <projects.txt>\n\n"
+    "Usage: agent stats [-v|--verbose] [--from D] [--until D] [--days N] <projects.txt>\n\n"
     "Reads a list of project paths (one per line) and prints aggregated\n"
     "usage stats from each project's .claude/litellm-logs/ directories.\n\n"
-    "Output is a per-project table plus per-model and per-day breakdowns.\n"
-    "Models are displayed as <provider>/<model>. Day buckets use host-local time.\n"
-    "--days N limits the per-day section to the most recent N calendar days\n"
-    "(default 30; use 0 to show all).\n"
-    "-v/--verbose adds a usage-source breakdown table over the same Recent\n"
-    "window, splitting totals by how each record's usage was obtained\n"
+    "Output is a per-project table plus a per-model and per-day breakdown,\n"
+    "both over the same usage window. Models are displayed as <provider>/<model>.\n"
+    "Day buckets use host-local time.\n\n"
+    "Selection range (at most two of --from/--until/--days may be combined):\n"
+    "  --from D    inclusive lower bound; D is YYYY-MM-DD or -Nd (e.g. -14d)\n"
+    "  --until D   inclusive upper bound; same format as --from\n"
+    "  --days N    span in days; N=0 means unlimited (no day bound)\n"
+    "Defaults: no flags → last 28 days; --from alone → [from, now];\n"
+    "--days N alone → [now-N, now]; --until alone → [until-28, until];\n"
+    "--days 0 alone → all time (includes records with no timestamp).\n\n"
+    "-v/--verbose adds a usage-source breakdown table over the same window,\n"
+    "splitting totals by how each record's usage was obtained\n"
     "(native response vs. standard_logging_object recovery vs. unrecoverable).\n\n"
     "Pricing is fetched dynamically per-provider as logs are scanned.\n\n"
     "Projects are recorded by `agent` on each launch — a project that\n"
@@ -732,7 +802,7 @@ _USAGE_TEXT = (
 )
 
 
-_USAGE_LINE = "Usage: agent stats [-v|--verbose] [--days N] <projects.txt>"
+_USAGE_LINE = "Usage: agent stats [-v|--verbose] [--from D] [--until D] [--days N] <projects.txt>"
 
 
 def _parse_usage_args(args: list[str]) -> UsageArgs | None:
@@ -757,6 +827,9 @@ class _Group:
 def _aggregate_projects(
     projects: list[Path],
     prices: PriceSource,
+    *,
+    from_iso: str | None = None,
+    until_iso: str | None = None,
 ) -> tuple[
     list[dict],
     dict[str, Bucket],
@@ -764,9 +837,10 @@ def _aggregate_projects(
     dict[str, dict[str, Bucket]],
 ]:
     """
-    Scan every project and roll its buckets up into the render inputs.
+    Scan every project and roll its in-window buckets up into the render inputs.
 
-    Returns (rows, totals_by_model, totals_by_day_by_model, totals_by_day_by_source).
+    Returns (rows, totals_by_model, totals_by_day_by_model, totals_by_day_by_source),
+    all restricted to the inclusive ``[from_iso, until_iso]`` window.
     Physical projects sharing a ``.agent_stats_leaf`` group root are merged into
     a single row (see :func:`agent_wrap.lib.grouping.resolve_group`); the global
     per-model, per-day, and per-source totals are unaffected by grouping and are
@@ -778,7 +852,9 @@ def _aggregate_projects(
     totals_by_day_by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     for path in projects:
-        sessions, last_ts, by_day, by_day_by_source, exists = _scan_project(path, prices)
+        sessions, last_ts, by_day, by_day_by_source, exists = _scan_project(
+            path, prices, from_iso=from_iso, until_iso=until_iso
+        )
 
         root, name, transient = resolve_group(path)
         group = groups.get(root)
@@ -849,7 +925,7 @@ def run(args: list[str], tool_dir: Path) -> int:
 
     prices = PriceSource()
     rows, totals_by_model, totals_by_day_by_model, totals_by_day_by_source = _aggregate_projects(
-        projects, prices
+        projects, prices, from_iso=parsed.from_iso, until_iso=parsed.until_iso
     )
 
     # Filter out projects with no logs
@@ -858,7 +934,14 @@ def run(args: list[str], tool_dir: Path) -> int:
     # Logs left behind by deleted projects / stale registry entries surface under
     # a synthetic <orphaned> row; their usage also folds into the totals above.
     orphaned = _collect_orphaned(
-        tool_dir, projects, prices, totals_by_model, totals_by_day_by_model, totals_by_day_by_source
+        tool_dir,
+        projects,
+        prices,
+        totals_by_model,
+        totals_by_day_by_model,
+        totals_by_day_by_source,
+        from_iso=parsed.from_iso,
+        until_iso=parsed.until_iso,
     )
 
     if not rows and orphaned is None:
@@ -868,15 +951,17 @@ def run(args: list[str], tool_dir: Path) -> int:
     print(
         render(
             rows,
-            totals_by_model,
             totals_by_day_by_model,
-            parsed.days_window,
+            parsed.from_iso,
+            parsed.until_iso,
             orphaned=orphaned,
         )
     )
 
     if parsed.verbose:
-        breakdown = render_source_breakdown(totals_by_day_by_source, parsed.days_window)
+        breakdown = render_source_breakdown(
+            totals_by_day_by_source, parsed.from_iso, parsed.until_iso
+        )
         if breakdown:
             print()
             print(breakdown)

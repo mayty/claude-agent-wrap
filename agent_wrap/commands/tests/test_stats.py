@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import agent_wrap.commands.stats as stats_mod
@@ -14,6 +16,7 @@ from agent_wrap.commands.stats import (
     _best_prefix_key,
     _collect_orphaned,
     _cost_record,
+    _scan_logs_dir,
     _usage_source,
     _usage_unrecorded,
     extract_usage,
@@ -133,7 +136,7 @@ def test_errored_only_project_costs_known_zero(monkeypatch):
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     rec = {"status": "failure", "model": "claude-opus-4-8"}
-    assert _cost_record(rec, "bedrock", prices, by_day) is None
+    assert _cost_record(rec, "bedrock", prices, by_day) == (False, None)
     assert by_day == {}  # nothing accumulated
 
     # A bucket that never saw a billable request is a known zero.
@@ -281,6 +284,108 @@ def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path)
     assert all(r["transient"] is False for r in rows)
 
 
+# --- windowing: range filtering at the data layer --------------------------
+
+
+def _day_epoch(day: str) -> float:
+    """Local-midnight epoch seconds for a YYYY-MM-DD day string."""
+    return datetime.strptime(day, "%Y-%m-%d").astimezone().timestamp()
+
+
+def _dated_rec(day: str, model="claude-opus-4-8"):
+    """Build a success record whose timing.start lands on the given day (local)."""
+    return {
+        "status": "success",
+        "model": model,
+        "timing": {"start": _day_epoch(day)},
+        "response": {"usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
+    }
+
+
+def test_cost_record_skips_out_of_range(monkeypatch):
+    prices = _make_prices(monkeypatch, priced=True)
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+
+    # In range → accumulated.
+    acc, _ts = _cost_record(
+        _dated_rec("2026-06-15"),
+        "bedrock",
+        prices,
+        by_day,
+        from_iso="2026-06-01",
+        until_iso="2026-06-30",
+    )
+    assert acc is True
+    # Out of range → skipped, nothing accumulated.
+    acc, ts = _cost_record(
+        _dated_rec("2026-05-01"),
+        "bedrock",
+        prices,
+        by_day,
+        from_iso="2026-06-01",
+        until_iso="2026-06-30",
+    )
+    assert (acc, ts) == (False, None)
+    assert set(by_day) == {"2026-06-15"}
+
+
+def test_aggregate_projects_windows_sessions_and_totals(monkeypatch, tmp_path: Path):
+    # A project with one in-window session and one out-of-window session: only the
+    # in-window one is counted and totalled.
+    prices = _make_prices(monkeypatch, priced=True)
+    proj = tmp_path / "proj"
+    _write_session_log(proj, "in", [_dated_rec("2026-06-15")])
+    _write_session_log(proj, "out", [_dated_rec("2026-01-01")])
+
+    rows, _totals, by_day, _by_source = _aggregate_projects(
+        [proj], prices, from_iso="2026-06-01", until_iso="2026-06-30"
+    )
+    assert len(rows) == 1
+    assert rows[0]["sessions"] == 1  # the out-of-window session is not counted
+    assert rows[0]["total"].msgs == 1
+    assert set(by_day) == {"2026-06-15"}
+
+
+def test_file_culling_skips_old_mtime(monkeypatch, tmp_path: Path):
+    # A log file whose mtime predates the lower bound is skipped unread, even though
+    # it would parse to in-range records (proving the metadata short-circuit).
+    prices = _make_prices(monkeypatch, priced=True)
+    logs = tmp_path / ".claude" / "litellm-logs"
+    sdir = logs / "litellm-bedrock" / "s1"
+    sdir.mkdir(parents=True)
+    msg = sdir / "messages.jsonl"
+    msg.write_text(json.dumps(_dated_rec("2026-06-15")) + "\n", encoding="utf-8")
+
+    # Back-date the file mtime to well before the window.
+    old = _day_epoch("2026-01-01")
+    os.utime(msg, (old, old))
+
+    sessions, _last_ts, by_day, _by_source = _scan_logs_dir(
+        logs, prices, from_iso="2026-06-01", until_iso="2026-06-30"
+    )
+    assert sessions == 0  # culled: not read, not counted
+    assert by_day == {}
+
+
+def test_file_culling_keeps_recent_mtime_but_filters_records(monkeypatch, tmp_path: Path):
+    # A recently-written file is parsed; its out-of-range records are filtered by
+    # day_in_range, never counted (only the upper bound, not cullable via mtime).
+    prices = _make_prices(monkeypatch, priced=True)
+    logs = tmp_path / ".claude" / "litellm-logs"
+    sdir = logs / "litellm-bedrock" / "s1"
+    sdir.mkdir(parents=True)
+    msg = sdir / "messages.jsonl"
+    with msg.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(_dated_rec("2026-06-15")) + "\n")  # in range
+        f.write(json.dumps(_dated_rec("2026-07-15")) + "\n")  # after upper bound
+
+    sessions, _last_ts, by_day, _by_source = _scan_logs_dir(
+        logs, prices, from_iso="2026-06-01", until_iso="2026-06-30"
+    )
+    assert sessions == 1
+    assert set(by_day) == {"2026-06-15"}
+
+
 # --- orphaned central logs -------------------------------------------------
 
 
@@ -339,14 +444,14 @@ def test_render_includes_orphaned_row(monkeypatch, tmp_path: Path):
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
     orphaned = _collect_orphaned(tool_dir, [], prices, totals_by_model, totals_by_day_by_model)
 
-    out = render([], totals_by_model, totals_by_day_by_model, 30, orphaned=orphaned)
+    out = render([], totals_by_day_by_model, None, None, orphaned=orphaned)
     assert "<orphaned>" in out
     assert "<orphaned> *" not in out
 
 
 def test_render_without_orphaned_has_no_row(monkeypatch):
     """When orphaned is None, no <orphaned> row appears."""
-    out = render([], {}, {}, 30, orphaned=None)
+    out = render([], {}, None, None, orphaned=None)
     assert "<orphaned>" not in out
 
 
@@ -599,8 +704,8 @@ def test_render_source_breakdown_lists_active_sources():
             "unrecoverable": _source_bucket(1),  # zero tokens, still counted
         }
     }
-    out = render_source_breakdown(by_day_by_source, 0)
-    assert "Usage source breakdown:" in out
+    out = render_source_breakdown(by_day_by_source, None, None)
+    assert "Usage source breakdown (all time):" in out
     assert "native" in out
     assert "standard_logging_object" in out
     assert "unrecoverable" in out
@@ -609,26 +714,26 @@ def test_render_source_breakdown_lists_active_sources():
 
 def test_render_source_breakdown_omits_zero_msg_sources():
     by_day_by_source = {"2026-06-29": {"native": _source_bucket(2, in_=100)}}
-    out = render_source_breakdown(by_day_by_source, 0)
+    out = render_source_breakdown(by_day_by_source, None, None)
     assert "native" in out
     assert "standard_logging_object" not in out
 
 
 def test_render_source_breakdown_empty_when_no_activity():
-    assert render_source_breakdown({}, 0) == ""
+    assert render_source_breakdown({}, None, None) == ""
 
 
-def test_render_source_breakdown_honors_window():
-    # An old day is dropped by a narrow window but kept when the window is 0 (all).
+def test_render_source_breakdown_merges_supplied_days():
+    # The source dict is already windowed at scan time, so render merges every day
+    # present (the range only drives the title). Both days appear here.
     by_day_by_source = {
-        "2000-01-01": {"unrecoverable": _source_bucket(1)},
+        "2026-06-01": {"unrecoverable": _source_bucket(1)},
         "2026-06-29": {"native": _source_bucket(1, in_=1)},
     }
-    windowed = render_source_breakdown(by_day_by_source, 30)
-    assert "unrecoverable" not in windowed  # 2000-01-01 is outside the window
-
-    full = render_source_breakdown(by_day_by_source, 0)
-    assert "unrecoverable" in full  # all days shown
+    out = render_source_breakdown(by_day_by_source, "2026-06-01", "2026-06-29")
+    assert "Usage source breakdown (2026-06-01 … 2026-06-29):" in out
+    assert "unrecoverable" in out
+    assert "native" in out
 
 
 # --- verbose arg parsing -----------------------------------------------------
