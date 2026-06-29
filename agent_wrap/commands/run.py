@@ -73,15 +73,6 @@ _STATE_FILES = (
 )
 
 
-def _is_wsl() -> bool:
-    """Check if running on WSL."""
-    try:
-        version = Path("/proc/version").read_text()
-        return "microsoft" in version.lower()
-    except OSError:
-        return False
-
-
 def _extract_network(extra_run_args: list[str]) -> str | None:
     """Extract --network value from a list of docker run flags."""
     for i, arg in enumerate(extra_run_args):
@@ -114,7 +105,7 @@ def _resolve_host_network(
     if not is_truthy_env(env_val):
         return False, [], port_args
 
-    if not _is_wsl():
+    if not docker_utils.is_wsl():
         print(
             "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts.",
             file=sys.stderr,

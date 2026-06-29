@@ -225,6 +225,29 @@ def test_docker_build_failure(tmp_path: Path, mocker: pytest_mock.MockFixture) -
     assert rc == 1
 
 
+def test_docker_build_splices_host_network(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.commands.rebuild.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mocker.patch(
+        "agent_wrap.commands.rebuild.host_network_build_args",
+        return_value=["--network", "host"],
+    )
+    _docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    argv = mock_run.call_args[0][0]
+    assert "--network" in argv
+    assert argv[argv.index("--network") + 1] == "host"
+
+
+def test_docker_build_no_host_network_by_default(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    mock_run = mocker.patch("agent_wrap.commands.rebuild.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mocker.patch("agent_wrap.commands.rebuild.host_network_build_args", return_value=[])
+    _docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    assert "--network" not in mock_run.call_args[0][0]
+
+
 # --- _do_rebuild success path ---
 
 

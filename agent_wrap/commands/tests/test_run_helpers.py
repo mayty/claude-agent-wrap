@@ -14,7 +14,6 @@ from agent_wrap.commands.run import (
     _build_env_args,
     _build_volume_mounts,
     _build_wslg_args,
-    _is_wsl,
     _load_secrets,
     _load_telegram_creds,
     _parse_dockerfile_directives,
@@ -30,27 +29,6 @@ from agent_wrap.commands.run import (
 )
 from agent_wrap.lib.utils import ResolvedImage
 from agent_wrap.sidecars import SidecarTracker
-
-# --- _is_wsl ---
-
-
-def test_is_wsl_true(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
-    mock_path.return_value.read_text.return_value = "Linux version 5.15 (microsoft)"
-    assert _is_wsl() is True
-
-
-def test_is_wsl_false(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
-    mock_path.return_value.read_text.return_value = "Linux version 5.15 (generic)"
-    assert _is_wsl() is False
-
-
-def test_is_wsl_os_error(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
-    mock_path.return_value.read_text.side_effect = OSError("no file")
-    assert _is_wsl() is False
-
 
 # --- _resolve_agent_name ---
 
@@ -268,7 +246,7 @@ def test_host_network_not_wsl(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=False)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False)
     use, _, _ = _resolve_host_network(None, ["-p", "8080:8080"])
     assert use is False
     assert "only honored on WSL" in capsys.readouterr().err
@@ -278,7 +256,7 @@ def test_host_network_wsl_no_agent_network(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
     use, args, ports = _resolve_host_network(None, ["-p", "8080:8080"])
     assert use is True
     assert args == ["--network", "host"]
@@ -289,7 +267,7 @@ def test_host_network_wsl_agent_network_specified(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
     use, _, ports = _resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
     assert "AGENT_USE_HOST_NETWORK ignored" in capsys.readouterr().err

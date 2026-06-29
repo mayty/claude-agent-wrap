@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.docker_utils import image_exists
+from agent_wrap.lib.docker_utils import host_network_build_args, image_exists
 from agent_wrap.lib.utils import ResolvedImage, resolve_image
 
 USAGE = "[--full]"
@@ -40,6 +40,7 @@ def _docker_build(dockerfile: Path, image: str, context: Path, uid: str, gid: st
             "docker",
             "build",
             "--no-cache",
+            *host_network_build_args(),
             "--build-arg",
             f"HOST_UID={uid}",
             "--build-arg",

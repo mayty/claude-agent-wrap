@@ -23,6 +23,8 @@ Providers are auto-discovered by scanning `agent_wrap/providers/*/provider.py` f
 
 Setting `AGENT_USE_HOST_NETWORK=1` (or any non-empty value other than `0`/`false`/`no`) makes `agent run` launch the container with `--network host`. The switch is honored only on WSL hosts (detected via `microsoft` in `/proc/version`); on macOS or native Linux it is ignored with a note.
 
+The same switch also applies to `agent rebuild`: each `RUN` step in a `docker build` (`apt-get`, `pip install`, package downloads) executes in a temporary container on Docker's default bridge — the same path that breaks in the scenario below — so the build is launched with `docker build --network host` under the identical WSL-only gating.
+
 Use this when you run multiple WSL2 distros that each have their own `dockerd`. All WSL2 distros share a single Linux kernel, so the two daemons fight over the kernel's iptables tables — specifically, the second daemon to start installs Docker's standard ruleset on `iptables-legacy`, which flips the legacy `FORWARD` chain policy from `ACCEPT` to `DROP`. Reply traffic to the first distro's existing containers then gets dropped before it reaches `docker0`. Symptom: parent shell stays online, but containers lose all outbound TCP (DNS UDP still works); recovery requires `wsl --shutdown`. Relaunching the container does not help, because the broken state is upstream of `docker0`.
 
 `--network host` puts the agent in the WSL distro's namespace directly, sidestepping the bridge and the FORWARD chain entirely.
