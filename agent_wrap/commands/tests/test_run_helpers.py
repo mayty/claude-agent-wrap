@@ -208,6 +208,18 @@ def test_build_env_args_term_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "COLORTERM=16color" in result
 
 
+def test_build_env_args_prompt_caching_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENABLE_PROMPT_CACHING_1H", raising=False)
+    result = _build_env_args("a", "b", "/h")
+    assert not any(arg.startswith("ENABLE_PROMPT_CACHING_1H=") for arg in result)
+
+
+def test_build_env_args_prompt_caching_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_PROMPT_CACHING_1H", "1")
+    result = _build_env_args("a", "b", "/h")
+    assert "ENABLE_PROMPT_CACHING_1H=1" in result
+
+
 # --- _build_volume_mounts ---
 
 

@@ -279,6 +279,9 @@ def _build_env_args(
     auto_mode_flag = os.environ.get("CLAUDE_CODE_ENABLE_AUTO_MODE", None)
     if auto_mode_flag is not None:
         args.extend(["-e", f"CLAUDE_CODE_ENABLE_AUTO_MODE={auto_mode_flag}"])
+    prompt_caching_flag = os.environ.get("ENABLE_PROMPT_CACHING_1H", None)
+    if prompt_caching_flag is not None:
+        args.extend(["-e", f"ENABLE_PROMPT_CACHING_1H={prompt_caching_flag}"])
     return args
 
 
