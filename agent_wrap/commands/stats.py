@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import sys
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.lib.buckets import Bucket
@@ -270,6 +273,14 @@ class PriceSource:
 _usage_convention_warned = False
 _mixed_cache_ttl_warned = False
 
+# When False, the warn-* helpers below record into `_warn_capture` instead of
+# printing. Pool workers run with this off (set in `_worker_init`) so their
+# warnings travel back to the parent — which prints each exactly once — rather
+# than being lost to a child stderr or duplicated once per worker process. The
+# in-process/serial path leaves it True and prints inline as before.
+_warn_print = True
+_warn_capture: dict[str, Any] = {}
+
 
 def _warn_mixed_cache_ttl() -> None:
     """
@@ -281,6 +292,9 @@ def _warn_mixed_cache_ttl() -> None:
     the (rare) imprecision is visible without spamming a line per record.
     """
     global _mixed_cache_ttl_warned  # noqa: PLW0603
+    if not _warn_print:
+        _warn_capture["mixed"] = True
+        return
     if _mixed_cache_ttl_warned:
         return
     _mixed_cache_ttl_warned = True
@@ -305,6 +319,11 @@ def _warn_usage_convention_drift(in_tokens: int, cw_5m: int, cw_1h: int, cr_toke
     spamming a line per record.
     """
     global _usage_convention_warned  # noqa: PLW0603
+    if not _warn_print:
+        # The first drift's numbers are representative enough for the parent's
+        # single emission; later ones (same root cause) need not be threaded back.
+        _warn_capture.setdefault("drift", (in_tokens, cw_5m, cw_1h, cr_tokens))
+        return
     if _usage_convention_warned:
         return
     _usage_convention_warned = True
@@ -456,12 +475,30 @@ def _cost_record(  # noqa: PLR0913
     display_model = f"{provider_name}/{norm_model}"
 
     # The request's cache_control TTL attributes the flat cache-write total to a
-    # 5m/1h tier when the response omits the breakdown (the Bedrock case).
-    request_ttl = request_cache_ttl(rec.get("request"))
-    usage = extract_usage(rec.get("response"), request_ttl)
-    # Pass the raw result through: None means pricing was unknown for this
-    # request, which the Bucket records distinctly from a known-zero cost.
-    cost = prices.compute_cost(provider_name, model, rec.get("response"), request_ttl)
+    # 5m/1h tier when the response omits the breakdown (the Bedrock case). It is
+    # *only* consulted in that case, so resolving it eagerly for every record
+    # would walk each request body needlessly — by far the hottest cost in a
+    # large scan. Compute it lazily: only when the response carries a flat
+    # cache-write total with no ephemeral split of its own does the request-side
+    # marker matter. See request_cache_ttl / extract_usage / _response_cache_split.
+    response = rec.get("response")
+    request_ttl = None
+    resp_usage = response.get("usage") if isinstance(response, dict) else None
+    if (
+        isinstance(resp_usage, dict)
+        and (resp_usage.get("cache_creation_input_tokens") or 0)
+        and not _response_cache_split(resp_usage)
+    ):
+        request_ttl = request_cache_ttl(rec.get("request"))
+
+    usage = extract_usage(response, request_ttl)
+    # Price the usage we just extracted directly, rather than calling
+    # prices.compute_cost — which would re-run extract_usage internally — so the
+    # response is normalized exactly once per record. get_pricing returning None
+    # means pricing was unknown for this request, which the Bucket records
+    # distinctly from a known-zero cost.
+    tiers = prices.get_pricing(provider_name, model)
+    cost = None if tiers is None else _cost_for_tiers(tiers, usage)
 
     unrecorded = _usage_unrecorded(rec)
     by_day[day_key][display_model].add(usage, cost, unrecorded=unrecorded)
@@ -536,7 +573,291 @@ def _file_predates_range(messages_file: Path, from_iso: str | None) -> bool:
     return mtime_day.astimezone().strftime("%Y-%m-%d") < from_iso
 
 
-def _scan_logs_dir(  # noqa: C901
+def _enumerate_session_files(logs_dir: Path, from_iso: str | None) -> list[tuple[str, Path]]:
+    """
+    List a logs dir's ``(provider_name, messages.jsonl)`` units, mtime-culled.
+
+    Walks the ``<provider>/<session>/`` layout shared by a project's
+    ``.claude/litellm-logs`` symlink and a central orphaned ``<hash>`` dir, and
+    drops files whose mtime predates the lower bound (see
+    :func:`_file_predates_range`) so culled files never become scan work. This is
+    the cheap metadata-only pass; the costly per-file parsing happens in
+    :func:`_scan_session_file`, which lets the work be fanned out across processes.
+    """
+    units: list[tuple[str, Path]] = []
+    try:
+        provider_dirs = list(logs_dir.iterdir())
+    except OSError:
+        return units
+    for provider_dir in provider_dirs:
+        if not provider_dir.is_dir():
+            continue
+        provider_name = provider_dir.name
+        try:
+            session_dirs = provider_dir.iterdir()
+        except OSError:
+            continue
+        for session_dir in session_dirs:
+            if not session_dir.is_dir():
+                continue
+            messages_file = session_dir / "messages.jsonl"
+            if not messages_file.is_file():
+                continue
+            if _file_predates_range(messages_file, from_iso):
+                continue
+            units.append((provider_name, messages_file))
+    return units
+
+
+# A single session file's contribution: (had_in_window_record, last_ts, by_day,
+# by_day_by_source). The two dicts are plain (not defaultdict) so the result
+# pickles cleanly back from a pool worker.
+_FileResult = tuple[
+    bool, "datetime | None", dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]]
+]
+
+
+def _scan_session_file(
+    provider_name: str,
+    messages_file: Path,
+    prices: PriceSource,
+    *,
+    from_iso: str | None,
+    until_iso: str | None,
+) -> _FileResult:
+    """
+    Cost one ``messages.jsonl`` line-by-line. Returns this file's
+    ``(had_record, last_ts, by_day_by_model, by_day_by_source)``.
+
+    The single per-file scanning core shared by the serial path
+    (:func:`_scan_logs_dir`) and the parallel worker (:func:`_scan_one_file`), so
+    the two can never drift. Only in-window records are counted; ``had_record`` is
+    True when at least one such record was costed (so the dir can count the
+    session). ``by_day_by_source`` mirrors ``by_day`` keyed by usage source (see
+    :func:`_usage_source`) for the verbose breakdown.
+    """
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    by_day_by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    last_ts: datetime | None = None
+    had_record = False
+    try:
+        with messages_file.open("r", encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                try:
+                    rec = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                accumulated, ts = _cost_record(
+                    rec,
+                    provider_name,
+                    prices,
+                    by_day,
+                    by_day_by_source,
+                    from_iso=from_iso,
+                    until_iso=until_iso,
+                )
+                had_record = had_record or accumulated
+                if ts is not None and (last_ts is None or ts > last_ts):
+                    last_ts = ts
+    except OSError:
+        return False, None, {}, {}
+    return (
+        had_record,
+        last_ts,
+        {d: dict(m) for d, m in by_day.items()},
+        {d: dict(s) for d, s in by_day_by_source.items()},
+    )
+
+
+def _merge_by_day(dst: dict[str, dict[str, Bucket]], src: dict[str, dict[str, Bucket]]) -> None:
+    """Merge one ``by_day[day][key] -> Bucket`` map into another in place."""
+    for day, by_key in src.items():
+        dst_day = dst.setdefault(day, {})
+        for key, bucket in by_key.items():
+            existing = dst_day.get(key)
+            if existing is None:
+                dst_day[key] = bucket
+            else:
+                existing.merge(bucket)
+
+
+def _fold_file_results(
+    results: Iterable[_FileResult],
+) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]]]:
+    """
+    Fold per-file results into a dir aggregate: (sessions, last_ts, by_day, by_source).
+
+    A session is counted only when its file contributed at least one in-window
+    record, so the session column reflects the selected range rather than all-time
+    directories — matching the original per-dir scan.
+    """
+    by_day: dict[str, dict[str, Bucket]] = {}
+    by_day_by_source: dict[str, dict[str, Bucket]] = {}
+    last_ts: datetime | None = None
+    session_count = 0
+    for had_record, ts, file_by_day, file_by_source in results:
+        if had_record:
+            session_count += 1
+        if ts is not None and (last_ts is None or ts > last_ts):
+            last_ts = ts
+        _merge_by_day(by_day, file_by_day)
+        _merge_by_day(by_day_by_source, file_by_source)
+    return session_count, last_ts, by_day, by_day_by_source
+
+
+# --- Parallel scan -----------------------------------------------------------
+#
+# The scan is embarrassingly parallel per session file, and json.loads (CPU-bound
+# C that holds the GIL) dominates it, so a process pool — not threads — is what
+# wins. `run` enumerates every file across all projects and orphaned dirs, fans
+# them through one shared pool, and folds the per-dir results back. Below a
+# threshold the pool's fork/import cost isn't worth it, so the serial path runs.
+
+# A unit of parallel work: (dir_index, provider_name, messages_file). dir_index
+# tags which logs dir the file belongs to so the parent can fold results per dir
+# (a project's sessions vs. an orphaned dir's) without the worker knowing.
+_WorkUnit = tuple[int, str, "Path"]
+
+# Below this many files, fork + interpreter import per worker costs more than the
+# serial scan saves. Tuned well above an empty/near-empty scan (~50ms serial).
+_PARALLEL_MIN_FILES = 64
+
+# Set in each worker process by `_worker_init`. The pool reuses one PriceSource
+# (and its lazily-fetched provider tables) per process rather than pickling it
+# per task — pricing fetch is local and cheap, so a fresh one per worker is fine.
+# The window bounds are passed once via initargs (not per task) since they are
+# constant across the whole scan.
+_worker_prices: PriceSource | None = None
+_worker_from_iso: str | None = None
+_worker_until_iso: str | None = None
+
+
+def plan_pool(nfiles: int) -> tuple[int, int]:
+    """
+    Choose ``(workers, chunksize)`` for a parallel scan of ``nfiles`` files.
+
+    Sized to the machine and the workload, validated against a chunksize-by-pool
+    sweep on a 25.5K-record dataset:
+      * workers — ``min(cpu_count, 8, ceil(nfiles / 16))``. Decode saturates
+        ~8 workers (16 was no faster), so 8 is the cap; it also scales *down* on
+        few-core hosts and small datasets (no point forking 8 for 20 files).
+      * chunksize — ``max(1, min(8, nfiles // (workers * 4)))``, ≈4 chunks per
+        worker. ``map`` dispatches chunks lazily as workers free up, so several
+        small chunks per worker keep load balanced when a few sessions are far
+        larger than the rest; the [1, 8] clamp matches the sweep's flat optimum.
+    """
+    cpu = os.cpu_count() or 1
+    workers = max(1, min(cpu, 8, math.ceil(nfiles / 16)))
+    chunksize = max(1, min(8, nfiles // (workers * 4)))
+    return workers, chunksize
+
+
+def _worker_init(from_iso: str | None, until_iso: str | None) -> None:
+    """Set up one pool worker: own PriceSource, window bounds, warn-capture mode."""
+    global _worker_prices, _worker_from_iso, _worker_until_iso, _warn_print  # noqa: PLW0603
+    _worker_prices = PriceSource()
+    _worker_from_iso = from_iso
+    _worker_until_iso = until_iso
+    # Warnings printed from a child go to a stderr the user never sees and would
+    # also duplicate per worker; capture them instead so the parent emits once.
+    _warn_print = False
+
+
+def _scan_one_file(unit: _WorkUnit) -> tuple[int, _FileResult, bool, tuple | None]:
+    """
+    Pool task: scan one file with the worker's PriceSource. Returns
+    ``(dir_index, file_result, saw_mixed_ttl, drift_numbers_or_None)``.
+
+    The two warning signals ride back with the result so the parent can emit each
+    at most once (workers run with printing suppressed; see :func:`_worker_init`).
+    """
+    global _warn_capture  # noqa: PLW0603
+    dir_index, provider_name, messages_file = unit
+    assert _worker_prices is not None  # set by _worker_init
+    _warn_capture = {}
+    result = _scan_session_file(
+        provider_name,
+        messages_file,
+        _worker_prices,
+        from_iso=_worker_from_iso,
+        until_iso=_worker_until_iso,
+    )
+    return dir_index, result, bool(_warn_capture.get("mixed")), _warn_capture.get("drift")
+
+
+# A scan cache maps each logs dir to its folded
+# (sessions, last_ts, by_day_by_model, by_day_by_source) result, so the
+# aggregation pass can look results up instead of re-scanning. `run` builds one
+# (possibly in parallel) and threads it through; direct callers that pass None
+# scan serially on demand.
+_DirResult = tuple[
+    int, "datetime | None", dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]]
+]
+ScanCache = dict["Path", _DirResult]
+
+
+def _scan_dirs(
+    logs_dirs: list[Path],
+    *,
+    from_iso: str | None,
+    until_iso: str | None,
+) -> ScanCache:
+    """
+    Scan many logs dirs and return a ``{logs_dir: folded_result}`` cache.
+
+    Enumerates every session file across all dirs up front (cheap, metadata-only),
+    then fans the per-file scans across a process pool when there are enough files
+    to outweigh the pool's startup cost (see :data:`_PARALLEL_MIN_FILES`),
+    otherwise scans serially in-process. Either way the per-file results are
+    folded back per originating dir with :func:`_fold_file_results`, so the result
+    is identical to calling :func:`_scan_logs_dir` on each dir — only faster.
+    """
+    # Enumerate (dir_index, provider, file) units; dir_index ties each file back
+    # to its dir so per-dir folding is exact regardless of scan order.
+    units: list[_WorkUnit] = []
+    for idx, logs_dir in enumerate(logs_dirs):
+        for provider_name, messages_file in _enumerate_session_files(logs_dir, from_iso):
+            units.append((idx, provider_name, messages_file))
+
+    # Per-dir result buckets, keyed by dir_index, collecting raw file results.
+    per_dir: list[list[_FileResult]] = [[] for _ in logs_dirs]
+
+    if len(units) < _PARALLEL_MIN_FILES:
+        # Serial: small enough that a pool's fork/import cost would dominate.
+        prices = PriceSource()
+        for idx, provider_name, messages_file in units:
+            per_dir[idx].append(
+                _scan_session_file(
+                    provider_name, messages_file, prices, from_iso=from_iso, until_iso=until_iso
+                )
+            )
+    else:
+        workers, chunksize = plan_pool(len(units))
+        saw_mixed = False
+        drift: tuple | None = None
+        with ProcessPoolExecutor(
+            max_workers=workers, initializer=_worker_init, initargs=(from_iso, until_iso)
+        ) as pool:
+            for idx, result, file_mixed, file_drift in pool.map(
+                _scan_one_file, units, chunksize=chunksize
+            ):
+                per_dir[idx].append(result)
+                saw_mixed = saw_mixed or file_mixed
+                if drift is None and file_drift is not None:
+                    drift = file_drift
+        # Emit each warning once in the parent — workers ran with printing off.
+        if saw_mixed:
+            _warn_mixed_cache_ttl()
+        if drift is not None:
+            _warn_usage_convention_drift(*drift)
+
+    return {logs_dir: _fold_file_results(per_dir[idx]) for idx, logs_dir in enumerate(logs_dirs)}
+
+
+def _scan_logs_dir(
     logs_dir: Path,
     prices: PriceSource,
     *,
@@ -557,63 +878,18 @@ def _scan_logs_dir(  # noqa: C901
     usage source (see :func:`_usage_source`), feeding the verbose breakdown.
 
     Works on both a project's ``.claude/litellm-logs`` symlink and a central
-    orphaned ``<hash>`` dir, since they share the same internal layout.
+    orphaned ``<hash>`` dir, since they share the same internal layout. This is the
+    serial path; the parallel scan in :func:`run` fans the same per-file core
+    (:func:`_scan_session_file`) across processes and folds with
+    :func:`_fold_file_results`.
     """
-    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
-    by_day_by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
-    last_ts: datetime | None = None
-    session_count = 0
-
-    for provider_dir in logs_dir.iterdir():
-        if not provider_dir.is_dir():
-            continue
-        provider_name = provider_dir.name
-
-        for session_dir in provider_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            messages_file = session_dir / "messages.jsonl"
-            if not messages_file.is_file():
-                continue
-            if _file_predates_range(messages_file, from_iso):
-                continue
-
-            session_had_record = False
-            try:
-                with messages_file.open("r", encoding="utf-8", errors="replace") as f:
-                    for raw_line in f:
-                        stripped = raw_line.strip()
-                        if not stripped:
-                            continue
-                        try:
-                            rec = json.loads(stripped)
-                        except json.JSONDecodeError:
-                            continue
-                        accumulated, ts = _cost_record(
-                            rec,
-                            provider_name,
-                            prices,
-                            by_day,
-                            by_day_by_source,
-                            from_iso=from_iso,
-                            until_iso=until_iso,
-                        )
-                        session_had_record = session_had_record or accumulated
-                        if ts is not None and (last_ts is None or ts > last_ts):
-                            last_ts = ts
-            except OSError:
-                continue
-            # Count a session only when it contributed an in-window record, so the
-            # session column reflects the selected range, not all-time directories.
-            if session_had_record:
-                session_count += 1
-
-    return (
-        session_count,
-        last_ts,
-        {d: dict(m) for d, m in by_day.items()},
-        {d: dict(s) for d, s in by_day_by_source.items()},
-    )
+    results = [
+        _scan_session_file(
+            provider_name, messages_file, prices, from_iso=from_iso, until_iso=until_iso
+        )
+        for provider_name, messages_file in _enumerate_session_files(logs_dir, from_iso)
+    ]
+    return _fold_file_results(results)
 
 
 def _scan_project(
@@ -622,6 +898,7 @@ def _scan_project(
     *,
     from_iso: str | None = None,
     until_iso: str | None = None,
+    scan_cache: ScanCache | None = None,
 ) -> tuple[int, datetime | None, dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]], bool]:
     """
     Scan one project's LiteLLM logs. Returns
@@ -629,13 +906,18 @@ def _scan_project(
 
     ``exists`` is False when the project's ``.claude/litellm-logs`` is gone (a
     deleted project / stale registry entry), in which case nothing is scanned.
+    When ``scan_cache`` is given, this dir's pre-scanned result is reused instead
+    of scanning on demand (see :func:`_scan_dirs`).
     """
     logs_dir = path / ".claude" / "litellm-logs"
     if not logs_dir.is_dir():
         return 0, None, {}, {}, False
-    sessions, last_ts, by_day, by_day_by_source = _scan_logs_dir(
-        logs_dir, prices, from_iso=from_iso, until_iso=until_iso
-    )
+    if scan_cache is not None:
+        sessions, last_ts, by_day, by_day_by_source = scan_cache.get(logs_dir, (0, None, {}, {}))
+    else:
+        sessions, last_ts, by_day, by_day_by_source = _scan_logs_dir(
+            logs_dir, prices, from_iso=from_iso, until_iso=until_iso
+        )
     return sessions, last_ts, by_day, by_day_by_source, True
 
 
@@ -649,6 +931,7 @@ def _collect_orphaned(  # noqa: PLR0913
     *,
     from_iso: str | None = None,
     until_iso: str | None = None,
+    scan_cache: ScanCache | None = None,
 ) -> dict | None:
     """
     Aggregate central log dirs not reachable from any registered project.
@@ -659,16 +942,23 @@ def _collect_orphaned(  # noqa: PLR0913
     synthetic ``<orphaned>`` row. Returns None when there are no orphaned sessions.
 
     When ``totals_by_day_by_source`` is given, orphaned spend is also folded into
-    the per-day per-source breakdown so the verbose table stays consistent.
+    the per-day per-source breakdown so the verbose table stays consistent. When
+    ``scan_cache`` is given, each orphaned dir's pre-scanned result is reused
+    instead of scanning on demand (see :func:`_scan_dirs`).
     """
     total = Bucket()
     sessions = 0
     last_ts: datetime | None = None
 
     for logs_dir in orphaned_log_dirs(tool_dir, projects):
-        d_sessions, d_last_ts, by_day, by_day_by_source = _scan_logs_dir(
-            logs_dir, prices, from_iso=from_iso, until_iso=until_iso
-        )
+        if scan_cache is not None:
+            d_sessions, d_last_ts, by_day, by_day_by_source = scan_cache.get(
+                logs_dir, (0, None, {}, {})
+            )
+        else:
+            d_sessions, d_last_ts, by_day, by_day_by_source = _scan_logs_dir(
+                logs_dir, prices, from_iso=from_iso, until_iso=until_iso
+            )
         sessions += d_sessions
         if d_last_ts is not None and (last_ts is None or d_last_ts > last_ts):
             last_ts = d_last_ts
@@ -830,6 +1120,7 @@ def _aggregate_projects(
     *,
     from_iso: str | None = None,
     until_iso: str | None = None,
+    scan_cache: ScanCache | None = None,
 ) -> tuple[
     list[dict],
     dict[str, Bucket],
@@ -844,7 +1135,9 @@ def _aggregate_projects(
     Physical projects sharing a ``.agent_stats_leaf`` group root are merged into
     a single row (see :func:`agent_wrap.lib.grouping.resolve_group`); the global
     per-model, per-day, and per-source totals are unaffected by grouping and are
-    accumulated straight from each project's scan.
+    accumulated straight from each project's scan. When ``scan_cache`` is given,
+    each project's pre-scanned result is reused instead of scanning on demand
+    (see :func:`_scan_dirs`).
     """
     groups: dict[Path, _Group] = {}
     totals_by_model: dict[str, Bucket] = defaultdict(Bucket)
@@ -853,7 +1146,7 @@ def _aggregate_projects(
 
     for path in projects:
         sessions, last_ts, by_day, by_day_by_source, exists = _scan_project(
-            path, prices, from_iso=from_iso, until_iso=until_iso
+            path, prices, from_iso=from_iso, until_iso=until_iso, scan_cache=scan_cache
         )
 
         root, name, transient = resolve_group(path)
@@ -924,8 +1217,27 @@ def run(args: list[str], tool_dir: Path) -> int:
         return 0
 
     prices = PriceSource()
+
+    # Scan every logs dir — projects and orphaned alike — in one pass up front,
+    # fanned across a process pool when the file count warrants it (see
+    # _scan_dirs). The aggregation/orphaned passes below then read folded results
+    # from this cache instead of scanning serially. orphaned_log_dirs is cheap
+    # (metadata only) and is called again inside _collect_orphaned; recomputing it
+    # here keeps the dir set authoritative there rather than threading it through.
+    orphaned_dirs = orphaned_log_dirs(tool_dir, projects)
+    project_log_dirs = [p / ".claude" / "litellm-logs" for p in projects]
+    scan_cache = _scan_dirs(
+        [*project_log_dirs, *orphaned_dirs],
+        from_iso=parsed.from_iso,
+        until_iso=parsed.until_iso,
+    )
+
     rows, totals_by_model, totals_by_day_by_model, totals_by_day_by_source = _aggregate_projects(
-        projects, prices, from_iso=parsed.from_iso, until_iso=parsed.until_iso
+        projects,
+        prices,
+        from_iso=parsed.from_iso,
+        until_iso=parsed.until_iso,
+        scan_cache=scan_cache,
     )
 
     # Filter out projects with no logs
@@ -942,6 +1254,7 @@ def run(args: list[str], tool_dir: Path) -> int:
         totals_by_day_by_source,
         from_iso=parsed.from_iso,
         until_iso=parsed.until_iso,
+        scan_cache=scan_cache,
     )
 
     if not rows and orphaned is None:

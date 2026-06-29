@@ -16,10 +16,12 @@ from agent_wrap.commands.stats import (
     _best_prefix_key,
     _collect_orphaned,
     _cost_record,
+    _scan_dirs,
     _scan_logs_dir,
     _usage_source,
     _usage_unrecorded,
     extract_usage,
+    plan_pool,
     render,
     render_source_breakdown,
     request_cache_ttl,
@@ -761,3 +763,193 @@ def test_parse_usage_args_verbose_defaults_false(tmp_path: Path):
     parsed = parse_usage_args([str(reg)], usage_line="u", usage_text="u")
     assert parsed is not None
     assert parsed.verbose is False
+
+
+# --- lazy request_cache_ttl --------------------------------------------------
+
+
+def test_cost_record_skips_ttl_walk_when_response_has_split(monkeypatch):
+    # When the response already carries an ephemeral split, the request-side TTL
+    # is never needed — so _cost_record must not walk the request body for it.
+    prices = _make_prices(monkeypatch, priced=True)
+    calls = {"n": 0}
+    real = stats_mod.request_cache_ttl
+    monkeypatch.setattr(
+        stats_mod,
+        "request_cache_ttl",
+        lambda req: (calls.__setitem__("n", calls["n"] + 1), real(req))[1],
+    )
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": 1_700_000_000.0},
+        "request": _request_with_ttls("1h"),
+        "response": {
+            "usage": {
+                "prompt_tokens": 5000,
+                "completion_tokens": 100,
+                "cache_creation_input_tokens": 1000,
+                "ephemeral_5m_input_tokens": 600,
+                "ephemeral_1h_input_tokens": 400,
+            }
+        },
+    }
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    _cost_record(rec, "bedrock", prices, by_day)
+    assert calls["n"] == 0
+
+
+def test_cost_record_skips_ttl_walk_without_cache_writes(monkeypatch):
+    # No cache-write tokens at all → the TTL is irrelevant, so it is not consulted.
+    prices = _make_prices(monkeypatch, priced=True)
+    calls = {"n": 0}
+    real = stats_mod.request_cache_ttl
+    monkeypatch.setattr(
+        stats_mod,
+        "request_cache_ttl",
+        lambda req: (calls.__setitem__("n", calls["n"] + 1), real(req))[1],
+    )
+    rec = {**_success_rec(), "request": _request_with_ttls("1h")}
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    _cost_record(rec, "bedrock", prices, by_day)
+    assert calls["n"] == 0
+
+
+def test_cost_record_consults_ttl_for_flat_bedrock_total(monkeypatch):
+    # The Bedrock case — a flat cache-write total with no ephemeral split — is the
+    # one case that *does* need the request TTL, so it must be consulted.
+    prices = _make_prices(monkeypatch, priced=True)
+    calls = {"n": 0}
+    real = stats_mod.request_cache_ttl
+    monkeypatch.setattr(
+        stats_mod,
+        "request_cache_ttl",
+        lambda req: (calls.__setitem__("n", calls["n"] + 1), real(req))[1],
+    )
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": 1_700_000_000.0},
+        "request": _request_with_ttls("1h"),
+        "response": _flat_cache_response(1000),
+    }
+    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
+    _cost_record(rec, "bedrock", prices, by_day)
+    assert calls["n"] == 1
+    # And the TTL still threads through: the 1h request bills the writes as 1h.
+    (bucket,) = next(iter(by_day.values())).values()
+    assert bucket.cw_1h == 1000
+    assert bucket.cw_5m == 0
+
+
+# --- plan_pool sizing heuristic ----------------------------------------------
+
+
+def test_plan_pool_caps_workers_at_eight(monkeypatch):
+    # Many cores and many files still cap at 8 workers (decode saturates there).
+    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 64)
+    workers, chunksize = plan_pool(10_000)
+    assert workers == 8
+    assert 1 <= chunksize <= 8
+
+
+def test_plan_pool_scales_down_on_single_core(monkeypatch):
+    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 1)
+    workers, chunksize = plan_pool(10_000)
+    assert workers == 1
+    assert 1 <= chunksize <= 8
+
+
+def test_plan_pool_scales_workers_to_file_count(monkeypatch):
+    # Few files shouldn't fork a full fleet: ceil(nfiles/16) bounds the workers.
+    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 64)
+    workers, _chunksize = plan_pool(20)
+    assert workers == 2  # ceil(20/16)
+
+
+def test_plan_pool_chunksize_in_clamp_range(monkeypatch):
+    # Across a wide range of inputs the chunksize stays within the tuned [1, 8].
+    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 20)
+    for nfiles in (1, 20, 80, 200, 800, 4430, 50_000):
+        workers, chunksize = plan_pool(nfiles)
+        assert workers >= 1
+        assert 1 <= chunksize <= 8
+
+
+def test_plan_pool_handles_unknown_cpu_count(monkeypatch):
+    # os.cpu_count() can return None; the heuristic must still yield >=1 worker.
+    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: None)
+    workers, chunksize = plan_pool(1000)
+    assert workers == 1
+    assert 1 <= chunksize <= 8
+
+
+# --- _scan_dirs: serial / parallel equivalence -------------------------------
+
+
+def _seed_many_dirs(tool_dir: Path, n: int, records_per: int) -> list[Path]:
+    """Create `n` central <hash> log dirs, each one session of `records_per` recs."""
+    dirs = []
+    for i in range(n):
+        recs = [_dated_rec("2026-06-15") for _ in range(records_per)]
+        dirs.append(_write_central_log(tool_dir, f"hash{i:04d}", "s1", recs))
+    return dirs
+
+
+def test_scan_dirs_serial_matches_scan_logs_dir(monkeypatch, tmp_path: Path):
+    # The serial _scan_dirs path must fold to the same result _scan_logs_dir gives.
+    prices = _make_prices(monkeypatch, priced=True)
+    dirs = _seed_many_dirs(tmp_path / "tool", 3, records_per=2)
+
+    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 10**9)  # force serial
+    cache = _scan_dirs(dirs, from_iso=None, until_iso=None)
+    for d in dirs:
+        expect = _scan_logs_dir(d, prices, from_iso=None, until_iso=None)
+        got = cache[d]
+        assert got[0] == expect[0]  # sessions
+        assert {m: b.msgs for v in got[2].values() for m, b in v.items()} == {
+            m: b.msgs for v in expect[2].values() for m, b in v.items()
+        }
+
+
+def test_scan_dirs_parallel_matches_serial(monkeypatch, tmp_path: Path):
+    # Forcing the pool path must yield byte-identical aggregates to the serial one,
+    # proving parallelism doesn't change results. Enough files to exercise chunks.
+    _make_prices(monkeypatch, priced=True)
+    dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=2)
+
+    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 10**9)
+    serial = _scan_dirs(dirs, from_iso=None, until_iso=None)
+    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 1)
+    parallel = _scan_dirs(dirs, from_iso=None, until_iso=None)
+
+    def norm(cache: dict) -> dict:
+        out = {}
+        for d, (sess, ts, by_day, _by_src) in cache.items():
+            out[str(d)] = (
+                sess,
+                ts,
+                {
+                    day: {
+                        m: (b.msgs, b.in_, b.out, b.cw, b.cr, round(b.cost, 9))
+                        for m, b in v.items()
+                    }
+                    for day, v in by_day.items()
+                },
+            )
+        return out
+
+    assert norm(serial) == norm(parallel)
+
+
+def test_scan_dirs_parallel_totals_match_records(monkeypatch, tmp_path: Path):
+    # End-to-end count check on the parallel path: every record is costed once.
+    _make_prices(monkeypatch, priced=True)
+    dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=3)
+
+    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 1)  # force parallel
+    cache = _scan_dirs(dirs, from_iso=None, until_iso=None)
+    total_msgs = sum(
+        b.msgs for _, _, by_day, _ in cache.values() for v in by_day.values() for b in v.values()
+    )
+    assert total_msgs == 80 * 3  # no double-counting, no drops
