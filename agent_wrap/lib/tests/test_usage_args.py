@@ -113,6 +113,37 @@ def test_until_and_days_zero_open_lower(monkeypatch, tmp_path: Path):
     assert parsed.until_iso == "2026-06-20"
 
 
+# --- short flag forms --------------------------------------------------------
+
+
+def test_short_days(monkeypatch, tmp_path: Path):
+    parsed = _parse(monkeypatch, _reg(tmp_path), "-d", "7")
+    assert parsed is not None
+    assert parsed.from_iso == _iso(_TODAY - timedelta(days=7))
+    assert parsed.until_iso == _iso(_TODAY)
+
+
+def test_short_from(monkeypatch, tmp_path: Path):
+    parsed = _parse(monkeypatch, _reg(tmp_path), "-f", "2026-06-01")
+    assert parsed is not None
+    assert parsed.from_iso == "2026-06-01"
+    assert parsed.until_iso == _iso(_TODAY)
+
+
+def test_short_until(monkeypatch, tmp_path: Path):
+    parsed = _parse(monkeypatch, _reg(tmp_path), "-u", "2026-06-20")
+    assert parsed is not None
+    assert parsed.until_iso == "2026-06-20"
+    assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS))
+
+
+def test_short_from_and_until(monkeypatch, tmp_path: Path):
+    parsed = _parse(monkeypatch, _reg(tmp_path), "-f", "2026-06-01", "-u", "2026-06-10")
+    assert parsed is not None
+    assert parsed.from_iso == "2026-06-01"
+    assert parsed.until_iso == "2026-06-10"
+
+
 # --- relative date specs -----------------------------------------------------
 
 

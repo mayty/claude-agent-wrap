@@ -137,7 +137,7 @@ def _resolve_range(builder: UsageArgsBuilder) -> tuple[str | None, str | None] |
 
 def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> UsageArgs | None:
     """
-    Parse ``[--from D] [--until D] [--days N] [-v] <projects.txt>``.
+    Parse ``[-f|--from D] [-u|--until D] [-d|--days N] [-v] <projects.txt>``.
 
     `usage_text` is printed for -h/--help; `usage_line` is printed when no
     positional registry path is supplied. Returns None if help was printed or
@@ -155,15 +155,15 @@ def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> Us
             parsed.verbose = True
             i += 1
             continue
-        if a == "--days" and i + 1 < len(args):
+        if a in ("-d", "--days") and i + 1 < len(args):
             parsed.days_spec = args[i + 1]
             i += 2
             continue
-        if a == "--from" and i + 1 < len(args):
+        if a in ("-f", "--from") and i + 1 < len(args):
             parsed.from_spec = args[i + 1]
             i += 2
             continue
-        if a == "--until" and i + 1 < len(args):
+        if a in ("-u", "--until") and i + 1 < len(args):
             parsed.until_spec = args[i + 1]
             i += 2
             continue

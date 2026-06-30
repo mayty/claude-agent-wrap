@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
-USAGE = "[-v|--verbose] [--from D] [--until D] [--days N]"
+USAGE = "[-v|--verbose] [-f|--from D] [-u|--until D] [-d|--days N]"
 SUMMARY = "Show token usage stats (reads from .claude/litellm-logs/)"
 
 _MODEL_CONTEXT_SUFFIX_RE = re.compile(r"\[(?:1m|128k|32k|8k)\]$", re.IGNORECASE)
@@ -1070,16 +1070,16 @@ def render_source_breakdown(
 
 
 _USAGE_TEXT = (
-    "Usage: agent stats [-v|--verbose] [--from D] [--until D] [--days N] <projects.txt>\n\n"
+    "Usage: agent stats [-v|--verbose] [-f|--from D] [-u|--until D] [-d|--days N] <projects.txt>\n\n"
     "Reads a list of project paths (one per line) and prints aggregated\n"
     "usage stats from each project's .claude/litellm-logs/ directories.\n\n"
     "Output is a per-project table plus a per-model and per-day breakdown,\n"
     "both over the same usage window. Models are displayed as <provider>/<model>.\n"
     "Day buckets use host-local time.\n\n"
     "Selection range (at most two of --from/--until/--days may be combined):\n"
-    "  --from D    inclusive lower bound; D is YYYY-MM-DD or -Nd (e.g. -14d)\n"
-    "  --until D   inclusive upper bound; same format as --from\n"
-    "  --days N    span in days; N=0 means unlimited (no day bound)\n"
+    "  -f, --from D    inclusive lower bound; D is YYYY-MM-DD or -Nd (e.g. -14d)\n"
+    "  -u, --until D   inclusive upper bound; same format as --from\n"
+    "  -d, --days N    span in days; N=0 means unlimited (no day bound)\n"
     "Defaults: no flags → last 28 days; --from alone → [from, now];\n"
     "--days N alone → [now-N, now]; --until alone → [until-28, until];\n"
     "--days 0 alone → all time (includes records with no timestamp).\n\n"
@@ -1092,7 +1092,9 @@ _USAGE_TEXT = (
 )
 
 
-_USAGE_LINE = "Usage: agent stats [-v|--verbose] [--from D] [--until D] [--days N] <projects.txt>"
+_USAGE_LINE = (
+    "Usage: agent stats [-v|--verbose] [-f|--from D] [-u|--until D] [-d|--days N] <projects.txt>"
+)
 
 
 def _parse_usage_args(args: list[str]) -> UsageArgs | None:
