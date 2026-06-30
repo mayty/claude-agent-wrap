@@ -1,57 +1,65 @@
 # This file has been created with the assistance of an AI tool.
 """
-Shared render core for the usage-stats subcommands.
+Shared render core for the usage-stats command.
 
-Both `stats` and `legacy_stats` emit the same two stacked tables — "Total"
-(all-time per-model + per-project tree) and "Recent" (per-model + per-day,
-restricted to a days window) — with the trailing six numeric columns width-
-aligned across both. Everything here is identical between the two commands
-except two things, which are injected by the caller:
+`stats` emits two stacked tables over the same usage window — "Projects"
+(per-project tree) and "By day" (per-model + per-day) — with the trailing six
+numeric columns width-aligned across both. The windowing is applied at scan
+time (the per-day dict and the project rows are already restricted to the
+range), so this layer just renders what it is given.
+
+Two things are injected by the caller:
 
   * `cost_fn(model, bucket) -> (known_cost, unknown)` — how a (model, bucket)
     pair's cost is obtained. `stats` reads the cost baked into `Bucket.cost`
-    at scan time; `legacy_stats` computes it lazily from a flat pricing dict.
-    IMPORTANT: cost/unknown for the per-day rows MUST come from `cost_fn`,
-    never by reading `Bucket.cost` directly — that float cannot represent the
-    "known-but-zero" vs "unknown" (`?` / `$X+?`) distinction legacy relies on.
+    at scan time. IMPORTANT: cost/unknown for the per-day rows MUST come from
+    `cost_fn`, never by reading `Bucket.cost` directly — that float cannot
+    represent the "known-but-zero" vs "unknown" (`?` / `$X+?`) distinction.
 
   * `build_model_section(totals_by_model, leading_blanks) -> list[body_row]` —
-    the per-model breakdown. `stats` renders a provider/model tree;
-    `legacy_stats` renders a flat cost-descending list. `leading_blanks` is the
-    number of empty columns to insert after the label (2 in the Total table to
-    skip SESSIONS/LAST LAUNCH, 0 in the Recent table).
+    the per-model breakdown rendered as a provider/model tree. `leading_blanks`
+    is the number of empty columns to insert after the label (0 in the By-day
+    table, which has no SESSIONS/LAST LAUNCH columns).
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from typing import Any
 
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.format import color, fmt_cost_with_unknown, fmt_count, fmt_ts
-from agent_wrap.lib.table import compute_shared_widths, render_table
-from agent_wrap.lib.tree import Node, build_project_tree, flatten_tree
+from agent_wrap.lib.format import fmt_cost_with_unknown, fmt_count, fmt_ts
+from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
+from agent_wrap.lib.tree import DisplayRow, Node, build_project_tree, flatten_tree
 
 # A "cost view" callback. cost/unknown MUST come from this, never `Bucket.cost`.
 CostFn = Callable[[str, Bucket], tuple[float, bool]]
-BuildModelSection = Callable[[dict[str, Bucket], int], list]
+BuildModelSection = Callable[[dict[str, Bucket], int], list[RowItem]]
 
 _DIV = "__div__"
 
 
-def _build_total_body(
-    totals_by_model: dict[str, Bucket],
-    tree_root: Node,
-    display_rows: list,
-    build_model_section: BuildModelSection,
-) -> list:
-    body: list = []
+def range_label(from_iso: str | None, until_iso: str | None) -> str:
+    """Human-readable label for an inclusive range, for table titles."""
+    if from_iso is None and until_iso is None:
+        return "all time"
+    if from_iso is None:
+        return f"through {until_iso}"
+    if until_iso is None:
+        return f"{from_iso} onward"
+    if from_iso == until_iso:
+        return from_iso
+    return f"{from_iso} … {until_iso}"
 
-    if totals_by_model:
-        body.extend(build_model_section(totals_by_model, 2))
-        body.append(_DIV)
+
+def _build_total_body(
+    tree_root: Node,
+    display_rows: list[DisplayRow],
+    orphaned: dict[str, Any] | None = None,
+) -> list[RowItem]:
+    body: list[RowItem] = []
 
     body.append(
         (
@@ -73,7 +81,12 @@ def _build_total_body(
         )
     )
     for dr in display_rows:
-        style = Ansi.DIM if dr.is_structural else Ansi.NONE
+        if dr.transient:
+            style = Ansi.CYAN
+        elif dr.is_structural:
+            style = Ansi.DIM
+        else:
+            style = Ansi.NONE
         body.append(
             (
                 [
@@ -89,6 +102,29 @@ def _build_total_body(
                 ],
                 style,
                 dr.prefix_len,
+            )
+        )
+
+    if orphaned is not None:
+        # A sibling of the "/" root (prefix_len 0, not under the fs tree): logs
+        # left behind by deleted projects. Its usage is already folded into the
+        # per-model section of the By-day table.
+        b = orphaned["total"]
+        body.append(
+            (
+                [
+                    "<orphaned>",
+                    str(orphaned["sessions"]),
+                    fmt_ts(orphaned["last_ts"]),
+                    fmt_count(b.msgs),
+                    fmt_count(b.in_),
+                    fmt_count(b.out),
+                    fmt_count(b.cw),
+                    fmt_count(b.cr),
+                    fmt_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                ],
+                Ansi.CYAN,
+                0,
             )
         )
 
@@ -129,20 +165,16 @@ def _aggregate_day_rows(
 
 def _build_recent_body(
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    days_window: int,
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
-) -> tuple[list, str]:
-    body: list = []
-    truncation_note = ""
+) -> list[RowItem]:
+    body: list[RowItem] = []
 
+    # The day dict is already restricted to the window at scan time; the
+    # synthetic "?" key (records with no timestamp) is the one exception and is
+    # only present in the all-time view, where it is shown alongside dated days.
     dated = {d: m for d, m in totals_by_day_by_model.items() if d != "?"}
-    all_days_sorted = sorted(dated.keys(), reverse=True) if dated else []
-    if dated and days_window > 0:
-        cutoff = (datetime.now().astimezone().date() - timedelta(days=days_window - 1)).isoformat()
-        shown_days = [d for d in all_days_sorted if d >= cutoff]
-    else:
-        shown_days = all_days_sorted
+    shown_days = sorted(dated.keys(), reverse=True)
 
     recent_models: dict[str, Bucket] = defaultdict(Bucket)
     for d in shown_days:
@@ -194,6 +226,7 @@ def _build_recent_body(
                 0,
             )
         )
+        # Average over the days that actually have activity in the window.
         n_days = len(shown_days)
         body.append(
             (
@@ -211,71 +244,71 @@ def _build_recent_body(
             )
         )
 
-        if days_window > 0 and len(shown_days) < len(all_days_sorted):
-            truncation_note = (
-                f"  (showing last {len(shown_days)} of "
-                f"{len(all_days_sorted)} days with activity; "
-                f"use --days 0 to widen)"
-            )
-
-    return body, truncation_note
+    return body
 
 
 def render_core(  # noqa: PLR0913
-    rows: list[dict],
-    totals_by_model: dict[str, Bucket],
+    rows: list[dict[str, Any]],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
-    days_window: int,
+    from_iso: str | None,
+    until_iso: str | None,
     *,
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
+    orphaned: dict[str, Any] | None = None,
 ) -> str:
-    # Two stacked tables: "Total" (all-time per-model + per-project tree) and
-    # "Recent" (per-model + per-day, both restricted to the days_window). Each
-    # table has internal sections separated by a `├─┼─┤` divider; widths of
-    # the trailing six numeric columns are shared across both tables so the
-    # numbers line up vertically.
+    # Two stacked tables over the same window: "Projects" (per-project tree) and
+    # "By day" (per-model + per-day). Each table has internal sections separated
+    # by a `├─┼─┤` divider; widths of the trailing six numeric columns are shared
+    # across both tables so the numbers line up vertically.
     shared_headers = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
     shared_aligns = [">", ">", ">", ">", ">", ">"]
     n_shared = len(shared_headers)
+    label = range_label(from_iso, until_iso)
 
-    # === Total table: models (all-time) + project tree ===
-    total_headers = ["MODEL / PROJECT", "SESSIONS", "LAST LAUNCH", *shared_headers]
+    # === Projects table: per-project tree ===
+    total_headers = ["PROJECT", "SESSIONS", "LAST LAUNCH", *shared_headers]
     total_aligns = ["<", ">", "<", *shared_aligns]
 
     tree_root = build_project_tree(rows)
     display_rows = flatten_tree(tree_root)
 
-    total_body = _build_total_body(totals_by_model, tree_root, display_rows, build_model_section)
+    total_body = _build_total_body(tree_root, display_rows, orphaned)
 
-    # === Recent table: models (in window) + per-day (in window) + TOTAL ===
+    # === By-day table: models (in window) + per-day (in window) + TOTAL ===
     recent_headers = ["MODEL / DATE", *shared_headers]
     recent_aligns = ["<", *shared_aligns]
 
-    recent_body, by_day_truncation_note = _build_recent_body(
-        totals_by_day_by_model, days_window, cost_fn, build_model_section
-    )
+    recent_body = _build_recent_body(totals_by_day_by_model, cost_fn, build_model_section)
 
     # === Shared widths for the trailing six numeric columns ===
     shared_widths = compute_shared_widths(
         [(total_headers, total_body, 3), (recent_headers, recent_body, 1)],
         n_shared,
-        _DIV,
     )
 
     lines: list[str] = []
     lines.extend(
-        render_table("Total:", total_headers, total_aligns, total_body, 3, shared_widths, _DIV)
+        render_table(
+            f"Projects ({label}):",
+            total_headers,
+            total_aligns,
+            total_body,
+            3,
+            shared_widths,
+        )
     )
     if recent_body:
-        recent_title = "Recent:" if days_window == 0 else f"Recent (last {days_window} days):"
         lines.append("")
         lines.extend(
             render_table(
-                recent_title, recent_headers, recent_aligns, recent_body, 1, shared_widths, _DIV
+                f"By day ({label}):",
+                recent_headers,
+                recent_aligns,
+                recent_body,
+                1,
+                shared_widths,
             )
         )
-        if by_day_truncation_note:
-            lines.append(color(by_day_truncation_note, Ansi.DIM))
 
     return "\n".join(lines)

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.format import fmt_cost, fmt_cost_with_unknown
@@ -39,7 +39,7 @@ class Node:
     def __init__(self, name: str) -> None:
         self.name = name
         self.children: dict[str, Node] = {}
-        self.row: dict | None = None
+        self.row: dict[str, Any] | None = None
         self.subtree_bucket = Bucket()
         self.subtree_known_cost = 0.0
         self.subtree_unknown = False
@@ -57,6 +57,7 @@ class DisplayRow:
         "last_ts",
         "prefix_len",
         "sessions",
+        "transient",
     )
 
     def __init__(  # noqa: PLR0913
@@ -69,6 +70,7 @@ class DisplayRow:
         bucket: Bucket,
         last_ts: datetime | None,
         cost_str: str,
+        transient: bool = False,
     ) -> None:
         self.label = label
         self.prefix_len = prefix_len
@@ -77,9 +79,10 @@ class DisplayRow:
         self.bucket = bucket
         self.last_ts = last_ts
         self.cost_str = cost_str
+        self.transient = transient
 
 
-def build_project_tree(rows: list[dict]) -> Node:
+def build_project_tree(rows: list[dict[str, Any]]) -> Node:
     """
     Build a path trie over `rows`, then compress single-child structural
     chains and split projects-with-children into a `.` self-row.
@@ -199,7 +202,18 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
             prefix = "".join("│" if cont else " " for cont in ancestors_continue) + connector
             prefix_len = len(prefix)
 
-            label = prefix + child.name
+            # A grouped transient project (`.agent_stats_leaf`) overrides the
+            # final path segment with its group name; such rows are accented in
+            # color by the renderer via the DisplayRow.transient flag. The
+            # override is a no-op when the name is just the directory name
+            # (empty marker), but the row is still flagged transient.
+            seg = child.name
+            transient = bool(child.row is not None and child.row.get("transient"))
+            if child.row is not None and transient:
+                head, _, _ = seg.rpartition("/")
+                group_name = child.row["name"]
+                seg = f"{head}/{group_name}" if head else group_name
+            label = prefix + seg
             if child.children:
                 label += "/"
             if child.row is not None and not child.row["exists"]:
@@ -217,6 +231,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
                         bucket=r["total"],
                         last_ts=r["last_ts"],
                         cost_str=cost_str,
+                        transient=transient,
                     )
                 )
             else:

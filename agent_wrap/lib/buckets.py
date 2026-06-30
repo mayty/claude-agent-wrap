@@ -3,9 +3,21 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class Bucket:
-    __slots__ = ("cost", "cost_unknown", "cr", "cw_1h", "cw_5m", "in_", "msgs", "out")
+    __slots__ = (
+        "cost",
+        "cost_unknown",
+        "cr",
+        "cw_1h",
+        "cw_5m",
+        "in_",
+        "msgs",
+        "out",
+        "unrecorded",
+    )
 
     def __init__(self) -> None:
         self.msgs = 0
@@ -20,9 +32,19 @@ class Bucket:
         # requests all errored out and so were never billable). Callers must
         # use this flag — not `cost <= 0.0` — to decide whether to render "?".
         self.cost_unknown = False
+        # Count of successful requests whose usage was never recorded (response
+        # logged as a bare "<Response ...>" string before the callback fix, or
+        # tagged "_usage_source": "unrecoverable" after it). These fold in as
+        # zero-token / $0 contributions, so their cost is silently missing —
+        # tracked here so `agent stats` can footnote the count rather than hide it.
+        self.unrecorded = 0
 
-    def add(self, usage: dict, request_cost: float | None = 0.0) -> None:
+    def add(
+        self, usage: dict[str, Any], request_cost: float | None = 0.0, *, unrecorded: bool = False
+    ) -> None:
         self.msgs += 1
+        if unrecorded:
+            self.unrecorded += 1
         self.in_ += usage.get("input_tokens", 0) or 0
         self.out += usage.get("output_tokens", 0) or 0
         cc = usage.get("cache_creation") or {}
@@ -32,8 +54,10 @@ class Bucket:
             self.cw_5m += h5
             self.cw_1h += h1
         else:
-            # Older sessions / non-Anthropic providers may only set the flat
-            # `cache_creation_input_tokens` total. Charge those at the 5m rate.
+            # No ephemeral 5m/1h split was available — neither from the response
+            # nor inferred from the request's cache_control TTL (see
+            # stats.extract_usage / request_cache_ttl). Charge the flat
+            # `cache_creation_input_tokens` total at the 5m rate as a last resort.
             self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
         self.cr += usage.get("cache_read_input_tokens", 0) or 0
         # A None cost means pricing was unavailable for this request; track that
@@ -52,16 +76,8 @@ class Bucket:
         self.cr += other.cr
         self.cost += other.cost
         self.cost_unknown = self.cost_unknown or other.cost_unknown
+        self.unrecorded += other.unrecorded
 
     @property
     def cw(self) -> int:
         return self.cw_5m + self.cw_1h
-
-    def usage_dict(self) -> dict:
-        return {
-            "in": self.in_,
-            "out": self.out,
-            "cw_5m": self.cw_5m,
-            "cw_1h": self.cw_1h,
-            "cr": self.cr,
-        }

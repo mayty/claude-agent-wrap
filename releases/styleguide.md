@@ -79,3 +79,12 @@ A complete skeleton looks like this:
   This applies to every repo file reference (READMEs, docs, source), not just
   READMEs. Pin to the file's location **as of that release** — paths that moved
   later (e.g. the `ops/` reorg in 0.4.0) resolve differently per tag.
+- **Release notes describe user-visible behavior, not internals.** State what
+  broke and what changed from the user's perspective — never describe how a fix
+  works. No data structures, no algorithms, no function signatures, no parameter
+  names. If a change cannot be described without internals, it does not belong
+  in the release notes.
+- **Internal housekeeping is not noteworthy.** Lint fixes, import reordering,
+  test additions, refactors, and similar changes that have no user-visible
+  effect are omitted from release notes entirely. The `**Full Changelog**`
+  compare link is the audit trail for those who need it.

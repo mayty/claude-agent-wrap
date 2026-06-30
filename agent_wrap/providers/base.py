@@ -1,45 +1,31 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Provider interface definition."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent_wrap.sidecars.base import Sidecar
 
 
 class Provider(ABC):
     """
     Abstract base class for model-routing providers.
 
-    Each provider manages a backend (e.g., a LiteLLM sidecar) that fronts
-    the actual model API. The launcher calls ensure() before docker run,
-    release() after it exits, and splices get_run_args() / get_label_args()
-    into the agent's docker run command.
+    Each provider declares the sidecars an agent run depends on (e.g. a LiteLLM
+    proxy fronting the model API). The launcher collects those sidecars, ensures
+    each before docker run, splices the connectivity flags each returns into the
+    agent's docker run command, and releases each after the agent exits.
     """
 
     #: Provider name matching the AGENT_PROVIDER env var (e.g. "litellm-bedrock").
     name: str
 
     @abstractmethod
-    def ensure(
-        self,
-        *,
-        use_host_net: bool,
-        instance_id: str,
-        agent_network: str | None,
-    ) -> None:
-        """Ensure the backend is ready. Raises on failure."""
-
-    @abstractmethod
-    def release(self, instance_id: str) -> None:
-        """Clean up after the agent exits."""
-
-    @abstractmethod
-    def get_run_args(self) -> list[str]:
-        """Return extra docker run flags (env vars, network flags, etc.)."""
-
-    @abstractmethod
-    def get_label_args(self, instance_id: str) -> list[str]:
-        """Return --label and --name flags for the agent container."""
+    def sidecars(self) -> list[Sidecar]:
+        """Return the sidecars an agent run with this provider depends on."""
 
     def get_pricing(self) -> dict[str, dict[str, float]]:
         """
@@ -53,7 +39,7 @@ class Provider(ABC):
         """
         return {}
 
-    def get_tiered_pricing(self) -> dict | None:
+    def get_tiered_pricing(self) -> dict[str, Any] | None:
         """
         Return a tiered pricing table for this provider, if applicable.
 

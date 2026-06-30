@@ -9,6 +9,7 @@ import sys
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.utils import is_truthy_env
 
@@ -316,6 +317,9 @@ def apply(tool_dir: Path, target_ref: str | None = None) -> int:
     return _fast_forward(tool_dir, target_ref, before, pre_state)
 
 
-def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001
+def run(args: list[str], tool_dir: Path) -> int:
     """Execute the `update` subcommand."""
+    ns = parse_or_code(make_parser("update", usage_summary=USAGE), args)
+    if isinstance(ns, int):
+        return ns
     return apply(tool_dir)

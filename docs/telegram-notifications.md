@@ -16,7 +16,9 @@ Claude Code can send you a Telegram message when it asks for permission to run a
    }
    ```
 
-Once both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, the next `agent run` launch idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and forwards the credentials as env vars into the container. No `agent rebuild` needed — the [telegram-notify.sh](../ops/telegram-notify.sh) script and its [md_to_html.js](../ops/md_to_html.js) converter are bind-mounted live.
+Once both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, the next `agent run` launch idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and starts a shared Telegram sidecar container. The sidecar manages the Bot API connection; the agent container receives opaque connectivity vars (`TELEGRAM_SIDECAR_URL`, `TELEGRAM_SIDECAR_TOKEN`) rather than the raw bot credentials. No `agent rebuild` needed — the [telegram-notify.sh](../ops/telegram-notify.sh) script is bind-mounted live and proxies events to the sidecar.
+
+**Headless launches skip the sidecar.** When `agent run` is invoked with a flag that won't exercise the sidecar — `-p`/`--print` (non-interactive), or `--bare`/`--safe-mode` (hooks disabled) — the sidecar container is not started. It is still declared internally so that a headless run which happens to be the last agent out still tears down a sidecar a concurrent interactive run started.
 
 ## How it works
 

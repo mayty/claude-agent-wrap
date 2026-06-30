@@ -28,17 +28,5 @@ jobs:
       - name: Install dev dependencies
         run: pip install -e '.[dev]'
 
-      - name: Run tests
-        run: make test
-
-      - name: Run linter
-        run: make lintcheck
-
-      - name: Check formatting
-        run: make format-check
-
-      - name: Run type checker
-        run: make typecheck
-
-      - name: Check markdown links
-        run: make markdown-check
+      - name: Run checks
+        run: make check

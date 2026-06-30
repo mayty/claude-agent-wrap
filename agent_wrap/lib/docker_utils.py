@@ -1,10 +1,38 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Docker-related utility functions."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
+from pathlib import Path
+
+from agent_wrap.lib.utils import is_truthy_env
+
+
+def is_wsl() -> bool:
+    """Check if running on WSL (Microsoft kernel)."""
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def host_network_build_args() -> list[str]:
+    """
+    Return ["--network", "host"] for `docker build` when the WSL host-network
+    workaround is active, else [].
+
+    Honored only on WSL (see docs/configuration.md): the parallel-distro
+    iptables-legacy FORWARD=DROP scenario that breaks `agent run` also breaks a
+    build's `RUN` steps, which execute on Docker's default bridge.
+    """
+    if not is_wsl():
+        return []
+    if not is_truthy_env(os.environ.get("AGENT_USE_HOST_NETWORK", "")):
+        return []
+    return ["--network", "host"]
 
 
 def docker_run(
@@ -52,3 +80,17 @@ def get_user_args() -> list[str]:
     if is_rootless():
         return []
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
+
+
+def get_tty_args() -> list[str]:
+    """
+    Return docker stdin/tty flags.
+
+    Allocate a pseudo-TTY (-t) only when our own stdin is a terminal; Docker
+    rejects -t when stdin is not a TTY (e.g. launched from a subprocess with
+    stdin=DEVNULL or a pipe). Always pass -i so piped stdin still reaches the
+    container.
+    """
+    if sys.stdin.isatty():
+        return ["-it"]
+    return ["-i"]

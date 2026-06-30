@@ -12,11 +12,10 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 | `AGENT_NAME` | from `# agent-name:` or sanitized project dir |
 | `HOME` | `/home/<agent-user>` (default `/home/ubuntu`) |
 | `TERM`, `COLORTERM` | forwarded from host shell, defaulting to `xterm-256color` / `truecolor` if unset |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | always passed (empty if not configured in `~/claude_keys.json`). The notification script checks that both are non-empty before sending. |
 
 ## Provider-injected vars
 
-The active provider injects additional vars via `get_agent_env()` and `get_run_args()`. See the provider's README:
+The active provider injects additional vars via its `get_agent_env()`, plus the connectivity flags its sidecar(s) supply to the agent's `docker run`. See the provider's README:
 
 - [litellm-bedrock](../agent_wrap/providers/litellm_bedrock/README.md)
 - [litellm-dashscope](../agent_wrap/providers/litellm_dashscope/README.md)
@@ -27,10 +26,14 @@ The active provider injects additional vars via `get_agent_env()` and `get_run_a
 | Var | When forwarded | Effect |
 | --- | --- | --- |
 | `CLAUDE_CODE_ENABLE_AUTO_MODE` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Allows the use of Claude Code's [auto mode](https://code.claude.com/docs/en/auto-mode-config), an LLM-based permission classifier that auto-approves commands instead of prompting. This only matters on backends that **don't** speak the Anthropic protocol — i.e. the default `litellm-bedrock` provider, where auto mode is unavailable unless this var is set. The `litellm-dashscope` and `litellm-deepseek` providers use the Anthropic interface, which makes auto mode available by default, so the var is a no-op there. |
+| `ENABLE_PROMPT_CACHING_1H` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Opts Claude Code into 1-hour prompt cache TTLs instead of the default 5-minute window, which can lower cost on long-running sessions. |
 
 ```sh
 # Allow auto mode (LLM permission classifier) on Bedrock
 CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
+
+# Opt into 1-hour prompt caching
+ENABLE_PROMPT_CACHING_1H=1 agent run
 ```
 
 ## WSLg (conditional)

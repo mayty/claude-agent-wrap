@@ -14,11 +14,13 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
+from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
 from agent_wrap.lib.utils import project_path_hash
 
 
-def _load_json(path: Path) -> dict | None:
+def _load_json(path: Path) -> dict[str, Any] | None:
     """Load JSON from a file, returning None if malformed."""
     try:
         text = path.read_text()
@@ -27,13 +29,6 @@ def _load_json(path: Path) -> dict | None:
         return json.loads(text)
     except (json.JSONDecodeError, OSError):
         return None
-
-
-def _save_json(path: Path, data: dict) -> None:
-    """Atomically write JSON to a file."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(path)
 
 
 def ensure_statusline(settings_path: Path) -> None:
@@ -60,10 +55,10 @@ def ensure_statusline(settings_path: Path) -> None:
         "type": "command",
         "command": "/opt/agent-wrap/statusline.py",
     }
-    _save_json(settings_path, data)
+    atomic_write_json(settings_path, data)
 
 
-def _ensure_hook(data: dict, event: str, command: str) -> None:
+def _ensure_hook(data: dict[str, Any], event: str, command: str) -> None:
     """Add a hook entry to an event if not already present."""
     hooks = data.setdefault("hooks", {})
     event_hooks = hooks.setdefault(event, [])
@@ -104,7 +99,7 @@ def ensure_telegram_hooks(settings_path: Path) -> None:
     _ensure_hook(data, "PermissionRequest", cmd)
     _ensure_hook(data, "Stop", f"{cmd} stop")
     _ensure_hook(data, "StopFailure", f"{cmd} stopfailure")
-    _save_json(settings_path, data)
+    atomic_write_json(settings_path, data)
 
 
 def ensure_claude_md(config_dir: Path, template_path: Path) -> None:
@@ -279,8 +274,6 @@ def record_project(tool_dir: Path) -> None:
         kept.append(cwd)
 
         merged = sorted(set(kept))
-        tmp = projects_file.with_suffix(projects_file.suffix + ".tmp")
-        tmp.write_text("\n".join(merged) + "\n")
-        tmp.replace(projects_file)
+        atomic_write_text(projects_file, "\n".join(merged) + "\n")
     except OSError:
         pass  # non-fatal

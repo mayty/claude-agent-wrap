@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_wrap.providers.litellm_common.callback import (
@@ -138,6 +139,30 @@ def test_build_record_timing_defaults_to_none_without_logging_object() -> None:
     assert record["timing"] == {"start": None, "completionStart": None, "end": None}
 
 
+def test_build_record_timing_falls_back_to_callback_datetimes() -> None:
+    # When the standard_logging_object lacks epoch timestamps, the callback's own
+    # start_time/end_time datetimes fill in — so start is never None and the stats
+    # reader never mints the timestamp-less "?" day-key.
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=timezone.utc)
+    record = build_record({}, None, status="success", start_time=start, end_time=end)
+    assert record["timing"] == {
+        "start": start.timestamp(),
+        "completionStart": start.timestamp(),
+        "end": end.timestamp(),
+    }
+
+
+def test_build_record_timing_prefers_slo_epoch_over_datetime_fallback() -> None:
+    # The standard_logging_object epoch values win when present; the datetime
+    # fallback is only used for fields LiteLLM omitted.
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    kwargs = {"standard_logging_object": {"startTime": 1780916982.12}}
+    record = build_record(kwargs, None, status="success", start_time=start)
+    assert record["timing"]["start"] == 1780916982.12
+    assert record["timing"]["completionStart"] == start.timestamp()
+
+
 def test_build_record_failure_includes_error() -> None:
     record = build_record({}, None, status="failure", exc=RuntimeError("boom"))
     assert record["status"] == "failure"
@@ -258,6 +283,93 @@ def test_build_record_uses_model_dump_for_pydantic_like() -> None:
 
     record = build_record({"model": "m"}, Modelish(), status="success")
     assert record["response"] == {"kind": "modelish", "n": 1}
+
+
+class _RawResponse:
+    """
+    Stand-in for the raw httpx Response LiteLLM sometimes passes the hook.
+
+    It has no model_dump/dict, so json_safe stringifies it — exactly the case
+    that dropped usage before the recovery fix.
+    """
+
+    def __str__(self) -> str:
+        return "<Response [200 OK]>"
+
+
+def test_build_record_recovers_usage_from_slo_when_response_not_dict() -> None:
+    """A raw-Response success recovers usage from the standard_logging_object."""
+    kwargs = {
+        "model": "bedrock/claude",
+        "standard_logging_object": {
+            "prompt_tokens": 1357,
+            "completion_tokens": 152,
+            "cache_read_input_tokens": 1000,
+        },
+    }
+    record = build_record(kwargs, _RawResponse(), status="success")
+
+    assert record["response"]["_usage_source"] == "standard_logging_object"
+    usage = record["response"]["usage"]
+    assert usage["prompt_tokens"] == 1357
+    assert usage["completion_tokens"] == 152
+    assert usage["cache_read_input_tokens"] == 1000
+    # The record must round-trip through the same serialization the callback uses.
+    json.dumps(record, default=str)
+
+
+def test_build_record_native_dict_response_carries_no_marker() -> None:
+    """A normal parsed-dict response is kept verbatim, with no _usage_source tag."""
+    kwargs = {
+        "model": "bedrock/claude",
+        "standard_logging_object": {"prompt_tokens": 10, "completion_tokens": 2},
+    }
+    response = {"choices": [{"text": "yo"}], "usage": {"input_tokens": 5}}
+    record = build_record(kwargs, response, status="success")
+
+    assert record["response"] == response
+    assert "_usage_source" not in record["response"]
+
+
+def test_build_record_marks_unrecoverable_when_slo_has_no_usage() -> None:
+    """No usable usage anywhere → tagged 'unrecoverable', not a silent $0 record."""
+    slo = {"some": "diagnostic", "tokens": "missing"}
+    kwargs = {"model": "bedrock/claude", "standard_logging_object": slo}
+    record = build_record(kwargs, _RawResponse(), status="success")
+
+    assert record["response"]["_usage_source"] == "unrecoverable"
+    # The original stringified response is retained for forensics.
+    assert record["response"]["_raw_response"] == "<Response [200 OK]>"
+    # The SLO we failed to recover from is captured so the failure is debuggable.
+    assert record["response"]["_standard_logging_object"] == slo
+
+
+def test_build_record_recovery_preserves_response_content() -> None:
+    """When the SLO response has content but no usage, keep content AND add usage."""
+    kwargs = {
+        "model": "bedrock/claude",
+        "standard_logging_object": {
+            "response": {"choices": [{"message": {"content": '{"name": "my-session"}'}}]},
+            "prompt_tokens": 1357,
+            "completion_tokens": 152,
+        },
+    }
+    record = build_record(kwargs, _RawResponse(), status="success")
+
+    response = record["response"]
+    assert response["_usage_source"] == "standard_logging_object"
+    # Usage was synthesized from the SLO's flat token fields...
+    assert response["usage"]["prompt_tokens"] == 1357
+    assert response["usage"]["completion_tokens"] == 152
+    # ...and the response content was preserved (not dropped), so alias extraction works.
+    assert response["choices"][0]["message"]["content"] == '{"name": "my-session"}'
+    assert extract_session_alias(response) == "my-session"
+
+
+def test_build_record_failure_does_not_recover_or_mark() -> None:
+    """Failures legitimately carry no usage; they must not be tagged unrecoverable."""
+    record = build_record({"model": "m"}, _RawResponse(), status="failure")
+    assert record["response"] == "<Response [200 OK]>"
 
 
 def test_build_record_hashes_long_strings() -> None:

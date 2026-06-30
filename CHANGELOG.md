@@ -5,6 +5,17 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.7.0](releases/0.7.0.md) — 2026-06-30
+
+Adds a Telegram decision sidecar so you can approve or deny Claude's tool-permission
+prompts from your phone — Allow/Deny buttons right in the chat. Surfaces previously
+invisible transient (`.agent_stats_leaf`) and `<orphaned>` projects in `agent stats` and
+the `agent logs` viewer, and reworks `agent stats` with `--from`/`--until`/`--days`
+windowing, more accurate cache-write cost, and a `--verbose` breakdown. Hardens the shared
+LiteLLM sidecar for hundreds of parallel `agent run` jobs and turns `agent` into a
+standalone executable. **Breaking:** custom provider forks must move to a single
+`sidecars()` method, and `legacy_stats` is removed in favor of `agent stats`.
+
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 
 Fixes a cold-start crash where a fresh install aborted into Claude Code's configuration-error

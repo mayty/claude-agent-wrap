@@ -10,7 +10,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -103,7 +103,7 @@ def _scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[
 
 
 def _build_pricing_table(
-    page_html: str, data_json: dict, region_label: str
+    page_html: str, data_json: dict[str, Any], region_label: str
 ) -> dict[str, dict[str, float]]:
     region = data_json.get("regions", {}).get(region_label) or {}
     keys_by_model = _scrape_model_keys(page_html)
@@ -131,7 +131,7 @@ def _load_prices(
     *,
     refresh: bool = False,
 ) -> dict[str, dict[str, float]]:
-    cached: dict | None = None
+    cached: dict[str, Any] | None = None
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -186,7 +186,7 @@ class BedrockProvider(LiteLLMProvider):
     )
     master_key_prefix: ClassVar[str] = "sk-aw-"
 
-    def read_secret_key(self, secrets: dict) -> str:
+    def read_secret_key(self, secrets: dict[str, Any]) -> str:
         # New flat key (preferred).
         key = secrets.get("BedrockBearerToken", "")
         # Legacy nested key, kept for backward compatibility.
@@ -198,7 +198,7 @@ class BedrockProvider(LiteLLMProvider):
             raise SystemExit(msg)
         return key
 
-    def get_sidecar_env(self, secrets: dict) -> dict[str, str]:
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "AWS_BEARER_TOKEN_BEDROCK": secrets.get("_secret_key", ""),
             "AWS_REGION_NAME": "us-east-1",

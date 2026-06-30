@@ -8,7 +8,7 @@ from agent_wrap.providers.litellm_bedrock.provider import (
     _build_pricing_table,
     _scrape_model_keys,
 )
-from agent_wrap.providers.litellm_common import LiteLLMProvider
+from agent_wrap.providers.litellm_common import LiteLLMProvider, LiteLLMSidecar
 
 
 def _bedrock() -> LiteLLMProvider:
@@ -17,23 +17,16 @@ def _bedrock() -> LiteLLMProvider:
     return p
 
 
-def test_bedrock_lock_file():
-    p = _bedrock()
-    assert p.lock_file == "lock"
-
-
 def test_bedrock_master_key_prefix():
     p = _bedrock()
     assert p.master_key_prefix == "sk-aw-"
 
 
-def test_bedrock_label_args():
+def test_bedrock_declares_litellm_sidecar():
     p = _bedrock()
-    args = p.get_label_args("test-123")
-    assert "--label" in args
-    assert "agent-wrap.role=claude-agent" in args
-    assert "--name" in args
-    assert "claude-agent-test-123" in args
+    sidecars = p.sidecars()
+    assert len(sidecars) == 1
+    assert isinstance(sidecars[0], LiteLLMSidecar)
 
 
 # --- Provider method implementations ---

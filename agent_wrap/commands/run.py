@@ -8,10 +8,17 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap import config
 from agent_wrap.lib import docker_utils
+from agent_wrap.lib.argparsing import make_parser
+from agent_wrap.lib.sidecar_lock import (
+    SidecarPriority,
+    sidecar_lock,
+)
 from agent_wrap.lib.utils import (
     generate_uuid,
     is_truthy_env,
@@ -20,11 +27,25 @@ from agent_wrap.lib.utils import (
     sanitize_name,
 )
 from agent_wrap.providers import get_provider
+from agent_wrap.sidecars.telegram import TelegramSidecar, TelegramSidecarConfig
+from agent_wrap.sidecars.tracker import SidecarTracker
+
+if TYPE_CHECKING:
+    from typing import TextIO
+
+    from agent_wrap.providers.base import Provider
+    from agent_wrap.sidecars.base import Sidecar
 
 USAGE = "[--base] [claude-args...]"
 SUMMARY = "Launch Claude Code in Docker"
 
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
+
+#: Expected number of agents queued behind the shared sidecar lock (the in-flight
+#: launch concurrency, e.g. an external "N simultaneous jobs" semaphore). Multiplied
+#: by each sidecar's hot-path walk time to size the lock timeout. Overridable via
+#: AGENT_EXPECTED_QUEUE_DEPTH for very large fan-outs.
+EXPECTED_QUEUE_DEPTH = 128
 
 # Per-project state directories mounted into the container.
 # Keys are the host subdirectory names under $(pwd)/.claude/;
@@ -53,15 +74,6 @@ _STATE_FILES = (
 )
 
 
-def _is_wsl() -> bool:
-    """Check if running on WSL."""
-    try:
-        version = Path("/proc/version").read_text()
-        return "microsoft" in version.lower()
-    except OSError:
-        return False
-
-
 def _extract_network(extra_run_args: list[str]) -> str | None:
     """Extract --network value from a list of docker run flags."""
     for i, arg in enumerate(extra_run_args):
@@ -73,11 +85,65 @@ def _extract_network(extra_run_args: list[str]) -> str | None:
     return None
 
 
-def _load_telegram_creds(secrets: dict) -> tuple[str, str]:
+#: Claude Code flags under which the Telegram sidecar is never exercised:
+#: --bare / --safe-mode disable hooks outright; -p/--print is non-interactive.
+_HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})
+
+
+def _is_headless(claude_args: list[str]) -> bool:
+    """Report whether Claude Code is launched in a mode that won't use the sidecar."""
+    return any(arg in _HEADLESS_FLAGS for arg in claude_args)
+
+
+def _load_telegram_creds(secrets: dict[str, Any]) -> tuple[str, str]:
     """Extract Telegram credentials from secrets dict."""
     bot_token = secrets.get("TelegramBotToken", "") or ""
     chat_id = secrets.get("TelegramChatId", "") or ""
     return bot_token, chat_id
+
+
+def _maybe_telegram_sidecar(
+    telegram: tuple[str, str],
+    *,
+    agent_name: str,
+    instance_id: str,
+    tool_dir: Path,
+    headless: bool,
+) -> TelegramSidecar | None:
+    """
+    Build the runner-level Telegram sidecar, or None when no creds are configured.
+
+    Always declared when creds exist so last-light-out teardown reaps the shared
+    container; in headless mode its startup is a no-op (see TelegramSidecar).
+    """
+    bot_token, chat_id = telegram
+    if not (bot_token and chat_id):
+        return None
+    if headless:
+        print(
+            "Note: headless mode — Telegram sidecar will not be started.",
+            file=sys.stderr,
+        )
+    return TelegramSidecar(
+        TelegramSidecarConfig(
+            image=(
+                "mayty/claude-agent-wrap-telegram:0.1.0"
+                "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
+            ),
+            container_name="agent-wrap-telegram",
+            network_name="agent-wrap-net",
+            internal_port=6837,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            agent_name=agent_name,
+            instance_id=instance_id,
+            health_timeout_sec=30,
+            cold_start_time=45.0,
+            short_circuit_time=2.0,
+            log_dir=tool_dir / ".agent-launches" / "telegram-sidecar-logs",
+            headless=headless,
+        )
+    )
 
 
 def _resolve_host_network(
@@ -94,7 +160,7 @@ def _resolve_host_network(
     if not is_truthy_env(env_val):
         return False, [], port_args
 
-    if not _is_wsl():
+    if not docker_utils.is_wsl():
         print(
             "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts.",
             file=sys.stderr,
@@ -192,8 +258,6 @@ def _parse_dockerfile_directives(
 
 
 def _build_env_args(
-    telegram_bot_token: str,
-    telegram_chat_id: str,
     agent_name: str,
     instance_id: str,
     claude_home: str,
@@ -202,10 +266,6 @@ def _build_env_args(
     args = [
         "-e",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        "-e",
-        f"TELEGRAM_BOT_TOKEN={telegram_bot_token}",
-        "-e",
-        f"TELEGRAM_CHAT_ID={telegram_chat_id}",
         "-e",
         f"AGENT_NAME={agent_name}",
         "-e",
@@ -220,6 +280,9 @@ def _build_env_args(
     auto_mode_flag = os.environ.get("CLAUDE_CODE_ENABLE_AUTO_MODE", None)
     if auto_mode_flag is not None:
         args.extend(["-e", f"CLAUDE_CODE_ENABLE_AUTO_MODE={auto_mode_flag}"])
+    prompt_caching_flag = os.environ.get("ENABLE_PROMPT_CACHING_1H", None)
+    if prompt_caching_flag is not None:
+        args.extend(["-e", f"ENABLE_PROMPT_CACHING_1H={prompt_caching_flag}"])
     return args
 
 
@@ -259,6 +322,177 @@ def _build_volume_mounts(
     return mounts
 
 
+def collect_sidecars(provider: Provider) -> list[Sidecar]:
+    """
+    Gather every sidecar an agent run depends on.
+
+    Today this is exactly the selected provider's sidecars. Runner-level sidecars
+    (e.g. a Telegram decision-maker, independent of the model backend) are appended
+    later in `run()`.
+    """
+    return list(provider.sidecars())
+
+
+def build_agent_labels(instance_id: str) -> list[str]:
+    """
+    Build the agent container's --label / --name flags.
+
+    One common role label (the tracker's host-wide live-agent count filter), the
+    instance id, and the container name — all belonging to the agent once. There is
+    no per-sidecar label: the shared SidecarTracker counts all agents together.
+    """
+    if not instance_id:
+        return []
+    return [
+        "--label",
+        f"{SidecarTracker.role_label}={SidecarTracker.role_value}",
+        "--label",
+        f"agent-wrap.instance-id={instance_id}",
+        "--name",
+        f"claude-agent-{instance_id}",
+    ]
+
+
+def _expected_queue_depth() -> int:
+    """Return the expected queue depth — EXPECTED_QUEUE_DEPTH or its env override."""
+    raw = os.environ.get("AGENT_EXPECTED_QUEUE_DEPTH")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return EXPECTED_QUEUE_DEPTH
+
+
+def sidecar_lock_timeout(sidecars: list[Sidecar], queue_depth: int) -> float:
+    """
+    Total seconds a launcher waits for the shared sidecar lock.
+
+    Σ(cold_start_time + queue_depth · short_circuit_time): one cold start per sidecar
+    plus the whole queue draining the hot path sequentially — the poll-inside-lock
+    worst case. A launcher that waits longer is genuinely stuck, not merely queued.
+    """
+    return sum(sc.cold_start_time + queue_depth * sc.short_circuit_time for sc in sidecars)
+
+
+@dataclass(frozen=True)
+class _ConfigContext:
+    """Inputs for the config-prep step of a launch (see :func:`_prepare_config`)."""
+
+    global_config_dir: Path
+    tool_dir: Path
+    cwd: Path
+    telegram: tuple[str, str]
+
+
+def _prepare_config(ctx: _ConfigContext) -> None:
+    """
+    Prepare global and per-project config. Caller must hold the launch lock.
+
+    Concurrent launches share one global config dir, so the read-modify-write of
+    settings.json/.claude.json (and the project registry) must be serialized. This
+    helper takes no lock of its own — it runs inside :func:`_prepare_for_launch`'s
+    critical section.
+    """
+    telegram_bot_token, telegram_chat_id = ctx.telegram
+    config.prepare_global_config(
+        ctx.global_config_dir, ctx.tool_dir, telegram_bot_token, telegram_chat_id
+    )
+    config.prepare_project_dirs(ctx.cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
+    config.link_litellm_logs(ctx.cwd, ctx.tool_dir)
+    config.record_project(ctx.tool_dir)
+
+
+def _prepare_for_launch(
+    sidecars: list[Sidecar],
+    tracker: SidecarTracker,
+    *,
+    net: tuple[bool, str | None],
+    instance_id: str,
+    config_ctx: _ConfigContext,
+) -> tuple[list[str], TextIO | None]:
+    """
+    Prepare a launch under one shared lock: config first, then ensure all sidecars.
+
+    Uses :func:`agent_wrap.lib.sidecar_lock.sidecar_lock` with ``HI`` priority to
+    acquire the lock: a start-waiter ticket is registered before contending (so a
+    stopping run yields), and the lock is taken with a computed timeout. Config prep
+    and sidecar ensure run inside the held lock; ``register_running`` is called as
+    the last action before the lock is released, just before the agent launches.
+
+    *net* is ``(use_host_net, agent_network)``; *config_ctx* carries the config-prep
+    inputs. Returns ``(run_args, running_handle)``: the merged `docker run` flags,
+    and the open handle of this run's *running* registration. That handle must stay
+    open until the run exits — its held ``flock`` is what tells a stopping run an agent
+    is still live — and is released by :func:`_release_sidecars` in the runner's
+    ``finally``.
+    """
+    use_host_net, agent_network = net
+    for sidecar in sidecars:
+        sidecar.prepare()
+
+    run_args: list[str] = []
+    running_handle: TextIO | None = None
+    timeout = sidecar_lock_timeout(sidecars, _expected_queue_depth())
+    with sidecar_lock(SidecarPriority.HI, tracker, instance_id, timeout=timeout):
+        # Config prep shares this lock: it is the read-modify-write that raced.
+        _prepare_config(config_ctx)
+        for sidecar in sidecars:
+            run_args += sidecar.ensure(use_host_net=use_host_net, agent_network=agent_network)
+        # Register as running as the LAST action under the lock, on success only:
+        # from here until this run exits its held flock keeps a releaser in the
+        # ensure→docker-run gap from tearing down.
+        running_handle = tracker.register_running(instance_id)
+    return run_args, running_handle
+
+
+def _safe_sidecar_on_exit(sidecar: Sidecar) -> None:
+    """
+    Call ``sidecar.on_exit()``, logging and swallowing any exception.
+
+    ``on_exit()`` is best-effort per-agent cleanup — a failure must not block
+    the runner from eventually calling ``release()`` for this sidecar.
+    """
+    try:
+        sidecar.on_exit()
+    except Exception:  # noqa: BLE001
+        print(
+            f"sidecar.on_exit() failed for {type(sidecar).__name__}, continuing with release",
+            file=sys.stderr,
+        )
+
+
+def _release_sidecars(
+    sidecars: list[Sidecar],
+    tracker: SidecarTracker,
+    instance_id: str,
+    running_handle: TextIO | None,
+) -> None:
+    """
+    Last-light-out teardown: release ALL declared sidecars when this is the last agent.
+
+    Uses :func:`agent_wrap.lib.sidecar_lock.sidecar_lock` with ``LO`` priority:
+    it loops internally yielding to live start-waiters, and only enters the
+    critical section once the lock is held without contention. The teardown is a
+    host-wide decision, so it releases *every* declared sidecar (in reverse),
+    reaping orphans a failed or earlier run left running; ``release()`` is a no-op
+    when a container isn't running, so this is safe.
+    """
+    # This run is finishing — drop our own running registration first so we don't count
+    # ourselves as alive.
+    tracker.clear_running(running_handle, instance_id)
+    if not sidecars:
+        return
+    for sidecar in reversed(sidecars):
+        _safe_sidecar_on_exit(sidecar)
+    with sidecar_lock(SidecarPriority.LO, tracker, instance_id):
+        if not tracker.has_live_runners(exclude_id=instance_id):
+            for sidecar in reversed(sidecars):
+                sidecar.release()
+
+
 def run(args: list[str], tool_dir: Path) -> int:
     """
     Execute the `run` subcommand.
@@ -271,14 +505,16 @@ def run(args: list[str], tool_dir: Path) -> int:
         Exit code from docker run.
 
     """
-    # Parse --base flag
-    use_base = False
-    claude_args: list[str] = []
-    for arg in args:
-        if arg == "--base":
-            use_base = True
-        else:
-            claude_args.append(arg)
+    # Parse our own --base flag and forward everything else verbatim to the
+    # inner `claude` CLI. add_help=False lets `-h`/`--help` pass through (claude
+    # prints its own help); allow_abbrev=False stops a claude flag like
+    # `--ba...` from being mistaken for `--base`.
+    parser = make_parser("run", usage_summary=USAGE, add_help=False)
+    parser.add_argument("--base", action="store_true")
+    ns, claude_args = parser.parse_known_args(args)
+    use_base = ns.base
+
+    headless = _is_headless(claude_args)
 
     # Check for updates (best-effort, non-blocking)
     from agent_wrap.commands.update import check as check_updates
@@ -321,50 +557,65 @@ def run(args: list[str], tool_dir: Path) -> int:
     instance_uuid = generate_uuid()
     instance_id = f"{agent_name}-{instance_uuid}"
 
-    # Prepare config
     cwd = Path.cwd()
     global_config_dir = tool_dir / ".claude_config"
-    config.prepare_global_config(
-        global_config_dir,
-        tool_dir,
-        telegram_bot_token,
-        telegram_chat_id,
-    )
-    config.prepare_project_dirs(cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
-    config.link_litellm_logs(cwd, tool_dir)
-    config.record_project(tool_dir)
+    tracker = SidecarTracker(tool_dir)
 
     wslg_args = _build_wslg_args(tool_dir)
 
     print(f"--- Agent instance: {instance_id} ---")
 
-    # Provider lifecycle
+    # Launch lifecycle. One shared lock (held by the runner) makes the whole launch
+    # an atomic critical section, and one SidecarTracker holds the lock-file registries
+    # that drive the teardown decision. Lock-free prepare() (image pull) runs BEFORE the
+    # lock; config prep and sidecar ensure run inside it. The whole block is in the try
+    # so the last-light-out teardown always runs, even on a failed start — and it
+    # releases the FULL declared set, reaping orphans.
     provider = get_provider()
-    provider.ensure(
-        use_host_net=use_host_net,
-        instance_id=instance_id,
-        agent_network=agent_network,
-    )
+    sidecars = collect_sidecars(provider)
 
+    # Runner-level sidecar: Telegram decision sidecar (independent of model backend).
+    telegram_sidecar = _maybe_telegram_sidecar(
+        (telegram_bot_token, telegram_chat_id),
+        agent_name=agent_name,
+        instance_id=instance_id,
+        tool_dir=tool_dir,
+        headless=headless,
+    )
+    if telegram_sidecar is not None:
+        sidecars.append(telegram_sidecar)
+
+    running_handle: TextIO | None = None
     try:
-        label_args = provider.get_label_args(instance_id)
-        provider_run_args = provider.get_run_args()
+        provider_run_args, running_handle = _prepare_for_launch(
+            sidecars,
+            tracker,
+            net=(use_host_net, agent_network),
+            instance_id=instance_id,
+            config_ctx=_ConfigContext(
+                global_config_dir=global_config_dir,
+                tool_dir=tool_dir,
+                cwd=cwd,
+                telegram=(telegram_bot_token, telegram_chat_id),
+            ),
+        )
+
+        label_args = build_agent_labels(instance_id)
 
         print(f"--- Launching Claude (Image: {resolved.image}, Config: {global_config_dir}) ---")
 
         volume_mounts = _build_volume_mounts(global_config_dir, cwd, tool_dir, claude_home)
         user_args = docker_utils.get_user_args()
+        tty_args = docker_utils.get_tty_args()
 
         cmd = [
             "docker",
             "run",
             "--rm",
-            "-it",
+            *tty_args,
             *user_args,
             *volume_mounts,
             *_build_env_args(
-                telegram_bot_token,
-                telegram_chat_id,
                 agent_name,
                 instance_id,
                 claude_home,
@@ -384,4 +635,4 @@ def run(args: list[str], tool_dir: Path) -> int:
         result = subprocess.run(cmd)
         return result.returncode
     finally:
-        provider.release(instance_id)
+        _release_sidecars(sidecars, tracker, instance_id, running_handle)

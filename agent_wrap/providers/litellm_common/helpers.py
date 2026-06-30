@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -36,9 +37,10 @@ def get_session_hasher(session_id: str, log_dir: Path) -> StringHasher:
     return _SESSION_HASHERS[session_id]
 
 
-def json_safe(
+def json_safe(  # noqa: PLR0911
     obj: Any,
     _hasher: StringHasher | None = None,
+    visited: set[int] | None = None,
 ) -> Any:
     """
     Recursively coerce ``obj`` into JSON-serializable primitives.
@@ -52,6 +54,13 @@ def json_safe(
     string values meeting the length threshold are replaced with
     ``"hash:<sha256_hex>"``.
     """
+    if visited is None:
+        visited = set()
+    elif id(obj) in visited:
+        return "<recursive_record>"
+
+    visited.add(id(obj))
+
     # Handle primitive types
     if obj is None or isinstance(obj, (int, float, bool)):
         return obj
@@ -62,16 +71,16 @@ def json_safe(
 
     # Handle containers
     if isinstance(obj, dict):
-        return {str(k): json_safe(v, _hasher) for k, v in obj.items()}
+        return {str(k): json_safe(v, _hasher, copy(visited)) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
-        return [json_safe(v, _hasher) for v in obj]
+        return [json_safe(v, _hasher, copy(visited)) for v in obj]
 
     # Handle Pydantic models and other objects with model_dump/dict methods
     for attr in ("model_dump", "dict"):
         method = getattr(obj, attr, None)
         if callable(method):
             try:
-                return json_safe(method(), _hasher)
+                return json_safe(method(), _hasher, copy(visited))
             except Exception:  # noqa: BLE001 - best-effort, fall through to str()
                 break
 
