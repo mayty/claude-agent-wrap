@@ -8,11 +8,14 @@ the [release notes style guide](releases/styleguide.md).
 ## [0.7.0](releases/0.7.0.md) — 2026-06-17
 
 Adds `.agent_stats_leaf` and `<orphaned>` aggregation so transient and deleted-project
-logs are no longer invisible in `agent stats` and the `agent logs` viewer. Hardens the
-shared LiteLLM sidecar for hundreds of parallel `agent run` jobs, turns `agent` into a
-standalone executable, and delivers Telegram notifications through a new shared sidecar
-container. Sidecar start/stop both show a smoother animated spinner. **Breaking:**
-custom provider forks must move to a single `sidecars()` method.
+logs are no longer invisible in `agent stats` and the `agent logs` viewer. Reworks
+`agent stats` with `--from`/`--until`/`--days` window selection, more accurate cache-write
+cost, and a `--verbose` breakdown. Hardens the shared LiteLLM sidecar for hundreds of
+parallel `agent run` jobs, turns `agent` into a standalone executable, and delivers
+Telegram notifications through a new shared sidecar container. Sidecar start/stop both
+show a smoother animated spinner. **Breaking:** custom provider forks must move to a
+single `sidecars()` method, and the `legacy_stats` command has been removed in favor of
+`agent stats`.
 
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 

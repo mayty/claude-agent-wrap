@@ -58,7 +58,7 @@ Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current dire
 ## `agent stats`
 
 ```
-agent stats [--from D] [--until D] [--days N]
+agent stats [--verbose] [--from D] [--until D] [--days N]
 ```
 
 Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` and walks each project's `.claude/litellm-logs/` directory (organized by provider and session). Pricing is fetched dynamically per provider as logs are scanned. Both the per-project table and the per-day breakdown cover the same usage window.
@@ -68,6 +68,8 @@ Selection range — at most two of the three flags may be combined:
 - **`--from D`** — inclusive lower bound; `D` is an absolute date (`YYYY-MM-DD`) or a relative offset (`-Nd`, e.g. `-14d`).
 - **`--until D`** — inclusive upper bound; same format as `--from`.
 - **`--days N`** — span in days; `N=0` means unlimited (no day bound).
+
+The **`-v`/`--verbose`** flag is independent of the range: it adds a usage-source breakdown table over the same window, splitting the totals by how each request's usage was obtained (read straight from the response, recovered from the request log, or uncountable).
 
 With no flags the window is the last 28 days. `--from` alone runs to now; `--days N` alone is the last N days; `--until` alone spans the 28 days ending at that date; `--days 0` alone shows all time (open lower bound, up to now).
 
