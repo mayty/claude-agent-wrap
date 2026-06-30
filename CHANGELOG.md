@@ -5,6 +5,13 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.7.1](releases/0.7.1.md) — 2026-06-30
+
+A maintenance release for the 0.7.0 Telegram decision sidecar: it now starts under
+rootless Docker, where a non-root image `USER` previously left it unable to write its
+host-owned log mount. When a sidecar fails its startup health check, the wrapper now
+streams the container's logs to the terminal instead of aborting with no diagnostics.
+
 ## [0.7.0](releases/0.7.0.md) — 2026-06-30
 
 Adds a Telegram decision sidecar so you can approve or deny Claude's tool-permission
