@@ -75,22 +75,29 @@ def _combine_bounds(from_date, until_date, days_bound, *, days_given: bool):
     bare side stays open for ``--days 0`` but defaults to now/DEFAULT_DAYS otherwise.
     """
     today = _today().date()
-    span = timedelta(days=days_bound) if days_bound is not None else None
-    default_span = timedelta(days=DEFAULT_DAYS)
+    # Bounds are inclusive on both sides, so an N-day window offsets by N-1.
+    span = timedelta(days=days_bound - 1) if days_bound is not None else None
+    default_span = timedelta(days=DEFAULT_DAYS - 1)
 
     if from_date is not None and until_date is not None:
         lo, hi = from_date, until_date
     elif from_date is not None:
-        # --from [--days N]: [from, from+N]; [from, open] for --days 0; else [from, now].
+        # --from [--days N]: N inclusive days [from, from+(N-1)]; [from, open] for
+        # --days 0; else [from, now].
         lo = from_date
-        hi = from_date + span if span else (None if days_given else today)
+        hi = from_date + span if span is not None else (None if days_given else today)
     elif until_date is not None:
-        # --until [--days N]: [until-N, until]; [open, until] for --days 0; else default span.
+        # --until [--days N]: N inclusive days [until-(N-1), until]; [open, until] for
+        # --days 0; else default span.
         hi = until_date
-        lo = (until_date - span if span else None) if days_given else until_date - default_span
+        lo = (
+            (until_date - span if span is not None else None)
+            if days_given
+            else until_date - default_span
+        )
     elif days_given:
-        # --days N alone: [now-N, now], or all-time for --days 0.
-        lo, hi = (today - span, today) if span else (None, None)
+        # --days N alone: the last N inclusive days [now-(N-1), now], or all-time for --days 0.
+        lo, hi = (today - span, today) if span is not None else (None, None)
     else:
         # No flags: default to the last DEFAULT_DAYS days.
         lo, hi = today - default_span, today

@@ -45,7 +45,7 @@ def _iso(d: date) -> str:
 def test_no_flags_defaults_to_last_28_days(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path))
     assert parsed is not None
-    assert parsed.from_iso == _iso(_TODAY - timedelta(days=DEFAULT_DAYS))
+    assert parsed.from_iso == _iso(_TODAY - timedelta(days=DEFAULT_DAYS - 1))
     assert parsed.until_iso == _iso(_TODAY)
     assert parsed.verbose is False
 
@@ -61,13 +61,13 @@ def test_until_alone_spans_default_days(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--until", "2026-06-20")
     assert parsed is not None
     assert parsed.until_iso == "2026-06-20"
-    assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS))
+    assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS - 1))
 
 
 def test_days_alone(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--days", "7")
     assert parsed is not None
-    assert parsed.from_iso == _iso(_TODAY - timedelta(days=7))
+    assert parsed.from_iso == _iso(_TODAY - timedelta(days=7 - 1))
     assert parsed.until_iso == _iso(_TODAY)
 
 
@@ -89,7 +89,7 @@ def test_from_and_days(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--from", "2026-06-01", "--days", "5")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
-    assert parsed.until_iso == "2026-06-06"
+    assert parsed.until_iso == "2026-06-05"
 
 
 def test_from_and_days_zero_open_upper(monkeypatch, tmp_path: Path):
@@ -102,7 +102,7 @@ def test_from_and_days_zero_open_upper(monkeypatch, tmp_path: Path):
 def test_until_and_days(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--until", "2026-06-20", "--days", "5")
     assert parsed is not None
-    assert parsed.from_iso == "2026-06-15"
+    assert parsed.from_iso == "2026-06-16"
     assert parsed.until_iso == "2026-06-20"
 
 
@@ -119,7 +119,7 @@ def test_until_and_days_zero_open_lower(monkeypatch, tmp_path: Path):
 def test_short_days(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "-d", "7")
     assert parsed is not None
-    assert parsed.from_iso == _iso(_TODAY - timedelta(days=7))
+    assert parsed.from_iso == _iso(_TODAY - timedelta(days=7 - 1))
     assert parsed.until_iso == _iso(_TODAY)
 
 
@@ -134,7 +134,7 @@ def test_short_until(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "-u", "2026-06-20")
     assert parsed is not None
     assert parsed.until_iso == "2026-06-20"
-    assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS))
+    assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS - 1))
 
 
 def test_short_from_and_until(monkeypatch, tmp_path: Path):
@@ -158,7 +158,7 @@ def test_relative_until_and_days(monkeypatch, tmp_path: Path):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--until", "-7d", "--days", "3")
     assert parsed is not None
     assert parsed.until_iso == _iso(_TODAY - timedelta(days=7))
-    assert parsed.from_iso == _iso(_TODAY - timedelta(days=10))
+    assert parsed.from_iso == _iso(_TODAY - timedelta(days=9))
 
 
 # --- errors ------------------------------------------------------------------
