@@ -7,7 +7,7 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # Default span (in days) for the usage window when no explicit count is given.
@@ -66,42 +66,57 @@ def _parse_date_spec(value: str):
         raise argparse.ArgumentTypeError(msg) from None
 
 
-def _combine_bounds(from_date, until_date, days_bound, *, days_given: bool):
+def _shift(d: date, span: timedelta, *, sign: int) -> date:
+    """
+    ``date ± span``, clamped to ``[date.min, date.max]`` instead of raising OverflowError.
+
+    The unlimited ``--days 0`` case uses ``timedelta.max`` as its span; adding or
+    subtracting that from a real date overflows, so saturate to the open-side
+    sentinel (``date.max`` for a forward shift, ``date.min`` for a backward one).
+    """
+    try:
+        return d + sign * span
+    except OverflowError:
+        return date.max if sign > 0 else date.min
+
+
+def _combine_bounds(
+    from_date: date | None,
+    until_date: date | None,
+    days_bound: int | None,
+    *,
+    days_given: bool,
+) -> tuple[date, date]:
     """
     Apply the resolution table to already-parsed specs, returning ``(lo, hi)`` dates.
 
     ``days_bound`` is the positive day count, or None for "no count" (flag absent
     *or* the unlimited ``--days 0``); ``days_given`` distinguishes those two so a
     bare side stays open for ``--days 0`` but defaults to now/DEFAULT_DAYS otherwise.
+
+    Open sides are returned as the ``date.min`` / ``date.max`` sentinels;
+    :func:`_resolve_range` maps those back to None at the ISO boundary.
     """
     today = _today().date()
     # Bounds are inclusive on both sides, so an N-day window offsets by N-1.
-    span = timedelta(days=days_bound - 1) if days_bound is not None else None
-    default_span = timedelta(days=DEFAULT_DAYS - 1)
+    # ``--days 0`` (days_given but no count) means "unlimited" — timedelta.max
+    # saturates the bare side to an open sentinel via _shift.
+    if days_given:
+        span = timedelta(days=days_bound - 1) if days_bound else timedelta.max
+    else:
+        span = timedelta(days=DEFAULT_DAYS - 1)
 
     if from_date is not None and until_date is not None:
-        lo, hi = from_date, until_date
-    elif from_date is not None:
-        # --from [--days N]: N inclusive days [from, from+(N-1)]; [from, open] for
-        # --days 0; else [from, now].
-        lo = from_date
-        hi = from_date + span if span is not None else (None if days_given else today)
-    elif until_date is not None:
-        # --until [--days N]: N inclusive days [until-(N-1), until]; [open, until] for
-        # --days 0; else default span.
-        hi = until_date
-        lo = (
-            (until_date - span if span is not None else None)
-            if days_given
-            else until_date - default_span
-        )
-    elif days_given:
-        # --days N alone: the last N inclusive days [now-(N-1), now], or all-time for --days 0.
-        lo, hi = (today - span, today) if span is not None else (None, None)
-    else:
-        # No flags: default to the last DEFAULT_DAYS days.
-        lo, hi = today - default_span, today
-    return lo, hi
+        return from_date, until_date
+    if from_date is not None:
+        # --from [--days N]: [from, from+(N-1)]; [from, open] for --days 0; else [from, now].
+        return from_date, _shift(from_date, span, sign=1) if days_given else today
+    if until_date is not None:
+        # --until [--days N]: [until-(N-1), until]; [open, until] for --days 0; else default span.
+        return _shift(until_date, span, sign=-1), until_date
+    # No --from/--until: the last N (or DEFAULT_DAYS) inclusive days [now-(N-1), now],
+    # or all-time [open, now] for --days 0.
+    return _shift(today, span, sign=-1), today
 
 
 def _resolve_range(from_date, until_date, days, *, days_given: bool):
@@ -123,8 +138,9 @@ def _resolve_range(from_date, until_date, days, *, days_given: bool):
 
     lo, hi = _combine_bounds(from_date, until_date, days_bound, days_given=days_given)
 
-    lo_iso = lo.isoformat() if lo is not None else None
-    hi_iso = hi.isoformat() if hi is not None else None
+    # The date.min / date.max sentinels mark open sides; collapse them back to None.
+    lo_iso = None if lo == date.min else lo.isoformat()
+    hi_iso = None if hi == date.max else hi.isoformat()
     if lo_iso is not None and hi_iso is not None and lo_iso > hi_iso:
         print("usage: --from date is after --until date", file=sys.stderr)
         return None

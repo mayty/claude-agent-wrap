@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_wrap.providers.litellm_common.callback import (
@@ -136,6 +137,30 @@ def test_build_record_success_shape() -> None:
 def test_build_record_timing_defaults_to_none_without_logging_object() -> None:
     record = build_record({}, None, status="success")
     assert record["timing"] == {"start": None, "completionStart": None, "end": None}
+
+
+def test_build_record_timing_falls_back_to_callback_datetimes() -> None:
+    # When the standard_logging_object lacks epoch timestamps, the callback's own
+    # start_time/end_time datetimes fill in — so start is never None and the stats
+    # reader never mints the timestamp-less "?" day-key.
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=timezone.utc)
+    record = build_record({}, None, status="success", start_time=start, end_time=end)
+    assert record["timing"] == {
+        "start": start.timestamp(),
+        "completionStart": start.timestamp(),
+        "end": end.timestamp(),
+    }
+
+
+def test_build_record_timing_prefers_slo_epoch_over_datetime_fallback() -> None:
+    # The standard_logging_object epoch values win when present; the datetime
+    # fallback is only used for fields LiteLLM omitted.
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    kwargs = {"standard_logging_object": {"startTime": 1780916982.12}}
+    record = build_record(kwargs, None, status="success", start_time=start)
+    assert record["timing"]["start"] == 1780916982.12
+    assert record["timing"]["completionStart"] == start.timestamp()
 
 
 def test_build_record_failure_includes_error() -> None:

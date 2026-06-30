@@ -69,7 +69,7 @@ Selection range — at most two of the three flags may be combined:
 - **`--until D`** — inclusive upper bound; same format as `--from`.
 - **`--days N`** — span in days; `N=0` means unlimited (no day bound).
 
-With no flags the window is the last 28 days. `--from` alone runs to now; `--days N` alone is the last N days; `--until` alone spans the 28 days ending at that date; `--days 0` alone shows all time (including records with no timestamp).
+With no flags the window is the last 28 days. `--from` alone runs to now; `--days N` alone is the last N days; `--until` alone spans the 28 days ending at that date; `--days 0` alone shows all time (open lower bound, up to now).
 
 Create an `.agent_stats_leaf` file in a directory to aggregate every registered project at or beneath it into a single **transient project** row, instead of one row per project — handy when a script launches many agents in per-run subdirectories. The first non-empty line of the file is the project's display name (falling back to the marker directory's name when the file is empty), and the aggregated row is accented in color (alongside the `<orphaned>` row) to set it apart. The lookup walks the path literally (symlinks are not resolved), so a directory that holds an `.agent_stats_leaf` plus symlinks to several unrelated projects groups them all together.
 

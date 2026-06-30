@@ -72,10 +72,12 @@ def test_days_alone(monkeypatch, tmp_path: Path):
 
 
 def test_days_zero_is_all_time(monkeypatch, tmp_path: Path):
+    # --days 0 lifts the count bound: open lower side, but the implicit upper stays
+    # "now" (no --until given). Records carry timestamps <= now, so this is all-time.
     parsed = _parse(monkeypatch, _reg(tmp_path), "--days", "0")
     assert parsed is not None
     assert parsed.from_iso is None
-    assert parsed.until_iso is None
+    assert parsed.until_iso == _iso(_TODAY)
 
 
 def test_from_and_until(monkeypatch, tmp_path: Path):
