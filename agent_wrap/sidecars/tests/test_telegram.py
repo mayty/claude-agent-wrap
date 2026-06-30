@@ -105,6 +105,52 @@ def test_prepare_pull_failure_raises(mocker: pytest_mock.MockFixture) -> None:
         _sidecar().prepare()
 
 
+# --- headless: prepare/ensure are no-ops, release still reaps ---
+
+
+def test_prepare_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
+    """A headless run never pulls the image — prepare() touches nothing."""
+    mock_exists = mocker.patch(_IMAGE_EXISTS)
+    mock_docker = mocker.patch(_DOCKER)
+    _sidecar(headless=True).prepare()
+    mock_exists.assert_not_called()
+    mock_docker.assert_not_called()
+
+
+def test_ensure_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
+    """A headless run never starts/registers — ensure() returns no agent flags."""
+    mock_docker = mocker.patch(_DOCKER)
+    sc = _sidecar(headless=True)
+    mock_net = mocker.patch.object(sc, "_ensure_network")
+    mock_start = mocker.patch.object(sc, "_start")
+    mock_reg = mocker.patch.object(sc, "_register")
+
+    result = sc.ensure(use_host_net=False, agent_network=None)
+
+    assert result == []
+    mock_net.assert_not_called()
+    mock_start.assert_not_called()
+    mock_reg.assert_not_called()
+    mock_docker.assert_not_called()
+
+
+def test_release_still_stops_running_container_when_headless(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """
+    A headless run that is last-out must still reap the shared singleton.
+
+    Regression guard: release() is not gated on headless.
+    """
+    sc = _sidecar(headless=True)
+    mocker.patch.object(sc, "_is_running", return_value=True)
+    mock_spin = mocker.patch("agent_wrap.sidecars.telegram._SPINNER.spin_while")
+
+    sc.release()
+
+    mock_spin.assert_called_once()
+
+
 # --- docker helpers ---
 
 

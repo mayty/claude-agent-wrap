@@ -12,8 +12,10 @@ from agent_wrap.lib.docker_utils import (
     docker_run,
     get_tty_args,
     get_user_args,
+    host_network_build_args,
     image_exists,
     is_rootless,
+    is_wsl,
 )
 
 # --- docker_run ---
@@ -137,3 +139,59 @@ def test_tty_args_interactive_when_stdin_is_tty(mocker: pytest_mock.MockFixture)
 def test_tty_args_no_tty_when_stdin_not_terminal(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("agent_wrap.lib.docker_utils.sys.stdin.isatty", return_value=False)
     assert get_tty_args() == ["-i"]
+
+
+# --- is_wsl ---
+
+
+def test_is_wsl_true(mocker: pytest_mock.MockFixture) -> None:
+    mock_path = mocker.patch("agent_wrap.lib.docker_utils.Path", autospec=True)
+    mock_path.return_value.read_text.return_value = "Linux version 5.15 (microsoft)"
+    assert is_wsl() is True
+
+
+def test_is_wsl_false(mocker: pytest_mock.MockFixture) -> None:
+    mock_path = mocker.patch("agent_wrap.lib.docker_utils.Path", autospec=True)
+    mock_path.return_value.read_text.return_value = "Linux version 5.15 (generic)"
+    assert is_wsl() is False
+
+
+def test_is_wsl_os_error(mocker: pytest_mock.MockFixture) -> None:
+    mock_path = mocker.patch("agent_wrap.lib.docker_utils.Path", autospec=True)
+    mock_path.return_value.read_text.side_effect = OSError("no file")
+    assert is_wsl() is False
+
+
+# --- host_network_build_args ---
+
+
+def test_host_network_build_args_on_wsl_with_env(
+    monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
+    assert host_network_build_args() == ["--network", "host"]
+
+
+def test_host_network_build_args_not_wsl(
+    monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False)
+    monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
+    assert host_network_build_args() == []
+
+
+def test_host_network_build_args_env_unset(
+    monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    monkeypatch.delenv("AGENT_USE_HOST_NETWORK", raising=False)
+    assert host_network_build_args() == []
+
+
+def test_host_network_build_args_env_falsey(
+    monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "0")
+    assert host_network_build_args() == []

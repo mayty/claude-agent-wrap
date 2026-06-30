@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from agent_wrap.providers.litellm_common import LiteLLMProvider
 from agent_wrap.providers.litellm_common.key_approval import MasterKeyApprovalMixin
@@ -17,14 +17,14 @@ class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
     )
     master_key_prefix: ClassVar[str] = "sk-ds-"
 
-    def read_secret_key(self, secrets: dict) -> str:
+    def read_secret_key(self, secrets: dict[str, Any]) -> str:
         key = secrets.get("DashScopeAPIKey", "")
         if not key:
             msg = "litellm-sidecar: .DashScopeAPIKey missing or empty in ~/claude_keys.json"
             raise SystemExit(msg)
         return key
 
-    def get_sidecar_env(self, secrets: dict) -> dict[str, str]:
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "DASHSCOPE_API_KEY": secrets.get("_secret_key", ""),
         }
@@ -56,7 +56,7 @@ class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
             "qwen3.6-flash": {"in": 0.25, "out": 1.50, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.05},
         }
 
-    def get_tiered_pricing(self) -> dict | None:
+    def get_tiered_pricing(self) -> dict[str, Any] | None:
         """Return the tiered pricing table for DashScope models."""
         return {
             "qwen3.7-plus": {

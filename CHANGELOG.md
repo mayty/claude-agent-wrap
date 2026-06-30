@@ -7,12 +7,14 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.7.0](releases/0.7.0.md) — 2026-06-17
 
-Adds `.agent_stats_leaf` and `<orphaned>` aggregation so transient and deleted-project
-logs are no longer invisible in `agent stats` and the `agent logs` viewer. Hardens the
-shared LiteLLM sidecar for hundreds of parallel `agent run` jobs, turns `agent` into a
-standalone executable, and delivers Telegram notifications through a new shared sidecar
-container. Sidecar start/stop both show a smoother animated spinner. **Breaking:**
-custom provider forks must move to a single `sidecars()` method.
+Adds a Telegram decision sidecar so you can approve or deny Claude's tool-permission
+prompts from your phone — Allow/Deny buttons right in the chat. Surfaces previously
+invisible transient (`.agent_stats_leaf`) and `<orphaned>` projects in `agent stats` and
+the `agent logs` viewer, and reworks `agent stats` with `--from`/`--until`/`--days`
+windowing, more accurate cache-write cost, and a `--verbose` breakdown. Hardens the shared
+LiteLLM sidecar for hundreds of parallel `agent run` jobs and turns `agent` into a
+standalone executable. **Breaking:** custom provider forks must move to a single
+`sidecars()` method, and `legacy_stats` is removed in favor of `agent stats`.
 
 ## [0.6.0](releases/0.6.0.md) — 2026-06-11
 

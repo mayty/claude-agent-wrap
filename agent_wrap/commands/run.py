@@ -10,10 +10,11 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap import config
 from agent_wrap.lib import docker_utils
+from agent_wrap.lib.argparsing import make_parser
 from agent_wrap.lib.sidecar_lock import (
     SidecarPriority,
     sidecar_lock,
@@ -73,15 +74,6 @@ _STATE_FILES = (
 )
 
 
-def _is_wsl() -> bool:
-    """Check if running on WSL."""
-    try:
-        version = Path("/proc/version").read_text()
-        return "microsoft" in version.lower()
-    except OSError:
-        return False
-
-
 def _extract_network(extra_run_args: list[str]) -> str | None:
     """Extract --network value from a list of docker run flags."""
     for i, arg in enumerate(extra_run_args):
@@ -93,11 +85,65 @@ def _extract_network(extra_run_args: list[str]) -> str | None:
     return None
 
 
-def _load_telegram_creds(secrets: dict) -> tuple[str, str]:
+#: Claude Code flags under which the Telegram sidecar is never exercised:
+#: --bare / --safe-mode disable hooks outright; -p/--print is non-interactive.
+_HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})
+
+
+def _is_headless(claude_args: list[str]) -> bool:
+    """Report whether Claude Code is launched in a mode that won't use the sidecar."""
+    return any(arg in _HEADLESS_FLAGS for arg in claude_args)
+
+
+def _load_telegram_creds(secrets: dict[str, Any]) -> tuple[str, str]:
     """Extract Telegram credentials from secrets dict."""
     bot_token = secrets.get("TelegramBotToken", "") or ""
     chat_id = secrets.get("TelegramChatId", "") or ""
     return bot_token, chat_id
+
+
+def _maybe_telegram_sidecar(
+    telegram: tuple[str, str],
+    *,
+    agent_name: str,
+    instance_id: str,
+    tool_dir: Path,
+    headless: bool,
+) -> TelegramSidecar | None:
+    """
+    Build the runner-level Telegram sidecar, or None when no creds are configured.
+
+    Always declared when creds exist so last-light-out teardown reaps the shared
+    container; in headless mode its startup is a no-op (see TelegramSidecar).
+    """
+    bot_token, chat_id = telegram
+    if not (bot_token and chat_id):
+        return None
+    if headless:
+        print(
+            "Note: headless mode — Telegram sidecar will not be started.",
+            file=sys.stderr,
+        )
+    return TelegramSidecar(
+        TelegramSidecarConfig(
+            image=(
+                "mayty/claude-agent-wrap-telegram:0.1.0"
+                "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
+            ),
+            container_name="agent-wrap-telegram",
+            network_name="agent-wrap-net",
+            internal_port=6837,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            agent_name=agent_name,
+            instance_id=instance_id,
+            health_timeout_sec=30,
+            cold_start_time=45.0,
+            short_circuit_time=2.0,
+            log_dir=tool_dir / ".agent-launches" / "telegram-sidecar-logs",
+            headless=headless,
+        )
+    )
 
 
 def _resolve_host_network(
@@ -114,7 +160,7 @@ def _resolve_host_network(
     if not is_truthy_env(env_val):
         return False, [], port_args
 
-    if not _is_wsl():
+    if not docker_utils.is_wsl():
         print(
             "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts.",
             file=sys.stderr,
@@ -234,6 +280,9 @@ def _build_env_args(
     auto_mode_flag = os.environ.get("CLAUDE_CODE_ENABLE_AUTO_MODE", None)
     if auto_mode_flag is not None:
         args.extend(["-e", f"CLAUDE_CODE_ENABLE_AUTO_MODE={auto_mode_flag}"])
+    prompt_caching_flag = os.environ.get("ENABLE_PROMPT_CACHING_1H", None)
+    if prompt_caching_flag is not None:
+        args.extend(["-e", f"ENABLE_PROMPT_CACHING_1H={prompt_caching_flag}"])
     return args
 
 
@@ -456,14 +505,16 @@ def run(args: list[str], tool_dir: Path) -> int:
         Exit code from docker run.
 
     """
-    # Parse --base flag
-    use_base = False
-    claude_args: list[str] = []
-    for arg in args:
-        if arg == "--base":
-            use_base = True
-        else:
-            claude_args.append(arg)
+    # Parse our own --base flag and forward everything else verbatim to the
+    # inner `claude` CLI. add_help=False lets `-h`/`--help` pass through (claude
+    # prints its own help); allow_abbrev=False stops a claude flag like
+    # `--ba...` from being mistaken for `--base`.
+    parser = make_parser("run", usage_summary=USAGE, add_help=False)
+    parser.add_argument("--base", action="store_true")
+    ns, claude_args = parser.parse_known_args(args)
+    use_base = ns.base
+
+    headless = _is_headless(claude_args)
 
     # Check for updates (best-effort, non-blocking)
     from agent_wrap.commands.update import check as check_updates
@@ -524,28 +575,15 @@ def run(args: list[str], tool_dir: Path) -> int:
     sidecars = collect_sidecars(provider)
 
     # Runner-level sidecar: Telegram decision sidecar (independent of model backend).
-    if telegram_bot_token and telegram_chat_id:
-        sidecars.append(
-            TelegramSidecar(
-                TelegramSidecarConfig(
-                    image=(
-                        "mayty/claude-agent-wrap-telegram:0.1.0"
-                        "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
-                    ),
-                    container_name="agent-wrap-telegram",
-                    network_name="agent-wrap-net",
-                    internal_port=6837,
-                    bot_token=telegram_bot_token,
-                    chat_id=telegram_chat_id,
-                    agent_name=agent_name,
-                    instance_id=instance_id,
-                    health_timeout_sec=30,
-                    cold_start_time=45.0,
-                    short_circuit_time=2.0,
-                    log_dir=tool_dir / ".agent-launches" / "telegram-sidecar-logs",
-                )
-            )
-        )
+    telegram_sidecar = _maybe_telegram_sidecar(
+        (telegram_bot_token, telegram_chat_id),
+        agent_name=agent_name,
+        instance_id=instance_id,
+        tool_dir=tool_dir,
+        headless=headless,
+    )
+    if telegram_sidecar is not None:
+        sidecars.append(telegram_sidecar)
 
     running_handle: TextIO | None = None
     try:

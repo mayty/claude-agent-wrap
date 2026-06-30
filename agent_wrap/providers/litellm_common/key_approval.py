@@ -21,7 +21,7 @@ Mix into a ``LiteLLMProvider`` subclass and call ``_approve_master_key`` from
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap.lib.atomic import atomic_write_json
 
@@ -47,7 +47,7 @@ class MasterKeyApprovalMixin:
         """Resolve the global .claude.json file path."""
         return self._tool_dir() / ".claude_config" / ".claude.json"
 
-    def _load_claude_json(self) -> dict | None:
+    def _load_claude_json(self) -> dict[str, Any] | None:
         """Load .claude.json, returning {} if missing/empty or None on malformed JSON."""
         path = self._claude_json_path()
         if not path.exists():
@@ -60,7 +60,7 @@ class MasterKeyApprovalMixin:
         except (json.JSONDecodeError, OSError):
             return None
 
-    def _save_claude_json(self, data: dict) -> None:
+    def _save_claude_json(self, data: dict[str, Any]) -> None:
         """Atomically write .claude.json."""
         atomic_write_json(self._claude_json_path(), data)
 

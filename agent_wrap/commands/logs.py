@@ -31,6 +31,7 @@ The data model (confirmed against real logs):
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import os
@@ -45,7 +46,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
-from agent_wrap.commands.stats import PriceSource, extract_usage
+from agent_wrap.commands.stats import PriceSource, extract_usage, request_cache_ttl
+from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
 from agent_wrap.lib.usage_args import load_projects
@@ -200,7 +202,10 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
 
 
 def _enrich_with_costs(
-    normalized: dict, raw_response: dict | None, provider: str
+    normalized: dict[str, Any],
+    raw_response: dict[str, Any] | None,
+    provider: str,
+    raw_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute cost, cache pct, and token counts for one normalized record.
@@ -211,9 +216,13 @@ def _enrich_with_costs(
     model = normalized.get("model") or ""
     usage = normalized.get("usage") or {}
 
+    # The request's cache_control TTL attributes cache writes to a 5m/1h tier
+    # when the response omits the split (the Bedrock case).
+    request_ttl = request_cache_ttl(raw_request)
+
     # Use the canonical token extraction so field-resolution logic lives in one
     # place (extract_usage handles prompt_tokens/input_tokens fallback, etc.).
-    norm_usage = extract_usage(raw_response)
+    norm_usage = extract_usage(raw_response, request_ttl)
     in_t = norm_usage.get("input_tokens", 0)
     out_t = norm_usage.get("output_tokens", 0)
     cr_t = norm_usage.get("cache_read_input_tokens", 0)
@@ -227,7 +236,7 @@ def _enrich_with_costs(
     # Compute cost in USD when pricing data is available.
     cost = None
     if normalized.get("status") == "success" and usage and model:
-        cost = _PRICES.compute_cost(provider, model, raw_response)
+        cost = _PRICES.compute_cost(provider, model, raw_response, request_ttl)
 
     return {
         "context_tokens": in_t,
@@ -864,7 +873,7 @@ def _read_provider_session(
     for rec in raw_records:
         raw_response = rec.get("response")
         normalized = normalize_record(rec, strings)  # type: ignore[arg-type]
-        enriched = _enrich_with_costs(normalized, raw_response, provider)
+        enriched = _enrich_with_costs(normalized, raw_response, provider, rec.get("request"))
         normalized.update(enriched)
         records.append(normalized)
 
@@ -1297,35 +1306,27 @@ _USAGE_TEXT = (
 )
 
 
-def _parse_port(args: list[str]) -> int | None:
-    """Parse ``[--port N]``; returns None if help/an error was printed."""
-    port = _DEFAULT_PORT
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in ("-h", "--help"):
-            print(_USAGE_TEXT, file=sys.stderr)
-            return None
-        if a == "--port":
-            if i + 1 >= len(args):
-                print("usage: --port expects a value", file=sys.stderr)
-                return None
-            try:
-                port = int(args[i + 1])
-            except ValueError:
-                print(f"usage: --port expects an integer, got '{args[i + 1]}'", file=sys.stderr)
-                return None
-            if not (_MIN_PORT <= port <= _MAX_PORT):
-                print(
-                    f"usage: --port must be between {_MIN_PORT} and {_MAX_PORT}",
-                    file=sys.stderr,
-                )
-                return None
-            i += 2
-            continue
-        print(f"usage: unknown argument '{a}'", file=sys.stderr)
-        return None
+def _port(value: str) -> int:
+    """Argparse ``type`` for ``--port``: an integer within the valid range."""
+    try:
+        port = int(value)
+    except ValueError:
+        msg = f"expects an integer, got '{value}'"
+        raise argparse.ArgumentTypeError(msg) from None
+    if not (_MIN_PORT <= port <= _MAX_PORT):
+        msg = f"must be between {_MIN_PORT} and {_MAX_PORT}"
+        raise argparse.ArgumentTypeError(msg)
     return port
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = make_parser("logs", usage_summary=USAGE, description=_USAGE_TEXT)
+    parser.add_argument("--port", type=_port, default=_DEFAULT_PORT, metavar="N")
+    parser.add_argument("--stop", action="store_true", help="stop the background viewer")
+    # Hidden internal flag: the re-exec'd child that actually runs the blocking
+    # server. Suppressed so it stays out of help/USAGE and bashrc completion.
+    parser.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
+    return parser
 
 
 def run(args: list[str], tool_dir: Path) -> int:
@@ -1336,29 +1337,22 @@ def run(args: list[str], tool_dir: Path) -> int:
     if env_dir:
         tool_dir = Path(env_dir)
 
-    if "--stop" in args:
-        if args != ["--stop"]:
+    ns = parse_or_code(_build_parser(), args)
+    if isinstance(ns, int):
+        return ns
+
+    if ns.stop:
+        if ns.foreground or ns.port != _DEFAULT_PORT:
             print("usage: agent logs --stop (takes no other arguments)", file=sys.stderr)
             return 1
         return _stop(tool_dir)
 
-    # `--foreground` is a hidden internal flag: the re-exec'd child that actually
-    # runs the blocking server. Strip it before port parsing so _parse_port (and
-    # its tests) stay unchanged, and keep it out of USAGE/bashrc completion.
-    foreground = "--foreground" in args
-    if foreground:
-        args = [a for a in args if a != "--foreground"]
-
-    port = _parse_port(args)
-    if port is None:
-        return 0 if (args and args[0] in ("-h", "--help")) else 1
-
-    if foreground:
-        return _serve_foreground(tool_dir, port)
+    if ns.foreground:
+        return _serve_foreground(tool_dir, ns.port)
 
     running = _running_server(tool_dir)
     if running is not None:
         print(_connect_line(running["port"]))
         return 0
 
-    return _spawn_background(tool_dir, port)
+    return _spawn_background(tool_dir, ns.port)

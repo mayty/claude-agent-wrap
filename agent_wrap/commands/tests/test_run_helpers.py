@@ -14,7 +14,7 @@ from agent_wrap.commands.run import (
     _build_env_args,
     _build_volume_mounts,
     _build_wslg_args,
-    _is_wsl,
+    _is_headless,
     _load_secrets,
     _load_telegram_creds,
     _parse_dockerfile_directives,
@@ -30,27 +30,6 @@ from agent_wrap.commands.run import (
 )
 from agent_wrap.lib.utils import ResolvedImage
 from agent_wrap.sidecars import SidecarTracker
-
-# --- _is_wsl ---
-
-
-def test_is_wsl_true(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
-    mock_path.return_value.read_text.return_value = "Linux version 5.15 (microsoft)"
-    assert _is_wsl() is True
-
-
-def test_is_wsl_false(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
-    mock_path.return_value.read_text.return_value = "Linux version 5.15 (generic)"
-    assert _is_wsl() is False
-
-
-def test_is_wsl_os_error(mocker: pytest_mock.MockFixture) -> None:
-    mock_path = mocker.patch("agent_wrap.commands.run.Path", autospec=True)
-    mock_path.return_value.read_text.side_effect = OSError("no file")
-    assert _is_wsl() is False
-
 
 # --- _resolve_agent_name ---
 
@@ -149,6 +128,24 @@ def test_load_telegram_creds(secrets: dict, expected: tuple[str, str]) -> None:
     assert _load_telegram_creds(secrets) == expected
 
 
+# --- _is_headless ---
+
+
+@pytest.mark.parametrize(
+    ("claude_args", "expected"),
+    [
+        (["-p", "do a thing"], True),
+        (["--print"], True),
+        (["--bare"], True),
+        (["--safe-mode"], True),
+        (["--model", "x"], False),
+        ([], False),
+    ],
+)
+def test_is_headless(claude_args: list[str], expected: bool) -> None:  # noqa: FBT001
+    assert _is_headless(claude_args) is expected
+
+
 # --- _build_wslg_args ---
 
 
@@ -211,6 +208,18 @@ def test_build_env_args_term_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "COLORTERM=16color" in result
 
 
+def test_build_env_args_prompt_caching_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENABLE_PROMPT_CACHING_1H", raising=False)
+    result = _build_env_args("a", "b", "/h")
+    assert not any(arg.startswith("ENABLE_PROMPT_CACHING_1H=") for arg in result)
+
+
+def test_build_env_args_prompt_caching_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_PROMPT_CACHING_1H", "1")
+    result = _build_env_args("a", "b", "/h")
+    assert "ENABLE_PROMPT_CACHING_1H=1" in result
+
+
 # --- _build_volume_mounts ---
 
 
@@ -268,7 +277,7 @@ def test_host_network_not_wsl(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=False)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False)
     use, _, _ = _resolve_host_network(None, ["-p", "8080:8080"])
     assert use is False
     assert "only honored on WSL" in capsys.readouterr().err
@@ -278,7 +287,7 @@ def test_host_network_wsl_no_agent_network(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
     use, args, ports = _resolve_host_network(None, ["-p", "8080:8080"])
     assert use is True
     assert args == ["--network", "host"]
@@ -289,7 +298,7 @@ def test_host_network_wsl_agent_network_specified(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.commands.run._is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
     use, _, ports = _resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
     assert "AGENT_USE_HOST_NETWORK ignored" in capsys.readouterr().err
@@ -392,6 +401,81 @@ def test_run_happy_path(
     # One common role label; NO per-sidecar label.
     assert "agent-wrap.role=claude-agent" in cmd
     assert not any(c.startswith("agent-wrap.sidecar.") for c in cmd if isinstance(c, str))
+
+
+def _setup_run_with_telegram_creds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """Drive run() to the sidecar-collection block with Telegram creds present."""
+    monkeypatch.chdir(tmp_path)
+    keys = tmp_path / "claude_keys.json"
+    keys.write_text(
+        json.dumps(
+            {
+                "ServiceSpecificCredential": {"ServiceCredentialSecret": "key"},
+                "TelegramBotToken": "123:ABC",
+                "TelegramChatId": "456",
+            }
+        )
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=True)
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_user_args", return_value=[])
+    mocker.patch("agent_wrap.commands.run.docker_utils.get_tty_args", return_value=["-it"])
+    mocker.patch("agent_wrap.commands.run.config.prepare_global_config")
+    mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
+    mocker.patch("agent_wrap.commands.run.config.record_project")
+    mocker.patch("agent_wrap.commands.run.config.link_litellm_logs")
+    mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
+
+    provider = mocker.MagicMock()
+    provider.sidecars.return_value = []
+    mocker.patch("agent_wrap.commands.run.get_provider", return_value=provider)
+    result = mocker.MagicMock()
+    result.returncode = 0
+    mocker.patch("agent_wrap.commands.run.subprocess.run", return_value=result)
+
+
+def test_run_telegram_sidecar_headless_flag_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """A headless launch still DECLARES the sidecar, but with headless=True."""
+    _setup_run_with_telegram_creds(tmp_path, monkeypatch, mocker)
+    mock_tg = mocker.patch("agent_wrap.commands.run.TelegramSidecar")
+    mock_tg.return_value.cold_start_time = 45.0
+    mock_tg.return_value.short_circuit_time = 2.0
+    mock_tg.return_value.ensure.return_value = []
+
+    rc = agent_run(["--base", "-p", "hello"], tmp_path)
+    assert rc == 0
+    mock_tg.assert_called_once()
+    config = mock_tg.call_args[0][0]
+    assert config.headless is True
+
+
+def test_run_telegram_sidecar_headless_flag_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
+) -> None:
+    """An interactive launch declares the sidecar with headless=False."""
+    _setup_run_with_telegram_creds(tmp_path, monkeypatch, mocker)
+    mock_tg = mocker.patch("agent_wrap.commands.run.TelegramSidecar")
+    mock_tg.return_value.cold_start_time = 45.0
+    mock_tg.return_value.short_circuit_time = 2.0
+    mock_tg.return_value.ensure.return_value = []
+
+    rc = agent_run(["--base"], tmp_path)
+    assert rc == 0
+    mock_tg.assert_called_once()
+    config = mock_tg.call_args[0][0]
+    assert config.headless is False
 
 
 def test_run_prepares_config_inside_single_lock(

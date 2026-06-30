@@ -6,6 +6,33 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+from agent_wrap.lib.utils import is_truthy_env
+
+
+def is_wsl() -> bool:
+    """Check if running on WSL (Microsoft kernel)."""
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def host_network_build_args() -> list[str]:
+    """
+    Return ["--network", "host"] for `docker build` when the WSL host-network
+    workaround is active, else [].
+
+    Honored only on WSL (see docs/configuration.md): the parallel-distro
+    iptables-legacy FORWARD=DROP scenario that breaks `agent run` also breaks a
+    build's `RUN` steps, which execute on Docker's default bridge.
+    """
+    if not is_wsl():
+        return []
+    if not is_truthy_env(os.environ.get("AGENT_USE_HOST_NETWORK", "")):
+        return []
+    return ["--network", "host"]
 
 
 def docker_run(

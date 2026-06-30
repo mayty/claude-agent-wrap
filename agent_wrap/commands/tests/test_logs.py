@@ -8,12 +8,14 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from agent_wrap.commands import logs as logs_mod
 from agent_wrap.commands.logs import (
+    _build_parser,
     _group_by_id,
     _lightweight_project_summary,
     _logs_dir,
-    _parse_port,
     _pid_alive,
     _read_last_record_ts,
     _read_meta_json,
@@ -906,28 +908,42 @@ def test_projects_fingerprint_null_when_no_registry(tmp_path: Path):
 
 
 def test_parse_port_default():
-    assert _parse_port([]) == 8765
+    assert _build_parser().parse_args([]).port == 8765
 
 
 def test_parse_port_custom():
-    assert _parse_port(["--port", "9000"]) == 9000
+    assert _build_parser().parse_args(["--port", "9000"]).port == 9000
 
 
-def test_parse_port_rejects_non_integer():
-    assert _parse_port(["--port", "abc"]) is None
+def test_parse_port_rejects_non_integer(capsys: pytest.CaptureFixture):
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["--port", "abc"])
+    assert exc.value.code != 0
+    assert "expects an integer" in capsys.readouterr().err
 
 
-def test_parse_port_rejects_out_of_range():
-    assert _parse_port(["--port", "0"]) is None
-    assert _parse_port(["--port", "70000"]) is None
+def test_parse_port_rejects_out_of_range(capsys: pytest.CaptureFixture):
+    for bad in ("0", "70000"):
+        with pytest.raises(SystemExit) as exc:
+            _build_parser().parse_args(["--port", bad])
+        assert exc.value.code != 0
+    assert "must be between" in capsys.readouterr().err
 
 
-def test_parse_port_help_returns_none():
-    assert _parse_port(["-h"]) is None
+def test_parse_port_help_returns_zero():
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["-h"])
+    assert exc.value.code == 0
 
 
 def test_parse_port_unknown_arg():
-    assert _parse_port(["--bogus"]) is None
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["--bogus"])
+    assert exc.value.code != 0
+
+
+def test_parse_stop_flag():
+    assert _build_parser().parse_args(["--stop"]).stop is True
 
 
 # --- resolve_static (path mapping + traversal safety) ---
