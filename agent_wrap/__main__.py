@@ -12,7 +12,6 @@ import pkgutil
 import sys
 from dataclasses import dataclass
 from importlib import import_module
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_wrap import commands as commands_pkg
@@ -73,7 +72,6 @@ def main() -> int:
 
     name = sys.argv[1]
     args = sys.argv[2:]
-    tool_dir = Path(__file__).parent.parent.resolve()
 
     match = next((c for c in commands if c.name == name), None)
     if match is None:
@@ -82,7 +80,7 @@ def main() -> int:
 
     mod = import_module(match.module_path)
     run: Callable[..., int] = mod.run
-    return run(args, tool_dir)
+    return run(args)
 
 
 if __name__ == "__main__":

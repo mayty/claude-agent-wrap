@@ -180,10 +180,6 @@ def _load_prices(
 
 class BedrockProvider(LiteLLMProvider):
     name = "litellm-bedrock"
-    image: ClassVar[str] = (
-        "ghcr.io/berriai/litellm:v1.83.14-stable"
-        "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
-    )
     master_key_prefix: ClassVar[str] = "sk-aw-"
     secret_description: ClassVar[str] = "AWS Bedrock Bearer Token"  # noqa: S105
 

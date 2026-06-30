@@ -167,7 +167,7 @@ def test_parse_nonexistent_file():
 
 def test_resolve_base_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    result = resolve_image(tmp_path, use_base=True)
+    result = resolve_image(use_base=True)
     assert result.image == "claude-agent"
     assert result.dockerfile == tmp_path / "ops" / "Dockerfile"
     assert result.context == tmp_path
@@ -176,7 +176,7 @@ def test_resolve_base_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def test_resolve_with_dockerfile_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: myproj\nFROM claude-agent\n")
-    result = resolve_image(tmp_path, use_base=False)
+    result = resolve_image(use_base=False)
     assert result.image == "claude-agent-myproj"
     assert result.dockerfile == tmp_path / "Dockerfile.agent"
     assert result.context == tmp_path
@@ -187,7 +187,7 @@ def test_resolve_base_ignores_dockerfile_agent(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: myproj\nFROM claude-agent\n")
-    result = resolve_image(tmp_path, use_base=True)
+    result = resolve_image(use_base=True)
     assert result.image == "claude-agent"
 
 
@@ -195,17 +195,17 @@ def test_resolve_no_agent_name_raises(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("FROM claude-agent\n")
     with pytest.raises(SystemExit, match="must contain '# agent-name:"):
-        resolve_image(tmp_path, use_base=False)
+        resolve_image(use_base=False)
 
 
 def test_resolve_invalid_agent_name_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: UPPER CASE\nFROM claude-agent\n")
     with pytest.raises(SystemExit, match="must match"):
-        resolve_image(tmp_path, use_base=False)
+        resolve_image(use_base=False)
 
 
 def test_resolve_no_dockerfile_uses_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    result = resolve_image(tmp_path, use_base=False)
+    result = resolve_image(use_base=False)
     assert result.image == "claude-agent"

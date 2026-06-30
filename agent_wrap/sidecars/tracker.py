@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
+from agent_wrap.constants import AGENT_LAUNCHES_DIR, BASE_IMAGE_NAME
 from agent_wrap.lib.flock import lock_and_hold, try_file_lock
 
 if TYPE_CHECKING:
@@ -38,10 +39,10 @@ class SidecarTracker:
 
     #: Label marking an agent container (used by the runner's --label flags).
     role_label: ClassVar[str] = "agent-wrap.role"
-    role_value: ClassVar[str] = "claude-agent"
+    role_value: ClassVar[str] = BASE_IMAGE_NAME
 
     #: Sub-directory of the install root holding host-wide launch state.
-    state_dirname: ClassVar[str] = ".agent-launches"
+    state_dirname: ClassVar[str] = AGENT_LAUNCHES_DIR.name
     lock_filename: ClassVar[str] = "sidecars.lock"
     #: Directories of lock-held per-run registration files (named by instance id).
     waiters_dirname: ClassVar[str] = "start-waiters"

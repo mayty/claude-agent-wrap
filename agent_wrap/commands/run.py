@@ -7,11 +7,17 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_wrap import config, secrets
+from agent_wrap.constants import (
+    AGENT_LAUNCHES_DIR,
+    GLOBAL_CONFIG_DIR,
+    OPS_DIR,
+    TELEGRAM_IMAGE,
+    TOOL_DIR,
+)
 from agent_wrap.lib import docker_utils
 from agent_wrap.lib.argparsing import make_parser
 from agent_wrap.lib.sidecar_lock import (
@@ -74,6 +80,11 @@ _STATE_FILES = (
 )
 
 
+#: Claude Code flags under which the Telegram sidecar is never exercised:
+#: --bare / --safe-mode disable hooks outright; -p/--print is non-interactive.
+_HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})
+
+
 def _extract_network(extra_run_args: list[str]) -> str | None:
     """Extract --network value from a list of docker run flags."""
     for i, arg in enumerate(extra_run_args):
@@ -85,11 +96,6 @@ def _extract_network(extra_run_args: list[str]) -> str | None:
     return None
 
 
-#: Claude Code flags under which the Telegram sidecar is never exercised:
-#: --bare / --safe-mode disable hooks outright; -p/--print is non-interactive.
-_HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})
-
-
 def _is_headless(claude_args: list[str]) -> bool:
     """Report whether Claude Code is launched in a mode that won't use the sidecar."""
     return any(arg in _HEADLESS_FLAGS for arg in claude_args)
@@ -99,63 +105,47 @@ def _resolve_sidecar_secrets(
     sidecar_name: str,
     required: list[tuple[str, str]],
     *,
-    prompt: bool,
+    optional: bool,
+    headless: bool,
 ) -> dict[str, str] | None:
     """
     Atomically resolve all secrets for a sidecar.
 
-    prompt=True  → required: prompt on TTY, error on non-TTY.
-    prompt=False → optional: return None if any missing, never prompt.
-    Returns {simple_key: value} when successful.
+    optional=False, headless=False → required: prompt on TTY, error on non-TTY.
+    optional=True  → return None if any missing, never prompt.
+    headless=True  → error on non-TTY instead of prompting.
+    Returns {simple_key: value} when successful, or None when optional and missing.
     """
-    entries = [(f"{sidecar_name}:{simple_key}", desc, simple_key) for simple_key, desc in required]
+    prompt_on_missing = sys.stdin.isatty() and not optional and not headless
 
-    # Phase 1 — read all, no prompts.
-    missing: list[tuple[str, str, str]] = []
-    resolved: dict[str, str] = {}
-    for ns_key, desc, simple_key in entries:
-        try:
-            resolved[simple_key] = secrets.read(ns_key, desc, prompt_on_missing=False)
-        except SecretNotFoundError:
-            missing.append((ns_key, desc, simple_key))
+    try:
+        return {
+            key: secrets.read(f"{sidecar_name}:{key}", desc, prompt_on_missing=prompt_on_missing)
+            for key, desc in required
+        }
+    except SecretNotFoundError:
+        if optional:
+            return None
 
-    if not missing:
-        return resolved
-    if not prompt:
-        return None
-    if not sys.stdin.isatty():
-        ns_key, desc, _ = missing[0]
-        print(f"Secret '{ns_key}' ({desc}) not found.", file=sys.stderr)
-        print(f"Run 'agent secrets {sidecar_name} set'.", file=sys.stderr)
-        raise SystemExit(1)
-
-    # Phase 2 — prompt for every missing key.
-    for ns_key, desc, simple_key in missing:
-        resolved[simple_key] = secrets.read(ns_key, desc, prompt_on_missing=True)
-
-    return resolved
+        print(
+            f"Secrets for '{sidecar_name}' not found. Run 'agent secrets {sidecar_name} set'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from None
 
 
-def _maybe_telegram_sidecar(
-    secrets_dict: dict[str, str] | None,
+def _telegram_sidecar(
     *,
     agent_name: str,
     instance_id: str,
-    tool_dir: Path,
     headless: bool,
-) -> TelegramSidecar | None:
+) -> TelegramSidecar:
     """
-    Build the runner-level Telegram sidecar, or None when no creds are configured.
+    Build the runner-level Telegram sidecar.
 
     Always declared when creds exist so last-light-out teardown reaps the shared
     container; in headless mode its startup is a no-op (see TelegramSidecar).
     """
-    if secrets_dict is None:
-        return None
-    bot_token = secrets_dict.get("TelegramBotToken", "")
-    chat_id = secrets_dict.get("TelegramChatId", "")
-    if not (bot_token and chat_id):
-        return None
     if headless:
         print(
             "Note: headless mode — Telegram sidecar will not be started.",
@@ -163,10 +153,7 @@ def _maybe_telegram_sidecar(
         )
     return TelegramSidecar(
         TelegramSidecarConfig(
-            image=(
-                "mayty/claude-agent-wrap-telegram:0.1.0"
-                "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
-            ),
+            image=TELEGRAM_IMAGE,
             container_name="agent-wrap-telegram",
             network_name="agent-wrap-net",
             internal_port=6837,
@@ -175,10 +162,43 @@ def _maybe_telegram_sidecar(
             health_timeout_sec=30,
             cold_start_time=45.0,
             short_circuit_time=2.0,
-            log_dir=tool_dir / ".agent-launches" / "telegram-sidecar-logs",
+            log_dir=AGENT_LAUNCHES_DIR / "telegram-sidecar-logs",
             headless=headless,
         )
     )
+
+
+def _assemble_sidecars(
+    agent_name: str,
+    instance_id: str,
+    *,
+    headless: bool,
+) -> tuple[list[Sidecar], dict[Sidecar, dict[str, str]], bool]:
+    provider = get_provider()
+    sidecars: list[Sidecar] = collect_sidecars(provider)
+    per_sidecar: dict[Sidecar, dict[str, str]] = {}
+    for sc in sidecars:
+        result = _resolve_sidecar_secrets(
+            provider.name, sc.required_secrets(), optional=False, headless=headless
+        )
+        assert result is not None  # required sidecar — never returns None
+        per_sidecar[sc] = result
+
+    telegram_available = False
+    tg_secrets = _resolve_sidecar_secrets(
+        "telegram", TelegramSidecar.required_secrets(), optional=True, headless=headless
+    )
+    if tg_secrets:
+        tg_sidecar = _telegram_sidecar(
+            agent_name=agent_name,
+            instance_id=instance_id,
+            headless=headless,
+        )
+        sidecars.append(tg_sidecar)
+        per_sidecar[tg_sidecar] = tg_secrets
+        telegram_available = True
+
+    return sidecars, per_sidecar, telegram_available
 
 
 def _resolve_host_network(
@@ -237,7 +257,7 @@ def _resolve_agent_name(*, use_base: bool, cwd: Path) -> str:
     return sanitize_name(cwd.name) or "agent"
 
 
-def _build_wslg_args(tool_dir: Path) -> list[str]:
+def _build_wslg_args() -> list[str]:
     """
     Build WSLg-related volume mounts and env vars.
 
@@ -252,7 +272,7 @@ def _build_wslg_args(tool_dir: Path) -> list[str]:
         "-v",
         "/mnt/wslg/.X11-unix:/tmp/.X11-unix",
         "-v",
-        f"{tool_dir}/ops/wl-paste-shim:/usr/local/bin/wl-paste:ro",
+        f"{OPS_DIR}/wl-paste-shim:/usr/local/bin/wl-paste:ro",
         "-e",
         "DISPLAY",
         "-e",
@@ -308,21 +328,19 @@ def _build_env_args(
 
 
 def _build_volume_mounts(
-    global_config_dir: Path,
-    cwd: Path,
-    tool_dir: Path,
     claude_home: str,
 ) -> list[str]:
     """Build all -v mount flags for the docker run command."""
     mounts: list[str] = []
+    cwd = Path.cwd()
 
     # Global config mounts
     mounts.extend(
         [
             "-v",
-            f"{global_config_dir}/.claude.json:{claude_home}/.claude.json",
+            f"{GLOBAL_CONFIG_DIR}/.claude.json:{claude_home}/.claude.json",
             "-v",
-            f"{global_config_dir}/.claude:{claude_home}/.claude",
+            f"{GLOBAL_CONFIG_DIR}/.claude:{claude_home}/.claude",
             # Workspace
             "-v",
             f"{cwd}:/workspace",
@@ -338,7 +356,7 @@ def _build_volume_mounts(
         mounts.extend(["-v", f"{cwd}/.claude/{name}:{claude_home}/.claude/{name}"])
 
     # Tool directory mounted read-only into the container.
-    mounts.extend(["-v", f"{tool_dir}/ops:{AGENT_WRAP_MOUNT}:ro"])
+    mounts.extend(["-v", f"{OPS_DIR}:{AGENT_WRAP_MOUNT}:ro"])
 
     return mounts
 
@@ -398,17 +416,7 @@ def sidecar_lock_timeout(sidecars: list[Sidecar], queue_depth: int) -> float:
     return sum(sc.cold_start_time + queue_depth * sc.short_circuit_time for sc in sidecars)
 
 
-@dataclass(frozen=True)
-class _ConfigContext:
-    """Inputs for the config-prep step of a launch (see :func:`_prepare_config`)."""
-
-    global_config_dir: Path
-    tool_dir: Path
-    cwd: Path
-    telegram: tuple[str, str]
-
-
-def _prepare_config(ctx: _ConfigContext) -> None:
+def _prepare_config(*, telegram_available: bool) -> None:
     """
     Prepare global and per-project config. Caller must hold the launch lock.
 
@@ -417,13 +425,11 @@ def _prepare_config(ctx: _ConfigContext) -> None:
     helper takes no lock of its own — it runs inside :func:`_prepare_for_launch`'s
     critical section.
     """
-    telegram_bot_token, telegram_chat_id = ctx.telegram
-    config.prepare_global_config(
-        ctx.global_config_dir, ctx.tool_dir, telegram_bot_token, telegram_chat_id
-    )
-    config.prepare_project_dirs(ctx.cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
-    config.link_litellm_logs(ctx.cwd, ctx.tool_dir)
-    config.record_project(ctx.tool_dir)
+    cwd = Path.cwd()
+    config.prepare_global_config(telegram_available=telegram_available)
+    config.prepare_project_dirs(cwd, tuple(_STATE_MOUNTS.keys()), _STATE_FILES)
+    config.link_litellm_logs(cwd)
+    config.record_project()
 
 
 def _prepare_for_launch(  # noqa: PLR0913
@@ -432,7 +438,7 @@ def _prepare_for_launch(  # noqa: PLR0913
     *,
     net: tuple[bool, str | None],
     instance_id: str,
-    config_ctx: _ConfigContext,
+    telegram_available: bool,
     per_sidecar_secrets: dict,
 ) -> tuple[list[str], TextIO | None]:
     """
@@ -450,13 +456,12 @@ def _prepare_for_launch(  # noqa: PLR0913
     running_handle: TextIO | None = None
     timeout = sidecar_lock_timeout(sidecars, _expected_queue_depth())
     with sidecar_lock(SidecarPriority.HI, tracker, instance_id, timeout=timeout):
-        _prepare_config(config_ctx)
+        _prepare_config(telegram_available=telegram_available)
         for sidecar in sidecars:
-            sc_secrets = per_sidecar_secrets.get(sidecar)
             run_args += sidecar.ensure(
                 use_host_net=use_host_net,
                 agent_network=agent_network,
-                secrets=sc_secrets,
+                secrets=per_sidecar_secrets[sidecar],
             )
         running_handle = tracker.register_running(instance_id)
     return run_args, running_handle
@@ -507,13 +512,18 @@ def _release_sidecars(
                 sidecar.release()
 
 
-def run(args: list[str], tool_dir: Path) -> int:  # noqa: PLR0915
+def _get_image_missing_error(image: str, *, use_base: bool) -> str:
+    if use_base:
+        return f"Error: Base image '{image}' not found. Run 'agent rebuild --full' to build it."
+    return f"Error: Image '{image}' not found. Run 'agent rebuild' in this directory to build it."
+
+
+def run(args: list[str]) -> int:
     """
     Execute the `run` subcommand.
 
     Args:
         args: Command-line arguments (after 'run').
-        tool_dir: Path to the agent-wrap tool directory.
 
     Returns:
         Exit code from docker run.
@@ -533,30 +543,19 @@ def run(args: list[str], tool_dir: Path) -> int:  # noqa: PLR0915
     # Check for updates (best-effort, non-blocking)
     from agent_wrap.commands.update import check as check_updates
 
-    if check_updates(tool_dir):
+    if check_updates():
         return 0  # Update applied, abort original operation
 
     # Resolve image
     try:
-        resolved = resolve_image(tool_dir, use_base=use_base)
+        resolved = resolve_image(use_base=use_base)
     except SystemExit as e:
         print(str(e), file=sys.stderr)
         return 1
 
     # Validate image exists
     if not docker_utils.image_exists(resolved.image):
-        if use_base:
-            print(
-                f"Error: Base image '{resolved.image}' not found. "
-                f"Run 'agent rebuild --full' to build it.",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"Error: Image '{resolved.image}' not found. "
-                f"Run 'agent rebuild' in this directory to build it.",
-                file=sys.stderr,
-            )
+        print(_get_image_missing_error(resolved.image, use_base=use_base), file=sys.stderr)
         return 1
 
     # Parse Dockerfile.agent directives
@@ -567,30 +566,15 @@ def run(args: list[str], tool_dir: Path) -> int:  # noqa: PLR0915
     claude_home = f"/home/{agent_user}"
     agent_name = _resolve_agent_name(use_base=use_base, cwd=Path.cwd())
 
-    # --- Resolve secrets from the secrets store ---
-    # Telegram (optional — never prompts; missing → no Telegram sidecar).
-    from agent_wrap.sidecars.telegram import TelegramSidecar
-
-    tg_keys: list[tuple[str, str]] = TelegramSidecar.required_secrets()
-    tg_secrets = _resolve_sidecar_secrets("telegram", tg_keys, prompt=False)
-
     # Provider sidecars (required — prompts on TTY, error on non-TTY).
-    provider = get_provider()
-    sidecars = collect_sidecars(provider)
-    per_sidecar: dict = {}
-    for sc in sidecars:
-        per_sidecar[sc] = _resolve_sidecar_secrets(
-            provider.name, sc.required_secrets(), prompt=True
-        )
 
-    instance_uuid = generate_uuid()
-    instance_id = f"{agent_name}-{instance_uuid}"
+    instance_id = f"{agent_name}-{generate_uuid()}"
 
-    cwd = Path.cwd()
-    global_config_dir = tool_dir / ".claude_config"
-    tracker = SidecarTracker(tool_dir)
+    sidecars, per_sidecar_secrets, telegram_available = _assemble_sidecars(
+        agent_name, instance_id, headless=headless
+    )
 
-    wslg_args = _build_wslg_args(tool_dir)
+    tracker = SidecarTracker(TOOL_DIR)
 
     print(f"--- Agent instance: {instance_id} ---")
 
@@ -601,24 +585,6 @@ def run(args: list[str], tool_dir: Path) -> int:  # noqa: PLR0915
     # so the last-light-out teardown always runs, even on a failed start — and it
     # releases the FULL declared set, reaping orphans.
 
-    # Runner-level sidecar: Telegram decision sidecar (independent of model backend).
-    telegram_sidecar = _maybe_telegram_sidecar(
-        tg_secrets,
-        agent_name=agent_name,
-        instance_id=instance_id,
-        tool_dir=tool_dir,
-        headless=headless,
-    )
-    if telegram_sidecar is not None:
-        sidecars.append(telegram_sidecar)
-
-    # Extract telegram tokens for _ConfigContext (config prep needs them).
-    tg_bot_token = ""
-    tg_chat_id = ""
-    if tg_secrets is not None:
-        tg_bot_token = tg_secrets.get("TelegramBotToken", "")
-        tg_chat_id = tg_secrets.get("TelegramChatId", "")
-
     running_handle: TextIO | None = None
     try:
         provider_run_args, running_handle = _prepare_for_launch(
@@ -626,40 +592,29 @@ def run(args: list[str], tool_dir: Path) -> int:  # noqa: PLR0915
             tracker,
             net=(use_host_net, agent_network),
             instance_id=instance_id,
-            config_ctx=_ConfigContext(
-                global_config_dir=global_config_dir,
-                tool_dir=tool_dir,
-                cwd=cwd,
-                telegram=(tg_bot_token, tg_chat_id),
-            ),
-            per_sidecar_secrets=per_sidecar,
+            telegram_available=telegram_available,
+            per_sidecar_secrets=per_sidecar_secrets,
         )
 
-        label_args = build_agent_labels(instance_id)
-
-        print(f"--- Launching Claude (Image: {resolved.image}, Config: {global_config_dir}) ---")
-
-        volume_mounts = _build_volume_mounts(global_config_dir, cwd, tool_dir, claude_home)
-        user_args = docker_utils.get_user_args()
-        tty_args = docker_utils.get_tty_args()
+        print(f"--- Launching Claude (Image: {resolved.image}, Config: {GLOBAL_CONFIG_DIR}) ---")
 
         cmd = [
             "docker",
             "run",
             "--rm",
-            *tty_args,
-            *user_args,
-            *volume_mounts,
+            *docker_utils.get_tty_args(),
+            *docker_utils.get_user_args(),
+            *_build_volume_mounts(claude_home),
             *_build_env_args(
                 agent_name,
                 instance_id,
                 claude_home,
             ),
             # Spliced arrays
-            *label_args,
+            *build_agent_labels(instance_id),
+            *_build_wslg_args(),
             *provider_run_args,
             *port_args,
-            *wslg_args,
             *host_net_args,
             *extra_run_args,
             # Image and passthrough args

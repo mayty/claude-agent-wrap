@@ -572,7 +572,7 @@ def test_load_strings_round_trip(tmp_path: Path):
 
 
 def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
     with_logs = tmp_path / "with"
     without_logs = tmp_path / "without"
@@ -585,14 +585,14 @@ def test_list_projects_filters_to_those_with_logs(tmp_path: Path):
     (tool_dir / ".agent-launches" / "projects.txt").write_text(
         f"{with_logs}\n{without_logs}\n", encoding="utf-8"
     )
-    projects = list_projects(tool_dir)
+    projects = list_projects()
     assert [p["path"] for p in projects] == [str(with_logs)]
     assert projects[0]["sessions"] == 1
     assert projects[0]["id"] == 0
 
 
 def test_list_projects_empty_without_registry(tmp_path: Path):
-    assert list_projects(tmp_path / "nope") == []
+    assert list_projects() == []
 
 
 # --- .agent_stats_leaf grouping --------------------------------------------
@@ -600,7 +600,7 @@ def test_list_projects_empty_without_registry(tmp_path: Path):
 
 def test_list_projects_aggregates_marked_group(tmp_path: Path):
     """Two projects under a .agent_stats_leaf marker collapse to one entry."""
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -612,7 +612,7 @@ def test_list_projects_aggregates_marked_group(tmp_path: Path):
     _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
 
-    projects = list_projects(tool_dir)
+    projects = list_projects()
     assert len(projects) == 1
     p = projects[0]
     assert p["name"] == "batch-feb"
@@ -635,7 +635,7 @@ def test_list_sessions_unions_group_members(tmp_path: Path):
 
 def test_unmarked_projects_stay_separate(tmp_path: Path):
     """Without a marker, each project remains its own entry (regression guard)."""
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
     a = tmp_path / "proj-a"
     b = tmp_path / "proj-b"
@@ -643,7 +643,7 @@ def test_unmarked_projects_stay_separate(tmp_path: Path):
     _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
 
-    projects = list_projects(tool_dir)
+    projects = list_projects()
     assert {p["name"] for p in projects} == {"proj-a", "proj-b"}
 
 
@@ -662,7 +662,7 @@ def _write_central(tool_dir: Path, hash_name: str, session_id: str, records: lis
 
 def test_orphaned_group_exposed_and_readable(tmp_path: Path):
     """Central log dirs with no registered project surface as an <orphaned> group."""
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
 
     # Registered project symlinked to its central hashA dir.
@@ -681,17 +681,17 @@ def test_orphaned_group_exposed_and_readable(tmp_path: Path):
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
     # The orphaned group is appended last with the synthetic name.
-    groups = list_groups(tool_dir)
+    groups = list_groups()
     assert groups[-1]["name"] == "<orphaned>"
     assert groups[-1]["logs_dirs"] == [hash_b]
 
-    projects = list_projects(tool_dir)
+    projects = list_projects()
     assert "<orphaned>" in {p["name"] for p in projects}
     orphaned = next(p for p in projects if p["name"] == "<orphaned>")
     assert orphaned["sessions"] == 1
 
     # Resolving the group id yields the central dirs; reading them returns s2.
-    dirs = _group_by_id(tool_dir, orphaned["id"])
+    dirs = _group_by_id(orphaned["id"])
     assert dirs is not None
     assert dirs == [hash_b]
     assert [s["session_id"] for s in list_sessions(dirs)] == ["s2"]
@@ -699,7 +699,7 @@ def test_orphaned_group_exposed_and_readable(tmp_path: Path):
 
 def test_no_orphaned_group_when_all_reachable(tmp_path: Path):
     """No orphaned group is appended when every central dir is project-reachable."""
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
     hash_a = _write_central(
         tool_dir, "hashA", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")]
@@ -709,7 +709,7 @@ def test_no_orphaned_group_when_all_reachable(tmp_path: Path):
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    assert all(g["name"] != "<orphaned>" for g in list_groups(tool_dir))
+    assert all(g["name"] != "<orphaned>" for g in list_groups())
 
 
 # --- _read_last_record_ts ---
@@ -853,7 +853,7 @@ def test_lightweight_project_summary_skips_empty_sessions(tmp_path: Path):
 
 def test_list_projects_lightweight_produces_same_shape(tmp_path: Path):
     """Output dict must have the same keys as before the optimization."""
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
     project = tmp_path / "proj"
     _write_session(
@@ -863,7 +863,7 @@ def test_list_projects_lightweight_produces_same_shape(tmp_path: Path):
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
-    projects = list_projects(tool_dir)
+    projects = list_projects()
     assert len(projects) == 1
     p = projects[0]
     assert set(p.keys()) == {"id", "path", "name", "sessions", "last_ts"}
@@ -873,7 +873,7 @@ def test_list_projects_lightweight_produces_same_shape(tmp_path: Path):
 
 def test_projects_fingerprint_reflects_changes(tmp_path: Path):
     """Fingerprint changes when a record is appended anywhere across projects."""
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
     project = tmp_path / "proj"
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
@@ -883,7 +883,7 @@ def test_projects_fingerprint_reflects_changes(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    fp1 = projects_fingerprint(tool_dir)
+    fp1 = projects_fingerprint()
     assert isinstance(fp1["mtime"], int)
     assert fp1["size"] > 0
 
@@ -894,14 +894,13 @@ def test_projects_fingerprint_reflects_changes(tmp_path: Path):
         "s2",
         [_ts_rec("2026-06-05T01:00:00+00:00", model="m/b")],
     )
-    fp2 = projects_fingerprint(tool_dir)
+    fp2 = projects_fingerprint()
     assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
 
 
 def test_projects_fingerprint_null_when_no_registry(tmp_path: Path):
     """No registry file → null fingerprint."""
-    tool_dir = tmp_path / "nope"
-    assert projects_fingerprint(tool_dir) == {"mtime": None, "size": None}
+    assert projects_fingerprint() == {"mtime": None, "size": None}
 
 
 # --- arg parsing ---
@@ -1145,29 +1144,29 @@ def test_write_and_read_meta_json_round_trip(tmp_path: Path):
 
 
 def test_state_file_path(tmp_path: Path):
-    assert _state_file(tmp_path) == tmp_path / ".agent-launches" / "logs-server.json"
+    assert _state_file() == tmp_path / ".agent-launches" / "logs-server.json"
 
 
 def test_read_state_missing_returns_none(tmp_path: Path):
-    assert _read_state(tmp_path) is None
+    assert _read_state() is None
 
 
 def test_read_state_corrupt_returns_none(tmp_path: Path):
     (tmp_path / ".agent-launches").mkdir()
-    _state_file(tmp_path).write_text("not json {{{", encoding="utf-8")
-    assert _read_state(tmp_path) is None
+    _state_file().write_text("not json {{{", encoding="utf-8")
+    assert _read_state() is None
 
 
 def test_read_state_rejects_wrong_shape(tmp_path: Path):
     (tmp_path / ".agent-launches").mkdir()
     # Missing/wrong-typed pid and port must be rejected.
-    _state_file(tmp_path).write_text(json.dumps({"pid": "x", "port": 8765}), encoding="utf-8")
-    assert _read_state(tmp_path) is None
+    _state_file().write_text(json.dumps({"pid": "x", "port": 8765}), encoding="utf-8")
+    assert _read_state() is None
 
 
 def test_write_then_read_state_round_trip(tmp_path: Path):
-    _write_state(tmp_path, pid=4242, port=8765)
-    state = _read_state(tmp_path)
+    _write_state(pid=4242, port=8765)
+    state = _read_state()
     assert state == {"pid": 4242, "port": 8765}
 
 
@@ -1193,21 +1192,21 @@ def test_pid_alive_true_for_permission_error(monkeypatch):
 
 
 def test_running_server_returns_state_when_alive(tmp_path: Path, monkeypatch):
-    _write_state(tmp_path, pid=4242, port=9001)
+    _write_state(pid=4242, port=9001)
     monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: True)
-    state = _running_server(tmp_path)
+    state = _running_server()
     assert state == {"pid": 4242, "port": 9001}
 
 
 def test_running_server_removes_stale_file_when_dead(tmp_path: Path, monkeypatch):
-    _write_state(tmp_path, pid=4242, port=9001)
+    _write_state(pid=4242, port=9001)
     monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: False)
-    assert _running_server(tmp_path) is None
-    assert not _state_file(tmp_path).exists()
+    assert _running_server() is None
+    assert not _state_file().exists()
 
 
 def test_running_server_none_when_no_file(tmp_path: Path):
-    assert _running_server(tmp_path) is None
+    assert _running_server() is None
 
 
 # --- background server: run() dispatch -------------------------------------
@@ -1216,84 +1215,84 @@ def test_running_server_none_when_no_file(tmp_path: Path):
 def test_run_stop_dispatches_to_stop(tmp_path: Path, monkeypatch):
     called = {}
 
-    def _fake_stop(td):
-        called["stop"] = td
+    def _fake_stop():
+        called["stop"] = True
         return 0
 
     monkeypatch.setattr(logs_mod, "_stop", _fake_stop)
-    assert run(["--stop"], tmp_path) == 0
-    assert called["stop"] == tmp_path
+    assert run(["--stop"]) == 0
+    assert called["stop"] is True
 
 
-def test_run_stop_rejects_extra_args(tmp_path: Path):
-    assert run(["--stop", "--port", "9000"], tmp_path) == 1
+def test_run_stop_rejects_extra_args(tmp_path: Path, monkeypatch):
+    assert run(["--stop", "--port", "9000"]) == 1
 
 
 def test_run_foreground_dispatches_to_serve_foreground(tmp_path: Path, monkeypatch):
     called = {}
 
-    def _fake_fg(td, port):
-        called["fg"] = (td, port)
+    def _fake_fg(port):
+        called["fg"] = port
         return 0
 
     monkeypatch.setattr(logs_mod, "_serve_foreground", _fake_fg)
-    assert run(["--foreground", "--port", "9000"], tmp_path) == 0
-    assert called["fg"] == (tmp_path, 9000)
+    assert run(["--foreground", "--port", "9000"]) == 0
+    assert called["fg"] == 9000
 
 
 def test_run_already_running_prints_connect_line_and_skips_spawn(
     tmp_path: Path, monkeypatch, capsys
 ):
-    monkeypatch.setattr(logs_mod, "_running_server", lambda td: {"pid": 1, "port": 9123})
+    monkeypatch.setattr(logs_mod, "_running_server", lambda: {"pid": 1, "port": 9123})
     spawned = {}
 
-    def _fake_spawn(td, port):
+    def _fake_spawn(port):
         spawned["x"] = 1
         return 0
 
     monkeypatch.setattr(logs_mod, "_spawn_background", _fake_spawn)
-    assert run(["--port", "8765"], tmp_path) == 0
+    assert run(["--port", "8765"]) == 0
     assert "x" not in spawned
     out = capsys.readouterr().out
     assert out.strip() == "LiteLLM log viewer running at http://127.0.0.1:9123"
 
 
 def test_run_spawns_when_not_running(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(logs_mod, "_running_server", lambda td: None)
+    monkeypatch.setattr(logs_mod, "_running_server", lambda: None)
     called = {}
 
-    def _fake_spawn(td, port):
-        called["spawn"] = (td, port)
+    def _fake_spawn(port):
+        called["spawn"] = port
         return 0
 
     monkeypatch.setattr(logs_mod, "_spawn_background", _fake_spawn)
-    assert run(["--port", "9000"], tmp_path) == 0
-    assert called["spawn"] == (tmp_path, 9000)
+    assert run(["--port", "9000"]) == 0
+    assert called["spawn"] == 9000
 
 
-def test_run_help_returns_zero(tmp_path: Path):
-    assert run(["-h"], tmp_path) == 0
+def test_run_help_returns_zero(tmp_path: Path, monkeypatch):
+    assert run(["-h"]) == 0
 
 
 # --- background server: _stop ----------------------------------------------
 
 
 def test_stop_when_not_running(tmp_path: Path, monkeypatch, capsys):
-    monkeypatch.setattr(logs_mod, "_running_server", lambda td: None)
-    assert _stop(tmp_path) == 0
+    monkeypatch.setattr(logs_mod, "_running_server", lambda: None)
+    assert _stop() == 0
     assert "no viewer is running" in capsys.readouterr().out
 
 
 def test_stop_sends_sigterm_and_removes_state(tmp_path: Path, monkeypatch, capsys):
-    _write_state(tmp_path, pid=4242, port=9001)
-    monkeypatch.setattr(logs_mod, "_running_server", lambda td: {"pid": 4242, "port": 9001})
+    _write_state(pid=4242, port=9001)
+    monkeypatch.setattr(logs_mod, "_running_server", lambda: {"pid": 4242, "port": 9001})
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(logs_mod.os, "kill", lambda pid, sig: signals.append((pid, sig)))
     # Report the PID as dead immediately so _stop doesn't spin on the wait loop.
     monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: False)
-    assert _stop(tmp_path) == 0
+    assert _stop() == 0
     assert (4242, logs_mod.signal.SIGTERM) in signals
-    assert not _state_file(tmp_path).exists()
+    assert not _state_file().exists()
     assert "viewer stopped" in capsys.readouterr().out
 
 

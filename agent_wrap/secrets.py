@@ -25,9 +25,13 @@ import functools
 import getpass
 import json
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
+from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.lib.atomic import atomic_write_json
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Exception
@@ -199,12 +203,9 @@ def _keyring_available() -> bool:
 # JSON fallback
 # ---------------------------------------------------------------------------
 
-_TOOL_DIR = Path(__file__).resolve().parents[1]
-_FALLBACK_DIR = _TOOL_DIR / ".agent-launches"
-
 
 def _fallback_path() -> Path:
-    return _FALLBACK_DIR / "secrets.json"
+    return AGENT_LAUNCHES_DIR / "secrets.json"
 
 
 def _fallback_get(key: str) -> str | None:

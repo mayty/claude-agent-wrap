@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from agent_wrap.constants import AGENT_LAUNCHES_DIR, GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
 from agent_wrap.lib.utils import project_path_hash
 
@@ -102,18 +103,17 @@ def ensure_telegram_hooks(settings_path: Path) -> None:
     atomic_write_json(settings_path, data)
 
 
-def ensure_claude_md(config_dir: Path, template_path: Path) -> None:
+def ensure_claude_md() -> None:
     """Copy default-CLAUDE.md to the global config dir if not already present."""
-    target = config_dir / ".claude" / "CLAUDE.md"
+    template_path = OPS_DIR / "default-CLAUDE.md"
+    target = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
     if not target.exists() and template_path.exists():
         shutil.copy2(template_path, target)
 
 
 def prepare_global_config(
-    global_config_dir: Path,
-    tool_dir: Path,
-    telegram_bot_token: str = "",
-    telegram_chat_id: str = "",
+    *,
+    telegram_available: bool = False,
 ) -> None:
     """
     Prepare the global config directory for agent launch.
@@ -121,6 +121,7 @@ def prepare_global_config(
     Creates the directory structure, secures config files, injects
     statusline and telegram hooks, and copies default-CLAUDE.md.
     """
+    global_config_dir = GLOBAL_CONFIG_DIR
     claude_dir = global_config_dir / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
@@ -138,10 +139,10 @@ def prepare_global_config(
     settings_path = claude_dir / "settings.json"
     ensure_statusline(settings_path)
 
-    if telegram_bot_token and telegram_chat_id:
+    if telegram_available:
         ensure_telegram_hooks(settings_path)
 
-    ensure_claude_md(global_config_dir, tool_dir / "ops" / "default-CLAUDE.md")
+    ensure_claude_md()
 
     # Pre-create projects dir so Docker doesn't create it as root
     (claude_dir / "projects" / "-workspace").mkdir(parents=True, exist_ok=True)
@@ -172,7 +173,7 @@ def prepare_project_dirs(
         gitignore.write_text("*\n")
 
 
-def link_litellm_logs(project_dir: Path, tool_dir: Path) -> None:
+def link_litellm_logs(project_dir: Path) -> None:
     """
     Point ``project_dir/.claude/litellm-logs`` at the shared per-project subtree.
 
@@ -191,7 +192,7 @@ def link_litellm_logs(project_dir: Path, tool_dir: Path) -> None:
     Best-effort: any OSError is swallowed so logging never blocks a launch.
     """
     try:
-        target = tool_dir / "litellm-logs" / project_path_hash(project_dir)
+        target = TOOL_DIR / "litellm-logs" / project_path_hash(project_dir)
         target.mkdir(parents=True, exist_ok=True)
 
         link = project_dir / ".claude" / "litellm-logs"
@@ -235,7 +236,7 @@ def _current_project_path() -> str:
     return str(cwd)
 
 
-def record_project(tool_dir: Path) -> None:
+def record_project() -> None:
     """
     Record cwd in the project registry, deduping aliases and keeping it sorted.
 
@@ -246,7 +247,7 @@ def record_project(tool_dir: Path) -> None:
     Failures are non-fatal — the agent launch must not depend on this.
     """
     try:
-        launches_dir = tool_dir / ".agent-launches"
+        launches_dir = AGENT_LAUNCHES_DIR
         launches_dir.mkdir(parents=True, exist_ok=True)
         projects_file = launches_dir / "projects.txt"
 

@@ -35,7 +35,7 @@ def test_secret_not_found_error_repr() -> None:
 
 
 def _set_fallback_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("agent_wrap.secrets._FALLBACK_DIR", tmp_path)
+    monkeypatch.setattr("agent_wrap.secrets.AGENT_LAUNCHES_DIR", tmp_path)
 
 
 def test_fallback_get_missing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

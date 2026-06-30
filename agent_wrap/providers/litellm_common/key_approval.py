@@ -23,29 +23,25 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from agent_wrap.lib.atomic import atomic_write_json
-
 if TYPE_CHECKING:
     from pathlib import Path
+
+from agent_wrap.constants import GLOBAL_CONFIG_DIR
+from agent_wrap.lib.atomic import atomic_write_json
 
 
 class MasterKeyApprovalMixin:
     """Approve/un-approve the sidecar master key in the global ``.claude.json``."""
-
-    if TYPE_CHECKING:
-        # Provided by the LiteLLMProvider this is mixed into. Declared for the type
-        # checker only — defining it at runtime would shadow the real method via MRO
-        # (the mixin precedes LiteLLMProvider in subclasses' bases).
-        def _tool_dir(self) -> Path: ...
 
     @staticmethod
     def _api_key_approval_id(key: str) -> str:
         """Return the identifier Claude Code uses to track key approval (last 20 chars)."""
         return key[-20:]
 
-    def _claude_json_path(self) -> Path:
+    @staticmethod
+    def _claude_json_path() -> Path:
         """Resolve the global .claude.json file path."""
-        return self._tool_dir() / ".claude_config" / ".claude.json"
+        return GLOBAL_CONFIG_DIR / ".claude.json"
 
     def _load_claude_json(self) -> dict[str, Any] | None:
         """Load .claude.json, returning {} if missing/empty or None on malformed JSON."""

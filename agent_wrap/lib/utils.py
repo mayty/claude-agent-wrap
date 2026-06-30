@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent_wrap.constants import BASE_IMAGE_NAME, OPS_DIR, TOOL_DIR
+
 
 def sanitize_name(name: str) -> str:
     """
@@ -112,12 +114,11 @@ class ResolvedImage:
     context: Path
 
 
-def resolve_image(tool_dir: Path, *, use_base: bool = False) -> ResolvedImage:
+def resolve_image(*, use_base: bool = False) -> ResolvedImage:
     """
     Determine which Docker image to use, its Dockerfile, and build context.
 
     Args:
-        tool_dir: Path to the agent-wrap tool directory.
         use_base: If True, always use the base claude-agent image.
 
     Returns:
@@ -156,7 +157,7 @@ def resolve_image(tool_dir: Path, *, use_base: bool = False) -> ResolvedImage:
 
     # Default: use base claude-agent image
     return ResolvedImage(
-        image="claude-agent",
-        dockerfile=tool_dir / "ops" / "Dockerfile",
-        context=tool_dir,
+        image=BASE_IMAGE_NAME,
+        dockerfile=OPS_DIR / "Dockerfile",
+        context=TOOL_DIR,
     )

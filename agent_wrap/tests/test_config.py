@@ -138,41 +138,37 @@ def test_telegram_hooks_skips_malformed_json(tmp_path: Path):
 
 
 def test_ensure_claude_md_copies_when_missing(tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    (config_dir / ".claude").mkdir()  # ensure_claude_md expects this to exist
-    template = tmp_path / "default-CLAUDE.md"
-    template.write_text("# hello")
-    ensure_claude_md(config_dir, template)
-    target = config_dir / ".claude" / "CLAUDE.md"
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "ops").mkdir()
+    (tmp_path / "ops" / "default-CLAUDE.md").write_text("# hello")
+    ensure_claude_md()
+    target = tmp_path / ".claude" / "CLAUDE.md"
     assert target.exists()
     assert target.read_text() == "# hello"
 
 
 def test_ensure_claude_md_skips_when_exists(tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    target_dir = config_dir / ".claude"
+    target_dir = tmp_path / ".claude"
     target_dir.mkdir(parents=True)
     target = target_dir / "CLAUDE.md"
     target.write_text("# user content")
-    template = tmp_path / "default-CLAUDE.md"
-    template.write_text("# default")
-    ensure_claude_md(config_dir, template)
+    (tmp_path / "ops").mkdir()
+    (tmp_path / "ops" / "default-CLAUDE.md").write_text("# default")
+    ensure_claude_md()
     assert target.read_text() == "# user content"
 
 
 def test_ensure_claude_md_skips_when_no_template(tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    ensure_claude_md(config_dir, tmp_path / "nonexistent-CLAUDE.md")
-    assert not (config_dir / ".claude" / "CLAUDE.md").exists()
+    (tmp_path / ".claude").mkdir()
+    ensure_claude_md()
+    assert not (tmp_path / ".claude" / "CLAUDE.md").exists()
 
 
 # --- prepare_global_config ---
 
 
 def test_prepare_global_config_creates_structure(tmp_path: Path) -> None:
-    prepare_global_config(tmp_path, tmp_path)
+    prepare_global_config(telegram_available=False)
     assert (tmp_path / ".claude.json").exists()
     assert (tmp_path / ".claude" / "settings.json").exists()
     assert (tmp_path / ".claude" / "projects" / "-workspace").exists()
@@ -181,7 +177,7 @@ def test_prepare_global_config_creates_structure(tmp_path: Path) -> None:
 def test_prepare_global_config_seeds_valid_json(tmp_path: Path) -> None:
     # Claude Code aborts on startup if .claude.json is empty/invalid, so the
     # seeded files must be parseable JSON, not zero-byte touch() output.
-    prepare_global_config(tmp_path, tmp_path)
+    prepare_global_config(telegram_available=False)
     assert json.loads((tmp_path / ".claude.json").read_text()) == {}
 
 
@@ -190,26 +186,26 @@ def test_prepare_global_config_repairs_empty_claude_json(tmp_path: Path) -> None
     # touch()ed it) must be repaired, not left to crash Claude Code.
     empty = tmp_path / ".claude.json"
     empty.touch()
-    prepare_global_config(tmp_path, tmp_path)
+    prepare_global_config(telegram_available=False)
     assert json.loads(empty.read_text()) == {}
 
 
 def test_prepare_global_config_preserves_existing_claude_json(tmp_path: Path) -> None:
     existing = tmp_path / ".claude.json"
     existing.write_text('{"foo": "bar"}\n')
-    prepare_global_config(tmp_path, tmp_path)
+    prepare_global_config(telegram_available=False)
     assert json.loads(existing.read_text()) == {"foo": "bar"}
 
 
 def test_prepare_global_config_with_telegram(tmp_path: Path) -> None:
-    prepare_global_config(tmp_path, tmp_path, telegram_bot_token="abc", telegram_chat_id="123")  # noqa: S106
+    prepare_global_config(telegram_available=True)
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert "hooks" in settings
     assert "PermissionRequest" in settings["hooks"]
 
 
 def test_prepare_global_config_without_telegram(tmp_path: Path) -> None:
-    prepare_global_config(tmp_path, tmp_path)
+    prepare_global_config(telegram_available=False)
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert "hooks" not in settings
 
@@ -253,7 +249,7 @@ def test_prepare_project_dirs_idempotent(tmp_path: Path) -> None:
 
 def test_record_project_appends_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    record_project(tmp_path)
+    record_project()
     projects_file = tmp_path / ".agent-launches" / "projects.txt"
     assert projects_file.exists()
     assert str(tmp_path) in projects_file.read_text()
@@ -261,8 +257,8 @@ def test_record_project_appends_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 def test_record_project_deduplicates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    record_project(tmp_path)
-    record_project(tmp_path)
+    record_project()
+    record_project()
     projects_file = tmp_path / ".agent-launches" / "projects.txt"
     lines = projects_file.read_text().splitlines()
     assert lines.count(str(tmp_path)) == 1
@@ -278,7 +274,7 @@ def test_record_project_uses_pwd_env_when_consistent(
 
     monkeypatch.chdir(link)
     monkeypatch.setenv("PWD", str(link))
-    record_project(tmp_path)
+    record_project()
 
     lines = (tmp_path / ".agent-launches" / "projects.txt").read_text().splitlines()
     assert str(link) in lines
@@ -300,7 +296,7 @@ def test_record_project_replaces_alias_pointing_to_same_target(
 
     monkeypatch.chdir(link)
     monkeypatch.setenv("PWD", str(link))
-    record_project(tmp_path)
+    record_project()
 
     lines = projects_file.read_text().splitlines()
     assert lines == [str(link)]
@@ -316,7 +312,7 @@ def test_record_project_keeps_file_sorted(tmp_path: Path, monkeypatch: pytest.Mo
     extra.mkdir()
     monkeypatch.chdir(extra)
     monkeypatch.delenv("PWD", raising=False)
-    record_project(tmp_path)
+    record_project()
 
     lines = projects_file.read_text().splitlines()
     assert lines == sorted(lines)
@@ -328,14 +324,12 @@ def test_record_project_keeps_file_sorted(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_link_litellm_logs_creates_symlink(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    tool = tmp_path / "tool"
     (project / ".claude").mkdir(parents=True)
-    tool.mkdir()
 
-    link_litellm_logs(project, tool)
+    link_litellm_logs(project)
 
     link = project / ".claude" / "litellm-logs"
-    target = tool / "litellm-logs" / project_path_hash(project)
+    target = tmp_path / "litellm-logs" / project_path_hash(project)
     assert link.is_symlink()
     assert link.resolve() == target.resolve()
     assert target.is_dir()
@@ -343,33 +337,29 @@ def test_link_litellm_logs_creates_symlink(tmp_path: Path) -> None:
 
 def test_link_litellm_logs_idempotent(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    tool = tmp_path / "tool"
     (project / ".claude").mkdir(parents=True)
-    tool.mkdir()
 
-    link_litellm_logs(project, tool)
-    link_litellm_logs(project, tool)  # second call must not raise or change state
+    link_litellm_logs(project)
+    link_litellm_logs(project)  # second call must not raise or change state
 
     link = project / ".claude" / "litellm-logs"
-    target = tool / "litellm-logs" / project_path_hash(project)
+    target = tmp_path / "litellm-logs" / project_path_hash(project)
     assert link.is_symlink()
     assert link.resolve() == target.resolve()
 
 
 def test_link_litellm_logs_repoints_stale_symlink(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    tool = tmp_path / "tool"
     (project / ".claude").mkdir(parents=True)
-    tool.mkdir()
 
     bogus = tmp_path / "bogus"
     bogus.mkdir()
     link = project / ".claude" / "litellm-logs"
     link.symlink_to(bogus)
 
-    link_litellm_logs(project, tool)
+    link_litellm_logs(project)
 
-    target = tool / "litellm-logs" / project_path_hash(project)
+    target = tmp_path / "litellm-logs" / project_path_hash(project)
     assert link.is_symlink()
     assert link.resolve() == target.resolve()
 
@@ -378,35 +368,31 @@ def test_link_litellm_logs_backs_up_real_directory(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
     project = tmp_path / "project"
-    tool = tmp_path / "tool"
     old = project / ".claude" / "litellm-logs"
     old.mkdir(parents=True)
     (old / "litellm-bedrock").mkdir()
     (old / "litellm-bedrock" / "keep.txt").write_text("old data")
-    tool.mkdir()
 
-    link_litellm_logs(project, tool)
+    link_litellm_logs(project)
 
     link = project / ".claude" / "litellm-logs"
     bkp = project / ".claude" / "litellm-logs-bkp"
     # Old data preserved in the backup, link now points at the shared target.
     assert (bkp / "litellm-bedrock" / "keep.txt").read_text() == "old data"
     assert link.is_symlink()
-    assert link.resolve() == (tool / "litellm-logs" / project_path_hash(project)).resolve()
+    assert link.resolve() == (tmp_path / "litellm-logs" / project_path_hash(project)).resolve()
     assert "backed up" in capsys.readouterr().err
 
 
 def test_link_litellm_logs_backup_suffix_on_collision(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    tool = tmp_path / "tool"
     old = project / ".claude" / "litellm-logs"
     old.mkdir(parents=True)
     (old / "marker.txt").write_text("data")
     # A previous backup already occupies the default name.
     (project / ".claude" / "litellm-logs-bkp").mkdir()
-    tool.mkdir()
 
-    link_litellm_logs(project, tool)
+    link_litellm_logs(project)
 
     # The new backup gets a numeric suffix rather than clobbering the old one.
     assert (project / ".claude" / "litellm-logs-bkp-2" / "marker.txt").read_text() == "data"

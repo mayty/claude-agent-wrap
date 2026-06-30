@@ -4,13 +4,9 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
 
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.providers import get_provider
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 USAGE = "<sidecar> check|set"
 SUMMARY = "Check or initialize sidecar secrets"
@@ -47,7 +43,7 @@ def _get_required_secrets(sidecar_name: str) -> list[tuple[str, str]]:
     return provider.required_secrets()
 
 
-def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001
+def run(args: list[str]) -> int:
     """Entry point for ``agent secrets``."""
     parser = make_parser(
         "secrets",
