@@ -471,8 +471,42 @@ def test_ensure_health_fail_raises(mocker: pytest_mock.MockFixture) -> None:
     logs_calls = [c for c in mock_docker.call_args_list if "logs" in c.args[:1]]
     assert len(logs_calls) == 1
     assert logs_calls[0].kwargs.get("capture") is False
+    # Teardown is graceful stop-then-remove (no SIGKILL): a `stop` and a plain
+    # `rm` (no -f) so the sidecar's in-container cleanup stage runs.
+    stop_calls = [c for c in mock_docker.call_args_list if "stop" in c.args[:1]]
     rm_calls = [c for c in mock_docker.call_args_list if "rm" in c.args[:1]]
+    assert len(stop_calls) == 1
     assert len(rm_calls) == 1
+    assert "-f" not in rm_calls[0].args
+
+
+def test_ensure_health_fail_reaps_even_if_log_stream_raises(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    sc = _sidecar()
+    mocker.patch.object(sc, "_ensure_network")
+    mocker.patch.object(sc, "_is_running", return_value=False)
+    mocker.patch.object(sc, "_start")
+    mocker.patch.object(sc, "_health_poll", return_value=False)
+
+    # Streaming the logs writes to a closed stderr/pipe and raises. Teardown must
+    # still run (it's in a `finally`); the launch aborts with the raised error
+    # rather than the trailing SystemExit, which is fine — either way it aborts.
+    def docker_side_effect(*args: str, **_kwargs: object) -> tuple[str, int]:
+        if args[:1] == ("logs",):
+            raise BrokenPipeError
+        return "", 0
+
+    mock_docker = mocker.patch(_DOCKER, side_effect=docker_side_effect)
+
+    with pytest.raises(BrokenPipeError):
+        sc.ensure(use_host_net=False, agent_network=None)
+
+    stop_calls = [c for c in mock_docker.call_args_list if "stop" in c.args[:1]]
+    rm_calls = [c for c in mock_docker.call_args_list if "rm" in c.args[:1]]
+    assert len(stop_calls) == 1
+    assert len(rm_calls) == 1
+    assert rm_calls[0].args == ("rm", "agent-wrap-telegram")
 
 
 def test_ensure_with_custom_agent_network(mocker: pytest_mock.MockFixture) -> None:
@@ -508,12 +542,23 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
     sc._auth_token = "tok-rel"
     mocker.patch.object(sc, "_is_running", return_value=True)
     mock_unreg = mocker.patch.object(sc, "_unregister")
-    mock_spin = mocker.patch("agent_wrap.sidecars.telegram._SPINNER.spin_while")
+    # Run the work lambda inline so we observe the actual docker call: teardown
+    # must `rm -f` (the container has no --rm), not merely `stop`.
+    mock_spin = mocker.patch(
+        "agent_wrap.sidecars.telegram._SPINNER.spin_while",
+        side_effect=lambda *, message, done_message, work: work(),
+    )
+    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
 
     sc.release()
 
     mock_unreg.assert_not_called()
     mock_spin.assert_called_once()
+    # Graceful teardown: stop (SIGTERM) then plain rm (no -f/SIGKILL), in order.
+    assert [c.args for c in mock_docker.call_args_list] == [
+        ("stop", "agent-wrap-telegram"),
+        ("rm", "agent-wrap-telegram"),
+    ]
 
 
 def test_release_skips_when_not_running(mocker: pytest_mock.MockFixture) -> None:
