@@ -138,7 +138,17 @@ class TelegramSidecar(Sidecar):
                     "telegram-sidecar: health check failed; recent logs:",
                     file=sys.stderr,
                 )
-                docker_run("logs", "--tail", "50", self.config.container_name)
+                try:
+                    # Stream the container's stdout+stderr straight through
+                    # (capture=False): a startup crash writes its traceback to
+                    # stderr, which a captured-stdout return value would drop.
+                    docker_run("logs", "--tail", "50", self.config.container_name, capture=False)
+                finally:
+                    # Always tear down — the container is started without --rm
+                    # (see _start) so its logs survive an early exit, but it must
+                    # not outlive this failed launch even if streaming the logs
+                    # above raised (e.g. BrokenPipeError on a closed pipe).
+                    self._stop_and_remove()
                 raise SystemExit(1)
 
         self._auth_token = self._register()
@@ -159,18 +169,34 @@ class TelegramSidecar(Sidecar):
 
     def release(self) -> None:
         """
-        Stop the sidecar container.
+        Gracefully stop and remove the sidecar container.
 
         Runs under the runner's shared lock, only after its ``SidecarTracker``
         decided the run may stop. Idempotent — a no-op when the container is
-        not running.
+        not running. Removal is needed because the container is started without
+        ``--rm`` (so a crash leaves logs to surface), and a successful run must
+        not leave a stopped corpse behind.
         """
         if self._is_running():
             _SPINNER.spin_while(
                 message="stopping…",
                 done_message="stopped",
-                work=lambda: docker_run("stop", self.config.container_name),
+                work=self._stop_and_remove,
             )
+
+    def _stop_and_remove(self) -> None:
+        """
+        Gracefully stop, then remove, the sidecar container.
+
+        ``stop`` (SIGTERM + grace period, not ``rm -f``/SIGKILL) so the sidecar's
+        in-container cleanup stage runs. The container is started without ``--rm``
+        (so a crash leaves logs to surface), so removal is explicit; the ``rm`` is
+        plain (no ``-f``) and succeeds because ``stop`` has left the container
+        exited. ``stop`` on an already-exited container is a quick no-op, so this
+        is safe on both the health-failure path (crash corpse) and normal teardown.
+        """
+        docker_run("stop", self.config.container_name)
+        docker_run("rm", self.config.container_name)
 
     # --- Internal: network ---
 
@@ -240,7 +266,10 @@ class TelegramSidecar(Sidecar):
         cmd = [
             "run",
             "-d",
-            "--rm",
+            # No --rm: a process that dies during startup (e.g. an unwritable
+            # LOG_LOCATION mount) would otherwise be auto-removed before the
+            # health poll can surface its logs. The stopped container is reaped
+            # by the next _start (above) or by the health-failure path.
             "--name",
             self.config.container_name,
             "--network",

@@ -76,9 +76,18 @@ def image_exists(image: str) -> bool:
 
 
 def get_user_args() -> list[str]:
-    """Get --user flags for docker run if not running rootless."""
+    """
+    Get --user flags for docker run.
+
+    Rootful: pin the container to the host UID/GID so bind-mounted files are
+    host-user-owned. Rootless: pin to 0:0 — rootless maps container-root to the
+    host user, so this both writes mounts correctly AND overrides any non-root
+    USER baked into an image (e.g. the Telegram sidecar), which would otherwise
+    map to an unprivileged subuid that cannot write host-owned mounts. The agent
+    base image declares no USER, so 0:0 matches its existing rootless behavior.
+    """
     if is_rootless():
-        return []
+        return ["--user", "0:0"]
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
 

@@ -293,9 +293,15 @@ def test_ensure_health_fail_raises(tmp_path: Path, mocker: pytest_mock.MockFixtu
     mocker.patch.object(sc, "_generate_master_key", return_value="sk-test-new")
     mocker.patch.object(sc, "_start")
     mocker.patch.object(sc, "_health_poll", return_value=False)
-    mocker.patch(_DOCKER, return_value=("", 0))
+    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     with pytest.raises(SystemExit):
         sc.ensure(use_host_net=False, agent_network=None)
+
+    # Logs must stream straight through (capture=False) so a startup traceback
+    # on the container's stderr reaches the user instead of being swallowed.
+    logs_calls = [c for c in mock_docker.call_args_list if "logs" in c.args[:1]]
+    assert len(logs_calls) == 1
+    assert logs_calls[0].kwargs.get("capture") is False
 
 
 def test_ensure_bridge_not_supported(tmp_path: Path) -> None:

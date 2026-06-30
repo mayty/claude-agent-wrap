@@ -116,9 +116,13 @@ def test_image_exists_file_not_found(mocker: pytest_mock.MockFixture) -> None:
 # --- get_user_args ---
 
 
-def test_user_args_empty_when_rootless(mocker: pytest_mock.MockFixture) -> None:
+def test_user_args_root_when_rootless(mocker: pytest_mock.MockFixture) -> None:
+    # Rootless maps container-root to the host user, so pin to 0:0: this writes
+    # bind mounts as the host user AND overrides any non-root USER baked into an
+    # image (e.g. the Telegram sidecar) that would otherwise map to an
+    # unprivileged subuid unable to write host-owned mounts.
     mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=True)
-    assert get_user_args() == []
+    assert get_user_args() == ["--user", "0:0"]
 
 
 def test_user_args_returns_uid_gid_when_not_rootless(mocker: pytest_mock.MockFixture) -> None:
