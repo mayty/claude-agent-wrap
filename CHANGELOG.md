@@ -5,7 +5,7 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.7.0](releases/0.7.0.md) — 2026-06-17
+## [0.7.0](releases/0.7.0.md) — 2026-06-30
 
 Adds a Telegram decision sidecar so you can approve or deny Claude's tool-permission
 prompts from your phone — Allow/Deny buttons right in the chat. Surfaces previously
