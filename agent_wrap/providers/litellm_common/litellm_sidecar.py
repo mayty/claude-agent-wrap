@@ -182,7 +182,12 @@ class LiteLLMSidecar(Sidecar):
                 # needs the container present to recover the key for un-approval. A
                 # later cold start's _start() reaps it via `rm -f`.
                 print("litellm-sidecar: health check failed; recent logs:", file=sys.stderr)
-                docker_run("logs", "--tail", "50", self.container_name)
+                # Stream stdout+stderr through (capture=False): the failure mode
+                # here is usually unhealthy-but-alive (config error, proxy still
+                # running), so the container — and its logs — are still present.
+                # capture=False also lets a stderr traceback through, which a
+                # captured-stdout return value would have dropped.
+                docker_run("logs", "--tail", "50", self.container_name, capture=False)
                 raise SystemExit(1)
 
         return sidecar_mode

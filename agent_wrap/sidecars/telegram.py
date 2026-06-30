@@ -138,7 +138,13 @@ class TelegramSidecar(Sidecar):
                     "telegram-sidecar: health check failed; recent logs:",
                     file=sys.stderr,
                 )
-                docker_run("logs", "--tail", "50", self.config.container_name)
+                # Stream the container's stdout+stderr straight through
+                # (capture=False): a startup crash writes its traceback to
+                # stderr, which a captured-stdout return value would drop. The
+                # container is started without --rm (see _start) precisely so
+                # its logs survive an early exit; reap the corpse once shown.
+                docker_run("logs", "--tail", "50", self.config.container_name, capture=False)
+                docker_run("rm", "-f", self.config.container_name)
                 raise SystemExit(1)
 
         self._auth_token = self._register()
@@ -240,7 +246,10 @@ class TelegramSidecar(Sidecar):
         cmd = [
             "run",
             "-d",
-            "--rm",
+            # No --rm: a process that dies during startup (e.g. an unwritable
+            # LOG_LOCATION mount) would otherwise be auto-removed before the
+            # health poll can surface its logs. The stopped container is reaped
+            # by the next _start (above) or by the health-failure path.
             "--name",
             self.config.container_name,
             "--network",

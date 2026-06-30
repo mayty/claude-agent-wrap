@@ -460,10 +460,19 @@ def test_ensure_health_fail_raises(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch.object(sc, "_is_running", return_value=False)
     mocker.patch.object(sc, "_start")
     mocker.patch.object(sc, "_health_poll", return_value=False)
-    mocker.patch(_DOCKER)  # for logs call
+    mock_docker = mocker.patch(_DOCKER)  # for logs + rm calls
 
     with pytest.raises(SystemExit):
         sc.ensure(use_host_net=False, agent_network=None)
+
+    # Logs must stream straight through (capture=False) so a startup
+    # traceback on the container's stderr reaches the user, and the stopped
+    # container (started without --rm) is reaped afterwards.
+    logs_calls = [c for c in mock_docker.call_args_list if "logs" in c.args[:1]]
+    assert len(logs_calls) == 1
+    assert logs_calls[0].kwargs.get("capture") is False
+    rm_calls = [c for c in mock_docker.call_args_list if "rm" in c.args[:1]]
+    assert len(rm_calls) == 1
 
 
 def test_ensure_with_custom_agent_network(mocker: pytest_mock.MockFixture) -> None:
