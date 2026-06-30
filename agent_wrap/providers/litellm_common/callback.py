@@ -458,9 +458,9 @@ try:
             self,
             user_api_key_dict,  # noqa: ARG002
             cache,  # noqa: ARG002
-            data: dict,
+            data: dict[str, Any],
             call_type: str,  # noqa: ARG002
-        ) -> dict:
+        ) -> dict[str, Any]:
             """Resolve provider-specific parameter conflicts before the upstream call."""
             return _resolve_thinking_reasoning_conflict(data)
 

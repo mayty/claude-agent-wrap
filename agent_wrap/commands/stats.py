@@ -23,7 +23,7 @@ from agent_wrap.lib.format import (
 from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
 from agent_wrap.lib.models import normalize_model
 from agent_wrap.lib.render import range_label, render_core
-from agent_wrap.lib.table import compute_shared_widths, render_table
+from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
 from agent_wrap.lib.tree import (
     DisplayRow,
     build_project_tree,
@@ -87,7 +87,7 @@ def _collect_cache_ttls(node: Any, out: set[str]) -> None:
             _collect_cache_ttls(item, out)
 
 
-def request_cache_ttl(request: dict | None) -> str | None:
+def request_cache_ttl(request: dict[str, Any] | None) -> str | None:
     """
     Determine the cache-write TTL tier a request asked for from its markers.
 
@@ -222,7 +222,7 @@ class PriceSource:
         self,
         provider: str,
         model: str,
-        raw_response: dict | None,
+        raw_response: dict[str, Any] | None,
         request_ttl: str | None = None,
     ) -> float | None:
         """
@@ -241,7 +241,7 @@ class PriceSource:
         usage = extract_usage(raw_response, request_ttl)
         return _cost_for_tiers(tiers, usage)
 
-    def _fetch(self, provider: str) -> dict[str, list[dict]]:
+    def _fetch(self, provider: str) -> dict[str, list[dict[str, float]]]:
         """Build the unified tiered table for one provider (fetched once)."""
         try:
             p = get_provider(provider)
@@ -250,7 +250,7 @@ class PriceSource:
         except Exception:  # noqa: BLE001
             return {}
 
-        table: dict[str, list[dict]] = {}
+        table: dict[str, list[dict[str, float]]] = {}
         # Flat rates first, recast as a single infinite tier...
         for model_key, rates in (flat or {}).items():
             table[model_key] = [
@@ -406,7 +406,7 @@ def _model_display_rows(totals_by_model: dict[str, Bucket]) -> list[DisplayRow]:
     return flatten_tree(build_project_tree(rows))
 
 
-def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int) -> list:
+def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int) -> list[RowItem]:
     """
     Build the per-model breakdown body rows (provider/model tree).
 
@@ -414,7 +414,7 @@ def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int
     LAST LAUNCH columns in the Total table (2) versus the Recent table (0).
     """
     blanks = [""] * leading_blanks
-    body: list = []
+    body: list[RowItem] = []
     for dr in _model_display_rows(totals_by_model):
         style = Ansi.DIM if dr.is_structural else Ansi.NONE
         body.append(
@@ -437,7 +437,7 @@ def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int
 
 
 def _cost_record(  # noqa: PLR0913
-    rec: dict,
+    rec: dict[str, Any],
     provider_name: str,
     prices: PriceSource,
     by_day: dict[str, dict[str, Bucket]],
@@ -510,7 +510,7 @@ def _cost_record(  # noqa: PLR0913
 _USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")
 
 
-def _usage_source(rec: dict) -> str:
+def _usage_source(rec: dict[str, Any]) -> str:
     """
     Classify how a success record's usage was obtained, for the verbose breakdown.
 
@@ -534,7 +534,7 @@ def _usage_source(rec: dict) -> str:
     return "unrecoverable"
 
 
-def _usage_unrecorded(rec: dict) -> bool:
+def _usage_unrecorded(rec: dict[str, Any]) -> bool:
     """
     Report whether a success record carries no usable usage to cost.
 
@@ -932,7 +932,7 @@ def _collect_orphaned(  # noqa: PLR0913
     from_iso: str | None = None,
     until_iso: str | None = None,
     scan_cache: ScanCache | None = None,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """
     Aggregate central log dirs not reachable from any registered project.
 
@@ -983,11 +983,11 @@ def _collect_orphaned(  # noqa: PLR0913
 
 
 def render(
-    rows: list[dict],
+    rows: list[dict[str, Any]],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     from_iso: str | None,
     until_iso: str | None,
-    orphaned: dict | None = None,
+    orphaned: dict[str, Any] | None = None,
 ) -> str:
     # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
     # `cost_unknown` flag (set when a billable request had no known price) is the
@@ -1032,7 +1032,7 @@ def render_source_breakdown(
     aligns = ["<", ">", ">", ">", ">", ">", ">"]
     div = "__div__"
 
-    def _row(label: str, b: Bucket, style: Ansi) -> tuple:
+    def _row(label: str, b: Bucket, style: Ansi) -> RowItem:
         return (
             [
                 label,
@@ -1047,7 +1047,7 @@ def render_source_breakdown(
             0,
         )
 
-    body: list = []
+    body: list[RowItem] = []
     total = Bucket()
     for source in _USAGE_SOURCES:
         b = merged.get(source)
@@ -1064,9 +1064,9 @@ def render_source_breakdown(
     body.append(div)
     body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
 
-    shared_widths = compute_shared_widths([(headers, body, 1)], 6, div)
+    shared_widths = compute_shared_widths([(headers, body, 1)], 6)
     title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
-    return "\n".join(render_table(title, headers, aligns, body, 1, shared_widths, div))
+    return "\n".join(render_table(title, headers, aligns, body, 1, shared_widths))
 
 
 _USAGE_TEXT = (

@@ -22,7 +22,7 @@ import sys
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.spinner import PollResult, Spinner
@@ -270,7 +270,7 @@ class LiteLLMSidecar(Sidecar):
         uid = generate_uuid()
         return f"{self.config.master_key_prefix}{uid.replace('-', '')}"
 
-    def _load_secrets(self) -> dict:
+    def _load_secrets(self) -> dict[str, Any]:
         secrets_path = Path.home() / "claude_keys.json"
         if not secrets_path.exists():
             msg = f"litellm-sidecar: {secrets_path} not found"

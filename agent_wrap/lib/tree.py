@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.format import fmt_cost, fmt_cost_with_unknown
@@ -39,7 +39,7 @@ class Node:
     def __init__(self, name: str) -> None:
         self.name = name
         self.children: dict[str, Node] = {}
-        self.row: dict | None = None
+        self.row: dict[str, Any] | None = None
         self.subtree_bucket = Bucket()
         self.subtree_known_cost = 0.0
         self.subtree_unknown = False
@@ -82,7 +82,7 @@ class DisplayRow:
         self.transient = transient
 
 
-def build_project_tree(rows: list[dict]) -> Node:
+def build_project_tree(rows: list[dict[str, Any]]) -> Node:
     """
     Build a path trie over `rows`, then compress single-child structural
     chains and split projects-with-children into a `.` self-row.

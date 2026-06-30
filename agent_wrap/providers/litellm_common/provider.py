@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from agent_wrap.providers.base import Provider
 from agent_wrap.providers.litellm_common.litellm_sidecar import (
@@ -94,7 +94,7 @@ class LiteLLMProvider(Provider):
     # --- Abstract hooks (subclasses must implement) ---
 
     @abstractmethod
-    def get_sidecar_env(self, secrets: dict) -> dict[str, str]:
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         """Return env vars for the sidecar container (upstream auth tokens)."""
 
     @abstractmethod
@@ -102,7 +102,7 @@ class LiteLLMProvider(Provider):
         """Return env vars injected into the agent container."""
 
     @abstractmethod
-    def read_secret_key(self, secrets: dict) -> str:
+    def read_secret_key(self, secrets: dict[str, Any]) -> str:
         """Extract the upstream API key from parsed secrets."""
 
     @abstractmethod

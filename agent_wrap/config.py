@@ -14,12 +14,13 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
 from agent_wrap.lib.utils import project_path_hash
 
 
-def _load_json(path: Path) -> dict | None:
+def _load_json(path: Path) -> dict[str, Any] | None:
     """Load JSON from a file, returning None if malformed."""
     try:
         text = path.read_text()
@@ -57,7 +58,7 @@ def ensure_statusline(settings_path: Path) -> None:
     atomic_write_json(settings_path, data)
 
 
-def _ensure_hook(data: dict, event: str, command: str) -> None:
+def _ensure_hook(data: dict[str, Any], event: str, command: str) -> None:
     """Add a hook entry to an event if not already present."""
     hooks = data.setdefault("hooks", {})
     event_hooks = hooks.setdefault(event, [])

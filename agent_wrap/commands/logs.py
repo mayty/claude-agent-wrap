@@ -202,7 +202,10 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
 
 
 def _enrich_with_costs(
-    normalized: dict, raw_response: dict | None, provider: str, raw_request: dict | None = None
+    normalized: dict[str, Any],
+    raw_response: dict[str, Any] | None,
+    provider: str,
+    raw_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute cost, cache pct, and token counts for one normalized record.

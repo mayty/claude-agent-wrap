@@ -10,7 +10,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap import config
 from agent_wrap.lib import docker_utils
@@ -95,7 +95,7 @@ def _is_headless(claude_args: list[str]) -> bool:
     return any(arg in _HEADLESS_FLAGS for arg in claude_args)
 
 
-def _load_telegram_creds(secrets: dict) -> tuple[str, str]:
+def _load_telegram_creds(secrets: dict[str, Any]) -> tuple[str, str]:
     """Extract Telegram credentials from secrets dict."""
     bot_token = secrets.get("TelegramBotToken", "") or ""
     chat_id = secrets.get("TelegramChatId", "") or ""

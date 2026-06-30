@@ -77,8 +77,7 @@ class Spinner:
     def _choose_spinner(self) -> tuple[tuple[str, ...], float]:
         frames, duration = random.choice(list(self.SPINNERS.values()))  # noqa: S311
         duration = duration or 1.0
-        fps = len(frames) / duration
-        sleep_time = 1 / fps
+        sleep_time = duration / len(frames)
         return frames, sleep_time
 
     def spin_while(

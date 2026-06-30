@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agent_wrap.sidecars.base import Sidecar
@@ -39,7 +39,7 @@ class Provider(ABC):
         """
         return {}
 
-    def get_tiered_pricing(self) -> dict | None:
+    def get_tiered_pricing(self) -> dict[str, Any] | None:
         """
         Return a tiered pricing table for this provider, if applicable.
 

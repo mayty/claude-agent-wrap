@@ -9,7 +9,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from agent_wrap.providers.litellm_common import LiteLLMProvider
 from agent_wrap.providers.litellm_common.key_approval import MasterKeyApprovalMixin
@@ -114,7 +114,7 @@ def _parse_pricing_page(page_html: str) -> dict[str, dict[str, float]]:
 
 def _load_prices(cache_path: Path) -> dict[str, dict[str, float]]:
     """Return cached or freshly-scraped DeepSeek pricing."""
-    cached: dict | None = None
+    cached: dict[str, Any] | None = None
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -168,14 +168,14 @@ class DeepSeekProvider(MasterKeyApprovalMixin, LiteLLMProvider):
     )
     master_key_prefix: ClassVar[str] = "sk-ds-"
 
-    def read_secret_key(self, secrets: dict) -> str:
+    def read_secret_key(self, secrets: dict[str, Any]) -> str:
         key = secrets.get("DeepSeekAPIKey", "")
         if not key:
             msg = "litellm-sidecar: .DeepSeekAPIKey missing or empty in ~/claude_keys.json"
             raise SystemExit(msg)
         return key
 
-    def get_sidecar_env(self, secrets: dict) -> dict[str, str]:
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "DEEPSEEK_API_KEY": secrets.get("_secret_key", ""),
         }

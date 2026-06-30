@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class Bucket:
     __slots__ = (
@@ -38,7 +40,7 @@ class Bucket:
         self.unrecorded = 0
 
     def add(
-        self, usage: dict, request_cost: float | None = 0.0, *, unrecorded: bool = False
+        self, usage: dict[str, Any], request_cost: float | None = 0.0, *, unrecorded: bool = False
     ) -> None:
         self.msgs += 1
         if unrecorded:
@@ -79,12 +81,3 @@ class Bucket:
     @property
     def cw(self) -> int:
         return self.cw_5m + self.cw_1h
-
-    def usage_dict(self) -> dict:
-        return {
-            "in": self.in_,
-            "out": self.out,
-            "cw_5m": self.cw_5m,
-            "cw_1h": self.cw_1h,
-            "cr": self.cr,
-        }

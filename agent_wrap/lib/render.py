@@ -26,16 +26,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from typing import Any
 
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import fmt_cost_with_unknown, fmt_count, fmt_ts
-from agent_wrap.lib.table import compute_shared_widths, render_table
-from agent_wrap.lib.tree import Node, build_project_tree, flatten_tree
+from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
+from agent_wrap.lib.tree import DisplayRow, Node, build_project_tree, flatten_tree
 
 # A "cost view" callback. cost/unknown MUST come from this, never `Bucket.cost`.
 CostFn = Callable[[str, Bucket], tuple[float, bool]]
-BuildModelSection = Callable[[dict[str, Bucket], int], list]
+BuildModelSection = Callable[[dict[str, Bucket], int], list[RowItem]]
 
 _DIV = "__div__"
 
@@ -55,10 +56,10 @@ def range_label(from_iso: str | None, until_iso: str | None) -> str:
 
 def _build_total_body(
     tree_root: Node,
-    display_rows: list,
-    orphaned: dict | None = None,
-) -> list:
-    body: list = []
+    display_rows: list[DisplayRow],
+    orphaned: dict[str, Any] | None = None,
+) -> list[RowItem]:
+    body: list[RowItem] = []
 
     body.append(
         (
@@ -166,8 +167,8 @@ def _build_recent_body(
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
-) -> list:
-    body: list = []
+) -> list[RowItem]:
+    body: list[RowItem] = []
 
     # The day dict is already restricted to the window at scan time; the
     # synthetic "?" key (records with no timestamp) is the one exception and is
@@ -247,14 +248,14 @@ def _build_recent_body(
 
 
 def render_core(  # noqa: PLR0913
-    rows: list[dict],
+    rows: list[dict[str, Any]],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     from_iso: str | None,
     until_iso: str | None,
     *,
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
-    orphaned: dict | None = None,
+    orphaned: dict[str, Any] | None = None,
 ) -> str:
     # Two stacked tables over the same window: "Projects" (per-project tree) and
     # "By day" (per-model + per-day). Each table has internal sections separated
@@ -284,7 +285,6 @@ def render_core(  # noqa: PLR0913
     shared_widths = compute_shared_widths(
         [(total_headers, total_body, 3), (recent_headers, recent_body, 1)],
         n_shared,
-        _DIV,
     )
 
     lines: list[str] = []
@@ -296,7 +296,6 @@ def render_core(  # noqa: PLR0913
             total_body,
             3,
             shared_widths,
-            _DIV,
         )
     )
     if recent_body:
@@ -309,7 +308,6 @@ def render_core(  # noqa: PLR0913
                 recent_body,
                 1,
                 shared_widths,
-                _DIV,
             )
         )
 

@@ -6,14 +6,19 @@ from __future__ import annotations
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import color
 
+# A table body is a list of rows. Each row is either a content row —
+# ``(cells, style, prefix_len)`` — or the ``div`` sentinel string that marks a
+# horizontal divider.
+RowItem = tuple[list[str], Ansi, int] | str
+
 
 def widths_for(
-    headers: list[str], body: list, leading: int, shared_widths: list[int], div: str
+    headers: list[str], body: list[RowItem], leading: int, shared_widths: list[int]
 ) -> list[int]:
     """Compute column widths for a table."""
     leading_widths = [len(headers[j]) for j in range(leading)]
     for item in body:
-        if item == div:
+        if isinstance(item, str):  # divider sentinel
             continue
         cells, _, _ = item
         for j in range(leading):
@@ -56,19 +61,18 @@ def render_table(  # noqa: PLR0913
     title: str,
     headers: list[str],
     aligns: list[str],
-    body: list,
+    body: list[RowItem],
     leading: int,
     shared_widths: list[int],
-    div: str,
 ) -> list[str]:
     """Render a complete table with borders."""
-    widths = widths_for(headers, body, leading, shared_widths, div)
+    widths = widths_for(headers, body, leading, shared_widths)
     out = [color(title, Ansi.DIM)]
     out.append(make_border(widths, "┌", "┬", "┐"))
     out.append(render_row(headers, aligns, widths, Ansi.DIM))
     out.append(make_border(widths, "├", "┼", "┤"))
     for item in body:
-        if item == div:
+        if isinstance(item, str):  # divider sentinel
             out.append(make_border(widths, "├", "┼", "┤"))
         else:
             cells, style, prefix_len = item
@@ -78,9 +82,8 @@ def render_table(  # noqa: PLR0913
 
 
 def compute_shared_widths(
-    tables: list[tuple[list[str], list, int]],
+    tables: list[tuple[list[str], list[RowItem], int]],
     n_shared: int,
-    div: str,
 ) -> list[int]:
     """Compute shared column widths across multiple tables."""
     shared_widths = [0] * n_shared
@@ -88,7 +91,7 @@ def compute_shared_widths(
         for j in range(n_shared):
             shared_widths[j] = max(shared_widths[j], len(headers[leading + j]))
         for item in body:
-            if item == div:
+            if isinstance(item, str):  # divider sentinel
                 continue
             cells, _, _ = item
             for j in range(n_shared):

@@ -84,7 +84,7 @@ def try_file_lock(path: Path) -> Iterator[bool]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
         except OSError:
-            acquired = False
+            pass
         yield acquired
     finally:
         if acquired:
