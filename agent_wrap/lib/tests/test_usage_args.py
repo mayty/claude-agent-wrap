@@ -181,13 +181,30 @@ def test_from_after_until_rejected(monkeypatch, tmp_path: Path, capsys):
 def test_malformed_from_rejected(monkeypatch, tmp_path: Path, capsys):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--from", "june-first")
     assert parsed is None
-    assert "--from expects" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "-f/--from" in err
+    assert "expects" in err
 
 
 def test_negative_days_rejected(monkeypatch, tmp_path: Path, capsys):
     parsed = _parse(monkeypatch, _reg(tmp_path), "--days", "-3")
     assert parsed is None
-    assert "--days must be >= 0" in capsys.readouterr().err
+    assert "must be >= 0" in capsys.readouterr().err
+
+
+def test_days_missing_value_rejected(monkeypatch, tmp_path: Path, capsys):
+    # Previously the bare flag was silently treated as the positional registry
+    # path; argparse now reports the missing value instead.
+    parsed = _parse(monkeypatch, _reg(tmp_path), "--days")
+    assert parsed is None
+    assert "argument" in capsys.readouterr().err
+
+
+def test_missing_registry_rejected(monkeypatch, capsys):
+    _freeze_today(monkeypatch)
+    parsed = parse_usage_args([], usage_line="u", usage_text="u")
+    assert parsed is None
+    assert capsys.readouterr().err
 
 
 # --- day_in_range ------------------------------------------------------------

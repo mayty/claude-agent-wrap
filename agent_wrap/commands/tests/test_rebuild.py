@@ -9,49 +9,46 @@ import pytest
 import pytest_mock
 
 from agent_wrap.commands.rebuild import (
+    _build_parser,
     _check_from_line,
     _do_rebuild,
     _docker_build,
-    _parse_rebuild_args,
 )
 from agent_wrap.commands.rebuild import (
     run as rebuild_run,
 )
 from agent_wrap.lib.utils import ResolvedImage
 
-# --- _parse_rebuild_args ---
+# --- argument parsing ---
 
 
-def test_no_args() -> None:
-    assert _parse_rebuild_args([]) == (False, False)
+def test_parse_no_args() -> None:
+    assert _build_parser().parse_args([]).full is False
 
 
-def test_full_flag() -> None:
-    assert _parse_rebuild_args(["--full"]) == (True, False)
+def test_parse_full_flag() -> None:
+    assert _build_parser().parse_args(["--full"]).full is True
 
 
 def test_help_short(capsys: pytest.CaptureFixture) -> None:
-    result = _parse_rebuild_args(["--help"])
-    assert result == (False, True)
-    out = capsys.readouterr().out
-    assert "Usage: agent rebuild" in out
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["--help"])
+    assert exc.value.code == 0
+    assert "agent rebuild" in capsys.readouterr().out
 
 
 def test_help_long(capsys: pytest.CaptureFixture) -> None:
-    result = _parse_rebuild_args(["-h"])
-    assert result == (False, True)
-    assert "Usage: agent rebuild" in capsys.readouterr().out
-
-
-def test_full_and_help(capsys: pytest.CaptureFixture) -> None:
-    result = _parse_rebuild_args(["--full", "--help"])
-    assert result == (True, True)
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["-h"])
+    assert exc.value.code == 0
+    assert "agent rebuild" in capsys.readouterr().out
 
 
 def test_unknown_arg(capsys: pytest.CaptureFixture) -> None:
-    result = _parse_rebuild_args(["--unknown"])
-    assert result == (False, True)
-    assert "unknown argument" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["--unknown"])
+    assert exc.value.code != 0
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 # --- _check_from_line ---

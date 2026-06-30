@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.docker_utils import host_network_build_args, image_exists
 from agent_wrap.lib.utils import ResolvedImage, resolve_image
@@ -17,20 +18,14 @@ USAGE = "[--full]"
 SUMMARY = "Rebuild Docker image"
 
 
-def _parse_rebuild_args(args: list[str]) -> tuple[bool, bool]:
-    """Parse rebuild arguments. Returns (full, abort) — abort if --help was printed."""
-    full = False
-    for arg in args:
-        if arg == "--full":
-            full = True
-        elif arg in ("-h", "--help"):
-            print("Usage: agent rebuild [--full]")
-            print("  --full  Rebuild the base 'claude-agent' image first, then the project image.")
-            return full, True
-        else:
-            print(f"Error: unknown argument '{arg}' (expected --full)", file=sys.stderr)
-            return full, True
-    return full, False
+def _build_parser():
+    parser = make_parser("rebuild", usage_summary=USAGE)
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Rebuild the base 'claude-agent' image first, then the project image.",
+    )
+    return parser
 
 
 def _docker_build(dockerfile: Path, image: str, context: Path, uid: str, gid: str) -> int:
@@ -85,9 +80,10 @@ def _check_from_line(resolved: ResolvedImage) -> bool:
 
 def run(args: list[str], tool_dir: Path) -> int:
     """Execute the `rebuild` subcommand."""
-    full, abort = _parse_rebuild_args(args)
-    if abort:
-        return 1 if args and args[0] not in ("-h", "--help") else 0
+    ns = parse_or_code(_build_parser(), args)
+    if isinstance(ns, int):
+        return ns
+    full = ns.full
 
     # Check for updates
     from agent_wrap.commands.update import check as check_updates

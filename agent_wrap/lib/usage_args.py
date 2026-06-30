@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from dataclasses import dataclass
@@ -13,14 +14,6 @@ from pathlib import Path
 DEFAULT_DAYS = 28
 
 _RELATIVE_DATE_RE = re.compile(r"^-(\d+)d$")
-
-
-@dataclass
-class UsageArgsBuilder:
-    from_spec: str | None = None
-    until_spec: str | None = None
-    days_spec: str | None = None
-    verbose: bool = False
 
 
 @dataclass
@@ -36,25 +29,32 @@ def _today() -> datetime:
     return datetime.now().astimezone()
 
 
-def _parse_days(value: str) -> int | None:
+def _parse_days(value: str) -> int:
+    """
+    Argparse ``type`` for ``--days``: a non-negative integer.
+
+    ``0`` is valid and means "unlimited" (the no-bound case is derived later).
+    Raises ``ArgumentTypeError`` on a non-integer or negative value; argparse
+    prefixes the message with ``argument -d/--days:`` and exits with an error.
+    """
     try:
         days = int(value)
     except ValueError:
-        print(f"usage: --days expects an integer, got '{value}'", file=sys.stderr)
-        return None
+        msg = f"expects an integer, got '{value}'"
+        raise argparse.ArgumentTypeError(msg) from None
     if days < 0:
-        print("usage: --days must be >= 0", file=sys.stderr)
-        return None
+        msg = "must be >= 0"
+        raise argparse.ArgumentTypeError(msg)
     return days
 
 
-def _parse_date_spec(flag: str, value: str):
+def _parse_date_spec(value: str):
     """
-    Parse a ``--from``/``--until`` value into a ``date``.
+    Argparse ``type`` for ``--from``/``--until``: parse a value into a ``date``.
 
     Accepts an absolute ISO date (``YYYY-MM-DD``) or a relative ``-Nd`` offset
-    (days only, relative to today). Returns the resolved ``date`` or None on
-    error (a usage message is printed to stderr).
+    (days only, relative to today). Raises ``ArgumentTypeError`` on a malformed
+    value; argparse prefixes the message with the offending ``argument`` name.
     """
     rel = _RELATIVE_DATE_RE.match(value)
     if rel is not None:
@@ -62,11 +62,8 @@ def _parse_date_spec(flag: str, value: str):
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007
     except ValueError:
-        print(
-            f"usage: {flag} expects YYYY-MM-DD or -Nd (e.g. -14d), got '{value}'",
-            file=sys.stderr,
-        )
-        return None
+        msg = f"expects YYYY-MM-DD or -Nd (e.g. -14d), got '{value}'"
+        raise argparse.ArgumentTypeError(msg) from None
 
 
 def _combine_bounds(from_date, until_date, days_bound, *, days_given: bool):
@@ -100,32 +97,24 @@ def _combine_bounds(from_date, until_date, days_bound, *, days_given: bool):
     return lo, hi
 
 
-def _resolve_range(builder: UsageArgsBuilder) -> tuple[str | None, str | None] | None:
+def _resolve_range(from_date, until_date, days, *, days_given: bool):
     """
-    Resolve the raw ``--from``/``--until``/``--days`` specs into inclusive bounds.
+    Resolve the parsed ``--from``/``--until``/``--days`` values into inclusive bounds.
 
-    Returns ``(from_iso, until_iso)`` (each None for an open side) or None on error.
-    At most two of the three flags may be given. ``--days 0`` means "unlimited"
-    (no count bound). See the resolution table in the command help.
+    ``from_date``/``until_date`` are ``date`` or None; ``days`` is an int or None;
+    ``days_given`` says whether ``--days`` was passed (to tell ``--days 0`` from
+    "absent"). Returns ``(from_iso, until_iso)`` (each None for an open side) or
+    None on error. At most two of the three flags may be given. ``--days 0``
+    means "unlimited" (no count bound). See the resolution table in the help.
     """
-    from_spec, until_spec, days_spec = builder.from_spec, builder.until_spec, builder.days_spec
-    if from_spec is not None and until_spec is not None and days_spec is not None:
+    if from_date is not None and until_date is not None and days_given:
         print("usage: at most two of --from, --until, --days may be given", file=sys.stderr)
         return None
 
-    from_date = _parse_date_spec("--from", from_spec) if from_spec is not None else None
-    if from_spec is not None and from_date is None:
-        return None
-    until_date = _parse_date_spec("--until", until_spec) if until_spec is not None else None
-    if until_spec is not None and until_date is None:
-        return None
-    days = _parse_days(days_spec) if days_spec is not None else None
-    if days_spec is not None and days is None:
-        return None
     # A days count of 0 means "unlimited" — it imposes no bound on the open side.
     days_bound = days or None
 
-    lo, hi = _combine_bounds(from_date, until_date, days_bound, days_given=days_spec is not None)
+    lo, hi = _combine_bounds(from_date, until_date, days_bound, days_given=days_given)
 
     lo_iso = lo.isoformat() if lo is not None else None
     hi_iso = hi.isoformat() if hi is not None else None
@@ -135,51 +124,68 @@ def _resolve_range(builder: UsageArgsBuilder) -> tuple[str | None, str | None] |
     return lo_iso, hi_iso
 
 
+_VALUE_FLAGS = ("-f", "--from", "-u", "--until")
+
+
+def _glue_dash_values(args: list[str]) -> list[str]:
+    """
+    Rewrite ``--from -14d`` to ``--from=-14d`` for the date flags.
+
+    The ``-Nd`` relative-date form looks like an option to argparse, which then
+    refuses to consume it as ``--from``'s value. Joining the flag and its value
+    with ``=`` sidesteps that — argparse always reads the right-hand side of
+    ``--flag=value`` literally. Only the date flags are glued; ``--days`` takes
+    integers (argparse already accepts a leading-dash negative there) and a bare
+    trailing flag is left alone so the "expected one argument" error still fires.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _VALUE_FLAGS and i + 1 < len(args) and args[i + 1].startswith("-"):
+            out.append(f"{a}={args[i + 1]}")
+            i += 2
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
 def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> UsageArgs | None:
     """
     Parse ``[-f|--from D] [-u|--until D] [-d|--days N] [-v] <projects.txt>``.
 
-    `usage_text` is printed for -h/--help; `usage_line` is printed when no
-    positional registry path is supplied. Returns None if help was printed or
-    on any error.
+    `usage_text` is rendered as the parser description for -h/--help; `usage_line`
+    becomes the usage prefix. Returns None if help was printed or on any error
+    (the caller treats None as "stop"). Per-value validation (date/days formats)
+    happens in the argparse ``type=`` converters; :func:`_resolve_range` applies
+    the cross-field semantics that a per-value converter can't see.
     """
-    parsed = UsageArgsBuilder()
-    positional: list[str] = []
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in ("-h", "--help"):
-            print(usage_text, file=sys.stderr)
-            return None
-        if a in ("-v", "--verbose"):
-            parsed.verbose = True
-            i += 1
-            continue
-        if a in ("-d", "--days") and i + 1 < len(args):
-            parsed.days_spec = args[i + 1]
-            i += 2
-            continue
-        if a in ("-f", "--from") and i + 1 < len(args):
-            parsed.from_spec = args[i + 1]
-            i += 2
-            continue
-        if a in ("-u", "--until") and i + 1 < len(args):
-            parsed.until_spec = args[i + 1]
-            i += 2
-            continue
-        positional.append(a)
-        i += 1
+    parser = argparse.ArgumentParser(
+        prog="agent stats",
+        usage=usage_line.removeprefix("Usage: "),
+        description=usage_text,
+        allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-f", "--from", dest="from_date", type=_parse_date_spec, metavar="D")
+    parser.add_argument("-u", "--until", dest="until_date", type=_parse_date_spec, metavar="D")
+    parser.add_argument("-d", "--days", dest="days", type=_parse_days, metavar="N")
+    parser.add_argument("registry")
 
-    if not positional:
-        print(usage_line, file=sys.stderr)
+    try:
+        ns = parser.parse_args(_glue_dash_values(args))
+    except SystemExit:
+        # argparse already printed help (-h) or the error; both map to "stop".
         return None
 
-    reg = Path(positional[0])
+    reg = Path(ns.registry)
     if not reg.is_file():
         print(f"usage: registry not found at {reg}", file=sys.stderr)
         return None
 
-    resolved = _resolve_range(parsed)
+    resolved = _resolve_range(ns.from_date, ns.until_date, ns.days, days_given=ns.days is not None)
     if resolved is None:
         return None
     from_iso, until_iso = resolved
@@ -188,7 +194,7 @@ def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> Us
         registry_path=reg,
         from_iso=from_iso,
         until_iso=until_iso,
-        verbose=parsed.verbose,
+        verbose=ns.verbose,
     )
 
 

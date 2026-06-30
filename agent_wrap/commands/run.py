@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from agent_wrap import config
 from agent_wrap.lib import docker_utils
+from agent_wrap.lib.argparsing import make_parser
 from agent_wrap.lib.sidecar_lock import (
     SidecarPriority,
     sidecar_lock,
@@ -504,14 +505,14 @@ def run(args: list[str], tool_dir: Path) -> int:
         Exit code from docker run.
 
     """
-    # Parse --base flag
-    use_base = False
-    claude_args: list[str] = []
-    for arg in args:
-        if arg == "--base":
-            use_base = True
-        else:
-            claude_args.append(arg)
+    # Parse our own --base flag and forward everything else verbatim to the
+    # inner `claude` CLI. add_help=False lets `-h`/`--help` pass through (claude
+    # prints its own help); allow_abbrev=False stops a claude flag like
+    # `--ba...` from being mistaken for `--base`.
+    parser = make_parser("run", usage_summary=USAGE, add_help=False)
+    parser.add_argument("--base", action="store_true")
+    ns, claude_args = parser.parse_known_args(args)
+    use_base = ns.base
 
     headless = _is_headless(claude_args)
 

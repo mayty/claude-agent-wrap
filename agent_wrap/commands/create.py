@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.utils import sanitize_name
 
 USAGE = ""
@@ -14,6 +15,10 @@ SUMMARY = "Scaffold Dockerfile.agent"
 
 def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001
     """Execute the `create` subcommand."""
+    ns = parse_or_code(make_parser("create", usage_summary=USAGE), args)
+    if isinstance(ns, int):
+        return ns
+
     dst = Path.cwd() / "Dockerfile.agent"
 
     if dst.exists():
