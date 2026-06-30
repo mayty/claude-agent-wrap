@@ -17,12 +17,11 @@ lock + one ``SidecarTracker``); this class only ensures/stops its container.
 
 from __future__ import annotations
 
-import json
 import sys
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.spinner import PollResult, Spinner
@@ -63,10 +62,16 @@ class LiteLLMSidecarConfig:
     # --- behavior hooks (provider-specific) ---
     get_sidecar_env: Callable[[dict], dict[str, str]]
     get_agent_env: Callable[[str, str], dict[str, str]]
-    read_secret_key: Callable[[dict], str]
     get_sidecar_cmd_args: Callable[[], list[str]]
     on_started: Callable[[str], None]
     on_stopping: Callable[[str], None]
+
+    # --- secrets ---
+    #: Keys this sidecar requires from the secrets store.
+    #: Each entry is ``(key_name, user_facing_description)``.
+    required_secrets: list[tuple[str, str]] = ()  # type: ignore[assignment]
+    # ^ mypy/pyrefly struggle with [] as a default for frozen dataclasses;
+    #   the immutable empty tuple is semantically identical and safer.
 
 
 class LiteLLMSidecar(Sidecar):
@@ -109,6 +114,9 @@ class LiteLLMSidecar(Sidecar):
     def health_endpoint(self) -> str:
         return self.config.health_endpoint
 
+    def required_secrets(self) -> list[tuple[str, str]]:
+        return list(self.config.required_secrets)
+
     # --- Public: prepare / ensure ---
 
     def prepare(self) -> None:
@@ -122,6 +130,7 @@ class LiteLLMSidecar(Sidecar):
         *,
         use_host_net: bool,
         agent_network: str | None,
+        secrets: dict[str, str] | None = None,
     ) -> list[str]:
         if agent_network == "bridge":
             msg = (
@@ -137,7 +146,10 @@ class LiteLLMSidecar(Sidecar):
         # Runs under the runner's shared lock (held across the whole launch), so the
         # start decision + health poll are atomic against every concurrent launcher.
         self._ensure_network()
-        sidecar_mode = self._ensure_sidecar(use_host_net=use_host_net)
+        sidecar_mode = self._ensure_sidecar(
+            use_host_net=use_host_net,
+            secrets=secrets or {},
+        )
 
         # Attach sidecar to agent's custom network if needed
         if (
@@ -151,7 +163,7 @@ class LiteLLMSidecar(Sidecar):
             sidecar_mode, agent_in_host_netns=agent_in_host_netns, agent_network=agent_network
         )
 
-    def _ensure_sidecar(self, *, use_host_net: bool) -> str:
+    def _ensure_sidecar(self, *, use_host_net: bool, secrets: dict[str, str]) -> str:
         """Ensure the sidecar is running + healthy. Returns its network mode."""
         # Migration: sidecar from before agent-wrap-net refactor
         if (
@@ -172,7 +184,7 @@ class LiteLLMSidecar(Sidecar):
             self._master_key = self._recover_master_key()
         else:
             sidecar_mode = "host" if use_host_net else "bridge"
-            secret_key = self.config.read_secret_key(self._load_secrets())
+            secret_key = secrets["api_key"]
             self._master_key = self._generate_master_key()
             self._start(secret_key, self._master_key, sidecar_mode)
             self.config.on_started(self._master_key)
@@ -274,17 +286,6 @@ class LiteLLMSidecar(Sidecar):
     def _generate_master_key(self) -> str:
         uid = generate_uuid()
         return f"{self.config.master_key_prefix}{uid.replace('-', '')}"
-
-    def _load_secrets(self) -> dict[str, Any]:
-        secrets_path = Path.home() / "claude_keys.json"
-        if not secrets_path.exists():
-            msg = f"litellm-sidecar: {secrets_path} not found"
-            raise SystemExit(msg)
-        try:
-            return json.loads(secrets_path.read_text())
-        except json.JSONDecodeError:
-            msg = f"litellm-sidecar: {secrets_path} is not valid JSON"
-            raise SystemExit(msg) from None
 
     def _recover_master_key(self) -> str:
         stdout, rc = docker_run(

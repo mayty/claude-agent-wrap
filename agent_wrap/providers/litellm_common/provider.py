@@ -44,6 +44,9 @@ class LiteLLMProvider(Provider):
     image: ClassVar[str] = ""
     #: Prefix for generated master keys (e.g. "sk-aw-" for bedrock).
     master_key_prefix: ClassVar[str] = "sk-aw-"
+    #: Human-readable description of the API key this provider needs.
+    #: Subclasses override this; the key name ``"api_key"`` is fixed.
+    secret_description: ClassVar[str] = ""
 
     # --- Shared defaults (rarely overridden) ---
 
@@ -85,11 +88,18 @@ class LiteLLMProvider(Provider):
             log_dir=self._log_dir(),
             get_sidecar_env=self.get_sidecar_env,
             get_agent_env=self.get_agent_env,
-            read_secret_key=self.read_secret_key,
             get_sidecar_cmd_args=self.get_sidecar_cmd_args,
             on_started=self.on_started,
             on_stopping=self.on_stopping,
+            required_secrets=self.required_secrets(),
         )
+
+    @classmethod
+    def required_secrets(cls) -> list[tuple[str, str]]:
+        """Return ``(key_name, description)`` for the secrets this provider needs."""
+        if cls.secret_description:
+            return [("api_key", cls.secret_description)]
+        return []
 
     # --- Abstract hooks (subclasses must implement) ---
 
@@ -100,10 +110,6 @@ class LiteLLMProvider(Provider):
     @abstractmethod
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         """Return env vars injected into the agent container."""
-
-    @abstractmethod
-    def read_secret_key(self, secrets: dict[str, Any]) -> str:
-        """Extract the upstream API key from parsed secrets."""
 
     @abstractmethod
     def get_sidecar_cmd_args(self) -> list[str]:

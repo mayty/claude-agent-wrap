@@ -185,18 +185,7 @@ class BedrockProvider(LiteLLMProvider):
         "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
     )
     master_key_prefix: ClassVar[str] = "sk-aw-"
-
-    def read_secret_key(self, secrets: dict[str, Any]) -> str:
-        # New flat key (preferred).
-        key = secrets.get("BedrockBearerToken", "")
-        # Legacy nested key, kept for backward compatibility.
-        if not key:
-            cred = secrets.get("ServiceSpecificCredential", {}) or {}
-            key = cred.get("ServiceCredentialSecret", "")
-        if not key:
-            msg = "litellm-sidecar: .BedrockBearerToken missing or empty in ~/claude_keys.json"
-            raise SystemExit(msg)
-        return key
+    secret_description: ClassVar[str] = "AWS Bedrock Bearer Token"  # noqa: S105
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {

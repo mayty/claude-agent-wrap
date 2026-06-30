@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,8 +14,6 @@ from agent_wrap.commands.run import (
     _build_volume_mounts,
     _build_wslg_args,
     _is_headless,
-    _load_secrets,
-    _load_telegram_creds,
     _parse_dockerfile_directives,
     _release_sidecars,
     _resolve_agent_name,
@@ -29,6 +26,7 @@ from agent_wrap.commands.run import (
     run as agent_run,
 )
 from agent_wrap.lib.utils import ResolvedImage
+from agent_wrap.secrets import SecretNotFoundError
 from agent_wrap.sidecars import SidecarTracker
 
 # --- _resolve_agent_name ---
@@ -73,59 +71,62 @@ def test_resolve_agent_name_empty_value_after_colon(tmp_path: Path) -> None:
     assert result == tmp_path.name.lower()
 
 
-# --- _load_secrets ---
+# --- _resolve_sidecar_secrets ---
 
 
-def test_load_secrets_file_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        _load_secrets()
-    assert exc.value.code == 1
+def test_resolve_secrets_optional_missing_skips(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Optional secrets: returns None if any key is missing."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.side_effect = SecretNotFoundError("test", "desc")
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
+
+    result = _resolve_sidecar_secrets("test", [("Key1", "desc")], prompt=False)
+    assert result is None
 
 
-def test_load_secrets_invalid_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "claude_keys.json").write_text("{not json}")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        _load_secrets()
-    assert exc.value.code == 1
+def test_resolve_secrets_required_missing_non_tty(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Required secrets on non-TTY: raises SystemExit with guidance."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.side_effect = SecretNotFoundError("test", "desc")
+    mocker.patch("sys.stdin.isatty", return_value=False)
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
+
+    with pytest.raises(SystemExit):
+        _resolve_sidecar_secrets("test", [("Key1", "desc")], prompt=True)
 
 
-def test_load_secrets_with_telegram(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    creds = {
-        "ServiceSpecificCredential": {"ServiceCredentialSecret": "aws-key"},
-        "TelegramBotToken": "123:ABC",
-        "TelegramChatId": "456",
-    }
-    (tmp_path / "claude_keys.json").write_text(json.dumps(creds))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    token, chat_id = _load_secrets()
-    assert token == "123:ABC"
-    assert chat_id == "456"
+def test_resolve_secrets_required_missing_tty_prompts(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Required secrets on TTY: prompts and returns the value."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.side_effect = [
+        SecretNotFoundError("test", "desc"),
+        "entered-value",
+    ]
+    mocker.patch("sys.stdin.isatty", return_value=True)
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
+
+    result = _resolve_sidecar_secrets("test", [("Key1", "desc")], prompt=True)
+    assert result == {"Key1": "entered-value"}
+    assert mock_read.call_count == 2
 
 
-def test_load_secrets_without_telegram(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    creds = {"ServiceSpecificCredential": {"ServiceCredentialSecret": "aws-key"}}
-    (tmp_path / "claude_keys.json").write_text(json.dumps(creds))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    token, chat_id = _load_secrets()
-    assert token == ""
-    assert chat_id == ""
+def test_resolve_secrets_found_no_prompt(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """When secrets are already stored, no prompting occurs."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.return_value = "stored-value"
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
 
-
-# --- _load_telegram_creds ---
-
-
-@pytest.mark.parametrize(
-    ("secrets", "expected"),
-    [
-        ({"TelegramBotToken": "abc", "TelegramChatId": "123"}, ("abc", "123")),
-        ({}, ("", "")),
-        ({"TelegramBotToken": None, "TelegramChatId": None}, ("", "")),
-    ],
-)
-def test_load_telegram_creds(secrets: dict, expected: tuple[str, str]) -> None:
-    assert _load_telegram_creds(secrets) == expected
+    result = _resolve_sidecar_secrets("test", [("Key1", "desc")], prompt=True)
+    assert result == {"Key1": "stored-value"}
+    mock_read.assert_called_once_with("test:Key1", "desc", prompt_on_missing=False)
 
 
 # --- _is_headless ---
@@ -322,7 +323,8 @@ def test_run_image_not_found(
         context=tmp_path,
     )
     mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=False)
-    mocker.patch("agent_wrap.commands.run._load_secrets", return_value=("", ""))
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
     rc = agent_run([], tmp_path)
     assert rc == 1
     assert "not found" in capsys.readouterr().err
@@ -348,10 +350,6 @@ def test_run_happy_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    # Create claude_keys.json
-    keys = tmp_path / "claude_keys.json"
-    keys.write_text(json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}}))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Create a minimal Dockerfile.agent
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
@@ -369,6 +367,8 @@ def test_run_happy_path(
     mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
     mocker.patch("agent_wrap.commands.run.config.record_project")
     mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
 
     # Mock provider with a single sidecar.
     mock_sidecar = mocker.MagicMock()
@@ -408,18 +408,19 @@ def _setup_run_with_telegram_creds(
 ) -> None:
     """Drive run() to the sidecar-collection block with Telegram creds present."""
     monkeypatch.chdir(tmp_path)
-    keys = tmp_path / "claude_keys.json"
-    keys.write_text(
-        json.dumps(
-            {
-                "ServiceSpecificCredential": {"ServiceCredentialSecret": "key"},
-                "TelegramBotToken": "123:ABC",
-                "TelegramChatId": "456",
-            }
-        )
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    # Mock secrets resolution: Telegram returns tokens, provider returns nothing.
+    def _resolve_side_effect(sidecar_name, required, *, prompt):
+        if sidecar_name == "telegram":
+            return {"TelegramBotToken": "123:ABC", "TelegramChatId": "456"}
+        return {}
+
+    mocker.patch(
+        "agent_wrap.commands.run._resolve_sidecar_secrets",
+        side_effect=_resolve_side_effect,
+    )
+    mocker.patch("sys.stdin.isatty", return_value=True)
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
     mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
@@ -483,12 +484,11 @@ def test_run_prepares_config_inside_single_lock(
 ) -> None:
     """Config prep runs inside the ONE launch-lock acquisition (no double-acquire)."""
     monkeypatch.chdir(tmp_path)
-    keys = tmp_path / "claude_keys.json"
-    keys.write_text(json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}}))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
     mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=tmp_path / "Dockerfile.agent",
@@ -597,11 +597,10 @@ def _run_with_sidecars(
     ``tmp_path/.agent-launches``; with no other run registered, teardown proceeds.
     """
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "claude_keys.json").write_text(
-        json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}})
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
     mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
