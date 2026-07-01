@@ -13,7 +13,7 @@ USAGE = ""
 SUMMARY = "Scaffold Dockerfile.agent"
 
 
-def run(args: list[str], tool_dir: Path) -> int:  # noqa: ARG001
+def run(args: list[str]) -> int:
     """Execute the `create` subcommand."""
     ns = parse_or_code(make_parser("create", usage_summary=USAGE), args)
     if isinstance(ns, int):

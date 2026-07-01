@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import TOOL_DIR
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -73,7 +75,7 @@ def resolve_group(path: Path) -> tuple[Path, str, bool]:
     return path, path.name, False
 
 
-def orphaned_log_dirs(tool_dir: Path, projects: list[Path]) -> list[Path]:
+def orphaned_log_dirs(projects: list[Path]) -> list[Path]:
     """
     Central ``<hash>`` log dirs not reachable from a registered, existing project.
 
@@ -96,7 +98,7 @@ def orphaned_log_dirs(tool_dir: Path, projects: list[Path]) -> list[Path]:
         except OSError:
             continue
 
-    central = tool_dir / CENTRAL_LOGS_DIRNAME
+    central = TOOL_DIR / CENTRAL_LOGS_DIRNAME
     orphaned: list[Path] = []
     try:
         children = list(central.iterdir())

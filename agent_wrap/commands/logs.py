@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.commands.stats import PriceSource, extract_usage, request_cache_ttl
+from agent_wrap.constants import AGENT_LAUNCHES_DIR, TOOL_DIR
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.grouping import orphaned_log_dirs, resolve_group
@@ -81,7 +82,6 @@ _MAX_PORT = 65535
 # host-level singleton (it serves every registered project), so a single state
 # file under .agent-launches/ — alongside projects.txt — is the right home.
 _STATE_FILE_NAME = "logs-server.json"
-_STATE_DIR_NAME = ".agent-launches"
 _LOG_FILE_NAME = "logs-server.log"
 
 # Set by _spawn_background on the detached child so it resolves the same
@@ -431,7 +431,7 @@ def _as_logs_dirs(project: Path | list[Path]) -> list[Path]:
     return project if isinstance(project, list) else [_logs_dir(project)]
 
 
-def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
+def list_groups() -> list[dict[str, Any]]:
     """
     Group registered projects into transient projects by ``.agent_stats_leaf``.
 
@@ -450,7 +450,7 @@ def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
     behind by deleted projects / stale registry entries — its ``logs_dirs`` are the
     central ``<hash>`` dirs themselves and it has no member ``paths``.
     """
-    registry = tool_dir / ".agent-launches" / "projects.txt"
+    registry = AGENT_LAUNCHES_DIR / "projects.txt"
     if not registry.is_file():
         return []
 
@@ -478,7 +478,7 @@ def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
         for root in sorted(members)
     ]
 
-    orphaned = orphaned_log_dirs(tool_dir, projects)
+    orphaned = orphaned_log_dirs(projects)
     if orphaned:
         groups.append(
             {
@@ -491,10 +491,10 @@ def list_groups(tool_dir: Path) -> list[dict[str, Any]]:
     return groups
 
 
-def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
+def list_projects() -> list[dict[str, Any]]:
     """List transient projects (grouped) that have LiteLLM logs."""
     out: list[dict[str, Any]] = []
-    for idx, group in enumerate(list_groups(tool_dir)):
+    for idx, group in enumerate(list_groups()):
         session_count = 0
         max_last_ts: float | None = None
         for logs_dir in group["logs_dirs"]:
@@ -517,7 +517,7 @@ def list_projects(tool_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _group_by_id(tool_dir: Path, group_id: int) -> list[Path] | None:
+def _group_by_id(group_id: int) -> list[Path] | None:
     """
     Return the logs dirs to scan for a group index, or None if unknown.
 
@@ -525,7 +525,7 @@ def _group_by_id(tool_dir: Path, group_id: int) -> list[Path] | None:
     this returns the group's ``logs_dirs`` — a project's ``.claude/litellm-logs``
     for normal groups, or the central ``<hash>`` dirs for the ``<orphaned>`` group.
     """
-    groups = list_groups(tool_dir)
+    groups = list_groups()
     if 0 <= group_id < len(groups):
         return groups[group_id]["logs_dirs"]
     return None
@@ -798,7 +798,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> dict[str, Any]:
     return {"mtime": best_mtime, "size": total_size}
 
 
-def projects_fingerprint(tool_dir: Path) -> dict[str, Any]:
+def projects_fingerprint() -> dict[str, Any]:
     """
     Return a change-marker for all registered projects that have logs.
 
@@ -808,7 +808,7 @@ def projects_fingerprint(tool_dir: Path) -> dict[str, Any]:
 
     Returns ``{"mtime": None, "size": None}`` when no projects have logs.
     """
-    registry = tool_dir / ".agent-launches" / "projects.txt"
+    registry = AGENT_LAUNCHES_DIR / "projects.txt"
     best_mtime: int | None = None
     total_size: int | None = None
 
@@ -957,7 +957,6 @@ class _Handler(BaseHTTPRequestHandler):
     """Serves the static web UI and the read-only JSON API."""
 
     # Both bound as class attributes in _serve_foreground().
-    tool_dir: Path
     page_dir: Path
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -981,7 +980,7 @@ class _Handler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if path == "/api/projects":
-            self._send_json(list_projects(self.tool_dir))
+            self._send_json(list_projects())
             return
 
         if path == "/api/sessions":
@@ -993,7 +992,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/projects-stat":
-            self._send_json(projects_fingerprint(self.tool_dir))
+            self._send_json(projects_fingerprint())
             return
 
         if path == "/api/sessions-stat":
@@ -1045,7 +1044,7 @@ class _Handler(BaseHTTPRequestHandler):
             group_id = int(raw)
         except ValueError:
             return None
-        return _group_by_id(self.tool_dir, group_id)
+        return _group_by_id(group_id)
 
 
 def _bind(port: int) -> tuple[ThreadingHTTPServer, int] | None:
@@ -1074,18 +1073,18 @@ def _bind(port: int) -> tuple[ThreadingHTTPServer, int] | None:
 # is silent (its stdout/stderr go to a logfile).
 
 
-def _state_dir(tool_dir: Path) -> Path:
-    return tool_dir / _STATE_DIR_NAME
+def _state_dir() -> Path:
+    return AGENT_LAUNCHES_DIR
 
 
-def _state_file(tool_dir: Path) -> Path:
-    return _state_dir(tool_dir) / _STATE_FILE_NAME
+def _state_file() -> Path:
+    return _state_dir() / _STATE_FILE_NAME
 
 
-def _read_state(tool_dir: Path) -> dict[str, Any] | None:
+def _read_state() -> dict[str, Any] | None:
     """Read the viewer state file, or None when missing/corrupt."""
     try:
-        raw = _state_file(tool_dir).read_text(encoding="utf-8")
+        raw = _state_file().read_text(encoding="utf-8")
     except OSError:
         return None
     try:
@@ -1101,9 +1100,9 @@ def _read_state(tool_dir: Path) -> dict[str, Any] | None:
     return None
 
 
-def _write_state(tool_dir: Path, pid: int, port: int) -> None:
+def _write_state(pid: int, port: int) -> None:
     """Write the viewer state file atomically (tmp + replace)."""
-    atomic_write_json(_state_file(tool_dir), {"pid": pid, "port": port})
+    atomic_write_json(_state_file(), {"pid": pid, "port": port})
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1137,20 +1136,20 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _running_server(tool_dir: Path) -> dict[str, Any] | None:
+def _running_server() -> dict[str, Any] | None:
     """
     Return the state dict if a live viewer is running, else None.
 
     A state file whose PID is dead is treated as stale and removed so the
     caller can spawn a fresh server.
     """
-    state = _read_state(tool_dir)
+    state = _read_state()
     if state is None:
         return None
     if _pid_alive(state["pid"]):
         return state
     with contextlib.suppress(OSError):
-        _state_file(tool_dir).unlink()
+        _state_file().unlink()
     return None
 
 
@@ -1158,7 +1157,7 @@ def _connect_line(port: int) -> str:
     return f"LiteLLM log viewer running at http://127.0.0.1:{port}"
 
 
-def _serve_foreground(tool_dir: Path, port: int) -> int:
+def _serve_foreground(port: int) -> int:
     """
     Run the viewer in the foreground until SIGTERM/SIGINT. Returns an exit code.
 
@@ -1177,7 +1176,6 @@ def _serve_foreground(tool_dir: Path, port: int) -> int:
 
     # ThreadingHTTPServer instantiates the handler class per request, so bind
     # the shared state as class attributes the handler reads on each request.
-    _Handler.tool_dir = tool_dir
     _Handler.page_dir = _LOGS_PAGE_DIR
 
     bound = _bind(port)
@@ -1189,7 +1187,7 @@ def _serve_foreground(tool_dir: Path, port: int) -> int:
         return 1
     server, actual_port = bound
 
-    _write_state(tool_dir, os.getpid(), actual_port)
+    _write_state(os.getpid(), actual_port)
 
     stop = threading.Event()
 
@@ -1207,11 +1205,11 @@ def _serve_foreground(tool_dir: Path, port: int) -> int:
         server.shutdown()
         server.server_close()
         with contextlib.suppress(OSError):
-            _state_file(tool_dir).unlink()
+            _state_file().unlink()
     return 0
 
 
-def _spawn_background(tool_dir: Path, port: int) -> int:
+def _spawn_background(port: int) -> int:
     """
     Spawn the detached viewer and print the connect line. Returns an exit code.
 
@@ -1219,7 +1217,7 @@ def _spawn_background(tool_dir: Path, port: int) -> int:
     then waits for the child to record {pid, port} in the state file before
     reporting the actual bound port.
     """
-    state_dir = _state_dir(tool_dir)
+    state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     log_path = state_dir / _LOG_FILE_NAME
 
@@ -1231,7 +1229,12 @@ def _spawn_background(tool_dir: Path, port: int) -> int:
 
     # Pin the child to the parent's tool_dir so both sides agree on where the
     # state file lives (the child would otherwise re-derive it from __main__).
-    child_env = {**os.environ, _TOOL_DIR_ENV: str(tool_dir)}
+    # Preserve an existing override (e.g. from tests) so the grandchild process
+    # writes to the same tmp_path as the original caller.
+    if _TOOL_DIR_ENV not in os.environ:
+        child_env = {**os.environ, _TOOL_DIR_ENV: str(TOOL_DIR)}
+    else:
+        child_env = os.environ.copy()
     with logfile:
         proc = subprocess.Popen(
             [sys.executable, "-m", "agent_wrap", "logs", "--foreground", "--port", str(port)],
@@ -1246,7 +1249,7 @@ def _spawn_background(tool_dir: Path, port: int) -> int:
     # early exit (missing assets, no free port) and from a timeout.
     deadline = time.monotonic() + _SPAWN_TIMEOUT_SEC
     while time.monotonic() < deadline:
-        state = _read_state(tool_dir)
+        state = _read_state()
         if state is not None and state["pid"] == proc.pid:
             print(_connect_line(state["port"]))
             return 0
@@ -1267,9 +1270,9 @@ def _spawn_background(tool_dir: Path, port: int) -> int:
     return 1
 
 
-def _stop(tool_dir: Path) -> int:
+def _stop() -> int:
     """Stop the background viewer. Returns an exit code (always 0)."""
-    state = _running_server(tool_dir)
+    state = _running_server()
     if state is None:
         print("agent logs: no viewer is running.")
         return 0
@@ -1283,7 +1286,7 @@ def _stop(tool_dir: Path) -> int:
         time.sleep(_POLL_INTERVAL_SEC)
 
     with contextlib.suppress(OSError):
-        _state_file(tool_dir).unlink()
+        _state_file().unlink()
     print("agent logs: viewer stopped.")
     return 0
 
@@ -1329,13 +1332,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run(args: list[str], tool_dir: Path) -> int:
+def run(args: list[str]) -> int:
     """Execute the `logs` subcommand."""
     # A detached child is pinned to its launching parent's tool_dir so both
     # sides resolve the same state file (see _TOOL_DIR_ENV / _spawn_background).
     env_dir = os.environ.get(_TOOL_DIR_ENV)
     if env_dir:
         tool_dir = Path(env_dir)
+        # Patch the module-level constant so state functions use the test's tmp_path.
+        globals()["AGENT_LAUNCHES_DIR"] = tool_dir / ".agent-launches"
 
     ns = parse_or_code(_build_parser(), args)
     if isinstance(ns, int):
@@ -1345,14 +1350,14 @@ def run(args: list[str], tool_dir: Path) -> int:
         if ns.foreground or ns.port != _DEFAULT_PORT:
             print("usage: agent logs --stop (takes no other arguments)", file=sys.stderr)
             return 1
-        return _stop(tool_dir)
+        return _stop()
 
     if ns.foreground:
-        return _serve_foreground(tool_dir, ns.port)
+        return _serve_foreground(ns.port)
 
-    running = _running_server(tool_dir)
+    running = _running_server()
     if running is not None:
         print(_connect_line(running["port"]))
         return 0
 
-    return _spawn_background(tool_dir, ns.port)
+    return _spawn_background(ns.port)

@@ -127,44 +127,39 @@ def _central(tool_dir: Path, name: str) -> Path:
 def test_orphaned_excludes_reachable_central_dir(tmp_path: Path):
     # A registered project whose .claude/litellm-logs symlink points at hashA must
     # exclude hashA; the unreferenced hashB is orphaned.
-    tool_dir = tmp_path / "tool"
-    hash_a = _central(tool_dir, "hashA")
-    _central(tool_dir, "hashB")
+    hash_a = _central(tmp_path, "hashA")
+    _central(tmp_path, "hashB")
 
     project = tmp_path / "proj"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / CENTRAL_LOGS_DIRNAME).symlink_to(hash_a, target_is_directory=True)
 
-    orphaned = orphaned_log_dirs(tool_dir, [project])
-    assert orphaned == [tool_dir / CENTRAL_LOGS_DIRNAME / "hashB"]
+    orphaned = orphaned_log_dirs([project])
+    assert orphaned == [tmp_path / CENTRAL_LOGS_DIRNAME / "hashB"]
 
 
 def test_orphaned_includes_all_when_no_projects(tmp_path: Path):
     # No registered projects → every central dir is orphaned (deleted projects).
-    tool_dir = tmp_path / "tool"
-    _central(tool_dir, "hashA")
-    _central(tool_dir, "hashB")
+    _central(tmp_path, "hashA")
+    _central(tmp_path, "hashB")
 
-    orphaned = orphaned_log_dirs(tool_dir, [])
+    orphaned = orphaned_log_dirs([])
     assert orphaned == [
-        tool_dir / CENTRAL_LOGS_DIRNAME / "hashA",
-        tool_dir / CENTRAL_LOGS_DIRNAME / "hashB",
+        tmp_path / CENTRAL_LOGS_DIRNAME / "hashA",
+        tmp_path / CENTRAL_LOGS_DIRNAME / "hashB",
     ]
 
 
 def test_orphaned_empty_without_central_dir(tmp_path: Path):
     # No <tool_dir>/litellm-logs at all → nothing orphaned.
-    tool_dir = tmp_path / "tool"
-    tool_dir.mkdir()
-    assert orphaned_log_dirs(tool_dir, []) == []
+    assert orphaned_log_dirs([]) == []
 
 
 def test_orphaned_ignores_deleted_project_symlink(tmp_path: Path):
     # A registered project whose dir was deleted (no logs dir) cannot reach its
     # central hash, so that hash is orphaned.
-    tool_dir = tmp_path / "tool"
-    _central(tool_dir, "hashA")
+    _central(tmp_path, "hashA")
     gone = tmp_path / "deleted-proj"  # never created
 
-    orphaned = orphaned_log_dirs(tool_dir, [gone])
-    assert orphaned == [tool_dir / CENTRAL_LOGS_DIRNAME / "hashA"]
+    orphaned = orphaned_log_dirs([gone])
+    assert orphaned == [tmp_path / CENTRAL_LOGS_DIRNAME / "hashA"]

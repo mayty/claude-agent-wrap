@@ -12,6 +12,7 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from typing import TYPE_CHECKING, Any
 
+from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.lib.buckets import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import (
@@ -922,7 +923,6 @@ def _scan_project(
 
 
 def _collect_orphaned(  # noqa: PLR0913
-    tool_dir: Path,
     projects: list[Path],
     prices: PriceSource,
     totals_by_model: dict[str, Bucket],
@@ -950,7 +950,7 @@ def _collect_orphaned(  # noqa: PLR0913
     sessions = 0
     last_ts: datetime | None = None
 
-    for logs_dir in orphaned_log_dirs(tool_dir, projects):
+    for logs_dir in orphaned_log_dirs(projects):
         if scan_cache is not None:
             d_sessions, d_last_ts, by_day, by_day_by_source = scan_cache.get(
                 logs_dir, (0, None, {}, {})
@@ -1201,8 +1201,8 @@ def _aggregate_projects(
     )
 
 
-def run(args: list[str], tool_dir: Path) -> int:
-    projects_file = tool_dir / ".agent-launches" / "projects.txt"
+def run(args: list[str]) -> int:
+    projects_file = AGENT_LAUNCHES_DIR / "projects.txt"
 
     # Inject tool-dir-derived paths into the args stream
     injected = [str(projects_file), *args]
@@ -1226,7 +1226,7 @@ def run(args: list[str], tool_dir: Path) -> int:
     # from this cache instead of scanning serially. orphaned_log_dirs is cheap
     # (metadata only) and is called again inside _collect_orphaned; recomputing it
     # here keeps the dir set authoritative there rather than threading it through.
-    orphaned_dirs = orphaned_log_dirs(tool_dir, projects)
+    orphaned_dirs = orphaned_log_dirs(projects)
     project_log_dirs = [p / ".claude" / "litellm-logs" for p in projects]
     scan_cache = _scan_dirs(
         [*project_log_dirs, *orphaned_dirs],
@@ -1248,7 +1248,6 @@ def run(args: list[str], tool_dir: Path) -> int:
     # Logs left behind by deleted projects / stale registry entries surface under
     # a synthetic <orphaned> row; their usage also folds into the totals above.
     orphaned = _collect_orphaned(
-        tool_dir,
         projects,
         prices,
         totals_by_model,

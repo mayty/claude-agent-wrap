@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent_wrap.constants import BASE_IMAGE_NAME, OPS_DIR, TOOL_DIR
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.docker_utils import host_network_build_args, image_exists
@@ -58,7 +59,7 @@ def _check_from_line(resolved: ResolvedImage) -> bool:
             if m := re.match(r"^[Ff][Rr][Oo][Mm]\s+(\S+)", line):
                 from_line = m.group(1)
 
-    if re.match(r"^claude-agent(:.*)?$", from_line) and not image_exists("claude-agent"):
+    if re.match(rf"^{BASE_IMAGE_NAME}(:.*)?$", from_line) and not image_exists(BASE_IMAGE_NAME):
         print(
             f"Error: '{resolved.dockerfile}' uses 'FROM claude-agent' but the "
             f"base image is not built.",
@@ -67,7 +68,7 @@ def _check_from_line(resolved: ResolvedImage) -> bool:
         print("       Run 'agent rebuild --full' to build the base first.", file=sys.stderr)
         return False
 
-    if from_line and not re.match(r"^claude-agent(:.*)?$", from_line):
+    if from_line and not re.match(rf"^{BASE_IMAGE_NAME}(:.*)?$", from_line):
         print(
             f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} '{resolved.dockerfile}' inherits from "
             f"'{from_line}' rather than 'claude-agent'. Consider migrating to "
@@ -78,7 +79,7 @@ def _check_from_line(resolved: ResolvedImage) -> bool:
     return True
 
 
-def run(args: list[str], tool_dir: Path) -> int:
+def run(args: list[str]) -> int:
     """Execute the `rebuild` subcommand."""
     ns = parse_or_code(_build_parser(), args)
     if isinstance(ns, int):
@@ -88,16 +89,16 @@ def run(args: list[str], tool_dir: Path) -> int:
     # Check for updates
     from agent_wrap.commands.update import check as check_updates
 
-    if check_updates(tool_dir):
+    if check_updates():
         return 0
 
-    return _do_rebuild(tool_dir, full=full)
+    return _do_rebuild(full=full)
 
 
-def _do_rebuild(tool_dir: Path, *, full: bool) -> int:
+def _do_rebuild(*, full: bool) -> int:
     """Perform the actual rebuild. Returns exit code."""
     try:
-        resolved = resolve_image(tool_dir)
+        resolved = resolve_image()
     except SystemExit as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -106,19 +107,19 @@ def _do_rebuild(tool_dir: Path, *, full: bool) -> int:
     gid = str(os.getgid())
 
     if full:
-        print(f"--- Building base claude-agent from {tool_dir}/ops/Dockerfile ---")
-        rc = _docker_build(tool_dir / "ops" / "Dockerfile", "claude-agent", tool_dir, uid, gid)
+        print(f"--- Building base claude-agent from {OPS_DIR / 'Dockerfile'} ---")
+        rc = _docker_build(OPS_DIR / "Dockerfile", BASE_IMAGE_NAME, TOOL_DIR, uid, gid)
         if rc != 0:
             return rc
 
-        if resolved.image == "claude-agent":
+        if resolved.image == BASE_IMAGE_NAME:
             print(
                 f"--- No Dockerfile.agent in {Path.cwd()}; base build is the only build needed ---"
             )
             subprocess.run(["docker", "images", "--filter", f"reference={resolved.image}"])
             return 0
 
-    if not full and resolved.image != "claude-agent" and not _check_from_line(resolved):
+    if not full and resolved.image != BASE_IMAGE_NAME and not _check_from_line(resolved):
         return 1
 
     print(f"--- Building {resolved.image} from {resolved.dockerfile} ---")

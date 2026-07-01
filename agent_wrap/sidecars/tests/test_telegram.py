@@ -31,8 +31,6 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
         "container_name": "agent-wrap-telegram",
         "network_name": "agent-wrap-net",
         "internal_port": 6837,
-        "bot_token": "test-bot-token",
-        "chat_id": "test-chat-id",
         "agent_name": "test-agent",
         "instance_id": "test-inst",
         "health_timeout_sec": 30,
@@ -48,6 +46,7 @@ def _sidecar(**overrides: object) -> TelegramSidecar:
     return TelegramSidecar(_config(**overrides))
 
 
+_SECRETS = {"TelegramBotToken": "test-bot-token", "TelegramChatId": "test-chat-id"}
 _DOCKER = "agent_wrap.sidecars.telegram.docker_run"
 _IMAGE_EXISTS = "agent_wrap.sidecars.telegram.image_exists"
 _URLOPEN = "urllib.request.urlopen"
@@ -65,8 +64,6 @@ def test_config_fields() -> None:
     assert cfg.container_name == "agent-wrap-telegram"
     assert cfg.network_name == "agent-wrap-net"
     assert cfg.internal_port == 6837
-    assert cfg.bot_token == "test-bot-token"
-    assert cfg.chat_id == "test-chat-id"
     assert cfg.agent_name == "test-agent"
     assert cfg.instance_id == "test-inst"
     assert cfg.health_timeout_sec == 30
@@ -125,7 +122,7 @@ def test_ensure_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
     mock_start = mocker.patch.object(sc, "_start")
     mock_reg = mocker.patch.object(sc, "_register")
 
-    result = sc.ensure(use_host_net=False, agent_network=None)
+    result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
     assert result == []
     mock_net.assert_not_called()
@@ -248,7 +245,10 @@ def test_attach_to_network_connect_fails(mocker: pytest_mock.MockFixture) -> Non
 def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     mocker.patch("agent_wrap.sidecars.telegram.get_user_args", return_value=[])
-    _sidecar()._start()
+    sc = _sidecar()
+    sc._bot_token = "test-bot-token"
+    sc._chat_id = "test-chat-id"
+    sc._start()
     # Find the 'run' command in the call list
     run_calls = [c.args for c in mock_docker.call_args_list if "run" in c.args[:2]]
     assert len(run_calls) == 1
@@ -273,7 +273,10 @@ def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
 def test_start_reaps_existing_container(mocker: pytest_mock.MockFixture) -> None:
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     mocker.patch("agent_wrap.sidecars.telegram.get_user_args", return_value=[])
-    _sidecar()._start()
+    sc = _sidecar()
+    sc._bot_token = "x"
+    sc._chat_id = "x"
+    sc._start()
     rm_calls = [c.args for c in mock_docker.call_args_list if "rm" in c.args[:2]]
     assert len(rm_calls) == 1
 
@@ -424,7 +427,7 @@ def test_ensure_full_flow(mocker: pytest_mock.MockFixture) -> None:
     mock_attach = mocker.patch.object(sc, "_attach_to_network")
     mocker.patch.object(sc, "_build_connectivity_args", return_value=["-e", "FOO=bar"])
 
-    result = sc.ensure(use_host_net=False, agent_network=None)
+    result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
     mock_net.assert_called_once()
     mock_start.assert_called_once()
@@ -445,7 +448,7 @@ def test_ensure_already_running(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch.object(sc, "_attach_to_network")
     mocker.patch.object(sc, "_build_connectivity_args", return_value=["-e", "X=1"])
 
-    result = sc.ensure(use_host_net=False, agent_network=None)
+    result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
     mock_start.assert_not_called()
     mock_health.assert_not_called()
@@ -463,7 +466,7 @@ def test_ensure_health_fail_raises(mocker: pytest_mock.MockFixture) -> None:
     mock_docker = mocker.patch(_DOCKER)  # for logs + rm calls
 
     with pytest.raises(SystemExit):
-        sc.ensure(use_host_net=False, agent_network=None)
+        sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
     # Logs must stream straight through (capture=False) so a startup
     # traceback on the container's stderr reaches the user, and the stopped
@@ -500,7 +503,7 @@ def test_ensure_health_fail_reaps_even_if_log_stream_raises(
     mock_docker = mocker.patch(_DOCKER, side_effect=docker_side_effect)
 
     with pytest.raises(BrokenPipeError):
-        sc.ensure(use_host_net=False, agent_network=None)
+        sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
     stop_calls = [c for c in mock_docker.call_args_list if "stop" in c.args[:1]]
     rm_calls = [c for c in mock_docker.call_args_list if "rm" in c.args[:1]]
@@ -517,7 +520,7 @@ def test_ensure_with_custom_agent_network(mocker: pytest_mock.MockFixture) -> No
     mock_attach = mocker.patch.object(sc, "_attach_to_network")
     mocker.patch.object(sc, "_build_connectivity_args", return_value=["-e", "Z=1"])
 
-    sc.ensure(use_host_net=False, agent_network="custom-bridge")
+    sc.ensure(use_host_net=False, agent_network="custom-bridge", secrets=_SECRETS)
 
     mock_attach.assert_called_once_with("custom-bridge")
 
@@ -530,7 +533,7 @@ def test_ensure_skips_attach_for_agent_wrap_net(mocker: pytest_mock.MockFixture)
     mock_attach = mocker.patch.object(sc, "_attach_to_network")
     mocker.patch.object(sc, "_build_connectivity_args", return_value=[])
 
-    sc.ensure(use_host_net=False, agent_network="agent-wrap-net")
+    sc.ensure(use_host_net=False, agent_network="agent-wrap-net", secrets=_SECRETS)
     mock_attach.assert_not_called()
 
 

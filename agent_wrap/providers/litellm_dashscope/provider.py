@@ -11,18 +11,8 @@ from agent_wrap.providers.litellm_common.key_approval import MasterKeyApprovalMi
 
 class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
     name = "litellm-dashscope"
-    image: ClassVar[str] = (
-        "ghcr.io/berriai/litellm:v1.83.14-stable"
-        "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
-    )
     master_key_prefix: ClassVar[str] = "sk-ds-"
-
-    def read_secret_key(self, secrets: dict[str, Any]) -> str:
-        key = secrets.get("DashScopeAPIKey", "")
-        if not key:
-            msg = "litellm-sidecar: .DashScopeAPIKey missing or empty in ~/claude_keys.json"
-            raise SystemExit(msg)
-        return key
+    secret_description: ClassVar[str] = "DashScope (Alibaba Cloud Model Studio) API Key"  # noqa: S105
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {

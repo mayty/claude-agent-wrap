@@ -35,7 +35,6 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
         "log_dir": tmp_path / "logs",
         "get_sidecar_env": lambda secrets: {"UPSTREAM_KEY": secrets.get("_secret_key", "")},
         "get_agent_env": lambda master_key, base_url: {"API_KEY": master_key, "BASE_URL": base_url},
-        "read_secret_key": lambda secrets: secrets.get("_secret_key", ""),
         "get_sidecar_cmd_args": list,
         "on_started": lambda _key: None,
         "on_stopping": lambda _key: None,
@@ -253,11 +252,10 @@ def test_ensure_first_launch_approves_once(tmp_path: Path, mocker: pytest_mock.M
     sc = _sidecar(tmp_path, on_started=started)
     mocker.patch.object(sc, "_ensure_network")
     mocker.patch.object(sc, "_is_running", return_value=False)
-    mocker.patch.object(sc, "_load_secrets", return_value={"_secret_key": "k"})
     mocker.patch.object(sc, "_generate_master_key", return_value="sk-test-new")
     mocker.patch.object(sc, "_start")
     mocker.patch.object(sc, "_health_poll", return_value=True)
-    sc.ensure(use_host_net=False, agent_network=None)
+    sc.ensure(use_host_net=False, agent_network=None, secrets={"api_key": "k"})
     assert sc._master_key == "sk-test-new"
     started.assert_called_once_with("sk-test-new")
 
@@ -289,13 +287,12 @@ def test_ensure_health_fail_raises(tmp_path: Path, mocker: pytest_mock.MockFixtu
     sc = _sidecar(tmp_path)
     mocker.patch.object(sc, "_ensure_network")
     mocker.patch.object(sc, "_is_running", return_value=False)
-    mocker.patch.object(sc, "_load_secrets", return_value={"_secret_key": "k"})
     mocker.patch.object(sc, "_generate_master_key", return_value="sk-test-new")
     mocker.patch.object(sc, "_start")
     mocker.patch.object(sc, "_health_poll", return_value=False)
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     with pytest.raises(SystemExit):
-        sc.ensure(use_host_net=False, agent_network=None)
+        sc.ensure(use_host_net=False, agent_network=None, secrets={"api_key": "k"})
 
     # Logs must stream straight through (capture=False) so a startup traceback
     # on the container's stderr reaches the user instead of being swallowed.

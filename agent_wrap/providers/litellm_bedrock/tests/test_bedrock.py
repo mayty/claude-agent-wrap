@@ -48,10 +48,10 @@ def test_bedrock_get_agent_env():
     assert env["AWS_REGION"] == "us-east-1"
 
 
-def test_bedrock_read_secret_key():
+def test_bedrock_secret_description():
     p = _bedrock()
-    key = p.read_secret_key({"ServiceSpecificCredential": {"ServiceCredentialSecret": "aws-key"}})
-    assert key == "aws-key"
+    assert p.secret_description == "AWS Bedrock Bearer Token"
+    assert p.required_secrets() == [("api_key", p.secret_description)]
 
 
 def test_bedrock_get_sidecar_cmd_args():

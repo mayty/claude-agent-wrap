@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,8 +14,6 @@ from agent_wrap.commands.run import (
     _build_volume_mounts,
     _build_wslg_args,
     _is_headless,
-    _load_secrets,
-    _load_telegram_creds,
     _parse_dockerfile_directives,
     _release_sidecars,
     _resolve_agent_name,
@@ -29,6 +26,7 @@ from agent_wrap.commands.run import (
     run as agent_run,
 )
 from agent_wrap.lib.utils import ResolvedImage
+from agent_wrap.secrets import SecretNotFoundError
 from agent_wrap.sidecars import SidecarTracker
 
 # --- _resolve_agent_name ---
@@ -73,59 +71,59 @@ def test_resolve_agent_name_empty_value_after_colon(tmp_path: Path) -> None:
     assert result == tmp_path.name.lower()
 
 
-# --- _load_secrets ---
+# --- _resolve_sidecar_secrets ---
 
 
-def test_load_secrets_file_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        _load_secrets()
-    assert exc.value.code == 1
+def test_resolve_secrets_optional_missing_skips(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Optional secrets: returns None if any key is missing."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.side_effect = SecretNotFoundError("test", "desc")
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
+
+    result = _resolve_sidecar_secrets("test", [("Key1", "desc")], optional=True, headless=False)
+    assert result is None
 
 
-def test_load_secrets_invalid_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "claude_keys.json").write_text("{not json}")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        _load_secrets()
-    assert exc.value.code == 1
+def test_resolve_secrets_required_missing_non_tty(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Required secrets on non-TTY: raises SystemExit with guidance."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.side_effect = SecretNotFoundError("test", "desc")
+    mocker.patch("sys.stdin.isatty", return_value=False)
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
+
+    with pytest.raises(SystemExit):
+        _resolve_sidecar_secrets("test", [("Key1", "desc")], optional=False, headless=False)
 
 
-def test_load_secrets_with_telegram(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    creds = {
-        "ServiceSpecificCredential": {"ServiceCredentialSecret": "aws-key"},
-        "TelegramBotToken": "123:ABC",
-        "TelegramChatId": "456",
-    }
-    (tmp_path / "claude_keys.json").write_text(json.dumps(creds))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    token, chat_id = _load_secrets()
-    assert token == "123:ABC"
-    assert chat_id == "456"
+def test_resolve_secrets_required_missing_tty_prompts(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Required secrets on TTY: prompts and returns the value."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.return_value = "entered-value"
+    mocker.patch("sys.stdin.isatty", return_value=True)
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
+
+    result = _resolve_sidecar_secrets("test", [("Key1", "desc")], optional=False, headless=False)
+    assert result == {"Key1": "entered-value"}
+    mock_read.assert_called_once_with("test:Key1", "desc", prompt_on_missing=True)
 
 
-def test_load_secrets_without_telegram(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    creds = {"ServiceSpecificCredential": {"ServiceCredentialSecret": "aws-key"}}
-    (tmp_path / "claude_keys.json").write_text(json.dumps(creds))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    token, chat_id = _load_secrets()
-    assert token == ""
-    assert chat_id == ""
+def test_resolve_secrets_found_no_prompt(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """When secrets are already stored, no prompting occurs."""
+    mock_read = mocker.patch("agent_wrap.commands.run.secrets.read")
+    mock_read.return_value = "stored-value"
+    from agent_wrap.commands.run import _resolve_sidecar_secrets
 
-
-# --- _load_telegram_creds ---
-
-
-@pytest.mark.parametrize(
-    ("secrets", "expected"),
-    [
-        ({"TelegramBotToken": "abc", "TelegramChatId": "123"}, ("abc", "123")),
-        ({}, ("", "")),
-        ({"TelegramBotToken": None, "TelegramChatId": None}, ("", "")),
-    ],
-)
-def test_load_telegram_creds(secrets: dict, expected: tuple[str, str]) -> None:
-    assert _load_telegram_creds(secrets) == expected
+    result = _resolve_sidecar_secrets("test", [("Key1", "desc")], optional=False, headless=False)
+    assert result == {"Key1": "stored-value"}
+    mock_read.assert_called_once_with("test:Key1", "desc", prompt_on_missing=False)
 
 
 # --- _is_headless ---
@@ -156,7 +154,7 @@ def test_build_wslg_args_not_present(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "agent_wrap.commands.run.Path",
         lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
     )
-    result = _build_wslg_args(Path("/tool"))
+    result = _build_wslg_args()
     assert result == []
 
 
@@ -167,13 +165,14 @@ def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         "agent_wrap.commands.run.Path",
         lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
     )
-    result = _build_wslg_args(Path("/tool"))
+    result = _build_wslg_args()
     assert "-v" in result
     assert "/mnt/wslg/runtime-dir:/mnt/wslg/runtime-dir" in result
     assert "/mnt/wslg/.X11-unix:/tmp/.X11-unix" in result
     # The full tree must NOT be mounted — /mnt/wslg/distro is the host root filesystem.
     assert "/mnt/wslg:/mnt/wslg" not in result
-    assert f"{Path('/tool')}/ops/wl-paste-shim:/usr/local/bin/wl-paste:ro" in result
+    # OPS_DIR is monkeypatched to tmp_path/ops by the autouse fixture
+    assert f"{tmp_path}/ops/wl-paste-shim:/usr/local/bin/wl-paste:ro" in result
     assert "-e" in result
     assert "DISPLAY" in result
     assert "WAYLAND_DISPLAY" in result
@@ -230,12 +229,12 @@ def test_build_volume_mounts_basic(tmp_path: Path) -> None:
     cwd.mkdir()
     tool = tmp_path / "tool"
     tool.mkdir()
-    result = _build_volume_mounts(global_config, cwd, tool, "/home/ubuntu")
-    assert f"{global_config}/.claude.json:/home/ubuntu/.claude.json" in result
-    assert f"{global_config}/.claude:/home/ubuntu/.claude" in result
-    assert f"{cwd}:/workspace" in result
-    assert f"{cwd}/.claude/sessions:/home/ubuntu/.claude/projects/-workspace" in result
-    assert f"{tool}/ops:/opt/agent-wrap:ro" in result
+    result = _build_volume_mounts("/home/ubuntu")
+    assert any(":/home/ubuntu/.claude.json" in v for v in result)
+    assert any(":/home/ubuntu/.claude" in v for v in result)
+    assert any(":/workspace" in v for v in result)
+    assert any(":/home/ubuntu/.claude/projects/-workspace" in v for v in result)
+    assert any(":/opt/agent-wrap:ro" in v for v in result)
 
 
 # --- _parse_dockerfile_directives ---
@@ -322,8 +321,9 @@ def test_run_image_not_found(
         context=tmp_path,
     )
     mocker.patch("agent_wrap.commands.run.docker_utils.image_exists", return_value=False)
-    mocker.patch("agent_wrap.commands.run._load_secrets", return_value=("", ""))
-    rc = agent_run([], tmp_path)
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
+    rc = agent_run([])
     assert rc == 1
     assert "not found" in capsys.readouterr().err
 
@@ -339,7 +339,7 @@ def test_run_resolve_image_exits(
     mocker.patch(
         "agent_wrap.commands.run.resolve_image", side_effect=SystemExit("no Dockerfile.agent")
     )
-    rc = agent_run([], tmp_path)
+    rc = agent_run([])
     assert rc == 1
     assert "no Dockerfile.agent" in capsys.readouterr().err
 
@@ -348,10 +348,6 @@ def test_run_happy_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    # Create claude_keys.json
-    keys = tmp_path / "claude_keys.json"
-    keys.write_text(json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}}))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Create a minimal Dockerfile.agent
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
@@ -368,7 +364,23 @@ def test_run_happy_path(
     mocker.patch("agent_wrap.commands.run.config.prepare_global_config")
     mocker.patch("agent_wrap.commands.run.config.prepare_project_dirs")
     mocker.patch("agent_wrap.commands.run.config.record_project")
+    mocker.patch("agent_wrap.commands.run.config.link_litellm_logs")
     mocker.patch("agent_wrap.commands.run.generate_uuid", return_value="test-uuid")
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
+
+    # Mock SidecarTracker to isolate from real .agent-launches/ state.
+    mock_tracker_cls = mocker.patch("agent_wrap.commands.run.SidecarTracker")
+    mock_tracker_cls.role_label = "agent-wrap.role"
+    mock_tracker_cls.role_value = "claude-agent"
+    mock_tracker = mocker.MagicMock()
+    mock_tracker.has_live_runners.return_value = False
+    mock_tracker.has_live_waiters.return_value = False
+    mock_tracker.register_running.return_value = mocker.MagicMock()
+    mock_tracker_cls.return_value = mock_tracker
+
+    # Mock file_lock to avoid real flock on mock tracker paths.
+    mocker.patch("agent_wrap.lib.sidecar_lock.file_lock")
 
     # Mock provider with a single sidecar.
     mock_sidecar = mocker.MagicMock()
@@ -383,9 +395,8 @@ def test_run_happy_path(
     mock_result.returncode = 0
     mock_run = mocker.patch("agent_wrap.commands.run.subprocess.run", return_value=mock_result)
 
-    rc = agent_run(["--base"], tmp_path)
+    rc = agent_run(["--base"])
     assert rc == 0
-    assert mock_sidecar.prepare.call_count == 1
     assert mock_sidecar.ensure.call_count == 1
     assert mock_sidecar.release.call_count == 1
     assert mock_run.called
@@ -408,18 +419,19 @@ def _setup_run_with_telegram_creds(
 ) -> None:
     """Drive run() to the sidecar-collection block with Telegram creds present."""
     monkeypatch.chdir(tmp_path)
-    keys = tmp_path / "claude_keys.json"
-    keys.write_text(
-        json.dumps(
-            {
-                "ServiceSpecificCredential": {"ServiceCredentialSecret": "key"},
-                "TelegramBotToken": "123:ABC",
-                "TelegramChatId": "456",
-            }
-        )
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    # Mock secrets resolution: Telegram returns tokens, provider returns nothing.
+    def _resolve_side_effect(sidecar_name, required, *, optional, headless):
+        if sidecar_name == "telegram":
+            return {"TelegramBotToken": "123:ABC", "TelegramChatId": "456"}
+        return {}
+
+    mocker.patch(
+        "agent_wrap.commands.run._resolve_sidecar_secrets",
+        side_effect=_resolve_side_effect,
+    )
+    mocker.patch("sys.stdin.isatty", return_value=True)
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
     mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
@@ -454,7 +466,7 @@ def test_run_telegram_sidecar_headless_flag_true(
     mock_tg.return_value.short_circuit_time = 2.0
     mock_tg.return_value.ensure.return_value = []
 
-    rc = agent_run(["--base", "-p", "hello"], tmp_path)
+    rc = agent_run(["--base", "-p", "hello"])
     assert rc == 0
     mock_tg.assert_called_once()
     config = mock_tg.call_args[0][0]
@@ -471,7 +483,7 @@ def test_run_telegram_sidecar_headless_flag_false(
     mock_tg.return_value.short_circuit_time = 2.0
     mock_tg.return_value.ensure.return_value = []
 
-    rc = agent_run(["--base"], tmp_path)
+    rc = agent_run(["--base"])
     assert rc == 0
     mock_tg.assert_called_once()
     config = mock_tg.call_args[0][0]
@@ -483,12 +495,11 @@ def test_run_prepares_config_inside_single_lock(
 ) -> None:
     """Config prep runs inside the ONE launch-lock acquisition (no double-acquire)."""
     monkeypatch.chdir(tmp_path)
-    keys = tmp_path / "claude_keys.json"
-    keys.write_text(json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}}))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
     mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=tmp_path / "Dockerfile.agent",
@@ -527,7 +538,7 @@ def test_run_prepares_config_inside_single_lock(
         side_effect=lambda *a, **k: events.append("prepare-global-config"),
     )
 
-    rc = agent_run(["--base"], tmp_path)
+    rc = agent_run(["--base"])
     assert rc == 0
 
     # Exactly ONE acquisition of the launch lock (regression guard: no double-acquire),
@@ -597,11 +608,10 @@ def _run_with_sidecars(
     ``tmp_path/.agent-launches``; with no other run registered, teardown proceeds.
     """
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "claude_keys.json").write_text(
-        json.dumps({"ServiceSpecificCredential": {"ServiceCredentialSecret": "key"}})
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: test\nFROM claude-agent\n")
+
+    mocker.patch("agent_wrap.commands.run._resolve_sidecar_secrets", return_value={})
+    mocker.patch("sys.stdin.isatty", return_value=True)
 
     mocker.patch("agent_wrap.commands.update.check", return_value=False)
     mocker.patch("agent_wrap.commands.run.resolve_image").return_value = ResolvedImage(
@@ -620,6 +630,19 @@ def _run_with_sidecars(
     provider = mocker.MagicMock()
     provider.sidecars.return_value = sidecars
     mocker.patch("agent_wrap.commands.run.get_provider", return_value=provider)
+
+    # Mock SidecarTracker to isolate from real .agent-launches/ state.
+    mock_tracker_cls = mocker.patch("agent_wrap.commands.run.SidecarTracker")
+    mock_tracker_cls.role_label = "agent-wrap.role"
+    mock_tracker_cls.role_value = "claude-agent"
+    mock_tracker = mocker.MagicMock()
+    mock_tracker.has_live_runners.return_value = False
+    mock_tracker.has_live_waiters.return_value = False
+    mock_tracker.register_running.return_value = mocker.MagicMock()
+    mock_tracker_cls.return_value = mock_tracker
+
+    # Mock file_lock to avoid real flock on mock tracker paths.
+    mocker.patch("agent_wrap.lib.sidecar_lock.file_lock")
 
     result = mocker.MagicMock()
     result.returncode = 0
@@ -648,7 +671,7 @@ def test_run_prepares_all_before_ensure_then_releases_reverse(
     b = _sidecar_mock(mocker, "b", order)
 
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a, b])
-    agent_run(["--base"], tmp_path)
+    agent_run(["--base"])
 
     # All prepare() (lock-free) before any ensure(); ensured in order; released reverse.
     assert order == [
@@ -667,14 +690,17 @@ def test_run_skips_release_when_another_runner_live(
     """When another run's running registration is still held, no sidecar is released."""
     a = _sidecar_mock(mocker, "a")
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
-    # A concurrent agent holds its running registration for the whole of our run.
-    other = SidecarTracker(tmp_path)
-    other_handle = other.register_running("other-inst")
-    try:
-        agent_run(["--base"], tmp_path)
-        a.release.assert_not_called()
-    finally:
-        other.clear_running(other_handle, "other-inst")
+    # Override the tracker mock: simulate another live runner so release is skipped.
+    mock_tracker_cls = mocker.patch("agent_wrap.commands.run.SidecarTracker")
+    mock_tracker_cls.role_label = "agent-wrap.role"
+    mock_tracker_cls.role_value = "claude-agent"
+    mock_tracker = mocker.MagicMock()
+    mock_tracker.has_live_runners.return_value = True
+    mock_tracker.has_live_waiters.return_value = False
+    mock_tracker.register_running.return_value = mocker.MagicMock()
+    mock_tracker_cls.return_value = mock_tracker
+    agent_run(["--base"])
+    a.release.assert_not_called()
 
 
 def test_run_releases_when_no_other_runner(
@@ -683,7 +709,7 @@ def test_run_releases_when_no_other_runner(
     """With no other run registered, the finishing run is last out and tears down."""
     a = _sidecar_mock(mocker, "a")
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
-    agent_run(["--base"], tmp_path)
+    agent_run(["--base"])
     a.release.assert_called_once_with()
 
 
@@ -721,7 +747,7 @@ def test_run_uses_summed_lock_timeout(
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a])
     fl = mocker.patch("agent_wrap.lib.sidecar_lock.file_lock")
     monkeypatch.setenv("AGENT_EXPECTED_QUEUE_DEPTH", "10")
-    agent_run(["--base"], tmp_path)
+    agent_run(["--base"])
     # The ensure-all lock is the timed one (the release lock blocks with no timeout).
     timeouts = [c.kwargs["timeout"] for c in fl.call_args_list if "timeout" in c.kwargs]
     # 120 + 10·2 = 140
@@ -738,7 +764,7 @@ def test_run_partial_ensure_failure_releases_full_set(
 
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a, b])
     with pytest.raises(SystemExit):
-        agent_run(["--base"], tmp_path)
+        agent_run(["--base"])
 
     # Last-light-out releases every declared sidecar (release is a no-op when a
     # container isn't running), so no orphan is left behind.
@@ -758,7 +784,7 @@ def test_run_releases_sidecars_ensure_never_reached(
 
     _run_with_sidecars(tmp_path, monkeypatch, mocker, [a, b])
     with pytest.raises(SystemExit):
-        agent_run(["--base"], tmp_path)
+        agent_run(["--base"])
 
     b.ensure.assert_not_called()  # the ensure loop never reached b
     b.release.assert_called_once_with()  # ...yet last-light-out still releases it

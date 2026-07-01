@@ -406,7 +406,7 @@ def _write_central_log(
 def test_collect_orphaned_folds_into_totals(monkeypatch, tmp_path: Path):
     """Orphaned usage is summarized and folded into the passed-in totals."""
     prices = _make_prices(monkeypatch, priced=True)
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     _write_central_log(tool_dir, "hashB", "s2", [_success_rec(), _success_rec()])
 
     # Plain dicts, matching what _aggregate_projects returns — an orphaned model
@@ -414,7 +414,7 @@ def test_collect_orphaned_folds_into_totals(monkeypatch, tmp_path: Path):
     totals_by_model: dict[str, Bucket] = {}
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
 
-    orphaned = _collect_orphaned(tool_dir, [], prices, totals_by_model, totals_by_day_by_model)
+    orphaned = _collect_orphaned([], prices, totals_by_model, totals_by_day_by_model)
     assert orphaned is not None
     assert orphaned["sessions"] == 1
     assert orphaned["total"].msgs == 2
@@ -425,26 +425,26 @@ def test_collect_orphaned_folds_into_totals(monkeypatch, tmp_path: Path):
 def test_collect_orphaned_none_when_all_reachable(monkeypatch, tmp_path: Path):
     """A central dir reachable from a registered project is not orphaned."""
     prices = _make_prices(monkeypatch, priced=True)
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     hash_a = _write_central_log(tool_dir, "hashA", "s1", [_success_rec()])
 
     project = tmp_path / "proj"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
 
-    orphaned = _collect_orphaned(tool_dir, [project], prices, {}, {})
+    orphaned = _collect_orphaned([project], prices, {}, {})
     assert orphaned is None
 
 
 def test_render_includes_orphaned_row(monkeypatch, tmp_path: Path):
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     prices = _make_prices(monkeypatch, priced=True)
-    tool_dir = tmp_path / "tool"
+    tool_dir = tmp_path
     _write_central_log(tool_dir, "hashB", "s2", [_success_rec()])
 
     totals_by_model: dict[str, Bucket] = {}
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
-    orphaned = _collect_orphaned(tool_dir, [], prices, totals_by_model, totals_by_day_by_model)
+    orphaned = _collect_orphaned([], prices, totals_by_model, totals_by_day_by_model)
 
     out = render([], totals_by_day_by_model, None, None, orphaned=orphaned)
     assert "<orphaned>" in out

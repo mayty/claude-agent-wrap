@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 The ``Sidecar`` interface.
 
@@ -14,9 +14,9 @@ needs without a wider contract.
 
 Locking and the start/stop decision are NOT a sidecar concern: the runner holds one
 shared lock around the whole ensure-all / release-all phase and consults a single
-``SidecarTracker`` once. So ``ensure()`` and ``release()`` are pure container
+``SidecarTracker`` once.  So ``ensure()`` and ``release()`` are pure container
 mechanics — they run with the lock already held and must not lock, announce, or
-decide whether to stop. Lock-free pre-work (e.g. the image pull) goes in ``prepare()``,
+decide whether to stop.  Lock-free pre-work (e.g. the image pull) goes in ``prepare()``,
 which the runner runs *before* taking the lock.
 """
 
@@ -38,6 +38,16 @@ class Sidecar(ABC):
     def short_circuit_time(self) -> float:
         """Seconds one agent takes to walk the lock on the hot path (sidecar up)."""
 
+    @classmethod
+    def required_secrets(cls) -> list[tuple[str, str]]:
+        """
+        Return ``(key_name, description)`` tuples for secrets this sidecar needs.
+
+        Simple key names — the orchestrator prepends the sidecar name for storage.
+        Default empty.
+        """
+        return []
+
     def prepare(self) -> None:  # noqa: B027 -- intentional optional no-op hook
         """
         Lock-free pre-work, run by the runner *before* the shared lock is taken.
@@ -52,6 +62,7 @@ class Sidecar(ABC):
         *,
         use_host_net: bool,
         agent_network: str | None,
+        secrets: dict[str, str] | None = None,
     ) -> list[str]:
         """
         Make the sidecar running + healthy and return the agent's ``docker run`` flags.
@@ -59,7 +70,13 @@ class Sidecar(ABC):
         Runs with the runner's shared lock already held — must not lock or announce.
         The returned flags (env vars + connectivity such as ``--network`` /
         ``--add-host``) are spliced into the agent container's launch command so it
-        can reach this sidecar. Raises on failure.
+        can reach this sidecar.
+
+        *secrets* is an optional dict of resolved key→value pairs from the
+        secrets store.  Sidecars that need credentials extract them from this
+        dict rather than reading configuration files directly.
+
+        Raises on failure.
         """
 
     @abstractmethod

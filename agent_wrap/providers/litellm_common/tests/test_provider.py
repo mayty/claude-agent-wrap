@@ -33,9 +33,6 @@ class ConcreteTestProvider(LiteLLMProvider):
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {"API_KEY": master_key, "BASE_URL": base_url}
 
-    def read_secret_key(self, secrets: dict) -> str:
-        return secrets.get("_secret_key", "")
-
     def get_sidecar_cmd_args(self) -> list[str]:
         return []
 
@@ -64,7 +61,8 @@ def test_sidecar_config_carries_provider_bits(tmp_path: Path) -> None:
     assert config.log_dir == p._log_dir()
     # Hooks are the provider's bound methods.
     assert config.get_agent_env("k", "http://x") == {"API_KEY": "k", "BASE_URL": "http://x"}
-    assert config.read_secret_key({"_secret_key": "s"}) == "s"
+    # required_secrets defaults to empty when the provider doesn't declare any.
+    assert config.required_secrets == []
 
 
 def test_sidecar_config_wires_lifecycle_hooks(

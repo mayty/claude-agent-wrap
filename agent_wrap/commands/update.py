@@ -7,8 +7,8 @@ import os
 import subprocess
 import sys
 from enum import Enum
-from typing import TYPE_CHECKING
 
+from agent_wrap.constants import GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.utils import is_truthy_env
@@ -25,9 +25,6 @@ class _MdPropagation(Enum):
     UPDATED = "updated"
     CONFLICT = "conflict"
 
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 USAGE = ""
 SUMMARY = "Pull upstream updates"
@@ -65,15 +62,15 @@ def _git_full(
         return "", 1, ""
 
 
-def _latest_tag(tool_dir: Path, ref: str) -> str | None:
+def _latest_tag(ref: str) -> str | None:
     """Return the newest tag reachable from *ref*, or None if none/unavailable."""
-    tag, rc = _git("describe", "--tags", "--abbrev=0", ref, cwd=str(tool_dir))
+    tag, rc = _git("describe", "--tags", "--abbrev=0", ref, cwd=str(TOOL_DIR))
     if rc != 0 or not tag:
         return None
     return tag
 
 
-def _resolve_target(tool_dir: Path, branch: str) -> str | None:
+def _resolve_target(branch: str) -> str | None:
     """
     Resolve the ref `apply()` should fast-forward to, or None if no update fits.
 
@@ -84,14 +81,14 @@ def _resolve_target(tool_dir: Path, branch: str) -> str | None:
     if branch != "master":
         return f"origin/{branch}"
 
-    local_tag = _latest_tag(tool_dir, "HEAD")
-    upstream_tag = _latest_tag(tool_dir, f"origin/{branch}")
+    local_tag = _latest_tag("HEAD")
+    upstream_tag = _latest_tag(f"origin/{branch}")
     if not upstream_tag or upstream_tag == local_tag:
         return None
     return upstream_tag
 
 
-def _get_behind_count(tool_dir: Path) -> tuple[str, int, str] | None:
+def _get_behind_count() -> tuple[str, int, str] | None:
     """
     Return (branch, commits_behind, target_ref) if an update should be offered.
 
@@ -100,30 +97,30 @@ def _get_behind_count(tool_dir: Path) -> tuple[str, int, str] | None:
     git repo, detached HEAD, fetch failure, no commits behind, or (on master) no
     newer tag.
     """
-    _, rc = _git("rev-parse", "--git-dir", cwd=str(tool_dir))
+    _, rc = _git("rev-parse", "--git-dir", cwd=str(TOOL_DIR))
     if rc != 0:
         return None
 
-    branch, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(tool_dir))
+    branch, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(TOOL_DIR))
     if rc != 0 or not branch:
         return None
 
-    _, rc = _git("fetch", "--quiet", "--tags", "origin", branch, cwd=str(tool_dir), timeout=10)
+    _, rc = _git("fetch", "--quiet", "--tags", "origin", branch, cwd=str(TOOL_DIR), timeout=10)
     if rc != 0:
         return None
 
-    behind, rc = _git("rev-list", "--count", f"HEAD..origin/{branch}", cwd=str(tool_dir))
+    behind, rc = _git("rev-list", "--count", f"HEAD..origin/{branch}", cwd=str(TOOL_DIR))
     if rc != 0 or not behind or behind == "0":
         return None
 
-    target_ref = _resolve_target(tool_dir, branch)
+    target_ref = _resolve_target(branch)
     if target_ref is None:
         return None
 
     return branch, int(behind), target_ref
 
 
-def check(tool_dir: Path) -> bool:
+def check() -> bool:
     """
     Check for upstream updates. Returns True if an update was applied.
 
@@ -134,7 +131,7 @@ def check(tool_dir: Path) -> bool:
     if is_truthy_env(env_val):
         return False
 
-    result = _get_behind_count(tool_dir)
+    result = _get_behind_count()
     if result is None:
         return False
 
@@ -157,14 +154,14 @@ def check(tool_dir: Path) -> bool:
     if ans.lower() != "y":
         return False
 
-    apply(tool_dir, target_ref)
+    apply(target_ref)
     return True
 
 
-def _detect_claude_md_state(tool_dir: Path) -> _MdState:
+def _detect_claude_md_state() -> _MdState:
     """Return the state of the user's CLAUDE.md relative to the default."""
-    user_claude_md = tool_dir / ".claude_config" / ".claude" / "CLAUDE.md"
-    default_claude_md = tool_dir / "ops" / "default-CLAUDE.md"
+    user_claude_md = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
+    default_claude_md = OPS_DIR / "default-CLAUDE.md"
     if not (user_claude_md.exists() and default_claude_md.exists()):
         return _MdState.MISSING
     result = subprocess.run(
@@ -181,13 +178,11 @@ def _detect_claude_md_state(tool_dir: Path) -> _MdState:
     return _MdState.MATCHES if result.returncode == 0 else _MdState.CUSTOMIZED
 
 
-def _handle_claude_md_propagation(
-    tool_dir: Path, before: str, after: str, pre_state: _MdState
-) -> _MdPropagation:
+def _handle_claude_md_propagation(before: str, after: str, pre_state: _MdState) -> _MdPropagation:
     """Handle default-CLAUDE.md propagation after a successful pull."""
-    user_claude_md = tool_dir / ".claude_config" / ".claude" / "CLAUDE.md"
+    user_claude_md = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
 
-    _, rc = _git("diff", "--quiet", before, after, "--", "default-CLAUDE.md", cwd=str(tool_dir))
+    _, rc = _git("diff", "--quiet", before, after, "--", "default-CLAUDE.md", cwd=str(TOOL_DIR))
     if rc == 0:
         return _MdPropagation.UNCHANGED
 
@@ -211,30 +206,30 @@ _RESOURCE_FILES = {
 }
 
 
-def _changed_files(tool_dir: Path, before: str, after: str) -> set[str]:
+def _changed_files(before: str, after: str) -> set[str]:
     """Return the set of file paths changed between two commits."""
-    out, rc = _git("diff", "--name-only", before, after, cwd=str(tool_dir))
+    out, rc = _git("diff", "--name-only", before, after, cwd=str(TOOL_DIR))
     if rc != 0 or not out:
         return set()
     return set(out.splitlines())
 
 
-def _resolve_ref(tool_dir: Path, commit: str) -> str:
+def _resolve_ref(commit: str) -> str:
     """Return a tag name if *commit* is tagged, otherwise its short hash."""
-    tag, rc = _git("describe", "--tags", "--exact-match", commit, cwd=str(tool_dir))
+    tag, rc = _git("describe", "--tags", "--exact-match", commit, cwd=str(TOOL_DIR))
     if rc == 0 and tag:
         return tag
-    short, _rc = _git("rev-parse", "--short", commit, cwd=str(tool_dir))
+    short, _rc = _git("rev-parse", "--short", commit, cwd=str(TOOL_DIR))
     return short or commit
 
 
-def _print_status(tool_dir: Path, before: str, after: str, pre_state: _MdState) -> None:
+def _print_status(before: str, after: str, pre_state: _MdState) -> None:
     """Print post-update status summary."""
-    before_ref = _resolve_ref(tool_dir, before)
-    after_ref = _resolve_ref(tool_dir, after)
+    before_ref = _resolve_ref(before)
+    after_ref = _resolve_ref(after)
     print(f"{Ansi.BOLD_GREEN}Updated {before_ref} -> {after_ref}{Ansi.RESET}")
 
-    changed = _changed_files(tool_dir, before, after)
+    changed = _changed_files(before, after)
 
     if changed & _RESOURCE_FILES:
         print(f"{Ansi.BOLD_YELLOW}re-source agent-wrap.bashrc to apply latest changes{Ansi.RESET}")
@@ -246,7 +241,7 @@ def _print_status(tool_dir: Path, before: str, after: str, pre_state: _MdState) 
     else:
         print(f"{Ansi.BOLD_GREEN}no re-build needed{Ansi.RESET}")
 
-    md_status = _handle_claude_md_propagation(tool_dir, before, after, pre_state)
+    md_status = _handle_claude_md_propagation(before, after, pre_state)
     if md_status == _MdPropagation.UPDATED:
         print(f"{Ansi.BOLD_GREEN}CLAUDE.md updated to new default{Ansi.RESET}")
     elif md_status == _MdPropagation.CONFLICT:
@@ -254,7 +249,7 @@ def _print_status(tool_dir: Path, before: str, after: str, pre_state: _MdState) 
             f"{Ansi.BOLD_RED}CLAUDE.md changed upstream but you have local customizations{Ansi.RESET}"
         )
         print(
-            f'{Ansi.BOLD_RED}Review: git -C "{tool_dir}" diff {before} {after}'
+            f'{Ansi.BOLD_RED}Review: git -C "{TOOL_DIR}" diff {before} {after}'
             f" -- default-CLAUDE.md{Ansi.RESET}"
         )
         print(
@@ -263,18 +258,18 @@ def _print_status(tool_dir: Path, before: str, after: str, pre_state: _MdState) 
         )
 
 
-def _fast_forward(tool_dir: Path, target_ref: str, before: str, pre_state: _MdState) -> int:
+def _fast_forward(target_ref: str, before: str, pre_state: _MdState) -> int:
     """Fast-forward to *target_ref* and report. Returns 0 on success, 1 on failure."""
     # The fetch already ran (via _get_behind_count or the auto-check), so a
     # local fast-forward merge to the resolved target is sufficient.
-    _, rc, stderr = _git_full("merge", "--ff-only", target_ref, cwd=str(tool_dir))
+    _, rc, stderr = _git_full("merge", "--ff-only", target_ref, cwd=str(TOOL_DIR))
     if rc != 0:
         print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}")
         if stderr:
             print(stderr)
         return 1
 
-    after, rc = _git("rev-parse", "HEAD", cwd=str(tool_dir))
+    after, rc = _git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
     if rc != 0:
         return 1
 
@@ -282,11 +277,11 @@ def _fast_forward(tool_dir: Path, target_ref: str, before: str, pre_state: _MdSt
         print(f"{Ansi.BOLD_GREEN}Already up to date{Ansi.RESET}")
         return 0
 
-    _print_status(tool_dir, before, after, pre_state)
+    _print_status(before, after, pre_state)
     return 0
 
 
-def apply(tool_dir: Path, target_ref: str | None = None) -> int:
+def apply(target_ref: str | None = None) -> int:
     """
     Fast-forward to *target_ref* and handle default-CLAUDE.md propagation.
 
@@ -294,32 +289,32 @@ def apply(tool_dir: Path, target_ref: str | None = None) -> int:
     recomputed via `_get_behind_count` so direct invocation honours the same
     tag-gating as the automatic check. Returns 0 on success, 1 on failure.
     """
-    _, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(tool_dir))
+    _, rc = _git("symbolic-ref", "--short", "HEAD", cwd=str(TOOL_DIR))
     if rc != 0:
         print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
         print("could not determine current branch", file=sys.stderr)
         return 1
 
     if target_ref is None:
-        result = _get_behind_count(tool_dir)
+        result = _get_behind_count()
         if result is None:
             print(f"{Ansi.BOLD_GREEN}Already up to date{Ansi.RESET}")
             return 0
         target_ref = result[2]
 
-    before, rc = _git("rev-parse", "HEAD", cwd=str(tool_dir))
+    before, rc = _git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
     if rc != 0:
         print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
         print("could not get current HEAD", file=sys.stderr)
         return 1
 
-    pre_state = _detect_claude_md_state(tool_dir)
-    return _fast_forward(tool_dir, target_ref, before, pre_state)
+    pre_state = _detect_claude_md_state()
+    return _fast_forward(target_ref, before, pre_state)
 
 
-def run(args: list[str], tool_dir: Path) -> int:
+def run(args: list[str]) -> int:
     """Execute the `update` subcommand."""
     ns = parse_or_code(make_parser("update", usage_summary=USAGE), args)
     if isinstance(ns, int):
         return ns
-    return apply(tool_dir)
+    return apply()

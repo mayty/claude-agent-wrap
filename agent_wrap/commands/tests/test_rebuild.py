@@ -144,7 +144,7 @@ def test_do_rebuild_resolve_image_exit(
     mocker.patch(
         "agent_wrap.commands.rebuild.resolve_image", side_effect=SystemExit("no Dockerfile.agent")
     )
-    rc = _do_rebuild(tmp_path, full=False)
+    rc = _do_rebuild(full=False)
     assert rc == 1
     assert "no Dockerfile.agent" in capsys.readouterr().err
 
@@ -158,7 +158,7 @@ def test_do_rebuild_full_build_fails(tmp_path: Path, mocker: pytest_mock.MockFix
     )
     mock_run = mocker.patch("agent_wrap.commands.rebuild.subprocess.run")
     mock_run.return_value.returncode = 1
-    rc = _do_rebuild(tmp_path, full=True)
+    rc = _do_rebuild(full=True)
     assert rc == 1
 
 
@@ -173,7 +173,7 @@ def test_do_rebuild_project_build_fails(tmp_path: Path, mocker: pytest_mock.Mock
     )
     mock_run = mocker.patch("agent_wrap.commands.rebuild.subprocess.run")
     mock_run.return_value.returncode = 1
-    rc = _do_rebuild(tmp_path, full=False)
+    rc = _do_rebuild(full=False)
     assert rc == 1
 
 
@@ -188,20 +188,20 @@ def test_do_rebuild_check_from_line_fails(tmp_path: Path, mocker: pytest_mock.Mo
     mock_run.return_value.returncode = 0
     mocker.patch("agent_wrap.commands.rebuild.image_exists", return_value=False)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: t\nFROM claude-agent\n")
-    rc = _do_rebuild(tmp_path, full=False)
+    rc = _do_rebuild(full=False)
     assert rc == 1
 
 
 # --- run() ---
 
 
-def test_run_help_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    rc = rebuild_run(["--help"], tmp_path)
+def test_run_help_returns_zero(capsys: pytest.CaptureFixture) -> None:
+    rc = rebuild_run(["--help"])
     assert rc == 0
 
 
-def test_run_unknown_arg_returns_one(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    rc = rebuild_run(["--unknown"], tmp_path)
+def test_run_unknown_arg_returns_one(capsys: pytest.CaptureFixture) -> None:
+    rc = rebuild_run(["--unknown"])
     assert rc == 1
 
 
@@ -259,7 +259,7 @@ def test_do_rebuild_project_success(tmp_path: Path, mocker: pytest_mock.MockFixt
     )
     mock_run = mocker.patch("agent_wrap.commands.rebuild.subprocess.run")
     mock_run.return_value.returncode = 0
-    rc = _do_rebuild(tmp_path, full=False)
+    rc = _do_rebuild(full=False)
     assert rc == 0
 
 
@@ -275,7 +275,7 @@ def test_do_rebuild_full_base_then_project(tmp_path: Path, mocker: pytest_mock.M
     mock_run = mocker.patch("agent_wrap.commands.rebuild.subprocess.run")
     mock_run.return_value.returncode = 0
     mocker.patch("agent_wrap.commands.rebuild.image_exists", return_value=True)
-    rc = _do_rebuild(tmp_path, full=True)
+    rc = _do_rebuild(full=True)
     assert rc == 0
     # Base build + project build + docker images ls (only at end, not after base)
     assert mock_run.call_count == 3

@@ -43,10 +43,6 @@ class TelegramSidecarConfig:
     network_name: str
     internal_port: int
 
-    # --- credentials (for the sidecar container only, never passed to the agent) ---
-    bot_token: str
-    chat_id: str
-
     # --- per-run identity (for /register and /unregister on the sidecar) ---
     agent_name: str
     instance_id: str
@@ -75,6 +71,8 @@ class TelegramSidecar(Sidecar):
     def __init__(self, config: TelegramSidecarConfig) -> None:
         self.config = config
         self._auth_token: str = ""
+        self._bot_token: str = ""
+        self._chat_id: str = ""
 
     # --- Sidecar interface properties ---
 
@@ -85,6 +83,13 @@ class TelegramSidecar(Sidecar):
     @property
     def short_circuit_time(self) -> float:
         return self.config.short_circuit_time
+
+    @classmethod
+    def required_secrets(cls) -> list[tuple[str, str]]:
+        return [
+            ("TelegramBotToken", "Telegram Bot Token (from @BotFather)"),
+            ("TelegramChatId", "Telegram Chat ID (numeric user or group ID)"),
+        ]
 
     # --- Public: prepare / ensure ---
 
@@ -108,6 +113,7 @@ class TelegramSidecar(Sidecar):
         *,
         use_host_net: bool,
         agent_network: str | None,
+        secrets: dict[str, str] | None = None,
     ) -> list[str]:
         """
         Ensure the sidecar is running + healthy and return the agent's docker run flags.
@@ -115,7 +121,13 @@ class TelegramSidecar(Sidecar):
         Runs under the runner's shared lock. Returns env var flags
         (``TELEGRAM_SIDECAR_URL``, ``TELEGRAM_SIDECAR_TOKEN``) plus network
         connectivity flags so the agent can reach the sidecar.
+
+        *secrets* carries the resolved credentials for this sidecar (simple keys).
         """
+        if secrets:
+            self._bot_token = secrets["TelegramBotToken"]
+            self._chat_id = secrets["TelegramChatId"]
+
         if self.config.headless:
             # Headless run never fires hooks/permission prompts — don't start the
             # container or hand the agent any sidecar env. release() stays active
@@ -278,9 +290,9 @@ class TelegramSidecar(Sidecar):
             f"127.0.0.1:{self.config.internal_port}:{self.config.internal_port}",
             *get_user_args(),
             "-e",
-            f"TELEGRAM_BOT_TOKEN={self.config.bot_token}",
+            f"TELEGRAM_BOT_TOKEN={self._bot_token}",
             "-e",
-            f"TELEGRAM_CHAT_ID={self.config.chat_id}",
+            f"TELEGRAM_CHAT_ID={self._chat_id}",
             "-e",
             f"LOG_LOCATION={container_log_path}",
             "-v",

@@ -19,6 +19,7 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from agent_wrap.constants import LITELLM_IMAGE, TOOL_DIR
 from agent_wrap.providers.base import Provider
 from agent_wrap.providers.litellm_common.litellm_sidecar import (
     LiteLLMSidecar,
@@ -41,9 +42,12 @@ class LiteLLMProvider(Provider):
     # --- Class attributes (overridden by subclasses) ---
 
     #: Pinned Docker image with tag + digest.
-    image: ClassVar[str] = ""
+    image: ClassVar[str] = LITELLM_IMAGE
     #: Prefix for generated master keys (e.g. "sk-aw-" for bedrock).
     master_key_prefix: ClassVar[str] = "sk-aw-"
+    #: Human-readable description of the API key this provider needs.
+    #: Subclasses override this; the key name ``"api_key"`` is fixed.
+    secret_description: ClassVar[str] = ""
 
     # --- Shared defaults (rarely overridden) ---
 
@@ -85,11 +89,18 @@ class LiteLLMProvider(Provider):
             log_dir=self._log_dir(),
             get_sidecar_env=self.get_sidecar_env,
             get_agent_env=self.get_agent_env,
-            read_secret_key=self.read_secret_key,
             get_sidecar_cmd_args=self.get_sidecar_cmd_args,
             on_started=self.on_started,
             on_stopping=self.on_stopping,
+            required_secrets=self.required_secrets(),
         )
+
+    @classmethod
+    def required_secrets(cls) -> list[tuple[str, str]]:
+        """Return ``(key_name, description)`` for the secrets this provider needs."""
+        if cls.secret_description:
+            return [("api_key", cls.secret_description)]
+        return []
 
     # --- Abstract hooks (subclasses must implement) ---
 
@@ -100,10 +111,6 @@ class LiteLLMProvider(Provider):
     @abstractmethod
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         """Return env vars injected into the agent container."""
-
-    @abstractmethod
-    def read_secret_key(self, secrets: dict[str, Any]) -> str:
-        """Extract the upstream API key from parsed secrets."""
 
     @abstractmethod
     def get_sidecar_cmd_args(self) -> list[str]:
@@ -131,13 +138,14 @@ class LiteLLMProvider(Provider):
 
     def _config_path(self) -> Path:
         """Resolve config.yaml next to this provider's provider.py."""
-        # Walk up to the provider directory (parent of the submodule dir)
-        provider_dir = Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
+        provider_dir = (
+            TOOL_DIR / "agent_wrap" / "providers" / self.__class__.__module__.split(".")[-2]
+        )
         return provider_dir / "config.yaml"
 
     def _state_dir(self) -> Path:
         """Resolve the provider's source directory (for lock/activity/state files)."""
-        return Path(__file__).parent.parent / self.__class__.__module__.split(".")[-2]
+        return TOOL_DIR / "agent_wrap" / "providers" / self.__class__.__module__.split(".")[-2]
 
     def _callback_dir(self) -> Path:
         """Resolve the shared LiteLLM logging callback (mounted into the sidecar)."""
@@ -145,8 +153,7 @@ class LiteLLMProvider(Provider):
 
     def _tool_dir(self) -> Path:
         """Resolve the agent-wrap install/repo root (e.g. /workspace)."""
-        # provider.py is at <root>/agent_wrap/providers/litellm_common/provider.py
-        return Path(__file__).resolve().parents[3]
+        return TOOL_DIR
 
     def _log_dir(self) -> Path:
         """

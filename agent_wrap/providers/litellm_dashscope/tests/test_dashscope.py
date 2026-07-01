@@ -47,16 +47,10 @@ def test_dashscope_get_agent_env():
     assert env["ANTHROPIC_BASE_URL"] == "http://proxy:4000"
 
 
-def test_dashscope_read_secret_key():
+def test_dashscope_secret_description():
     p = _dashscope()
-    key = p.read_secret_key({"DashScopeAPIKey": "ds-key"})
-    assert key == "ds-key"
-
-
-def test_dashscope_read_secret_key_missing():
-    p = _dashscope()
-    with pytest.raises(SystemExit, match="DashScopeAPIKey missing"):
-        p.read_secret_key({})
+    assert p.secret_description == "DashScope (Alibaba Cloud Model Studio) API Key"
+    assert p.required_secrets() == [("api_key", p.secret_description)]
 
 
 def test_dashscope_get_sidecar_cmd_args():

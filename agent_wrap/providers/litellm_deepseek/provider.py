@@ -162,18 +162,8 @@ def _load_prices(cache_path: Path) -> dict[str, dict[str, float]]:
 
 class DeepSeekProvider(MasterKeyApprovalMixin, LiteLLMProvider):
     name = "litellm-deepseek"
-    image: ClassVar[str] = (
-        "ghcr.io/berriai/litellm:v1.83.14-stable"
-        "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
-    )
     master_key_prefix: ClassVar[str] = "sk-ds-"
-
-    def read_secret_key(self, secrets: dict[str, Any]) -> str:
-        key = secrets.get("DeepSeekAPIKey", "")
-        if not key:
-            msg = "litellm-sidecar: .DeepSeekAPIKey missing or empty in ~/claude_keys.json"
-            raise SystemExit(msg)
-        return key
+    secret_description: ClassVar[str] = "DeepSeek API Key"  # noqa: S105
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {

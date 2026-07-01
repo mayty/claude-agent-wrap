@@ -23,6 +23,11 @@ class Provider(ABC):
     #: Provider name matching the AGENT_PROVIDER env var (e.g. "litellm-bedrock").
     name: str
 
+    @classmethod
+    def required_secrets(cls) -> list[tuple[str, str]]:
+        """Return ``(key_name, description)`` tuples for secrets this provider needs."""
+        return []
+
     @abstractmethod
     def sidecars(self) -> list[Sidecar]:
         """Return the sidecars an agent run with this provider depends on."""
