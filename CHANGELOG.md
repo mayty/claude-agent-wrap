@@ -5,6 +5,13 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.8.0](releases/0.8.0.md) — 2026-07-01
+
+Adds `agent secrets` (set, check, clear, cleanup) for managing sidecar credentials
+through the CLI instead of hand-editing plaintext files. Secrets are now stored
+encrypted. `agent run` prompts interactively when a secret is missing, so no
+separate setup step is needed. Existing plaintext files are migrated automatically.
+
 ## [0.7.1](releases/0.7.1.md) — 2026-06-30
 
 A maintenance release for the 0.7.0 Telegram decision sidecar: it now starts under
