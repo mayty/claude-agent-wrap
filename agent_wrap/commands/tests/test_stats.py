@@ -86,10 +86,10 @@ class _FakeProvider:
         return self._tiered
 
 
-def test_date_stamped_request_resolves_to_base_tier(monkeypatch):
+def test_date_stamped_request_resolves_to_base_tier(mocker):
     rates = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
     fake = _FakeProvider(flat={"claude-opus-4-8": rates})
-    monkeypatch.setattr("agent_wrap.commands.stats.get_provider", lambda name: fake)
+    mocker.patch("agent_wrap.commands.stats.get_provider", return_value=fake)
 
     prices = PriceSource()
     tiers = prices.get_pricing("bedrock", "us.anthropic.claude-opus-4-8-20260514")
@@ -100,10 +100,10 @@ def test_date_stamped_request_resolves_to_base_tier(monkeypatch):
     assert tiers[0]["max_in"] == float("inf")
 
 
-def test_unknown_model_returns_none(monkeypatch):
+def test_unknown_model_returns_none(mocker):
     rates = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
     fake = _FakeProvider(flat={"claude-opus-4-8": rates})
-    monkeypatch.setattr("agent_wrap.commands.stats.get_provider", lambda name: fake)
+    mocker.patch("agent_wrap.commands.stats.get_provider", return_value=fake)
 
     prices = PriceSource()
     assert prices.get_pricing("bedrock", "claude-opus-4-5") is None
@@ -123,18 +123,18 @@ def _success_rec(model="claude-opus-4-8"):
     }
 
 
-def _make_prices(monkeypatch, *, priced):
+def _make_prices(mocker, *, priced):
     rates = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
     flat = {"claude-opus-4-8": rates} if priced else {}
     fake = _FakeProvider(flat=flat)
-    monkeypatch.setattr("agent_wrap.commands.stats.get_provider", lambda name: fake)
+    mocker.patch("agent_wrap.commands.stats.get_provider", return_value=fake)
     return PriceSource()
 
 
-def test_errored_only_project_costs_known_zero(monkeypatch):
+def test_errored_only_project_costs_known_zero(mocker):
     # A project whose every request errored out is never costed, leaving a
     # *known* zero — the bucket must not be flagged unknown (no spurious "?").
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     rec = {"status": "failure", "model": "claude-opus-4-8"}
@@ -147,10 +147,10 @@ def test_errored_only_project_costs_known_zero(monkeypatch):
     assert b.cost_unknown is False
 
 
-def test_successful_request_without_price_marks_unknown(monkeypatch):
+def test_successful_request_without_price_marks_unknown(mocker):
     # A billable request whose model has no known price flags the bucket
     # unknown, so the cost still renders as "?".
-    prices = _make_prices(monkeypatch, priced=False)
+    prices = _make_prices(mocker, priced=False)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     _cost_record(_success_rec(), "bedrock", prices, by_day)
@@ -159,9 +159,9 @@ def test_successful_request_without_price_marks_unknown(monkeypatch):
     assert bucket.cost_unknown is True
 
 
-def test_successful_request_with_price_known_cost(monkeypatch):
+def test_successful_request_with_price_known_cost(mocker):
     # A billable request with a known price accumulates a positive, known cost.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     _cost_record(_success_rec(), "bedrock", prices, by_day)
@@ -170,10 +170,10 @@ def test_successful_request_with_price_known_cost(monkeypatch):
     assert bucket.cost_unknown is False
 
 
-def test_unrecorded_usage_string_response_counted(monkeypatch):
+def test_unrecorded_usage_string_response_counted(mocker):
     # A legacy success record whose response is a bare "<Response ...>" string has
     # no usage; it must be counted as unrecorded (not silently a $0 row).
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     rec = {
@@ -188,9 +188,9 @@ def test_unrecorded_usage_string_response_counted(monkeypatch):
     assert bucket.cost == 0.0
 
 
-def test_unrecorded_usage_unrecoverable_marker_counted(monkeypatch):
+def test_unrecorded_usage_unrecoverable_marker_counted(mocker):
     # A post-fix record the callback tagged "unrecoverable" is likewise counted.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     rec = {
@@ -204,9 +204,9 @@ def test_unrecorded_usage_unrecoverable_marker_counted(monkeypatch):
     assert bucket.unrecorded == 1
 
 
-def test_normal_success_not_counted_unrecorded(monkeypatch):
+def test_normal_success_not_counted_unrecorded(mocker):
     # A normal priced success must not be flagged unrecorded.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     _cost_record(_success_rec(), "bedrock", prices, by_day)
@@ -225,9 +225,9 @@ def _write_session_log(project: Path, session_id: str, records: list[dict]) -> N
             f.write(json.dumps(r) + "\n")
 
 
-def test_aggregate_projects_merges_marked_group(monkeypatch, tmp_path: Path):
+def test_aggregate_projects_merges_marked_group(mocker, tmp_path: Path):
     """Two projects under a .agent_stats_leaf marker yield a single named row."""
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     runs = tmp_path / "runs"
     runs.mkdir()
     (runs / ".agent_stats_leaf").write_text("batch-feb\n", encoding="utf-8")
@@ -247,9 +247,9 @@ def test_aggregate_projects_merges_marked_group(monkeypatch, tmp_path: Path):
     assert row["total"].msgs == 2
 
 
-def test_aggregate_projects_empty_marker_is_transient(monkeypatch, tmp_path: Path):
+def test_aggregate_projects_empty_marker_is_transient(mocker, tmp_path: Path):
     """An empty .agent_stats_leaf still flags the group transient (dir-named)."""
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     runs = tmp_path / "runs"
     runs.mkdir()
     (runs / ".agent_stats_leaf").write_text("", encoding="utf-8")
@@ -273,9 +273,9 @@ def test_aggregate_projects_empty_marker_is_transient(monkeypatch, tmp_path: Pat
     assert " *" not in group.label
 
 
-def test_aggregate_projects_keeps_unmarked_separate(monkeypatch, tmp_path: Path):
+def test_aggregate_projects_keeps_unmarked_separate(mocker, tmp_path: Path):
     """Without a marker each project remains its own row (regression guard)."""
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     a = tmp_path / "proj-a"
     b = tmp_path / "proj-b"
     _write_session_log(a, "s1", [_success_rec()])
@@ -304,8 +304,8 @@ def _dated_rec(day: str, model="claude-opus-4-8"):
     }
 
 
-def test_cost_record_skips_out_of_range(monkeypatch):
-    prices = _make_prices(monkeypatch, priced=True)
+def test_cost_record_skips_out_of_range(mocker):
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
     # In range → accumulated.
@@ -331,10 +331,10 @@ def test_cost_record_skips_out_of_range(monkeypatch):
     assert set(by_day) == {"2026-06-15"}
 
 
-def test_aggregate_projects_windows_sessions_and_totals(monkeypatch, tmp_path: Path):
+def test_aggregate_projects_windows_sessions_and_totals(mocker, tmp_path: Path):
     # A project with one in-window session and one out-of-window session: only the
     # in-window one is counted and totalled.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     proj = tmp_path / "proj"
     _write_session_log(proj, "in", [_dated_rec("2026-06-15")])
     _write_session_log(proj, "out", [_dated_rec("2026-01-01")])
@@ -348,10 +348,10 @@ def test_aggregate_projects_windows_sessions_and_totals(monkeypatch, tmp_path: P
     assert set(by_day) == {"2026-06-15"}
 
 
-def test_file_culling_skips_old_mtime(monkeypatch, tmp_path: Path):
+def test_file_culling_skips_old_mtime(mocker, tmp_path: Path):
     # A log file whose mtime predates the lower bound is skipped unread, even though
     # it would parse to in-range records (proving the metadata short-circuit).
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     logs = tmp_path / ".claude" / "litellm-logs"
     sdir = logs / "litellm-bedrock" / "s1"
     sdir.mkdir(parents=True)
@@ -369,10 +369,10 @@ def test_file_culling_skips_old_mtime(monkeypatch, tmp_path: Path):
     assert by_day == {}
 
 
-def test_file_culling_keeps_recent_mtime_but_filters_records(monkeypatch, tmp_path: Path):
+def test_file_culling_keeps_recent_mtime_but_filters_records(mocker, tmp_path: Path):
     # A recently-written file is parsed; its out-of-range records are filtered by
     # day_in_range, never counted (only the upper bound, not cullable via mtime).
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     logs = tmp_path / ".claude" / "litellm-logs"
     sdir = logs / "litellm-bedrock" / "s1"
     sdir.mkdir(parents=True)
@@ -403,9 +403,9 @@ def _write_central_log(
     return tool_dir / "litellm-logs" / hash_name
 
 
-def test_collect_orphaned_folds_into_totals(monkeypatch, tmp_path: Path):
+def test_collect_orphaned_folds_into_totals(mocker, tmp_path: Path):
     """Orphaned usage is summarized and folded into the passed-in totals."""
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     tool_dir = tmp_path
     _write_central_log(tool_dir, "hashB", "s2", [_success_rec(), _success_rec()])
 
@@ -422,9 +422,9 @@ def test_collect_orphaned_folds_into_totals(monkeypatch, tmp_path: Path):
     assert sum(b.msgs for b in totals_by_model.values()) == 2
 
 
-def test_collect_orphaned_none_when_all_reachable(monkeypatch, tmp_path: Path):
+def test_collect_orphaned_none_when_all_reachable(mocker, tmp_path: Path):
     """A central dir reachable from a registered project is not orphaned."""
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     tool_dir = tmp_path
     hash_a = _write_central_log(tool_dir, "hashA", "s1", [_success_rec()])
 
@@ -436,9 +436,9 @@ def test_collect_orphaned_none_when_all_reachable(monkeypatch, tmp_path: Path):
     assert orphaned is None
 
 
-def test_render_includes_orphaned_row(monkeypatch, tmp_path: Path):
+def test_render_includes_orphaned_row(mocker, tmp_path: Path):
     """render() shows an <orphaned> row (accented in color, no text marker)."""
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     tool_dir = tmp_path
     _write_central_log(tool_dir, "hashB", "s2", [_success_rec()])
 
@@ -451,7 +451,7 @@ def test_render_includes_orphaned_row(monkeypatch, tmp_path: Path):
     assert "<orphaned> *" not in out
 
 
-def test_render_without_orphaned_has_no_row(monkeypatch):
+def test_render_without_orphaned_has_no_row(mocker):
     """When orphaned is None, no <orphaned> row appears."""
     out = render([], {}, None, None, orphaned=None)
     assert "<orphaned>" not in out
@@ -564,8 +564,8 @@ def test_extract_usage_reads_nested_cache_creation_split():
     }
 
 
-def test_extract_usage_mixed_ttl_falls_back_to_5m_and_warns(monkeypatch, capsys):
-    monkeypatch.setattr(stats_mod, "_mixed_cache_ttl_warned", False)
+def test_extract_usage_mixed_ttl_falls_back_to_5m_and_warns(mocker, capsys):
+    mocker.patch.object(stats_mod, "_mixed_cache_ttl_warned", new=False)
     usage = extract_usage(_flat_cache_response(1000), "mixed")
     # Unattributed: left flat for the 5m fallback, and warned once.
     assert usage["cache_creation"] == {}
@@ -577,10 +577,10 @@ def test_extract_usage_mixed_ttl_falls_back_to_5m_and_warns(monkeypatch, capsys)
     assert capsys.readouterr().err == ""
 
 
-def test_cost_record_uses_request_ttl_for_1h_rate(monkeypatch):
+def test_cost_record_uses_request_ttl_for_1h_rate(mocker):
     # End-to-end through _cost_record: a 1h request bills cache writes at the
     # higher 1h rate, proving the TTL threads through to the cost math.
-    prices = _make_prices(monkeypatch, priced=True)  # cw_5m=6.875, cw_1h=11.0
+    prices = _make_prices(mocker, priced=True)  # cw_5m=6.875, cw_1h=11.0
     rec_1h = {
         "status": "success",
         "model": "claude-opus-4-8",
@@ -656,9 +656,9 @@ def test_usage_unrecorded_agrees_with_source():
     assert _usage_unrecorded(_unrecoverable_rec()) is True
 
 
-def test_cost_record_populates_by_source(monkeypatch):
+def test_cost_record_populates_by_source(mocker):
     # _cost_record routes the same usage/cost into by_day_by_source[day][source].
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
     by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(Bucket))
 
@@ -668,9 +668,9 @@ def test_cost_record_populates_by_source(monkeypatch):
     assert day_sources["standard_logging_object"].msgs == 1
 
 
-def test_aggregate_projects_returns_per_source_totals(monkeypatch, tmp_path: Path):
+def test_aggregate_projects_returns_per_source_totals(mocker, tmp_path: Path):
     # A project mixing all three sources yields a per-source breakdown.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     proj = tmp_path / "proj"
     _write_session_log(proj, "s1", [_success_rec(), _slo_rec(), _unrecoverable_rec()])
 
@@ -768,13 +768,13 @@ def test_parse_usage_args_verbose_defaults_false(tmp_path: Path):
 # --- lazy request_cache_ttl --------------------------------------------------
 
 
-def test_cost_record_skips_ttl_walk_when_response_has_split(monkeypatch):
+def test_cost_record_skips_ttl_walk_when_response_has_split(mocker):
     # When the response already carries an ephemeral split, the request-side TTL
     # is never needed — so _cost_record must not walk the request body for it.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     calls = {"n": 0}
     real = stats_mod.request_cache_ttl
-    monkeypatch.setattr(
+    mocker.patch.object(
         stats_mod,
         "request_cache_ttl",
         lambda req: (calls.__setitem__("n", calls["n"] + 1), real(req))[1],
@@ -799,12 +799,12 @@ def test_cost_record_skips_ttl_walk_when_response_has_split(monkeypatch):
     assert calls["n"] == 0
 
 
-def test_cost_record_skips_ttl_walk_without_cache_writes(monkeypatch):
+def test_cost_record_skips_ttl_walk_without_cache_writes(mocker):
     # No cache-write tokens at all → the TTL is irrelevant, so it is not consulted.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     calls = {"n": 0}
     real = stats_mod.request_cache_ttl
-    monkeypatch.setattr(
+    mocker.patch.object(
         stats_mod,
         "request_cache_ttl",
         lambda req: (calls.__setitem__("n", calls["n"] + 1), real(req))[1],
@@ -815,13 +815,13 @@ def test_cost_record_skips_ttl_walk_without_cache_writes(monkeypatch):
     assert calls["n"] == 0
 
 
-def test_cost_record_consults_ttl_for_flat_bedrock_total(monkeypatch):
+def test_cost_record_consults_ttl_for_flat_bedrock_total(mocker):
     # The Bedrock case — a flat cache-write total with no ephemeral split — is the
     # one case that *does* need the request TTL, so it must be consulted.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     calls = {"n": 0}
     real = stats_mod.request_cache_ttl
-    monkeypatch.setattr(
+    mocker.patch.object(
         stats_mod,
         "request_cache_ttl",
         lambda req: (calls.__setitem__("n", calls["n"] + 1), real(req))[1],
@@ -845,40 +845,40 @@ def test_cost_record_consults_ttl_for_flat_bedrock_total(monkeypatch):
 # --- plan_pool sizing heuristic ----------------------------------------------
 
 
-def test_plan_pool_caps_workers_at_eight(monkeypatch):
+def test_plan_pool_caps_workers_at_eight(mocker):
     # Many cores and many files still cap at 8 workers (decode saturates there).
-    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 64)
+    mocker.patch.object(stats_mod.os, "cpu_count", return_value=64)
     workers, chunksize = plan_pool(10_000)
     assert workers == 8
     assert 1 <= chunksize <= 8
 
 
-def test_plan_pool_scales_down_on_single_core(monkeypatch):
-    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 1)
+def test_plan_pool_scales_down_on_single_core(mocker):
+    mocker.patch.object(stats_mod.os, "cpu_count", return_value=1)
     workers, chunksize = plan_pool(10_000)
     assert workers == 1
     assert 1 <= chunksize <= 8
 
 
-def test_plan_pool_scales_workers_to_file_count(monkeypatch):
+def test_plan_pool_scales_workers_to_file_count(mocker):
     # Few files shouldn't fork a full fleet: ceil(nfiles/16) bounds the workers.
-    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 64)
+    mocker.patch.object(stats_mod.os, "cpu_count", return_value=64)
     workers, _chunksize = plan_pool(20)
     assert workers == 2  # ceil(20/16)
 
 
-def test_plan_pool_chunksize_in_clamp_range(monkeypatch):
+def test_plan_pool_chunksize_in_clamp_range(mocker):
     # Across a wide range of inputs the chunksize stays within the tuned [1, 8].
-    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: 20)
+    mocker.patch.object(stats_mod.os, "cpu_count", return_value=20)
     for nfiles in (1, 20, 80, 200, 800, 4430, 50_000):
         workers, chunksize = plan_pool(nfiles)
         assert workers >= 1
         assert 1 <= chunksize <= 8
 
 
-def test_plan_pool_handles_unknown_cpu_count(monkeypatch):
+def test_plan_pool_handles_unknown_cpu_count(mocker):
     # os.cpu_count() can return None; the heuristic must still yield >=1 worker.
-    monkeypatch.setattr(stats_mod.os, "cpu_count", lambda: None)
+    mocker.patch.object(stats_mod.os, "cpu_count", return_value=None)
     workers, chunksize = plan_pool(1000)
     assert workers == 1
     assert 1 <= chunksize <= 8
@@ -896,12 +896,12 @@ def _seed_many_dirs(tool_dir: Path, n: int, records_per: int) -> list[Path]:
     return dirs
 
 
-def test_scan_dirs_serial_matches_scan_logs_dir(monkeypatch, tmp_path: Path):
+def test_scan_dirs_serial_matches_scan_logs_dir(mocker, tmp_path: Path):
     # The serial _scan_dirs path must fold to the same result _scan_logs_dir gives.
-    prices = _make_prices(monkeypatch, priced=True)
+    prices = _make_prices(mocker, priced=True)
     dirs = _seed_many_dirs(tmp_path / "tool", 3, records_per=2)
 
-    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 10**9)  # force serial
+    mocker.patch.object(stats_mod, "_PARALLEL_MIN_FILES", 10**9)  # force serial
     cache = _scan_dirs(dirs, from_iso=None, until_iso=None)
     for d in dirs:
         expect = _scan_logs_dir(d, prices, from_iso=None, until_iso=None)
@@ -912,15 +912,15 @@ def test_scan_dirs_serial_matches_scan_logs_dir(monkeypatch, tmp_path: Path):
         }
 
 
-def test_scan_dirs_parallel_matches_serial(monkeypatch, tmp_path: Path):
+def test_scan_dirs_parallel_matches_serial(mocker, tmp_path: Path):
     # Forcing the pool path must yield byte-identical aggregates to the serial one,
     # proving parallelism doesn't change results. Enough files to exercise chunks.
-    _make_prices(monkeypatch, priced=True)
+    _make_prices(mocker, priced=True)
     dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=2)
 
-    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 10**9)
+    mocker.patch.object(stats_mod, "_PARALLEL_MIN_FILES", 10**9)
     serial = _scan_dirs(dirs, from_iso=None, until_iso=None)
-    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 1)
+    mocker.patch.object(stats_mod, "_PARALLEL_MIN_FILES", 1)
     parallel = _scan_dirs(dirs, from_iso=None, until_iso=None)
 
     def norm(cache: dict) -> dict:
@@ -942,12 +942,12 @@ def test_scan_dirs_parallel_matches_serial(monkeypatch, tmp_path: Path):
     assert norm(serial) == norm(parallel)
 
 
-def test_scan_dirs_parallel_totals_match_records(monkeypatch, tmp_path: Path):
+def test_scan_dirs_parallel_totals_match_records(mocker, tmp_path: Path):
     # End-to-end count check on the parallel path: every record is costed once.
-    _make_prices(monkeypatch, priced=True)
+    _make_prices(mocker, priced=True)
     dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=3)
 
-    monkeypatch.setattr(stats_mod, "_PARALLEL_MIN_FILES", 1)  # force parallel
+    mocker.patch.object(stats_mod, "_PARALLEL_MIN_FILES", 1)  # force parallel
     cache = _scan_dirs(dirs, from_iso=None, until_iso=None)
     total_msgs = sum(
         b.msgs for _, _, by_day, _ in cache.values() for v in by_day.values() for b in v.values()

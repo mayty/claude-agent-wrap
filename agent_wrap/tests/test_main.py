@@ -21,10 +21,8 @@ def test_every_command_module_exposes_run_and_metadata() -> None:
         assert c.summary, f"{c.name} SUMMARY must be non-empty"
 
 
-def test_help_lists_every_discovered_command(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr("sys.argv", ["agent_wrap"])
+def test_help_lists_every_discovered_command(mocker, capsys: pytest.CaptureFixture[str]) -> None:
+    mocker.patch("sys.argv", ["agent_wrap"])
     rc = main()
     assert rc == 1
     err = capsys.readouterr().err
@@ -34,10 +32,8 @@ def test_help_lists_every_discovered_command(
             assert c.summary in err, f"help output missing summary for {c.name!r}"
 
 
-def test_unknown_command_returns_error(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr("sys.argv", ["agent_wrap", "no-such-cmd"])
+def test_unknown_command_returns_error(mocker, capsys: pytest.CaptureFixture[str]) -> None:
+    mocker.patch("sys.argv", ["agent_wrap", "no-such-cmd"])
     rc = main()
     assert rc == 1
     assert "Unknown command: no-such-cmd" in capsys.readouterr().err

@@ -53,21 +53,21 @@ def test_secret_not_found_error_repr() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _setup_temp_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+def _setup_temp_paths(tmp_path: Path, mocker: pytest_mock.MockFixture) -> tuple[Path, Path]:
     """Point secrets_path and keyfile_path into *tmp_path*."""
     secrets_path = tmp_path / "secrets.enc"
     keyfile_path = tmp_path / ".secrets-key"
-    monkeypatch.setattr(_PATCH_SECRETS_PATH, lambda: secrets_path)
-    monkeypatch.setattr(_PATCH_KEYFILE_PATH, lambda: keyfile_path)
-    monkeypatch.setattr(_PATCH_AGENT_LAUNCHES, tmp_path)
+    mocker.patch(_PATCH_SECRETS_PATH, return_value=secrets_path)
+    mocker.patch(_PATCH_KEYFILE_PATH, return_value=keyfile_path)
+    mocker.patch(_PATCH_AGENT_LAUNCHES, tmp_path)
     _derive_key.cache_clear()
     return secrets_path, keyfile_path
 
 
-def _setup_fixed_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def _setup_fixed_key(mocker: pytest_mock.MockFixture) -> None:
     """Make _derive_key always return _FIXED_KEY."""
     _derive_key.cache_clear()
-    monkeypatch.setattr(_PATCH_DERIVE_KEY, lambda: _FIXED_KEY)
+    mocker.patch(_PATCH_DERIVE_KEY, return_value=_FIXED_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -75,15 +75,13 @@ def _setup_fixed_key(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_derive_key_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_derive_key_stable(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """Same inputs → same key (repeatable)."""
     _derive_key.cache_clear()
     keyfile = tmp_path / ".secrets-key"
     keyfile.write_bytes(b"a" * 32)
-    monkeypatch.setattr(_PATCH_KEYFILE_PATH, lambda: keyfile)
-    monkeypatch.setattr(
-        "agent_wrap.secrets.Path.read_text", lambda self, encoding=None: "fake-machine-id"
-    )
+    mocker.patch(_PATCH_KEYFILE_PATH, return_value=keyfile)
+    mocker.patch("agent_wrap.secrets.Path.read_text", return_value="fake-machine-id")
     # Mock subprocess for git
     import subprocess
 
@@ -91,7 +89,7 @@ def test_derive_key_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         returncode = 0
         stdout = "abc123def456\n"
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeResult())
+    mocker.patch.object(subprocess, "run", return_value=_FakeResult())
 
     k1 = _derive_key()
     _derive_key.cache_clear()
@@ -100,19 +98,19 @@ def test_derive_key_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert len(k1) == 32
 
 
-def test_derive_key_creates_keyfile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_derive_key_creates_keyfile(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """Keyfile is generated on first use when missing."""
     _derive_key.cache_clear()
     keyfile = tmp_path / ".secrets-key"
-    monkeypatch.setattr(_PATCH_KEYFILE_PATH, lambda: keyfile)
-    monkeypatch.setattr("agent_wrap.secrets.Path.read_text", lambda self, encoding=None: "mid")
+    mocker.patch(_PATCH_KEYFILE_PATH, return_value=keyfile)
+    mocker.patch("agent_wrap.secrets.Path.read_text", return_value="mid")
     import subprocess
 
     class _FakeResult:
         returncode = 0
         stdout = "abc\n"
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeResult())
+    mocker.patch.object(subprocess, "run", return_value=_FakeResult())
 
     assert not keyfile.is_file()
     _derive_key()
@@ -124,17 +122,17 @@ def test_derive_key_creates_keyfile(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_derive_key_empty_machine_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
 ) -> None:
     """Warns when /etc/machine-id exists but is empty."""
     _derive_key.cache_clear()
     keyfile = tmp_path / ".secrets-key"
     keyfile.write_bytes(b"b" * 32)
-    monkeypatch.setattr(_PATCH_KEYFILE_PATH, lambda: keyfile)
+    mocker.patch(_PATCH_KEYFILE_PATH, return_value=keyfile)
     # Return an empty machine-id
-    monkeypatch.setattr(
+    mocker.patch(
         "agent_wrap.secrets.Path.read_text",
-        lambda self, encoding=None: "   \n",
+        return_value="   \n",
     )
     import subprocess
 
@@ -142,7 +140,7 @@ def test_derive_key_empty_machine_id(
         returncode = 0
         stdout = "abc\n"
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeResult())
+    mocker.patch.object(subprocess, "run", return_value=_FakeResult())
 
     key = _derive_key()
     assert len(key) == 32
@@ -225,24 +223,24 @@ def test_decrypt_too_short() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_read_all_empty_when_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_all_empty_when_no_file(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     assert _read_all() == {}
 
 
-def test_read_all_returns_stored_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_all_returns_stored_data(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"a": "1", "b": "2"})
     assert _read_all() == {"a": "1", "b": "2"}
 
 
 def test_read_all_corrupt_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
 ) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     secrets_path = tmp_path / "secrets.enc"
     secrets_path.write_bytes(b"not valid encrypted data")
     result = _read_all()
@@ -252,16 +250,16 @@ def test_read_all_corrupt_file(
 
 
 def test_read_all_wrong_key_returns_empty(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture
 ) -> None:
     """When the encryption key changes, _read_all warns and returns {}."""
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"key": "val"})
 
     # Change the key
     _derive_key.cache_clear()
-    monkeypatch.setattr(_PATCH_DERIVE_KEY, lambda: b"x" * 32)
+    mocker.patch(_PATCH_DERIVE_KEY, return_value=b"x" * 32)
 
     result = _read_all()
     assert result == {}
@@ -269,38 +267,38 @@ def test_read_all_wrong_key_returns_empty(
     assert "decrypt" in captured.err.lower()
 
 
-def test_write_all_creates_parent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_all_creates_parent_dir(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     nested = tmp_path / "sub" / "nested"
-    monkeypatch.setattr(_PATCH_SECRETS_PATH, lambda: nested / "secrets.enc")
-    monkeypatch.setattr(_PATCH_AGENT_LAUNCHES, nested)
-    _setup_fixed_key(monkeypatch)
+    mocker.patch(_PATCH_SECRETS_PATH, return_value=nested / "secrets.enc")
+    mocker.patch(_PATCH_AGENT_LAUNCHES, nested)
+    _setup_fixed_key(mocker)
     _write_all({"x": "y"})
     assert (nested / "secrets.enc").is_file()
 
 
-def test_write_all_overwrites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_write_all_overwrites(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"old": "data"})
     _write_all({"new": "value"})
     assert _read_all() == {"new": "value"}
 
 
-def test_write_all_atomic_no_partial_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_all_atomic_no_partial_read(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """A failed write doesn't corrupt existing data."""
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"good": "data"})
     secrets_path = tmp_path / "secrets.enc"
     original = secrets_path.read_bytes()
     # Simulate a failure during write by temporarily pointing path to a
     # read-only directory — the write will fail but the original file
     # must remain intact.
-    monkeypatch.setattr(_PATCH_SECRETS_PATH, lambda: Path("/nonexistent/ro/secrets.enc"))
+    mocker.patch(_PATCH_SECRETS_PATH, return_value=Path("/nonexistent/ro/secrets.enc"))
     with contextlib.suppress(OSError, PermissionError):
         _write_all({"bad": "write"})
     # Restore and check original is intact
-    monkeypatch.setattr(_PATCH_SECRETS_PATH, lambda: secrets_path)
+    mocker.patch(_PATCH_SECRETS_PATH, return_value=secrets_path)
     assert secrets_path.read_bytes() == original
     assert _read_all() == {"good": "data"}
 
@@ -310,26 +308,24 @@ def test_write_all_atomic_no_partial_read(tmp_path: Path, monkeypatch: pytest.Mo
 # ---------------------------------------------------------------------------
 
 
-def test_read_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_found(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"ns:key": "stored-value"})
     assert read("ns:key", "desc") == "stored-value"
 
 
-def test_read_missing_no_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_missing_no_prompt(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     with pytest.raises(SecretNotFoundError) as exc:
         read("ns:missing", "desc", prompt_on_missing=False)
     assert exc.value.key == "ns:missing"
 
 
-def test_read_missing_with_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
-) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_missing_with_prompt(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     mocker.patch("agent_wrap.secrets.getpass.getpass", return_value="entered")
 
     result = read("ns:new", "desc", prompt_on_missing=True)
@@ -338,11 +334,9 @@ def test_read_missing_with_prompt(
     assert _read_all()["ns:new"] == "entered"
 
 
-def test_read_prompt_eof_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
-) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_prompt_eof_error(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     mocker.patch("agent_wrap.secrets.getpass.getpass", side_effect=EOFError)
 
     with pytest.raises(SecretNotFoundError):
@@ -354,22 +348,18 @@ def test_read_prompt_eof_error(
 # ---------------------------------------------------------------------------
 
 
-def test_write_stores(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
-) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_write_stores(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     mocker.patch("agent_wrap.secrets.getpass.getpass", return_value="typed")
 
     write("ns:key", "desc")
     assert _read_all()["ns:key"] == "typed"
 
 
-def test_write_preserves_other_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
-) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_write_preserves_other_keys(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"existing": "keep-me"})
     mocker.patch("agent_wrap.secrets.getpass.getpass", return_value="new-val")
 
@@ -384,32 +374,32 @@ def test_write_preserves_other_keys(
 # ---------------------------------------------------------------------------
 
 
-def test_delete_removes_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_delete_removes_key(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"a": "1", "b": "2"})
     delete("a")
     assert _read_all() == {"b": "2"}
 
 
-def test_delete_missing_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_delete_missing_is_noop(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"a": "1"})
     delete("nonexistent")  # no-op
     assert _read_all() == {"a": "1"}
 
 
-def test_list_keys_returns_sorted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_list_keys_returns_sorted(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _write_all({"c": "3", "a": "1", "b": "2"})
     assert list_keys() == ["a", "b", "c"]
 
 
-def test_list_keys_empty_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_list_keys_empty_store(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     assert list_keys() == []
 
 
@@ -418,10 +408,10 @@ def test_list_keys_empty_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 # ---------------------------------------------------------------------------
 
 
-def test_read_all_filters_non_strings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_all_filters_non_strings(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """_read_all skips values that are not strings (e.g. int, None)."""
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     # Bypass the public API to write a dict with a non-string value
     from agent_wrap.secrets import _encrypt, _secrets_path
 
@@ -434,12 +424,12 @@ def test_read_all_filters_non_strings(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "drop_none" not in data
 
 
-def test_migrate_filters_non_strings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_migrate_filters_non_strings(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """Migration skips entries with non-string values."""
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text(json.dumps({"keep": "val", "drop": 123, "also_drop": None}))
 
     _maybe_migrate_old_fallback()
@@ -454,19 +444,19 @@ def test_migrate_filters_non_strings(tmp_path: Path, monkeypatch: pytest.MonkeyP
 # ---------------------------------------------------------------------------
 
 
-def test_migrate_no_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_migrate_no_old_file(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     _maybe_migrate_old_fallback()
     # No crash, no side effects
     assert _read_all() == {}
 
 
-def test_migrate_copies_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_migrate_copies_data(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text(json.dumps({"a": "1", "b": "2"}))
 
     _maybe_migrate_old_fallback()
@@ -476,10 +466,10 @@ def test_migrate_copies_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_migrate_does_not_overwrite_existing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     # Pre-populate encrypted store
     _write_all({"existing": "keep"})
     encrypted = tmp_path / "secrets.enc"
@@ -487,7 +477,7 @@ def test_migrate_does_not_overwrite_existing(
 
     # Create old file
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text(json.dumps({"a": "should-not-migrate"}))
 
     _maybe_migrate_old_fallback()
@@ -497,11 +487,11 @@ def test_migrate_does_not_overwrite_existing(
     assert _read_all() == {"existing": "keep"}
 
 
-def test_migrate_corrupt_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_migrate_corrupt_old_file(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text("not valid json")
 
     _maybe_migrate_old_fallback()
@@ -510,11 +500,11 @@ def test_migrate_corrupt_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert _read_all() == {}
 
 
-def test_migrate_empty_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_migrate_empty_old_file(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text(json.dumps({}))
 
     _maybe_migrate_old_fallback()
@@ -522,11 +512,11 @@ def test_migrate_empty_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert not old.is_file(), "empty old file should be deleted"
 
 
-def test_read_triggers_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_read_triggers_migration(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text(json.dumps({"telegram:TelegramBotToken": "migrated-tg"}))
 
     result = read("telegram:TelegramBotToken", "desc")
@@ -534,13 +524,11 @@ def test_read_triggers_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert not old.is_file()
 
 
-def test_write_triggers_migration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
-) -> None:
-    _setup_temp_paths(tmp_path, monkeypatch)
-    _setup_fixed_key(monkeypatch)
+def test_write_triggers_migration(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    _setup_temp_paths(tmp_path, mocker)
+    _setup_fixed_key(mocker)
     old = tmp_path / "secrets.json"
-    monkeypatch.setattr("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
+    mocker.patch("agent_wrap.secrets._OLD_FALLBACK_PATH", old)
     old.write_text(json.dumps({"old-key": "old-val"}))
     mocker.patch("agent_wrap.secrets.getpass.getpass", return_value="new-val")
 

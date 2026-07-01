@@ -95,15 +95,13 @@ def test_concurrent_writers_do_not_crash(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == [target]
 
 
-def test_write_text_cleans_up_tmp_on_replace_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_write_text_cleans_up_tmp_on_replace_failure(tmp_path: Path, mocker) -> None:
     target = tmp_path / "out.txt"
 
     def boom(self: Path, _target: Path) -> None:
         raise OSError("replace failed")  # noqa: EM101, TRY003 -- test stub
 
-    monkeypatch.setattr(atomic.Path, "replace", boom)
+    mocker.patch.object(atomic.Path, "replace", boom)
 
     with pytest.raises(OSError, match="replace failed"):
         atomic_write_text(target, "x")

@@ -6,8 +6,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from agent_wrap.providers import get_provider
 from agent_wrap.providers.litellm_common import LiteLLMSidecar
 from agent_wrap.providers.litellm_dashscope.provider import DashscopeProvider
@@ -71,7 +69,7 @@ def test_api_key_approval_id():
     assert DashscopeProvider._api_key_approval_id("short") == "short"
 
 
-def test_approve_master_key_adds_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_approve_master_key_adds_entry(tmp_path: Path, mocker) -> None:
     """Approving a key adds its approval ID to .claude.json."""
     config_dir = tmp_path / ".claude_config"
     config_dir.mkdir()
@@ -80,65 +78,61 @@ def test_approve_master_key_adds_entry(tmp_path: Path, monkeypatch: pytest.Monke
 
     p = _dashscope()
     # Patch the path resolution
-    monkeypatch.setattr(p, "_claude_json_path", lambda: claude_json)
+    mocker.patch.object(p, "_claude_json_path", return_value=claude_json)
 
     p._approve_master_key("sk-ds-abcdefghijklmnopqrst")
     data = json.loads(claude_json.read_text())
     assert "abcdefghijklmnopqrst" in data["customApiKeyResponses"]["approved"]
 
 
-def test_approve_master_key_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_approve_master_key_idempotent(tmp_path: Path, mocker) -> None:
     """Approving the same key twice doesn't duplicate the entry."""
     claude_json = tmp_path / ".claude.json"
     claude_json.write_text("{}")
     p = _dashscope()
-    monkeypatch.setattr(p, "_claude_json_path", lambda: claude_json)
+    mocker.patch.object(p, "_claude_json_path", return_value=claude_json)
     p._approve_master_key("sk-ds-abcdefghijklmnopqrst")
     p._approve_master_key("sk-ds-abcdefghijklmnopqrst")
     data = json.loads(claude_json.read_text())
     assert data["customApiKeyResponses"]["approved"].count("abcdefghijklmnopqrst") == 1
 
 
-def test_approve_master_key_skips_malformed_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_approve_master_key_skips_malformed_json(tmp_path: Path, mocker) -> None:
     """Approving a key when .claude.json is malformed is a no-op."""
     claude_json = tmp_path / ".claude.json"
     claude_json.write_text("{bad json")
     p = _dashscope()
-    monkeypatch.setattr(p, "_claude_json_path", lambda: claude_json)
+    mocker.patch.object(p, "_claude_json_path", return_value=claude_json)
     p._approve_master_key("sk-ds-abcdefghijklmnopqrst")
     assert claude_json.read_text() == "{bad json"
 
 
-def test_unapprove_master_key_removes_entry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_unapprove_master_key_removes_entry(tmp_path: Path, mocker) -> None:
     """Unapproving a key removes its approval ID."""
     claude_json = tmp_path / ".claude.json"
     data = {"customApiKeyResponses": {"approved": ["abcdefghijklmnopqrst", "other"]}}
     claude_json.write_text(json.dumps(data))
     p = _dashscope()
-    monkeypatch.setattr(p, "_claude_json_path", lambda: claude_json)
+    mocker.patch.object(p, "_claude_json_path", return_value=claude_json)
     p._unapprove_master_key("sk-ds-abcdefghijklmnopqrst")
     data = json.loads(claude_json.read_text())
     assert "abcdefghijklmnopqrst" not in data["customApiKeyResponses"]["approved"]
     assert "other" in data["customApiKeyResponses"]["approved"]
 
 
-def test_unapprove_nonexistent_key_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unapprove_nonexistent_key_noop(tmp_path: Path, mocker) -> None:
     """Unapproving a key that isn't approved is a no-op."""
     claude_json = tmp_path / ".claude.json"
     claude_json.write_text("{}")
     p = _dashscope()
-    monkeypatch.setattr(p, "_claude_json_path", lambda: claude_json)
+    mocker.patch.object(p, "_claude_json_path", return_value=claude_json)
     p._unapprove_master_key("sk-ds-abcdefghijklmnopqrst")  # should not raise
 
 
-def test_load_claude_json_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_claude_json_missing_file(tmp_path: Path, mocker) -> None:
     claude_json = tmp_path / ".claude.json"
     # Don't create it
     p = _dashscope()
-    monkeypatch.setattr(p, "_claude_json_path", lambda: claude_json)
+    mocker.patch.object(p, "_claude_json_path", return_value=claude_json)
     result = p._load_claude_json()
     assert result == {}

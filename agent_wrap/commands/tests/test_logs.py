@@ -1170,37 +1170,37 @@ def test_write_then_read_state_round_trip(tmp_path: Path):
     assert state == {"pid": 4242, "port": 8765}
 
 
-def test_pid_alive_true_for_running(monkeypatch):
-    monkeypatch.setattr(logs_mod.os, "kill", lambda pid, sig: None)
+def test_pid_alive_true_for_running(mocker):
+    mocker.patch.object(logs_mod.os, "kill", return_value=None)
     assert _pid_alive(123) is True
 
 
-def test_pid_alive_false_for_dead(monkeypatch):
+def test_pid_alive_false_for_dead(mocker):
     def _kill(pid, sig):
         raise ProcessLookupError
 
-    monkeypatch.setattr(logs_mod.os, "kill", _kill)
+    mocker.patch.object(logs_mod.os, "kill", _kill)
     assert _pid_alive(123) is False
 
 
-def test_pid_alive_true_for_permission_error(monkeypatch):
+def test_pid_alive_true_for_permission_error(mocker):
     def _kill(pid, sig):
         raise PermissionError
 
-    monkeypatch.setattr(logs_mod.os, "kill", _kill)
+    mocker.patch.object(logs_mod.os, "kill", _kill)
     assert _pid_alive(123) is True
 
 
-def test_running_server_returns_state_when_alive(tmp_path: Path, monkeypatch):
+def test_running_server_returns_state_when_alive(tmp_path: Path, mocker):
     _write_state(pid=4242, port=9001)
-    monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: True)
+    mocker.patch.object(logs_mod, "_pid_alive", return_value=True)
     state = _running_server()
     assert state == {"pid": 4242, "port": 9001}
 
 
-def test_running_server_removes_stale_file_when_dead(tmp_path: Path, monkeypatch):
+def test_running_server_removes_stale_file_when_dead(tmp_path: Path, mocker):
     _write_state(pid=4242, port=9001)
-    monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: False)
+    mocker.patch.object(logs_mod, "_pid_alive", return_value=False)
     assert _running_server() is None
     assert not _state_file().exists()
 
@@ -1212,84 +1212,82 @@ def test_running_server_none_when_no_file(tmp_path: Path):
 # --- background server: run() dispatch -------------------------------------
 
 
-def test_run_stop_dispatches_to_stop(tmp_path: Path, monkeypatch):
+def test_run_stop_dispatches_to_stop(tmp_path: Path, mocker):
     called = {}
 
     def _fake_stop():
         called["stop"] = True
         return 0
 
-    monkeypatch.setattr(logs_mod, "_stop", _fake_stop)
+    mocker.patch.object(logs_mod, "_stop", _fake_stop)
     assert run(["--stop"]) == 0
     assert called["stop"] is True
 
 
-def test_run_stop_rejects_extra_args(tmp_path: Path, monkeypatch):
+def test_run_stop_rejects_extra_args(tmp_path: Path):
     assert run(["--stop", "--port", "9000"]) == 1
 
 
-def test_run_foreground_dispatches_to_serve_foreground(tmp_path: Path, monkeypatch):
+def test_run_foreground_dispatches_to_serve_foreground(tmp_path: Path, mocker):
     called = {}
 
     def _fake_fg(port):
         called["fg"] = port
         return 0
 
-    monkeypatch.setattr(logs_mod, "_serve_foreground", _fake_fg)
+    mocker.patch.object(logs_mod, "_serve_foreground", _fake_fg)
     assert run(["--foreground", "--port", "9000"]) == 0
     assert called["fg"] == 9000
 
 
-def test_run_already_running_prints_connect_line_and_skips_spawn(
-    tmp_path: Path, monkeypatch, capsys
-):
-    monkeypatch.setattr(logs_mod, "_running_server", lambda: {"pid": 1, "port": 9123})
+def test_run_already_running_prints_connect_line_and_skips_spawn(tmp_path: Path, mocker, capsys):
+    mocker.patch.object(logs_mod, "_running_server", return_value={"pid": 1, "port": 9123})
     spawned = {}
 
     def _fake_spawn(port):
         spawned["x"] = 1
         return 0
 
-    monkeypatch.setattr(logs_mod, "_spawn_background", _fake_spawn)
+    mocker.patch.object(logs_mod, "_spawn_background", _fake_spawn)
     assert run(["--port", "8765"]) == 0
     assert "x" not in spawned
     out = capsys.readouterr().out
     assert out.strip() == "LiteLLM log viewer running at http://127.0.0.1:9123"
 
 
-def test_run_spawns_when_not_running(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(logs_mod, "_running_server", lambda: None)
+def test_run_spawns_when_not_running(tmp_path: Path, mocker):
+    mocker.patch.object(logs_mod, "_running_server", return_value=None)
     called = {}
 
     def _fake_spawn(port):
         called["spawn"] = port
         return 0
 
-    monkeypatch.setattr(logs_mod, "_spawn_background", _fake_spawn)
+    mocker.patch.object(logs_mod, "_spawn_background", _fake_spawn)
     assert run(["--port", "9000"]) == 0
     assert called["spawn"] == 9000
 
 
-def test_run_help_returns_zero(tmp_path: Path, monkeypatch):
+def test_run_help_returns_zero(tmp_path: Path):
     assert run(["-h"]) == 0
 
 
 # --- background server: _stop ----------------------------------------------
 
 
-def test_stop_when_not_running(tmp_path: Path, monkeypatch, capsys):
-    monkeypatch.setattr(logs_mod, "_running_server", lambda: None)
+def test_stop_when_not_running(tmp_path: Path, mocker, capsys):
+    mocker.patch.object(logs_mod, "_running_server", return_value=None)
     assert _stop() == 0
     assert "no viewer is running" in capsys.readouterr().out
 
 
-def test_stop_sends_sigterm_and_removes_state(tmp_path: Path, monkeypatch, capsys):
+def test_stop_sends_sigterm_and_removes_state(tmp_path: Path, mocker, capsys):
     _write_state(pid=4242, port=9001)
-    monkeypatch.setattr(logs_mod, "_running_server", lambda: {"pid": 4242, "port": 9001})
+    mocker.patch.object(logs_mod, "_running_server", return_value={"pid": 4242, "port": 9001})
     signals: list[tuple[int, int]] = []
-    monkeypatch.setattr(logs_mod.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    mocker.patch.object(logs_mod.os, "kill", lambda pid, sig: signals.append((pid, sig)))
     # Report the PID as dead immediately so _stop doesn't spin on the wait loop.
-    monkeypatch.setattr(logs_mod, "_pid_alive", lambda pid: False)
+    mocker.patch.object(logs_mod, "_pid_alive", return_value=False)
     assert _stop() == 0
     assert (4242, logs_mod.signal.SIGTERM) in signals
     assert not _state_file().exists()

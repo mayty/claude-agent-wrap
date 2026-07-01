@@ -147,10 +147,10 @@ def test_is_headless(claude_args: list[str], expected: bool) -> None:  # noqa: F
 # --- _build_wslg_args ---
 
 
-def test_build_wslg_args_not_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_wslg_args_not_present(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     fake_mnt = tmp_path / "mnt" / "wslg"
     # Don't create the directory so is_dir() returns False
-    monkeypatch.setattr(
+    mocker.patch(
         "agent_wrap.commands.run.Path",
         lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
     )
@@ -158,10 +158,10 @@ def test_build_wslg_args_not_present(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result == []
 
 
-def test_build_wslg_args_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_wslg_args_present(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     fake_mnt = tmp_path / "mnt" / "wslg"
     fake_mnt.mkdir(parents=True)
-    monkeypatch.setattr(
+    mocker.patch(
         "agent_wrap.commands.run.Path",
         lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
     )
