@@ -1,10 +1,11 @@
+.idea
 .claude_config
 .agent-launches/
 *.pyc
 __pycache__
-agent_wrap/providers/*/lock
-agent_wrap/providers/*/refcount
-agent_wrap/providers/*/pricing.json
+agent_wrap/domain/providers/*/lock
+agent_wrap/domain/providers/*/refcount
+agent_wrap/domain/providers/*/pricing.json
 .claude/litellm-logs/
 .pytest_cache/
 .ruff_cache/

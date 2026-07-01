@@ -5,7 +5,7 @@ These environment variables affect wrapper behavior, not the container's environ
 
 ## `AGENT_PROVIDER` (model-routing backend)
 
-Selects which provider plugin to use. Each provider lives in `agent_wrap/providers/<name>/provider.py` and implements the [Provider ABC](../agent_wrap/providers/base.py). The default is `litellm-bedrock`, preserving historical behavior.
+Selects which provider plugin to use. Each provider lives in `agent_wrap/domain/providers/<name>/provider.py` and implements the [Provider ABC](../agent_wrap/domain/providers/base.py). The default is `litellm-bedrock`, preserving historical behavior.
 
 ```sh
 # Use the default LiteLLM-Bedrock provider (no var needed)
@@ -17,7 +17,7 @@ AGENT_PROVIDER=my-direct-anthropic source agent-wrap.bashrc
 agent run
 ```
 
-Providers are auto-discovered by scanning `agent_wrap/providers/*/provider.py` for concrete `Provider` subclasses (`inspect.getmembers()` + `inspect.isabstract()`) — drop in a directory and it shows up in the error message above without any registry edits.
+Providers are auto-discovered by scanning `agent_wrap/domain/providers/*/provider.py` for concrete `Provider` subclasses (`inspect.getmembers()` + `inspect.isabstract()`) — drop in a directory and it shows up in the error message above without any registry edits.
 
 ## `AGENT_USE_HOST_NETWORK` (WSL workaround)
 

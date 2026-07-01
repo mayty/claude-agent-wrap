@@ -10,6 +10,7 @@ dev = [
     "pytest>=9.1.1,<10",
     "pytest-cov>=7.1.0,<8",
     "pytest-mock>=3.15.1,<4",
+    "pytest-subtests>=0.14.1,<1",
     "ruff>=0.15.20,<1",
     "pyrefly>=1.1.1,<2",
 ]
@@ -27,6 +28,7 @@ addopts = [
     "--tb=short",
     "--strict-markers",
 ]
+markers = []
 
 # ---------------------------------------------------------------------------
 # ruff (linter + formatter)
@@ -83,9 +85,6 @@ ignore = [
     "TD002",
     "TD003",
 
-    # `import` should be at the top-level of a file
-    "PLC0415",
-
     # Key in dict style
     "SIM118",
 
@@ -118,13 +117,21 @@ ignore = [
     "TC002",   # type-checking block imports not needed in test files
     "TC003",   # type-checking block imports not needed in test files
 ]
+"agent_wrap/containers.py" = [
+    "PLC0415", # local imports in @cached_property methods are the ONE exception
+]
 "ops/statusline.py" = [
     "BLE001", # broad except Exception -- statusline must never crash
 ]
-"agent_wrap/providers/litellm_common/callback.py" = [
+"agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py" = [
     "PLR0911", # too many return statements -- pre-existing pattern with minor additions
 ]
-"agent_wrap/providers/litellm_common/string_hasher.py" = [
+"agent_wrap/domain/providers/litellm_common/litellm_runtime/**" = [
+    "INP001",  # not a package — plain dir of files mounted into the sidecar container
+    "TC001",   # imports from the parent package are runtime dependencies in sidecar context
+    "TC002",   # same — sidecar-deployed files import at runtime, not just type-checking
+]
+"agent_wrap/domain/providers/litellm_common/litellm_runtime/string_hasher.py" = [
     "PERF203", # try-except within loop -- justified for resilient line-by-line JSONL parsing
 ]
 "scripts/**" = [
@@ -133,6 +140,9 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["agent_wrap"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -169,6 +179,7 @@ exclude_lines = [
 # pyrefly (Meta's type checker)
 # ---------------------------------------------------------------------------
 [tool.pyrefly]
+preset = "strict"
 project_includes = [
     "agent_wrap",
     "ops/statusline.py",
@@ -176,5 +187,14 @@ project_includes = [
 project_excludes = [
     "__pycache__",
     ".pytest_cache",
+    # litellm_runtime/ is not a Python package — it's a directory of files
+    # mounted into the sidecar container. Imports within it use sys.path
+    # manipulation rather than package-relative imports.
+    "agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py",
+    "agent_wrap/domain/providers/litellm_common/litellm_runtime/helpers.py",
+    "agent_wrap/domain/providers/litellm_common/litellm_runtime/string_hasher.py",
 ]
 python_version = "3.10"
+
+[tool.pyrefly.errors]
+missing-override-decorator = false

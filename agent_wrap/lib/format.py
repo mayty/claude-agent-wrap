@@ -31,21 +31,6 @@ def fmt_count(n: int) -> str:
     return f"{value:.1f}{units[-1]}"
 
 
-def fmt_cost(c: float | None) -> str:
-    if c is None:
-        return "?"
-    return f"${c:.2f}"
-
-
-def fmt_cost_with_unknown(c: float | None, *, unknown: bool) -> str:
-    """Format cost, collapsing '$0.00+?' to just '?'."""
-    if c is None or (c == 0.0 and unknown):
-        return "?"
-    if unknown:
-        return f"${c:.2f}+?"
-    return f"${c:.2f}"
-
-
 def parse_ts(s: str | None) -> datetime | None:
     if not s:
         return None

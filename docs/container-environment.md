@@ -17,9 +17,9 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 
 The active provider injects additional vars via its `get_agent_env()`, plus the connectivity flags its sidecar(s) supply to the agent's `docker run`. See the provider's README:
 
-- [litellm-bedrock](../agent_wrap/providers/litellm_bedrock/README.md)
-- [litellm-dashscope](../agent_wrap/providers/litellm_dashscope/README.md)
-- [litellm-deepseek](../agent_wrap/providers/litellm_deepseek/README.md)
+- [litellm-bedrock](../agent_wrap/domain/providers/litellm_bedrock/README.md)
+- [litellm-dashscope](../agent_wrap/domain/providers/litellm_dashscope/README.md)
+- [litellm-deepseek](../agent_wrap/domain/providers/litellm_deepseek/README.md)
 
 ## Host-forwarded (conditional)
 

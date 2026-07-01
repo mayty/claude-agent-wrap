@@ -24,6 +24,7 @@ import sys
 import termios
 import time
 from pathlib import Path
+from typing import Any
 
 CACHE = Path.home() / ".cache" / "claude-latest-version"
 REFRESH_AFTER_SECONDS = 6 * 3600
@@ -101,7 +102,7 @@ def latest_version(current: str) -> str | None:
     return None
 
 
-def context_segment(data: dict) -> str:
+def context_segment(data: dict[str, Any]) -> str:
     cw = data.get("context_window") or {}
     used = cw.get("used_percentage")
     exceeds_200k = bool(data.get("exceeds_200k_tokens"))
@@ -116,7 +117,7 @@ def context_segment(data: dict) -> str:
     return f"{color}{used:.0f}% context{RESET}"
 
 
-def model_segment(data: dict) -> str:
+def model_segment(data: dict[str, Any]) -> str:
     model = (data.get("model") or {}).get("display_name") or "?"
     effort = (data.get("effort") or {}).get("level")
     thinking = bool((data.get("thinking") or {}).get("enabled"))
@@ -129,12 +130,12 @@ def model_segment(data: dict) -> str:
     return f"{model}{suffix}"
 
 
-def cost_segment(data: dict) -> str:
+def cost_segment(data: dict[str, Any]) -> str:
     cost = (data.get("cost") or {}).get("total_cost_usd") or 0.0
     return f"${cost:.2f}"
 
 
-def update_segment(data: dict) -> str:
+def update_segment(data: dict[str, Any]) -> str:
     version = data.get("version") or ""
     if not version:
         return ""
