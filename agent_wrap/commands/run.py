@@ -128,7 +128,7 @@ def _resolve_sidecar_secrets(
             return None
 
         print(
-            f"Secrets for '{sidecar_name}' not found. Run 'agent secrets {sidecar_name} set'.",
+            f"Secrets for '{sidecar_name}' not found. Run 'agent secrets set {sidecar_name}'.",
             file=sys.stderr,
         )
         raise SystemExit(1) from None
