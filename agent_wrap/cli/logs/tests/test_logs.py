@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_wrap.cli.logs import build_parser, run
+from agent_wrap.cli.logs.run import build_parser, run
 from agent_wrap.containers import services
 
 # --- arg parsing ---

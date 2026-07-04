@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_wrap.cli.create import run as create_run
+from agent_wrap.cli.create.run import run as create_run
 from agent_wrap.containers import services
 
 

@@ -9,7 +9,8 @@ import pytest
 from pytest_mock import MockerFixture
 from pytest_subtests import SubTests
 
-from agent_wrap.cli import command_meta, main
+from agent_wrap.__main__ import main
+from agent_wrap.cli.commands import command_meta
 
 
 def test_every_command_module_exposes_run_and_metadata(subtests: SubTests) -> None:
@@ -17,7 +18,7 @@ def test_every_command_module_exposes_run_and_metadata(subtests: SubTests) -> No
     assert meta, "expected at least one command to be registered"
     for c in meta.values():
         with subtests.test(msg=c.name):  # type: ignore[bad-context-manager]
-            mod = import_module(f"agent_wrap.cli.{c.name}")
+            mod = import_module(f"agent_wrap.cli.{c.name}.run")
             assert callable(getattr(mod, "run", None)), f"{c.name} missing callable run()"
             assert isinstance(c.usage, str), f"{c.name} USAGE must be a string"
             assert isinstance(c.summary, str), f"{c.name} SUMMARY must be a string"

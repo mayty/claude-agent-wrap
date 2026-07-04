@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 from pytest_mock import MockerFixture
 
-from agent_wrap.cli import logs as logs_mod
+from agent_wrap.cli.logs import run as logs_mod
 from agent_wrap.domain.logs.daemon import (
     read_state,
     state_file,

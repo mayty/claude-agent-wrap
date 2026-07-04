@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_wrap.cli.secrets import run as secrets_run
+from agent_wrap.cli.secrets.run import run as secrets_run
 from agent_wrap.containers import services
 
 

@@ -11,7 +11,7 @@ in ``agent_wrap/cli/conftest.py``.
 
 from __future__ import annotations
 
-from agent_wrap.cli.run import run as agent_run
+from agent_wrap.cli.run.run import run as agent_run
 from agent_wrap.containers import services
 
 

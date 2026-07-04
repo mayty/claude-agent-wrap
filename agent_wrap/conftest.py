@@ -37,11 +37,11 @@ def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         "agent_wrap.domain.launch.service",
         "agent_wrap.domain.build.service",
         # --- cli ---
-        "agent_wrap.cli.logs",
-        "agent_wrap.cli.update",
-        "agent_wrap.cli.rebuild",
-        "agent_wrap.cli.stats",
-        "agent_wrap.cli.run",
+        "agent_wrap.cli.logs.run",
+        "agent_wrap.cli.update.run",
+        "agent_wrap.cli.rebuild.run",
+        "agent_wrap.cli.stats.run",
+        "agent_wrap.cli.run.run",
         # --- providers ---
         "agent_wrap.domain.providers.key_approval",
         "agent_wrap.domain.providers.litellm_provider",

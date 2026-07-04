@@ -55,3 +55,56 @@ def parse_or_code(parser: argparse.ArgumentParser, argv: list[str]) -> ParseResu
         return parser.parse_args(argv)
     except SystemExit as exc:
         return 0 if exc.code in (0, None) else 1
+
+
+# COMP_WORDS index of the first word after the verb (verb at index 1).
+_FIRST_ARG_INDEX = 2
+
+
+def _takes_value(action: argparse.Action) -> bool:
+    """Return whether *action* consumes a value argument (not store_true/false/count/const)."""
+    return action.nargs != 0
+
+
+def unused_flags(parser: argparse.ArgumentParser, words: list[str], cword: int) -> list[str]:
+    """
+    Return flags from *parser* that aren't already on the command line.
+
+    - Respects shorthand groups: ``-u`` present → ``--until`` excluded.
+    - Strips trailing ``=`` from words (COMP_WORDBREAKS splits ``--from=val``).
+    - Returns [] when *prev* is a value-accepting flag.
+    """
+    # option_string → action
+    opt_to_action: dict[str, argparse.Action] = {}
+    for action in parser._actions:  # noqa: SLF001
+        for opt in action.option_strings:
+            opt_to_action[opt] = action
+
+    # Prev word is a value-accepting flag → user is typing the value
+    prev = words[cword - 1] if cword > _FIRST_ARG_INDEX else ""
+    prev_action = opt_to_action.get(prev)
+    if prev_action is not None and _takes_value(prev_action):
+        return []
+
+    # Actions whose option_strings already appear on the command line
+    consumed: set[int] = set()
+    for i in range(_FIRST_ARG_INDEX, cword):
+        w = words[i]
+        w = w.removesuffix("=")  # --from= → --from
+        action = opt_to_action.get(w)
+        if action is not None:
+            consumed.add(id(action))
+
+    # Return option_strings from non-consumed, non-hidden actions
+    flags: list[str] = []
+    seen: set[int] = set()
+    for action in parser._actions:  # noqa: SLF001
+        if action.help is argparse.SUPPRESS:
+            continue
+        aid = id(action)
+        if aid in seen:
+            continue
+        seen.add(aid)
+        if aid not in consumed:
+            flags.extend(action.option_strings)
+    return flags

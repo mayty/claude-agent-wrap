@@ -82,7 +82,7 @@ class SecretsService:
 
     # -- Sidecar discovery --------------------------------------------------
 
-    def _known_sidecars(self) -> list[str]:
+    def known_sidecars(self) -> list[str]:
         """Return the sorted list of known sidecar names."""
         names = list(self._provider_service.discover_providers().keys())
         names.append("telegram")
@@ -98,7 +98,7 @@ class SecretsService:
         try:
             provider = self._provider_service.get_provider(sidecar_name)
         except ProviderNotFoundError:
-            known = ", ".join(self._known_sidecars())
+            known = ", ".join(self.known_sidecars())
             print(
                 f"Unknown sidecar: {sidecar_name}  (known: {known})",
                 file=sys.stderr,
@@ -171,7 +171,7 @@ class SecretsService:
         Returns the list of removed keys.
         """
         known_keys: set[str] = set()
-        for name in self._known_sidecars():
+        for name in self.known_sidecars():
             required = self._get_required_secrets_safe(name)
             for key, _desc in required:
                 known_keys.add(f"{name}:{key}")

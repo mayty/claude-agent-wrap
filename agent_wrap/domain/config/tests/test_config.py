@@ -257,9 +257,7 @@ def test_prepare_project_dirs_idempotent(svc: ConfigService, tmp_path: Path) -> 
 _STATE_DIRS_WITH_MEMORY = (*_STATE_DIRS, "memory")
 
 
-def test_prepare_project_dirs_migrates_old_memory_files(
-    svc: ConfigService, tmp_path: Path
-) -> None:
+def test_prepare_project_dirs_migrates_old_memory_files(svc: ConfigService, tmp_path: Path) -> None:
     """Old memory files under sessions/memory/ are moved to memory/."""
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -307,9 +305,7 @@ def test_prepare_project_dirs_migration_skips_existing_destination_files(
     assert (old_memory_dir / "old-fact.md").read_text() == "old version"
 
 
-def test_prepare_project_dirs_migration_idempotent(
-    svc: ConfigService, tmp_path: Path
-) -> None:
+def test_prepare_project_dirs_migration_idempotent(svc: ConfigService, tmp_path: Path) -> None:
     """Running the migration twice is safe."""
     project_dir = tmp_path / "project"
     project_dir.mkdir()

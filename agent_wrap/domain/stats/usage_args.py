@@ -160,6 +160,21 @@ def _glue_dash_values(args: list[str]) -> list[str]:
     return out
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Return an ``ArgumentParser`` for ``agent stats`` (no usage text set)."""
+    parser = argparse.ArgumentParser(
+        prog="agent stats",
+        allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-f", "--from", dest="from_date", type=_parse_date_spec, metavar="D")
+    parser.add_argument("-u", "--until", dest="until_date", type=_parse_date_spec, metavar="D")
+    parser.add_argument("-d", "--days", dest="days", type=_parse_days, metavar="N")
+    parser.add_argument("registry")
+    return parser
+
+
 def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> UsageArgs | None:
     """
     Parse ``[-f|--from D] [-u|--until D] [-d|--days N] [-v] <projects.txt>``.
@@ -170,18 +185,9 @@ def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> Us
     happens in the argparse ``type=`` converters; :func:`_resolve_range` applies
     the cross-field semantics that a per-value converter can't see.
     """
-    parser = argparse.ArgumentParser(
-        prog="agent stats",
-        usage=usage_line.removeprefix("Usage: "),
-        description=usage_text,
-        allow_abbrev=False,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-f", "--from", dest="from_date", type=_parse_date_spec, metavar="D")
-    parser.add_argument("-u", "--until", dest="until_date", type=_parse_date_spec, metavar="D")
-    parser.add_argument("-d", "--days", dest="days", type=_parse_days, metavar="N")
-    parser.add_argument("registry")
+    parser = build_parser()
+    parser.usage = usage_line.removeprefix("Usage: ")
+    parser.description = usage_text
 
     try:
         ns = parser.parse_args(_glue_dash_values(args))

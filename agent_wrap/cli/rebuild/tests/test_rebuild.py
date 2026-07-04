@@ -5,33 +5,33 @@ from __future__ import annotations
 
 import pytest
 
-from agent_wrap.cli.rebuild import _build_parser
-from agent_wrap.cli.rebuild import run as rebuild_run
+from agent_wrap.cli.rebuild.run import build_parser
+from agent_wrap.cli.rebuild.run import run as rebuild_run
 
 
 def test_parse_no_args() -> None:
-    assert _build_parser().parse_args([]).full is False
+    assert build_parser().parse_args([]).full is False
 
 
 def test_parse_full_flag() -> None:
-    assert _build_parser().parse_args(["--full"]).full is True
+    assert build_parser().parse_args(["--full"]).full is True
 
 
 def test_help_short() -> None:
     with pytest.raises(SystemExit) as exc:
-        _build_parser().parse_args(["-h"])
+        build_parser().parse_args(["-h"])
     assert exc.value.code == 0
 
 
 def test_help_long() -> None:
     with pytest.raises(SystemExit) as exc:
-        _build_parser().parse_args(["--help"])
+        build_parser().parse_args(["--help"])
     assert exc.value.code == 0
 
 
 def test_unknown_arg(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
-        _build_parser().parse_args(["--bogus"])
+        build_parser().parse_args(["--bogus"])
     assert exc.value.code != 0
     assert "unrecognized arguments" in capsys.readouterr().err
 
