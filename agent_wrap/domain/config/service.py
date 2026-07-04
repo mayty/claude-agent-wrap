@@ -176,6 +176,17 @@ class ConfigService:
         if not gitignore.exists():
             gitignore.write_text("*\n")
 
+        # One-time migration: memory was previously a subdirectory of the sessions
+        # mount. Now that it has its own mount, move any old files over so they
+        # are not hidden by the new (empty) bind-mount.
+        old_memory_dir = claude_dir / "sessions" / "memory"
+        new_memory_dir = claude_dir / "memory"
+        if old_memory_dir.is_dir() and new_memory_dir.is_dir():
+            for src in old_memory_dir.iterdir():
+                dst = new_memory_dir / src.name
+                if not dst.exists():
+                    shutil.move(str(src), str(dst))
+
     def link_litellm_logs(self, project_dir: Path) -> None:
         """
         Point ``project_dir/.claude/litellm-logs`` at the shared per-project subtree.

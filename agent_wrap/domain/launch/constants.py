@@ -7,6 +7,7 @@ EXPECTED_QUEUE_DEPTH = 128
 # Per-project state directories mounted into the container.
 STATE_MOUNTS = {
     "sessions": "projects/-workspace",
+    "memory": "projects/-workspace/memory",
     "session-state": "sessions",
     "daemon": "daemon",
     "jobs": "jobs",

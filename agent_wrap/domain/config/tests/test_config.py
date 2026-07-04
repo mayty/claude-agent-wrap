@@ -254,6 +254,80 @@ def test_prepare_project_dirs_idempotent(svc: ConfigService, tmp_path: Path) -> 
     svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)  # should not raise
 
 
+_STATE_DIRS_WITH_MEMORY = (*_STATE_DIRS, "memory")
+
+
+def test_prepare_project_dirs_migrates_old_memory_files(
+    svc: ConfigService, tmp_path: Path
+) -> None:
+    """Old memory files under sessions/memory/ are moved to memory/."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+
+    # Simulate pre-migration state: sessions/memory/ exists with old files,
+    # and prepare_project_dirs has already created the empty memory/ dir.
+    old_memory_dir = claude_dir / "sessions" / "memory"
+    old_memory_dir.mkdir(parents=True)
+    new_memory_dir = claude_dir / "memory"
+    new_memory_dir.mkdir(parents=True)
+    (old_memory_dir / "MEMORY.md").write_text("old index")
+    (old_memory_dir / "some-fact.md").write_text("old fact")
+
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+
+    # Files should be moved to the new location.
+    assert (new_memory_dir / "MEMORY.md").read_text() == "old index"
+    assert (new_memory_dir / "some-fact.md").read_text() == "old fact"
+    # Old location should be empty.
+    assert list(old_memory_dir.iterdir()) == []
+
+
+def test_prepare_project_dirs_migration_skips_existing_destination_files(
+    svc: ConfigService, tmp_path: Path
+) -> None:
+    """Files already present at the destination are not overwritten."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+
+    old_memory_dir = claude_dir / "sessions" / "memory"
+    old_memory_dir.mkdir(parents=True)
+    new_memory_dir = claude_dir / "memory"
+    new_memory_dir.mkdir(parents=True)
+
+    (old_memory_dir / "old-fact.md").write_text("old version")
+    (new_memory_dir / "old-fact.md").write_text("newer version")
+
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+
+    # Destination file should not be overwritten.
+    assert (new_memory_dir / "old-fact.md").read_text() == "newer version"
+    # Old file should remain.
+    assert (old_memory_dir / "old-fact.md").read_text() == "old version"
+
+
+def test_prepare_project_dirs_migration_idempotent(
+    svc: ConfigService, tmp_path: Path
+) -> None:
+    """Running the migration twice is safe."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+
+    old_memory_dir = claude_dir / "sessions" / "memory"
+    old_memory_dir.mkdir(parents=True)
+    new_memory_dir = claude_dir / "memory"
+    new_memory_dir.mkdir(parents=True)
+    (old_memory_dir / "fact.md").write_text("fact")
+
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+
+    assert (new_memory_dir / "fact.md").read_text() == "fact"
+    assert list(old_memory_dir.iterdir()) == []
+
+
 # --- record_project ---
 
 
