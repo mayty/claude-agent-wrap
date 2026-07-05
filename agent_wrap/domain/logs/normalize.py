@@ -108,7 +108,7 @@ def enrich_with_costs(
     # Compute cost in USD when pricing data is available.
     cost = None
     if normalized["status"] == "success" and usage and model:
-        cost = pricing.compute_cost(provider, model, raw_response, request_ttl)
+        cost = pricing.compute_cost(provider, model, usage=norm_usage)
 
     return {
         "context_tokens": in_t,

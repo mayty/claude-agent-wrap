@@ -162,8 +162,7 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixt
         json.dumps({"hash": "hash:s", "original": "X"}) + "\n", encoding="utf-8"
     )
     mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.get_pricing.return_value = {}  # type: ignore[implicit-any-empty-container]
-    mock_ps.get_provider.return_value.get_tiered_pricing.return_value = {}  # type: ignore[implicit-any-empty-container]
+    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
     pricing = PricingService(provider_service=mock_ps)
     data = read_session(project, "s1", pricing=pricing)
     assert data["session_meta"] is not None
@@ -276,8 +275,7 @@ def test_read_session_merges_across_providers(tmp_path: Path, mocker: MockerFixt
         ],
     )
     mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.get_pricing.return_value = {}  # type: ignore[implicit-any-empty-container]
-    mock_ps.get_provider.return_value.get_tiered_pricing.return_value = {}  # type: ignore[implicit-any-empty-container]
+    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
     pricing = PricingService(provider_service=mock_ps)
     data = read_session(project, "s1", pricing=pricing)
     reqs = data["reqs"]

@@ -8,26 +8,27 @@ from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.pricing.constants import (
     DATE_SUFFIX_RE,
-    MODEL_CONTEXT_SUFFIX_RE,
     MODEL_FAMILY_RE_T_FIRST,
     MODEL_FAMILY_RE_V_FIRST,
 )
-from agent_wrap.domain.pricing.models import Bucket, Tier, TokenUsage
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from agent_wrap.domain.providers.service import ProviderService
 
 
 class PricingService:
     """
-    Domain service wrapping pricing lookup, usage extraction, and cost computation.
+    Domain service wrapping usage extraction, model normalization, and cost lookup.
 
     This is the *single public API* for the pricing subpackage.  Every consumer
     outside ``agent_wrap.domain.pricing`` accesses pricing functionality through
     an injected ``PricingService`` instance — never by importing the internal
     module-level helpers directly.
+
+    Cost computation is delegated to the provider (``Provider.compute_cost``)
+    so that individual providers can apply custom pricing logic (e.g. time-of-day
+    multipliers).
     """
 
     # Bucket factory for cross-domain consumers (accessed via injected instance).
@@ -37,12 +38,8 @@ class PricingService:
 
     def __init__(self, provider_service: ProviderService) -> None:
         self._provider_service = provider_service
-        # provider_name -> {model_key: [tier, ...]}, or None if unavailable.
-        # Key presence (even with a None value) marks the provider as fetched.
-        self._cache: dict[str, dict[str, list[Tier]] | None] = {}
         # Per-instance warning state (print once).
         self._mixed_cache_ttl_warned = False
-        self._usage_convention_warned = False
 
     # ------------------------------------------------------------------
     # Cache TTL helpers (inlined from UsageCollectors)
@@ -125,106 +122,31 @@ class PricingService:
         ver = m.group("ver").replace(".", "-")
         return f"claude-{tier}-{ver}"
 
-    def _best_prefix_key(self, query: str, keys: Iterable[str]) -> str | None:
-        """
-        Pick the pricing-table key that best matches *query* under true-prefix matching.
-
-        A key matches when it is a prefix of the query or the query is a prefix of it,
-        so a date-stamped request id matches its base pricing key, and a base request
-        matches its newest date-stamped key. Among matches prefer, in order:
-          1. the longest shared prefix,
-          2. then the shortest key (an exact base key beats a longer date-stamped one),
-          3. then the alphabetically-greatest key (newer date suffix wins).
-        """
-        best: str | None = None
-        best_rank: tuple[int, int, str] | None = None
-        for k in keys:
-            if not (k.startswith(query) or query.startswith(k)):
-                continue
-            rank = (min(len(k), len(query)), -len(k), k)
-            if best_rank is None or rank > best_rank:
-                best, best_rank = k, rank
-        return best
-
     # ------------------------------------------------------------------
-    # Pricing lookup (inlined from PriceSource)
-    # ------------------------------------------------------------------
-
-    def get_pricing(self, provider: str, model: str) -> list[Tier] | None:
-        """Return the tier list for *model*, or None if no price is known."""
-        if provider not in self._cache:
-            self._cache[provider] = self._fetch_pricing(provider)
-        table = self._cache[provider]
-        if not table:
-            return None
-
-        clean = model.rsplit("/", 1)[-1]
-        candidates = [
-            self.normalize_model(clean),
-            MODEL_CONTEXT_SUFFIX_RE.sub("", clean),
-            clean,
-        ]
-        for key in candidates:
-            if not key:
-                continue
-            match = self._best_prefix_key(key, table)
-            if match is not None:
-                return table[match]
-        return None
-
-    def _fetch_pricing(self, provider: str) -> dict[str, list[Tier]]:
-        """Build the unified tiered table for one provider (fetched once)."""
-        try:
-            p = self._provider_service.get_provider(provider)
-            flat = p.get_pricing()
-            tiered = p.get_tiered_pricing()
-        except Exception:  # noqa: BLE001
-            return {}
-
-        table: dict[str, list[Tier]] = {}
-        # Flat rates first, recast as a single infinite tier…
-        for model_key, rates in (flat or {}).items():
-            table[model_key] = [
-                {
-                    "max_in": float("inf"),
-                    "in_": rates["in"],
-                    "out": rates["out"],
-                    "cw_5m": rates["cw_5m"],
-                    "cw_1h": rates["cw_1h"],
-                    "cr": rates["cr"],
-                }
-            ]
-        # …then let genuine tiered pricing override flat for the same model.
-        for model_key, entry in (tiered or {}).items():
-            if entry and "tiers" in entry:
-                table[model_key] = entry["tiers"]
-        return table
-
-    # ------------------------------------------------------------------
-    # Cost computation
+    # Cost computation (delegates to provider)
     # ------------------------------------------------------------------
 
     def compute_cost(
         self,
         provider: str,
         model: str,
-        raw_response: dict[str, Any] | None = None,
-        request_ttl: str | None = None,
         *,
-        usage: TokenUsage | None = None,
+        usage: TokenUsage,
     ) -> float | None:
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
 
-        When *usage* is given it is used directly (skipping ``extract_usage``),
-        letting callers that already extracted usage avoid redundant work.
+        Normalizes *model* (Claude display names → canonical keys) then delegates
+        to the provider's ``compute_cost`` method.  Callers must extract usage
+        first via :meth:`extract_usage`.
         """
-        tiers = self.get_pricing(provider, model.rsplit("/", 1)[-1])
-        if tiers is None:
+        clean = model.rsplit("/", 1)[-1]
+        normalized = self.normalize_model(clean) or clean
+        try:
+            p = self._provider_service.get_provider(provider)
+        except Exception:  # noqa: BLE001
             return None
-        if usage is None:
-            usage = self.extract_usage(raw_response, request_ttl)
-        return self.cost_for_tiers(tiers, usage)
+        return p.compute_cost(normalized, usage)
 
     # ------------------------------------------------------------------
     # Usage extraction
@@ -272,36 +194,6 @@ class PricingService:
             "cache_creation": cache_creation,
         }
 
-    def cost_for_tiers(self, tiers: list[Tier], usage: TokenUsage) -> float:
-        """Calculate the cost of a single request given its applicable tier list."""
-        in_tokens = usage["input_tokens"]
-        out_tokens = usage["output_tokens"]
-        cr_tokens = usage["cache_read_input_tokens"]
-
-        cc = usage["cache_creation"]
-        cw_5m = cc.get("ephemeral_5m_input_tokens", 0) or 0
-        cw_1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
-        if not (cw_5m or cw_1h):
-            cw_5m = usage["cache_creation_input_tokens"]
-
-        if not (in_tokens or out_tokens or cw_5m or cw_1h or cr_tokens):
-            return 0.0
-
-        tier = next((t for t in tiers if in_tokens <= t["max_in"]), tiers[-1])
-
-        fresh_in_tokens = in_tokens - cw_5m - cw_1h - cr_tokens
-        if fresh_in_tokens < 0:
-            self._warn_usage_convention_drift(in_tokens, cw_5m, cw_1h, cr_tokens)
-            fresh_in_tokens = 0
-
-        return (
-            fresh_in_tokens * tier["in_"] / 1_000_000
-            + out_tokens * tier["out"] / 1_000_000
-            + cw_5m * tier["cw_5m"] / 1_000_000
-            + cw_1h * tier["cw_1h"] / 1_000_000
-            + cr_tokens * tier["cr"] / 1_000_000
-        )
-
     def _warn_mixed_cache_ttl(self) -> None:
         """Print a warning (once) when a request mixed 5m and 1h cache TTLs."""
         if self._mixed_cache_ttl_warned:
@@ -312,21 +204,5 @@ class PricingService:
             "only a flat cache-write total. Those writes are priced at the 5m rate; "
             "reported cache-write cost may be slightly low. See "
             "agent_wrap/lib/usage.py:request_cache_ttl.",
-            file=sys.stderr,
-        )
-
-    def _warn_usage_convention_drift(
-        self, in_tokens: int, cw_5m: int, cw_1h: int, cr_tokens: int
-    ) -> None:
-        """Print a warning (once) when the token-overlap assumption appears broken."""
-        if self._usage_convention_warned:
-            return
-        self._usage_convention_warned = True
-        print(
-            "warning: token usage convention drift detected — "
-            f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "
-            f"cache-read ({cr_tokens}). Cost math assumes input_tokens is inclusive of "
-            "cache tokens; this record violates that. Reported costs may be inaccurate "
-            "until agent_wrap/domain/pricing/pricing.py:cost_for_tiers is revisited.",
             file=sys.stderr,
         )

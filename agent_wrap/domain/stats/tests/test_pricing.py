@@ -13,8 +13,9 @@ import pytest
 import pytest_mock
 
 from agent_wrap.cli.stats.tree import build_project_tree, flatten_tree
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.cost import usage_source
 from agent_wrap.domain.stats.scan import scan_logs_dir
@@ -29,15 +30,21 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-class FakeProvider:
+class FakeProvider(Provider):
     def __init__(self, flat: dict[str, Any] | None = None, tiered: dict[str, Any] | None = None):
+        super().__init__(sidecar_service=None)
         self._flat = flat or {}
         self._tiered = tiered
 
-    def get_pricing(self):
+    def sidecars(self) -> list[Any]:
+        return []
+
+    def _get_pricing(self):
         return self._flat
 
-    def get_tiered_pricing(self):
+    def _get_tiered_pricing(self):
+        if self._tiered is None:
+            raise NotImplementedError
         return self._tiered
 
 
@@ -175,35 +182,35 @@ def ps(mocker: pytest_mock.MockFixture) -> PricingService:
     return PricingService(provider_service=mocker.Mock(spec=ProviderService))
 
 
-def test_exact_key_beats_date_stamped_siblings(ps: PricingService) -> None:
+def test_exact_key_beats_date_stamped_siblings() -> None:
     keys = {
         "claude-opus-4-8",
         "claude-opus-4-8-20260514",
         "claude-opus-4-8-20260512",
     }
-    assert ps._best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8"
+    assert Provider._best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8"
 
 
-def test_newest_date_wins_without_bare_key(ps: PricingService) -> None:
+def test_newest_date_wins_without_bare_key() -> None:
     keys = {
         "claude-opus-4-8-20260514",
         "claude-opus-4-8-20260512",
     }
-    assert ps._best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8-20260514"
+    assert Provider._best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8-20260514"
 
 
-def test_no_cross_model_match(ps: PricingService) -> None:
+def test_no_cross_model_match() -> None:
     keys = {"claude-opus-4-5", "claude-opus-4-7"}
-    assert ps._best_prefix_key("claude-opus-4-8", keys) is None
+    assert Provider._best_prefix_key("claude-opus-4-8", keys) is None
 
 
-def test_longest_prefix_wins(ps: PricingService) -> None:
+def test_longest_prefix_wins() -> None:
     keys = {"claude-opus-4", "claude-opus-4-8"}
-    assert ps._best_prefix_key("claude-opus-4-8-20260514", keys) == "claude-opus-4-8"
+    assert Provider._best_prefix_key("claude-opus-4-8-20260514", keys) == "claude-opus-4-8"
 
 
-def test_empty_keys(ps: PricingService) -> None:
-    assert ps._best_prefix_key("claude-opus-4-8", []) is None
+def test_empty_keys() -> None:
+    assert Provider._best_prefix_key("claude-opus-4-8", []) is None
 
 
 # ---------------------------------------------------------------------------
@@ -218,11 +225,17 @@ def test_date_stamped_request_resolves_to_base_tier(
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
     pricing = PricingService(provider_service=mockps)
-    tiers = pricing.get_pricing("bedrock", "us.anthropic.claude-opus-4-8-20260514")
-    assert tiers is not None
-    assert len(tiers) == 1
-    assert tiers[0]["in_"] == 5.5
-    assert tiers[0]["max_in"] == float("inf")
+    usage: TokenUsage = {
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {},
+    }
+    cost = pricing.compute_cost("bedrock", "us.anthropic.claude-opus-4-8-20260514", usage=usage)
+    # 1000 * 5.5/1M + 500 * 27.5/1M = 0.0055 + 0.01375 = 0.01925
+    assert cost is not None
+    assert cost == pytest.approx(0.01925)
 
 
 def test_unknown_model_returns_none(
@@ -232,7 +245,14 @@ def test_unknown_model_returns_none(
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
     pricing = PricingService(provider_service=mockps)
-    assert pricing.get_pricing("bedrock", "claude-opus-4-5") is None
+    usage: TokenUsage = {
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {},
+    }
+    assert pricing.compute_cost("bedrock", "claude-opus-4-5", usage=usage) is None
 
 
 # ---------------------------------------------------------------------------

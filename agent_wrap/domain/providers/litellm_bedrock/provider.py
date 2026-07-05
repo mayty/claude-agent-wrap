@@ -188,7 +188,7 @@ class BedrockProvider(LiteLLMProvider):
     def get_sidecar_cmd_args(self) -> list[str]:
         return []
 
-    def get_pricing(self) -> dict[str, dict[str, float]]:
+    def _get_pricing(self) -> dict[str, dict[str, float]]:
         """Return the cached AWS Bedrock pricing table for this provider."""
         cache_path = self._state_dir() / "pricing.json"
         return _load_prices(cache_path)

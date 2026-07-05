@@ -304,10 +304,6 @@ def price_buckets(
     for by_model in by_day.values():
         for display_model, bucket in by_model.items():
             provider, _, model = display_model.partition("/")
-            tiers = pricing.get_pricing(provider, model)
-            if tiers is None:
-                bucket.cost_unknown = True
-                continue
             usage: TokenUsage = {
                 "input_tokens": bucket.in_,
                 "output_tokens": bucket.out,
@@ -318,7 +314,11 @@ def price_buckets(
                 },
                 "cache_read_input_tokens": bucket.cr,
             }
-            bucket.cost += pricing.cost_for_tiers(tiers, usage)
+            cost = pricing.compute_cost(provider, model, usage=usage)
+            if cost is None:
+                bucket.cost_unknown = True
+            else:
+                bucket.cost += cost
 
 
 # Parallel scan

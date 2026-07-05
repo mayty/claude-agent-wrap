@@ -3,8 +3,6 @@
 
 import re
 
-MODEL_CONTEXT_SUFFIX_RE = re.compile(r"\[(?:1m|128k|32k|8k)\]$", re.IGNORECASE)
-
 MODEL_FAMILY_RE_V_FIRST = re.compile(
     r"claude[-\s.]*(?P<ver>\d+(?:[.\-]\d+)*)[-\s.]*(?P<tier>[a-z]+)",
     re.IGNORECASE,

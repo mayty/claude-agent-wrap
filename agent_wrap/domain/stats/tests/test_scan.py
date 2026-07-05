@@ -13,6 +13,7 @@ import pytest_mock
 
 import agent_wrap.domain.stats.scan as scan_mod
 from agent_wrap.domain.pricing.service import PricingService
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.scan import plan_pool, scan_logs_dir
 from agent_wrap.domain.stats.service import StatsService
@@ -24,15 +25,19 @@ from agent_wrap.domain.stats.service import StatsService
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
 
-class _FakeProvider:
+class _FakeProvider(Provider):
     def __init__(self, flat: dict[str, Any] | None = None):
+        super().__init__(sidecar_service=None)
         self._flat = flat or {}
 
-    def get_pricing(self):
+    def sidecars(self) -> list[Any]:
+        return []
+
+    def _get_pricing(self):
         return self._flat
 
-    def get_tiered_pricing(self):
-        return None
+    def _get_tiered_pricing(self):
+        raise NotImplementedError
 
 
 @pytest.fixture

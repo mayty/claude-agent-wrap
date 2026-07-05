@@ -186,7 +186,7 @@ class DeepSeekProvider(MasterKeyApprovalMixin, LiteLLMProvider):
     def get_sidecar_cmd_args(self) -> list[str]:
         return []
 
-    def get_pricing(self) -> dict[str, dict[str, float]]:
+    def _get_pricing(self) -> dict[str, dict[str, float]]:
         """Return the cached DeepSeek pricing table, scraping if stale."""
         cache_path = self._state_dir() / "pricing.json"
         return _DeepSeekPricing.load_prices(cache_path)

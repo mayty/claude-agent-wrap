@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
 from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from agent_wrap.domain.providers.models import Tier
 
 
 class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
@@ -37,70 +42,55 @@ class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
     def get_sidecar_cmd_args(self) -> list[str]:
         return []
 
-    def get_pricing(self) -> dict[str, dict[str, float]]:
-        """Return a flat fallback pricing table for legacy stats compatibility."""
-        # Using the ≤256K tier as a reasonable default for aggregated totals.
-        return {
-            "qwen3.7-plus": {"in": 0.40, "out": 1.60, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.08},
-            "qwen3.7-max": {"in": 2.50, "out": 7.50, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.50},
-            "qwen3.6-flash": {"in": 0.25, "out": 1.50, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.05},
-        }
-
-    def get_tiered_pricing(self) -> dict[str, Any] | None:
+    def _get_tiered_pricing(self) -> dict[str, list[Tier]]:
         """Return the tiered pricing table for DashScope models."""
         return {
-            "qwen3.7-plus": {
-                "tiers": [
-                    {
-                        "max_in": 256_000,
-                        "in": 0.40,
-                        "out": 1.60,
-                        "cw_5m": 0.0,
-                        "cw_1h": 0.0,
-                        "cr": 0.08,
-                    },
-                    {
-                        "max_in": 1_000_000,
-                        "in": 1.20,
-                        "out": 4.80,
-                        "cw_5m": 0.0,
-                        "cw_1h": 0.0,
-                        "cr": 0.24,
-                    },
-                ]
-            },
-            "qwen3.7-max": {
-                "tiers": [
-                    {
-                        "max_in": 1_000_000,
-                        "in": 2.50,
-                        "out": 7.50,
-                        "cw_5m": 0.0,
-                        "cw_1h": 0.0,
-                        "cr": 0.50,
-                    },
-                ]
-            },
-            "qwen3.6-flash": {
-                "tiers": [
-                    {
-                        "max_in": 256_000,
-                        "in": 0.25,
-                        "out": 1.50,
-                        "cw_5m": 0.0,
-                        "cw_1h": 0.0,
-                        "cr": 0.05,
-                    },
-                    {
-                        "max_in": 1_000_000,
-                        "in": 1.00,
-                        "out": 4.00,
-                        "cw_5m": 0.0,
-                        "cw_1h": 0.0,
-                        "cr": 0.20,
-                    },
-                ]
-            },
+            "qwen3.7-plus": [
+                {
+                    "max_in": 256_000,
+                    "in_": 0.40,
+                    "out": 1.60,
+                    "cw_5m": 0.0,
+                    "cw_1h": 0.0,
+                    "cr": 0.08,
+                },
+                {
+                    "max_in": 1_000_000,
+                    "in_": 1.20,
+                    "out": 4.80,
+                    "cw_5m": 0.0,
+                    "cw_1h": 0.0,
+                    "cr": 0.24,
+                },
+            ],
+            "qwen3.7-max": [
+                {
+                    "max_in": 1_000_000,
+                    "in_": 2.50,
+                    "out": 7.50,
+                    "cw_5m": 0.0,
+                    "cw_1h": 0.0,
+                    "cr": 0.50,
+                },
+            ],
+            "qwen3.6-flash": [
+                {
+                    "max_in": 256_000,
+                    "in_": 0.25,
+                    "out": 1.50,
+                    "cw_5m": 0.0,
+                    "cw_1h": 0.0,
+                    "cr": 0.05,
+                },
+                {
+                    "max_in": 1_000_000,
+                    "in_": 1.00,
+                    "out": 4.00,
+                    "cw_5m": 0.0,
+                    "cw_1h": 0.0,
+                    "cr": 0.20,
+                },
+            ],
         }
 
     # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
