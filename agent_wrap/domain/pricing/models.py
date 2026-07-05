@@ -3,7 +3,34 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TypedDict
+
+
+class Tier(TypedDict):
+    """
+    A single pricing tier with per-unit costs in USD per 1M tokens.
+
+    The ``in_`` field (rather than ``in``) is required because ``in`` is a
+    Python keyword and cannot be used as a class attribute name.
+    """
+
+    # "in" is a Python keyword, so this field uses the in_ convention
+    in_: float
+    out: float
+    cw_5m: float
+    cw_1h: float
+    cr: float
+    max_in: float
+
+
+class TokenUsage(TypedDict):
+    """Token usage extracted from a LiteLLM response."""
+
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int
+    cache_read_input_tokens: int
+    cache_creation: dict[str, int]
 
 
 class Bucket:
@@ -40,14 +67,14 @@ class Bucket:
         self.unrecorded = 0
 
     def add(
-        self, usage: dict[str, Any], request_cost: float | None = 0.0, *, unrecorded: bool = False
+        self, usage: TokenUsage, request_cost: float | None = 0.0, *, unrecorded: bool = False
     ) -> None:
         self.msgs += 1
         if unrecorded:
             self.unrecorded += 1
-        self.in_ += usage.get("input_tokens", 0) or 0
-        self.out += usage.get("output_tokens", 0) or 0
-        cc = usage.get("cache_creation") or {}
+        self.in_ += usage["input_tokens"]
+        self.out += usage["output_tokens"]
+        cc = usage["cache_creation"]
         h5 = cc.get("ephemeral_5m_input_tokens", 0) or 0
         h1 = cc.get("ephemeral_1h_input_tokens", 0) or 0
         if h5 or h1:
@@ -58,8 +85,8 @@ class Bucket:
             # nor inferred from the request's cache_control TTL (see
             # stats.extract_usage / request_cache_ttl). Charge the flat
             # `cache_creation_input_tokens` total at the 5m rate as a last resort.
-            self.cw_5m += usage.get("cache_creation_input_tokens", 0) or 0
-        self.cr += usage.get("cache_read_input_tokens", 0) or 0
+            self.cw_5m += usage["cache_creation_input_tokens"]
+        self.cr += usage["cache_read_input_tokens"]
         # A None cost means pricing was unavailable for this request; track that
         # as unknown rather than silently treating it as a $0.00 contribution.
         if request_cost is None:

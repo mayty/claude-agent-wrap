@@ -14,7 +14,16 @@ from agent_wrap.domain.stats.usage_args import parse_usage_args
 def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
     b = Bucket()
     for _ in range(msgs):
-        b.add({"input_tokens": in_}, 0.0)
+        b.add(
+            {
+                "input_tokens": in_,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {},
+            },
+            0.0,
+        )
     return b
 
 
@@ -26,8 +35,26 @@ def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
 def test_render_includes_orphaned_row() -> None:
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     b = Bucket()
-    b.add({"input_tokens": 1000}, 0.0)
-    b.add({"input_tokens": 1000}, 0.0)
+    b.add(
+        {
+            "input_tokens": 1000,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        },
+        0.0,
+    )
+    b.add(
+        {
+            "input_tokens": 1000,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        },
+        0.0,
+    )
     last_ts = datetime(2026, 6, 29, tzinfo=timezone.utc)
     orphaned = {"sessions": 1, "last_ts": last_ts, "total": b}
     out = render([], {}, None, None, orphaned=orphaned)

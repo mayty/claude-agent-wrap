@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
 from agent_wrap.domain.pricing.cost_format import fmt_cost_with_unknown
@@ -34,6 +34,9 @@ from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import fmt_count, fmt_ts
 from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
 
 # A "cost view" callback. cost/unknown MUST come from this, never `Bucket.cost`.
 CostFn = Callable[[str, Bucket], tuple[float, bool]]
@@ -68,7 +71,7 @@ def range_label(from_iso: str | None, until_iso: str | None) -> str:
 def _build_total_body(
     tree_root: Node,
     display_rows: list[DisplayRow],
-    orphaned: dict[str, Any] | None = None,
+    orphaned: OrphanedResult | None = None,
 ) -> list[RowItem]:
     body: list[RowItem] = []
 
@@ -259,14 +262,14 @@ def _build_recent_body(
 
 
 def render_core(  # noqa: PLR0913
-    rows: list[dict[str, Any]],
+    rows: list[ProjectRow],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     from_iso: str | None,
     until_iso: str | None,
     *,
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
-    orphaned: dict[str, Any] | None = None,
+    orphaned: OrphanedResult | None = None,
 ) -> str:
     # Two stacked tables over the same window: "Projects" (per-project tree) and
     # "By day" (per-model + per-day). Each table has internal sections separated

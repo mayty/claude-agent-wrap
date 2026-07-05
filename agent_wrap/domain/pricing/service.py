@@ -12,7 +12,7 @@ from agent_wrap.domain.pricing.constants import (
     MODEL_FAMILY_RE_T_FIRST,
     MODEL_FAMILY_RE_V_FIRST,
 )
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.pricing.models import Bucket, Tier, TokenUsage
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -39,7 +39,7 @@ class PricingService:
         self._provider_service = provider_service
         # provider_name -> {model_key: [tier, ...]}, or None if unavailable.
         # Key presence (even with a None value) marks the provider as fetched.
-        self._cache: dict[str, dict[str, list[dict[str, Any]]] | None] = {}
+        self._cache: dict[str, dict[str, list[Tier]] | None] = {}
         # Per-instance warning state (print once).
         self._mixed_cache_ttl_warned = False
         self._usage_convention_warned = False
@@ -150,7 +150,7 @@ class PricingService:
     # Pricing lookup (inlined from PriceSource)
     # ------------------------------------------------------------------
 
-    def get_pricing(self, provider: str, model: str) -> list[dict[str, Any]] | None:
+    def get_pricing(self, provider: str, model: str) -> list[Tier] | None:
         """Return the tier list for *model*, or None if no price is known."""
         if provider not in self._cache:
             self._cache[provider] = self._fetch_pricing(provider)
@@ -172,7 +172,7 @@ class PricingService:
                 return table[match]
         return None
 
-    def _fetch_pricing(self, provider: str) -> dict[str, list[dict[str, float]]]:
+    def _fetch_pricing(self, provider: str) -> dict[str, list[Tier]]:
         """Build the unified tiered table for one provider (fetched once)."""
         try:
             p = self._provider_service.get_provider(provider)
@@ -181,13 +181,13 @@ class PricingService:
         except Exception:  # noqa: BLE001
             return {}
 
-        table: dict[str, list[dict[str, float]]] = {}
+        table: dict[str, list[Tier]] = {}
         # Flat rates first, recast as a single infinite tier…
         for model_key, rates in (flat or {}).items():
             table[model_key] = [
                 {
                     "max_in": float("inf"),
-                    "in": rates["in"],
+                    "in_": rates["in"],
                     "out": rates["out"],
                     "cw_5m": rates["cw_5m"],
                     "cw_1h": rates["cw_1h"],
@@ -211,7 +211,7 @@ class PricingService:
         raw_response: dict[str, Any] | None = None,
         request_ttl: str | None = None,
         *,
-        usage: dict[str, Any] | None = None,
+        usage: TokenUsage | None = None,
     ) -> float | None:
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
@@ -232,13 +232,20 @@ class PricingService:
 
     def extract_usage(
         self, response: dict[str, Any] | None, request_ttl: str | None = None
-    ) -> dict[str, Any]:
+    ) -> TokenUsage:
         """Extract and normalize usage dict from a LiteLLM response object."""
+        _zero: TokenUsage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        }
         if not response or not isinstance(response, dict):
-            return {}
+            return _zero
         usage = response.get("usage")
         if not usage or not isinstance(usage, dict):
-            return {}
+            return _zero
 
         cache_creation = self.response_cache_split(usage)
 
@@ -265,17 +272,17 @@ class PricingService:
             "cache_creation": cache_creation,
         }
 
-    def cost_for_tiers(self, tiers: list[dict[str, Any]], usage: dict[str, Any]) -> float:
+    def cost_for_tiers(self, tiers: list[Tier], usage: TokenUsage) -> float:
         """Calculate the cost of a single request given its applicable tier list."""
-        in_tokens = usage.get("input_tokens", 0) or 0
-        out_tokens = usage.get("output_tokens", 0) or 0
-        cr_tokens = usage.get("cache_read_input_tokens", 0) or 0
+        in_tokens = usage["input_tokens"]
+        out_tokens = usage["output_tokens"]
+        cr_tokens = usage["cache_read_input_tokens"]
 
-        cc = usage.get("cache_creation") or {}
+        cc = usage["cache_creation"]
         cw_5m = cc.get("ephemeral_5m_input_tokens", 0) or 0
         cw_1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
         if not (cw_5m or cw_1h):
-            cw_5m = usage.get("cache_creation_input_tokens", 0) or 0
+            cw_5m = usage["cache_creation_input_tokens"]
 
         if not (in_tokens or out_tokens or cw_5m or cw_1h or cr_tokens):
             return 0.0
@@ -288,7 +295,7 @@ class PricingService:
             fresh_in_tokens = 0
 
         return (
-            fresh_in_tokens * tier["in"] / 1_000_000
+            fresh_in_tokens * tier["in_"] / 1_000_000
             + out_tokens * tier["out"] / 1_000_000
             + cw_5m * tier["cw_5m"] / 1_000_000
             + cw_1h * tier["cw_1h"] / 1_000_000

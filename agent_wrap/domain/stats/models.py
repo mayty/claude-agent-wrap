@@ -4,14 +4,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
     from pathlib import Path
 
-    from agent_wrap.domain.pricing.models import Bucket
+    from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 
 
 @dataclass
@@ -82,7 +82,7 @@ ScanCache = dict["Path", DirResult]
 class RawRecord(NamedTuple):
     day_key: str
     display_model: str
-    usage: dict[str, Any]
+    usage: TokenUsage
     source: str
     unrecorded: bool
 
@@ -100,7 +100,7 @@ class AccumulatedRecord(NamedTuple):
     ts: datetime | None
     day_key: str | None
     display_model: str | None
-    usage: dict[str, Any] | None
+    usage: TokenUsage | None
     source: str
     unrecorded: bool
 
@@ -114,9 +114,41 @@ class ScanProjectResult(NamedTuple):
     exists: bool
 
 
+class _ProjectRowBase(TypedDict):
+    """Fields common to project rows and model display rows."""
+
+    path: Path
+    exists: bool
+    sessions: int
+    last_ts: datetime | None
+    total: Bucket
+    cost: float | None
+
+
+class ProjectRow(_ProjectRowBase, total=False):
+    """
+    A project row for rendering the project tree.
+
+    ``name`` and ``transient`` are optional — model display rows (produced by
+    ``_model_display_rows``) omit them, and the tree renderer only accesses
+    ``name`` when ``transient`` is truthy.
+    """
+
+    name: str
+    transient: bool
+
+
+class OrphanedResult(TypedDict):
+    """Aggregated result for orphaned sessions."""
+
+    sessions: int
+    last_ts: datetime | None
+    total: Bucket
+
+
 # Return type for aggregate_projects: the four render inputs rolled up across all projects.
 class AggregateResult(NamedTuple):
-    rows: list[dict[str, Any]]
+    rows: list[ProjectRow]
     totals_by_model: dict[str, Bucket]
     totals_by_day_by_model: dict[str, dict[str, Bucket]]
     totals_by_source: dict[str, dict[str, Bucket]]

@@ -7,7 +7,7 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agent_wrap.constants import SCAN_PARALLEL_MIN_FILES, TOOL_DIR
 from agent_wrap.domain.stats.constants import CENTRAL_LOGS_DIRNAME, MARKER_NAME
@@ -16,6 +16,8 @@ from agent_wrap.domain.stats.models import (
     DirResult,
     Group,
     GroupResult,
+    OrphanedResult,
+    ProjectRow,
     WorkUnit,
 )
 from agent_wrap.domain.stats.scan import (
@@ -92,7 +94,7 @@ class StatsService:
                 for model, b in by_model.items():
                     totals_by_source[source][model].merge(b)
 
-        rows: list[dict[str, Any]] = []
+        rows: list[ProjectRow] = []
         for group in groups.values():
             proj_cost = None if group.total.cost_unknown else group.total.cost
             if group.sessions > 0 or group.exists:
@@ -272,7 +274,7 @@ class StatsService:
         from_iso: str | None = None,
         until_iso: str | None = None,
         scan_cache: ScanCache | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> OrphanedResult | None:
         """
         Aggregate central log dirs not reachable from any registered project.
 

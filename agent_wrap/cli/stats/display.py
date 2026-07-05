@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent_wrap.cli.stats.render import range_label, render_core
 from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
@@ -13,6 +14,9 @@ from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.format import fmt_count
 from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
 
 
 def _model_display_rows(totals_by_model: dict[str, Bucket]) -> list[DisplayRow]:
@@ -24,9 +28,9 @@ def _model_display_rows(totals_by_model: dict[str, Bucket]) -> list[DisplayRow]:
     Models carry no session/launch data, so those columns are left blank by
     the callers; only the token/cost columns of each DisplayRow are used.
     """
-    rows = [
+    rows: list[ProjectRow] = [
         {
-            "path": model,
+            "path": Path(model),
             "exists": True,
             "sessions": 0,
             "last_ts": None,
@@ -69,11 +73,11 @@ def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int
 
 
 def render(
-    rows: list[dict[str, Any]],
+    rows: list[ProjectRow],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     from_iso: str | None,
     until_iso: str | None,
-    orphaned: dict[str, Any] | None = None,
+    orphaned: OrphanedResult | None = None,
 ) -> str:
     # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
     # `cost_unknown` flag (set when a billable request had no known price) is the

@@ -7,10 +7,19 @@ import contextlib
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
-from agent_wrap.domain.logs.models import SessionMeta
+from agent_wrap.domain.logs.models import (
+    CombinedSessionMeta,
+    Fingerprint,
+    GroupInfo,
+    NormalizedRecord,
+    ProjectInfo,
+    ProviderSessionMeta,
+    ReadSessionResult,
+    SessionMeta,
+)
 from agent_wrap.domain.logs.normalize import (
     enrich_with_costs,
     extract_alias,
@@ -136,7 +145,7 @@ def _aslogs_dirs(project: Path | list[Path]) -> list[Path]:
     return project if isinstance(project, list) else [logs_dir(project)]
 
 
-def list_groups(stats_service: StatsService) -> list[dict[str, Any]]:
+def list_groups(stats_service: StatsService) -> list[GroupInfo]:
     """
     Group registered projects into transient projects by ``.agent_stats_leaf``.
 
@@ -173,7 +182,7 @@ def list_groups(stats_service: StatsService) -> list[dict[str, Any]]:
 
     # Sort by group-root path so ids are stable; callers re-sort the *public*
     # list (by recency) without disturbing this id assignment.
-    groups: list[dict[str, Any]] = [
+    groups: list[GroupInfo] = [
         {
             "root": root,
             "name": names[root],
@@ -196,9 +205,9 @@ def list_groups(stats_service: StatsService) -> list[dict[str, Any]]:
     return groups
 
 
-def list_projects(stats_service: StatsService) -> list[dict[str, Any]]:
+def list_projects(stats_service: StatsService) -> list[ProjectInfo]:
     """List transient projects (grouped) that have LiteLLM logs."""
-    out: list[dict[str, Any]] = []
+    out: list[ProjectInfo] = []
     for idx, group in enumerate(list_groups(stats_service)):
         session_count = 0
         max_last_ts: float | None = None
@@ -239,14 +248,14 @@ def group_by_id(group_id: int, stats_service: StatsService) -> list[Path] | None
 def _accumulate_session_meta(meta: SessionMeta, rec: LogRecord) -> None:
     """Update *meta* with timing, model, alias, and title from *rec*."""
     meta.count += 1
-    timing = rec.get("timing") or {}
+    timing = rec["timing"] or {}
     start = timing.get("start")
     if isinstance(start, (int, float)) and meta.first_ts is None:
         meta.first_ts = start
     end = timing.get("end")
     if isinstance(end, (int, float)):
         meta.last_ts = end
-    model = rec.get("model")
+    model = rec["model"]
     if isinstance(model, str):
         meta.models.add(model.rsplit("/", 1)[-1])
     alias = extract_alias(rec)
@@ -297,7 +306,7 @@ def write_meta_json(session_dir: Path, meta: MetaData) -> None:
         atomic_write_json(session_dir / "meta.json", meta)
 
 
-def scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | None:
+def scan_session_meta(session_dir: Path, provider: str) -> ProviderSessionMeta | None:
     """
     Cheap metadata for one session: count, first/last ts, models, alias.
 
@@ -308,16 +317,19 @@ def scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | None
     # Fast path: use the callback-maintained cache when available.
     cached = read_meta_json(session_dir)
     if cached is not None:
-        return {
-            "provider": provider,
-            "session_id": session_dir.name,
-            "alias": cached.get("alias"),
-            "title": cached.get("title"),
-            "count": cached.get("count", 0),
-            "first_ts": cached.get("first_ts"),
-            "last_ts": cached.get("last_ts"),
-            "models": cached.get("models") or [],
-        }
+        return cast(
+            "ProviderSessionMeta",
+            {
+                "provider": provider,
+                "session_id": session_dir.name,
+                "alias": cached.get("alias"),
+                "title": cached.get("title"),
+                "count": cached.get("count", 0),
+                "first_ts": cached.get("first_ts"),
+                "last_ts": cached.get("last_ts"),
+                "models": cached.get("models") or [],
+            },
+        )
 
     # Slow path: full scan (existing behavior).
     messages_file = session_dir / "messages.jsonl"
@@ -368,7 +380,7 @@ def scan_session_meta(session_dir: Path, provider: str) -> dict[str, Any] | None
     }
 
 
-def _merge_session_meta(existing: dict[str, Any], meta: dict[str, Any]) -> None:
+def _merge_session_meta(existing: CombinedSessionMeta, meta: ProviderSessionMeta) -> None:
     """Merge *meta* (from one provider) into *existing* (the combined entry)."""
     existing["providers"].append(meta["provider"])
     existing["providers"].sort()
@@ -380,11 +392,11 @@ def _merge_session_meta(existing: dict[str, Any], meta: dict[str, Any]) -> None:
     existing["models"] = sorted(set(existing["models"]) | set(meta["models"]))
     if existing["alias"] is None and meta["alias"] is not None:
         existing["alias"] = meta["alias"]
-    if existing.get("title") is None and meta.get("title") is not None:
+    if existing["title"] is None and meta["title"] is not None:
         existing["title"] = meta["title"]
 
 
-def list_sessions(project: Path | list[Path]) -> list[dict[str, Any]]:
+def list_sessions(project: Path | list[Path]) -> list[CombinedSessionMeta]:
     """
     List sessions (newest first) across every provider in a project.
 
@@ -393,7 +405,7 @@ def list_sessions(project: Path | list[Path]) -> list[dict[str, Any]]:
     entry so a mid-session provider switch (or grouping) doesn't produce duplicate
     rows in the viewer.
     """
-    by_session: dict[str, dict[str, Any]] = {}
+    by_session: dict[str, CombinedSessionMeta] = {}
     for logs_dir in _aslogs_dirs(project):
         if not logs_dir.is_dir():
             continue
@@ -410,15 +422,24 @@ def list_sessions(project: Path | list[Path]) -> list[dict[str, Any]]:
                 if sid in by_session:
                     _merge_session_meta(by_session[sid], meta)
                 else:
-                    meta["providers"] = [meta.pop("provider")]
-                    by_session[sid] = meta
+                    combined: CombinedSessionMeta = {
+                        "session_id": meta["session_id"],
+                        "alias": meta["alias"],
+                        "title": meta["title"],
+                        "count": meta["count"],
+                        "first_ts": meta["first_ts"],
+                        "last_ts": meta["last_ts"],
+                        "models": meta["models"],
+                        "providers": [meta["provider"]],
+                    }
+                    by_session[sid] = combined
 
     out = list(by_session.values())
     out.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
     return out
 
 
-def session_fingerprint(project: Path | list[Path], session_id: str) -> dict[str, Any]:
+def session_fingerprint(project: Path | list[Path], session_id: str) -> Fingerprint:
     """
     Return a combined change-marker for a session across all providers.
 
@@ -452,7 +473,7 @@ def session_fingerprint(project: Path | list[Path], session_id: str) -> dict[str
     return {"mtime": best_mtime, "size": total_size}
 
 
-def sessions_fingerprint(project: Path | list[Path]) -> dict[str, Any]:
+def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
     """
     Return a change-marker for all sessions in a project.
 
@@ -493,7 +514,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> dict[str, Any]:
     return {"mtime": best_mtime, "size": total_size}
 
 
-def projects_fingerprint(stats_service: StatsService) -> dict[str, Any]:
+def projects_fingerprint(stats_service: StatsService) -> Fingerprint:
     """
     Return a change-marker for all registered projects that have logs.
 
@@ -531,7 +552,7 @@ def _read_provider_session(
     provider: str,
     session_id: str,
     pricing: PricingService,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[list[NormalizedRecord], ProviderSessionMeta | None]:
     """
     Read and normalize records from one provider's session directory.
 
@@ -567,17 +588,17 @@ def _read_provider_session(
         return [], None
 
     strings = load_strings(session_dir)
-    records: list[dict[str, Any]] = []
+    records: list[NormalizedRecord] = []
     for rec in raw_records:
         raw_response = rec.get("response")
         normalized = normalize_record(rec, strings)  # type: ignore[arg-type]
         enriched = enrich_with_costs(
             normalized, raw_response, provider, pricing, rec.get("request")
         )
-        normalized.update(enriched)
-        records.append(normalized)
+        normalized.update(enriched)  # type: ignore[arg-type]
+        records.append(normalized)  # type: ignore[arg-type]
 
-    entry: dict[str, Any] = {
+    entry: ProviderSessionMeta = {
         "provider": provider,
         "session_id": session_id,
         "alias": meta.derived_alias,
@@ -594,7 +615,7 @@ def read_session(
     project: Path | list[Path],
     session_id: str,
     pricing: PricingService,
-) -> dict[str, Any]:
+) -> ReadSessionResult:
     """
     Read and normalize every request in one session across all providers.
 
@@ -607,8 +628,8 @@ def read_session(
     the same shape as one entry from :func:`list_sessions` (or ``None`` when no
     records exist).
     """
-    all_records: list[dict[str, Any]] = []
-    combined_meta: dict[str, Any] | None = None
+    all_records: list[NormalizedRecord] = []
+    combined_meta: CombinedSessionMeta | None = None
 
     for logs_dir in _aslogs_dirs(project):
         if not logs_dir.is_dir():
@@ -622,10 +643,18 @@ def read_session(
             all_records.extend(records)
             if entry is not None:
                 if combined_meta is None:
-                    combined_meta = entry
-                    combined_meta["providers"] = [combined_meta.pop("provider")]
+                    combined_meta = {
+                        "session_id": entry["session_id"],
+                        "alias": entry["alias"],
+                        "title": entry["title"],
+                        "count": entry["count"],
+                        "first_ts": entry["first_ts"],
+                        "last_ts": entry["last_ts"],
+                        "models": entry["models"],
+                        "providers": [entry["provider"]],
+                    }
                 else:
                     _merge_session_meta(combined_meta, entry)
 
-    all_records.sort(key=lambda r: (r.get("timing") or {}).get("start") or 0)
+    all_records.sort(key=lambda r: (r["timing"] or {}).get("start") or 0)
     return {"reqs": all_records, "session_meta": combined_meta}

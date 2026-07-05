@@ -221,7 +221,7 @@ def test_date_stamped_request_resolves_to_base_tier(
     tiers = pricing.get_pricing("bedrock", "us.anthropic.claude-opus-4-8-20260514")
     assert tiers is not None
     assert len(tiers) == 1
-    assert tiers[0]["in"] == 5.5
+    assert tiers[0]["in_"] == 5.5
     assert tiers[0]["max_in"] == float("inf")
 
 

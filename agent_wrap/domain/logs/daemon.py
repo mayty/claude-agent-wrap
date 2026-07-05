@@ -6,13 +6,16 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     LOGS_TOOL_DIR_ENV,
 )
 from agent_wrap.domain.logs.constants import STATE_FILE_NAME
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.logs.models import DaemonState
 
 
 def state_dir() -> Path:
@@ -26,7 +29,7 @@ def state_file() -> Path:
     return state_dir() / STATE_FILE_NAME
 
 
-def read_state() -> dict[str, Any] | None:
+def read_state() -> DaemonState | None:
     """Read the viewer state file, or None when missing/corrupt."""
     try:
         raw = state_file().read_text(encoding="utf-8")
@@ -41,7 +44,7 @@ def read_state() -> dict[str, Any] | None:
         and isinstance(data.get("pid"), int)
         and isinstance(data.get("port"), int)
     ):
-        return data
+        return cast("DaemonState", data)
     return None
 
 

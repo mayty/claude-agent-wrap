@@ -61,7 +61,7 @@ def _epoch(iso: str) -> float:
 def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
     """Build a minimal record with a timing object whose start == end == iso."""
     e = _epoch(iso)
-    return {"timing": {"start": e, "completionStart": None, "end": e}, **extra}
+    return {"timing": {"start": e, "completionStart": None, "end": e}, "response": {}, **extra}
 
 
 if TYPE_CHECKING:
@@ -166,6 +166,7 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixt
     mock_ps.get_provider.return_value.get_tiered_pricing.return_value = {}  # type: ignore[implicit-any-empty-container]
     pricing = PricingService(provider_service=mock_ps)
     data = read_session(project, "s1", pricing=pricing)
+    assert data["session_meta"] is not None
     assert data["session_meta"]["session_id"] == "s1"
 
 
@@ -338,6 +339,7 @@ def test_sessions_fingerprint_reflects_changes(tmp_path: Path):
     )
     fp1 = sessions_fingerprint(project)
     assert isinstance(fp1["mtime"], int)
+    assert isinstance(fp1["size"], int)
     assert fp1["size"] > 0
 
     # Append a record — mtime and size should change.
@@ -699,6 +701,7 @@ def test_projects_fingerprint_reflects_changes(
     )
     fp1 = projects_fingerprint(isolated_stats)
     assert isinstance(fp1["mtime"], int)
+    assert isinstance(fp1["size"], int)
     assert fp1["size"] > 0
 
     # Append a record in a second session — fingerprint should change.

@@ -93,9 +93,10 @@ def _write_session(project: Path, provider: str, session_id: str) -> Path:
     """Write a minimal messages.jsonl for *session_id* and return its dir."""
     sdir = project / ".claude" / "litellm-logs" / provider / session_id
     sdir.mkdir(parents=True)
-    rec = {
+    rec: dict[str, Any] = {
         "timing": {"start": 1000000.0, "completionStart": None, "end": 1000001.0},
         "model": "m/test",
+        "response": {},
     }
     with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")

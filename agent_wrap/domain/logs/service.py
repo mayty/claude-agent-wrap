@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agent_wrap.constants import (
     LOGS_DEFAULT_PORT,
@@ -35,6 +35,7 @@ from agent_wrap.lib.process_utils import pid_alive
 if TYPE_CHECKING:
     from types import FrameType
 
+    from agent_wrap.domain.logs.models import DaemonState
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.service import StatsService
 
@@ -56,7 +57,7 @@ class LogsService:
         """Return the connect line printed to the terminal."""
         return f"LiteLLM log viewer running at http://127.0.0.1:{port}"
 
-    def running_server(self) -> dict[str, Any] | None:
+    def running_server(self) -> DaemonState | None:
         """Return the running viewer's state dict, or None when stale/dead."""
         state = read_state()
         if state is None:

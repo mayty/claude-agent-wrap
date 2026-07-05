@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.logs.constants import ALIAS_NAME_RE, TITLE_RE
-from agent_wrap.domain.logs.models import ExtractedFields
+from agent_wrap.domain.logs.models import ExtractedFields, NormalizedRecordBase
 from agent_wrap.lib.hash_resolver import resolve_hashes
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ def _extract_record_fields(
     return ExtractedFields(data, agent_id, reply, usage)
 
 
-def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
+def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecordBase:
     """
     Reduce one raw log record to the shape the UI consumes.
 
@@ -72,7 +72,7 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> dict[str, Any]:
 
 
 def enrich_with_costs(
-    normalized: dict[str, Any],
+    normalized: NormalizedRecordBase,
     raw_response: dict[str, Any] | None,
     provider: str,
     pricing: PricingService,
@@ -85,8 +85,8 @@ def enrich_with_costs(
     the *pricing* service lookup, which is in-memory after the first fetch per
     provider.
     """
-    model = normalized.get("model") or ""
-    usage = normalized.get("usage") or {}
+    model = normalized["model"] or ""
+    usage = normalized["usage"] or {}
 
     # The request's cache_control TTL attributes cache writes to a 5m/1h tier
     # when the response omits the split (the Bedrock case).
@@ -95,9 +95,9 @@ def enrich_with_costs(
     # Use the canonical token extraction so field-resolution logic lives in one
     # place (extract_usage handles prompt_tokens/input_tokens fallback, etc.).
     norm_usage = pricing.extract_usage(raw_response, request_ttl)
-    in_t = norm_usage.get("input_tokens", 0)
-    out_t = norm_usage.get("output_tokens", 0)
-    cr_t = norm_usage.get("cache_read_input_tokens", 0)
+    in_t = norm_usage["input_tokens"]
+    out_t = norm_usage["output_tokens"]
+    cr_t = norm_usage["cache_read_input_tokens"]
 
     # Only set cache_percent when there are actual cache reads, so the frontend
     # can skip displaying "(0% cached)".
@@ -107,7 +107,7 @@ def enrich_with_costs(
 
     # Compute cost in USD when pricing data is available.
     cost = None
-    if normalized.get("status") == "success" and usage and model:
+    if normalized["status"] == "success" and usage and model:
         cost = pricing.compute_cost(provider, model, raw_response, request_ttl)
 
     return {
@@ -146,7 +146,7 @@ def extract_alias(rec: LogRecord) -> str | None:
     the sibling ``{"title": ...}`` call is ignored. The slug is short and never
     hashed, so the raw record's response is read directly.
     """
-    content = _response_content_str(rec.get("response"))
+    content = _response_content_str(rec["response"])
     if not content:
         return None
     stripped = content.strip()
@@ -168,7 +168,7 @@ def extract_title(rec: LogRecord) -> str | None:
     generation call (a short ``{"title": "…"}`` response, typically the first
     record of every session).
     """
-    content = _response_content_str(rec.get("response"))
+    content = _response_content_str(rec["response"])
     if not content:
         return None
     stripped = content.strip()

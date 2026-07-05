@@ -116,7 +116,20 @@ def test_normalize_resolves_hashes():
 
 
 def test_normalize_tolerates_missing_pieces():
-    out = normalize_record(cast("LogRecord", {"status": "failure", "error": "boom"}), {})
+    out = normalize_record(
+        cast(
+            "LogRecord",
+            {
+                "timing": {"start": None, "completionStart": None, "end": None},
+                "status": "failure",
+                "model": "",
+                "request": {},
+                "response": {},
+                "error": "boom",
+            },
+        ),
+        {},
+    )
     assert out["messages"] == []
     assert out["tools"] == []
     assert out["response"] == {}
@@ -203,4 +216,4 @@ def test_extract_alias_ignores_title_payload():
 def test_extract_alias_none_for_freeform_and_missing():
     assert extract_alias(_naming_record("hi there")) is None
     assert extract_alias(_naming_record('{"name": ""}')) is None
-    assert extract_alias(cast("LogRecord", {})) is None
+    assert extract_alias(cast("LogRecord", {"response": {}})) is None

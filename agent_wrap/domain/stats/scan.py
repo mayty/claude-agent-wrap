@@ -20,6 +20,9 @@ from agent_wrap.domain.stats.models import (
 from agent_wrap.lib.format import day_in_range, epoch_to_dt
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.pricing.models import TokenUsage
+
+if TYPE_CHECKING:
     from collections.abc import Iterable
     from datetime import datetime
     from pathlib import Path
@@ -155,7 +158,7 @@ def accumulate_record(
     )
     if not isinstance(resp_usage, dict):
         resp_usage = {}
-    usage: dict[str, Any] = {
+    usage: TokenUsage = {
         "input_tokens": resp_usage.get("input_tokens") or resp_usage.get("prompt_tokens") or 0,
         "output_tokens": resp_usage.get("output_tokens")
         or resp_usage.get("completion_tokens")
@@ -305,9 +308,10 @@ def price_buckets(
             if tiers is None:
                 bucket.cost_unknown = True
                 continue
-            usage = {
+            usage: TokenUsage = {
                 "input_tokens": bucket.in_,
                 "output_tokens": bucket.out,
+                "cache_creation_input_tokens": bucket.cw,
                 "cache_creation": {
                     "ephemeral_5m_input_tokens": bucket.cw_5m,
                     "ephemeral_1h_input_tokens": bucket.cw_1h,
