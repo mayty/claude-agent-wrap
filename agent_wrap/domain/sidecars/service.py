@@ -21,6 +21,8 @@ from agent_wrap.domain.sidecars.tracker import SidecarTracker
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from agent_wrap.domain.display.service import DisplayService
+
 
 class SidecarService:
     """
@@ -35,6 +37,9 @@ class SidecarService:
     #: Label role value used by ``SidecarTracker``.
     role_value: str = SidecarTracker.role_value
 
+    def __init__(self, display_service: DisplayService) -> None:
+        self._display = display_service
+
     # --- Factory methods ---
 
     def create_tracker(self, tool_dir: Path) -> SidecarTracker:
@@ -43,11 +48,11 @@ class SidecarService:
 
     def create_telegram_sidecar(self, **kwargs: Any) -> TelegramSidecar:
         """Create a ``TelegramSidecar`` from keyword arguments forwarded to the config."""
-        return TelegramSidecar(TelegramSidecarConfig(**kwargs))
+        return TelegramSidecar(TelegramSidecarConfig(**kwargs), display_service=self._display)
 
     def create_litellm_sidecar(self, **kwargs: Any) -> LiteLLMSidecar:
         """Create a ``LiteLLMSidecar`` from keyword arguments forwarded to the config."""
-        return LiteLLMSidecar(LiteLLMSidecarConfig(**kwargs))
+        return LiteLLMSidecar(LiteLLMSidecarConfig(**kwargs), display_service=self._display)
 
     def telegram_required_secrets(self) -> list[tuple[str, str]]:
         """Return the secrets required by the Telegram sidecar."""

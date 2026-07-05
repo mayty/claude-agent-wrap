@@ -12,9 +12,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.domain.display.service import DisplayService
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+    from unittest.mock import Mock
+
+    from pytest_mock import MockerFixture
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +67,12 @@ def tool_dir(tmp_path: Path) -> Path:
     (d / ".claude_config").mkdir(exist_ok=True)
     (d / ".agent-launches").mkdir(exist_ok=True)
     return d
+
+
+@pytest.fixture
+def display_mock(mocker: MockerFixture) -> Mock:
+    """Return a spec-mocked DisplayService for use in any test."""
+    return mocker.Mock(spec=DisplayService)
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ from agent_wrap.domain.providers.constants import PROVIDERS_DIR
 from agent_wrap.exceptions import ProviderNotFoundError
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.sidecars.service import SidecarService
 
 
@@ -25,8 +26,9 @@ class ProviderService:
     module-level functions directly.
     """
 
-    def __init__(self, sidecar_service: SidecarService) -> None:
+    def __init__(self, sidecar_service: SidecarService, display_service: DisplayService) -> None:
         self._sidecar_service = sidecar_service
+        self._display = display_service
 
     def discover_providers(self) -> dict[str, type[Provider]]:
         """Scan provider subdirectories for concrete Provider subclasses."""
@@ -60,4 +62,7 @@ class ProviderService:
             available = ", ".join(sorted(registry.keys())) or "(none found)"
             msg = f"Unknown provider: {resolved}\nAvailable: {available}"
             raise ProviderNotFoundError(msg)
-        return cls(sidecar_service=self._sidecar_service)
+        return cls(
+            sidecar_service=self._sidecar_service,
+            display_service=self._display,
+        )

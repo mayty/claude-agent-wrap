@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.build.service import BuildService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.updates.service import UpdateService
 from agent_wrap.lib.path_hash import project_path_hash
 from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
@@ -20,8 +21,11 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def build_svc() -> BuildService:
-    """Return a BuildService with a no-op update service."""
-    return BuildService(update_service=Mock(spec=UpdateService))
+    """Return a BuildService with mocked dependencies."""
+    return BuildService(
+        update_service=Mock(spec=UpdateService),
+        display_service=Mock(spec=DisplayService),
+    )
 
 
 def test_lowercase():

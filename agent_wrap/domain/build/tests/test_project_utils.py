@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.build.service import BuildService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.updates.service import UpdateService
 
 if TYPE_CHECKING:
@@ -19,7 +20,10 @@ if TYPE_CHECKING:
 @pytest.fixture
 def build_svc() -> BuildService:
     """Return a BuildService with a no-op update service."""
-    return BuildService(update_service=Mock(spec=UpdateService))
+    return BuildService(
+        update_service=Mock(spec=UpdateService),
+        display_service=Mock(spec=DisplayService),
+    )
 
 
 # --- parse_dockerfile_agent ---

@@ -16,10 +16,9 @@ import json
 import os
 import struct
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap.constants import TOOL_DIR
 from agent_wrap.domain.secrets.constants import (
@@ -29,7 +28,9 @@ from agent_wrap.domain.secrets.constants import (
     SECRETS_ENCRYPTED_FILE_PATH,
     SECRETS_KEYFILE_PATH,
 )
-from agent_wrap.lib.console import Ansi
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
 
 
 class KeyDerivation:
@@ -43,9 +44,9 @@ class KeyDerivation:
     """
 
     @staticmethod
-    @functools.cache
-    def derive_key() -> bytes:
-        """Derive the symmetric encryption key, cached in-process."""
+    @functools.lru_cache(maxsize=1)
+    def derive_key(display: DisplayService) -> bytes:
+        """Derive the symmetric encryption key."""
         keyfile_path = SECRETS_KEYFILE_PATH
 
         # -- keyfile --
@@ -64,17 +65,9 @@ class KeyDerivation:
         try:
             machine_id = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
             if not machine_id:
-                print(
-                    f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} /etc/machine-id is empty —"
-                    " secrets are not bound to this machine",
-                    file=sys.stderr,
-                )
+                display.warning("/etc/machine-id is empty — secrets are not bound to this machine")
         except (FileNotFoundError, OSError):
-            print(
-                f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} /etc/machine-id not found —"
-                " secrets are not bound to this machine",
-                file=sys.stderr,
-            )
+            display.warning("/etc/machine-id not found — secrets are not bound to this machine")
             machine_id = ""
         h.update(machine_id.encode())
 
@@ -167,13 +160,15 @@ class EncryptedFileStore:
     """Encrypted file read/write with atomic replacement and old-format migration."""
 
     @staticmethod
-    @functools.cache
-    def maybe_migrate_old_fallback() -> None:  # noqa: C901, PLR0912, PLR0915
+    @functools.lru_cache(maxsize=1)
+    def maybe_migrate_old_fallback(  # noqa: C901, PLR0912, PLR0915
+        display: DisplayService,
+    ) -> None:
         """
         Migrate old ``~/claude_keys.json`` secrets to the encrypted store, once.
 
-        Called (as a cached no-op after the first run) from :func:`read` and
-        :func:`write` so every entry point transparently triggers migration.
+        Called from :func:`read` and :func:`write` so every entry point
+        transparently triggers migration.
 
         Mapping from old flat keys to new namespaced keys:
 
@@ -201,16 +196,12 @@ class EncryptedFileStore:
             raw = old_path.read_text(encoding="utf-8")
             old_data: dict[str, Any] = json.loads(raw)
         except (json.JSONDecodeError, OSError) as exc:
-            print(
-                f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} {old_path}"
-                f" is corrupt or unreadable ({exc}); removing",
-                file=sys.stderr,
-            )
+            display.warning(f"{old_path} is corrupt or unreadable ({exc}); removing")
             with contextlib.suppress(OSError):
                 old_path.unlink(missing_ok=True)
             return
 
-        data = EncryptedFileStore.read_all()
+        data = EncryptedFileStore.read_all(display)
         migrated = 0
 
         # --- Bedrock ---
@@ -256,24 +247,18 @@ class EncryptedFileStore:
                 migrated += 1
 
         if migrated:
-            EncryptedFileStore.write_all(data)
-            print(
-                f"{Ansi.BOLD_GREEN}Migrated {migrated} secret(s) from"
-                f" ~/claude_keys.json to the secrets store{Ansi.RESET}",
-                file=sys.stderr,
+            EncryptedFileStore.write_all(data, display=display)
+            display.success(
+                f"Migrated {migrated} secret(s) from ~/claude_keys.json to the secrets store"
             )
 
         try:
             old_path.unlink(missing_ok=True)
         except OSError as exc:
-            print(
-                f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} could not remove"
-                f" {old_path} after migration ({exc})",
-                file=sys.stderr,
-            )
+            display.warning(f"could not remove {old_path} after migration ({exc})")
 
     @staticmethod
-    def read_all() -> dict[str, str]:
+    def read_all(display: DisplayService) -> dict[str, str]:
         """
         Decrypt and return all stored secrets.
 
@@ -289,25 +274,21 @@ class EncryptedFileStore:
         except OSError:
             return {}
 
-        key = KeyDerivation.derive_key()
+        key = KeyDerivation.derive_key(display)
         plaintext = EncryptionPrimitives.decrypt(ciphertext, key)
         if plaintext is None:
-            print(
-                f"{Ansi.BOLD_RED}Warning:{Ansi.RESET} secrets file could not be"
-                " decrypted — the encryption key may have changed (machine-id,"
-                " repo identity, or keyfile).  Re-run 'agent secrets set <name>'"
-                " to re-enter secrets.",
-                file=sys.stderr,
+            display.warning(
+                "secrets file could not be decrypted — the encryption key may have"
+                " changed (machine-id, repo identity, or keyfile).  Re-run"
+                " 'agent secrets set <name>' to re-enter secrets."
             )
             return {}
 
         try:
             data = json.loads(plaintext)
         except json.JSONDecodeError:
-            print(
-                f"{Ansi.BOLD_YELLOW}Warning:{Ansi.RESET} secrets file is corrupt —"
-                " re-run 'agent secrets set <name>' to re-enter secrets.",
-                file=sys.stderr,
+            display.warning(
+                "secrets file is corrupt — re-run 'agent secrets set <name>' to re-enter secrets."
             )
             return {}
 
@@ -319,7 +300,7 @@ class EncryptedFileStore:
         return {str(k): v for k, v in data.items() if isinstance(v, str)}
 
     @staticmethod
-    def write_all(data: dict[str, str]) -> None:
+    def write_all(data: dict[str, str], *, display: DisplayService) -> None:
         """
         Encrypt *data* and atomically write it to the secrets file.
 
@@ -328,7 +309,7 @@ class EncryptedFileStore:
         """
         path = SECRETS_ENCRYPTED_FILE_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
-        key = KeyDerivation.derive_key()
+        key = KeyDerivation.derive_key(display)
 
         plaintext = json.dumps(data, indent=2).encode()
         ciphertext = EncryptionPrimitives.encrypt(plaintext, key)

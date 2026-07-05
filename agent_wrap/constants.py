@@ -1,4 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
+from enum import Enum, auto
 from pathlib import Path
 
 TOOL_DIR = Path(__file__).parent.parent.resolve()
@@ -59,3 +60,17 @@ STATE_FILES = (
     "daemon.status.json",
     "history.jsonl",
 )
+
+# ── display / sidecars ────────────────────────────────────────────────────────
+
+LITELLM_SIDECAR_LABEL = "litellm-sidecar"
+TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"
+TELEGRAM_SIDECAR_NAME = "telegram"
+
+
+class PollResult(Enum):
+    """Verdict a poll callback returns each tick to ``DisplayService.poll_until``."""
+
+    PENDING = auto()
+    SUCCESS = auto()
+    FAILURE = auto()

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.pricing.constants import (
@@ -14,6 +13,7 @@ from agent_wrap.domain.pricing.constants import (
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.providers.service import ProviderService
 
 
@@ -36,8 +36,9 @@ class PricingService:
         """Return a fresh, empty :class:`Bucket` for token-count accumulation."""
         return Bucket()
 
-    def __init__(self, provider_service: ProviderService) -> None:
+    def __init__(self, provider_service: ProviderService, display_service: DisplayService) -> None:
         self._provider_service = provider_service
+        self._display = display_service
         # Per-instance warning state (print once).
         self._mixed_cache_ttl_warned = False
 
@@ -195,14 +196,13 @@ class PricingService:
         }
 
     def _warn_mixed_cache_ttl(self) -> None:
-        """Print a warning (once) when a request mixed 5m and 1h cache TTLs."""
+        """Emit a warning (once) when a request mixed 5m and 1h cache TTLs."""
         if self._mixed_cache_ttl_warned:
             return
         self._mixed_cache_ttl_warned = True
-        print(
-            "warning: a request mixed 5m and 1h cache TTLs, but the response reports "
+        self._display.warning(
+            "a request mixed 5m and 1h cache TTLs, but the response reports "
             "only a flat cache-write total. Those writes are priced at the 5m rate; "
             "reported cache-write cost may be slightly low. See "
-            "agent_wrap/lib/usage.py:request_cache_ttl.",
-            file=sys.stderr,
+            "agent_wrap/lib/usage.py:request_cache_ttl."
         )

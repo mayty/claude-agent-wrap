@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import SidecarService
 
@@ -14,7 +15,10 @@ from agent_wrap.domain.sidecars.service import SidecarService
 @pytest.fixture
 def svc() -> ProviderService:
     """Return a ProviderService with a no-op sidecar service."""
-    return ProviderService(sidecar_service=Mock(spec=SidecarService))
+    return ProviderService(
+        sidecar_service=Mock(spec=SidecarService),
+        display_service=Mock(spec=DisplayService),
+    )
 
 
 def test_discovers_bedrock(svc: ProviderService):

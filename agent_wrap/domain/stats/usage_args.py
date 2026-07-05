@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent_wrap.domain.stats.constants import DEFAULT_DAYS, RELATIVE_DATE_RE, VALUE_FLAGS
 from agent_wrap.domain.stats.models import UsageArgs
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
 
 
 def _today() -> datetime:
@@ -107,7 +110,12 @@ def _combine_bounds(
 
 
 def _resolve_range(
-    from_date: date | None, until_date: date | None, days: int | None, *, days_given: bool
+    from_date: date | None,
+    until_date: date | None,
+    days: int | None,
+    *,
+    days_given: bool,
+    display: DisplayService,
 ) -> tuple[str | None, str | None] | None:
     """
     Resolve the parsed ``--from``/``--until``/``--days`` values into inclusive bounds.
@@ -119,7 +127,7 @@ def _resolve_range(
     means "unlimited" (no count bound). See the resolution table in the help.
     """
     if from_date is not None and until_date is not None and days_given:
-        print("usage: at most two of --from, --until, --days may be given", file=sys.stderr)
+        display.error("usage: at most two of --from, --until, --days may be given")
         return None
 
     # A days count of 0 means "unlimited" — it imposes no bound on the open side.
@@ -131,7 +139,7 @@ def _resolve_range(
     lo_iso = None if lo == date.min else lo.isoformat()
     hi_iso = None if hi == date.max else hi.isoformat()
     if lo_iso is not None and hi_iso is not None and lo_iso > hi_iso:
-        print("usage: --from date is after --until date", file=sys.stderr)
+        display.error("usage: --from date is after --until date")
         return None
     return lo_iso, hi_iso
 
@@ -175,7 +183,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> UsageArgs | None:
+def parse_usage_args(
+    args: list[str],
+    *,
+    usage_line: str,
+    usage_text: str,
+    display: DisplayService,
+) -> UsageArgs | None:
     """
     Parse ``[-f|--from D] [-u|--until D] [-d|--days N] [-v] <projects.txt>``.
 
@@ -197,10 +211,12 @@ def parse_usage_args(args: list[str], *, usage_line: str, usage_text: str) -> Us
 
     reg = Path(ns.registry)
     if not reg.is_file():
-        print(f"usage: registry not found at {reg}", file=sys.stderr)
+        display.error(f"usage: registry not found at {reg}")
         return None
 
-    resolved = _resolve_range(ns.from_date, ns.until_date, ns.days, days_given=ns.days is not None)
+    resolved = _resolve_range(
+        ns.from_date, ns.until_date, ns.days, days_given=ns.days is not None, display=display
+    )
     if resolved is None:
         return None
     from_iso, until_iso = resolved

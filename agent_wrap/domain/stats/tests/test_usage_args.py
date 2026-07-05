@@ -16,6 +16,7 @@ from agent_wrap.lib.format import day_in_range
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from unittest.mock import Mock
 
 # A fixed "today" so relative offsets and defaults are deterministic.
 _TODAY = date(2026, 6, 29)
@@ -28,9 +29,11 @@ def _freeze_today(mocker: MockerFixture):
     mocker.patch.object(ua, "_today", return_value=frozen)
 
 
-def _parse(mocker: MockerFixture, reg: Path, *flags: str):
+def _parse(mocker: MockerFixture, display_mock: Mock, reg: Path, *flags: str):
     _freeze_today(mocker)
-    return parse_usage_args([str(reg), *flags], usage_line="u", usage_text="u")
+    return parse_usage_args(
+        [str(reg), *flags], usage_line="u", usage_text="u", display=display_mock
+    )
 
 
 def _reg(tmp_path: Path) -> Path:
@@ -46,74 +49,78 @@ def _iso(d: date) -> str:
 # --- resolution table --------------------------------------------------------
 
 
-def test_no_flags_defaults_to_last_28_days(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path))
+def test_no_flags_defaults_to_last_28_days(
+    mocker: MockerFixture, tmp_path: Path, display_mock: Mock
+):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path))
     assert parsed is not None
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=DEFAULT_DAYS - 1))
     assert parsed.until_iso == _iso(_TODAY)
     assert parsed.verbose is False
 
 
-def test_from_alone_runs_to_today(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "2026-06-01")
+def test_from_alone_runs_to_today(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "2026-06-01")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
     assert parsed.until_iso == _iso(_TODAY)
 
 
-def test_until_alone_spans_default_days(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--until", "2026-06-20")
+def test_until_alone_spans_default_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--until", "2026-06-20")
     assert parsed is not None
     assert parsed.until_iso == "2026-06-20"
     assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS - 1))
 
 
-def test_days_alone(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--days", "7")
+def test_days_alone(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--days", "7")
     assert parsed is not None
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=7 - 1))
     assert parsed.until_iso == _iso(_TODAY)
 
 
-def test_days_zero_is_all_time(mocker: MockerFixture, tmp_path: Path):
+def test_days_zero_is_all_time(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     # --days 0 lifts the count bound: open lower side, but the implicit upper stays
     # "now" (no --until given). Records carry timestamps <= now, so this is all-time.
-    parsed = _parse(mocker, _reg(tmp_path), "--days", "0")
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--days", "0")
     assert parsed is not None
     assert parsed.from_iso is None
     assert parsed.until_iso == _iso(_TODAY)
 
 
-def test_from_and_until(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "2026-06-01", "--until", "2026-06-10")
+def test_from_and_until(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(
+        mocker, display_mock, _reg(tmp_path), "--from", "2026-06-01", "--until", "2026-06-10"
+    )
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
     assert parsed.until_iso == "2026-06-10"
 
 
-def test_from_and_days(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "2026-06-01", "--days", "5")
+def test_from_and_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "2026-06-01", "--days", "5")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
     assert parsed.until_iso == "2026-06-05"
 
 
-def test_from_and_days_zero_open_upper(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "2026-06-01", "--days", "0")
+def test_from_and_days_zero_open_upper(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "2026-06-01", "--days", "0")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
     assert parsed.until_iso is None
 
 
-def test_until_and_days(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--until", "2026-06-20", "--days", "5")
+def test_until_and_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--until", "2026-06-20", "--days", "5")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-16"
     assert parsed.until_iso == "2026-06-20"
 
 
-def test_until_and_days_zero_open_lower(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--until", "2026-06-20", "--days", "0")
+def test_until_and_days_zero_open_lower(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--until", "2026-06-20", "--days", "0")
     assert parsed is not None
     assert parsed.from_iso is None
     assert parsed.until_iso == "2026-06-20"
@@ -122,29 +129,29 @@ def test_until_and_days_zero_open_lower(mocker: MockerFixture, tmp_path: Path):
 # --- short flag forms --------------------------------------------------------
 
 
-def test_short_days(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "-d", "7")
+def test_short_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "-d", "7")
     assert parsed is not None
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=7 - 1))
     assert parsed.until_iso == _iso(_TODAY)
 
 
-def test_short_from(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "-f", "2026-06-01")
+def test_short_from(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "-f", "2026-06-01")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
     assert parsed.until_iso == _iso(_TODAY)
 
 
-def test_short_until(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "-u", "2026-06-20")
+def test_short_until(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "-u", "2026-06-20")
     assert parsed is not None
     assert parsed.until_iso == "2026-06-20"
     assert parsed.from_iso == _iso(date(2026, 6, 20) - timedelta(days=DEFAULT_DAYS - 1))
 
 
-def test_short_from_and_until(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "-f", "2026-06-01", "-u", "2026-06-10")
+def test_short_from_and_until(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "-f", "2026-06-01", "-u", "2026-06-10")
     assert parsed is not None
     assert parsed.from_iso == "2026-06-01"
     assert parsed.until_iso == "2026-06-10"
@@ -153,15 +160,15 @@ def test_short_from_and_until(mocker: MockerFixture, tmp_path: Path):
 # --- relative date specs -----------------------------------------------------
 
 
-def test_relative_from(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "-14d")
+def test_relative_from(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "-14d")
     assert parsed is not None
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=14))
     assert parsed.until_iso == _iso(_TODAY)
 
 
-def test_relative_until_and_days(mocker: MockerFixture, tmp_path: Path):
-    parsed = _parse(mocker, _reg(tmp_path), "--until", "-7d", "--days", "3")
+def test_relative_until_and_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--until", "-7d", "--days", "3")
     assert parsed is not None
     assert parsed.until_iso == _iso(_TODAY - timedelta(days=7))
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=9))
@@ -170,57 +177,57 @@ def test_relative_until_and_days(mocker: MockerFixture, tmp_path: Path):
 # --- errors ------------------------------------------------------------------
 
 
-def test_all_three_flags_rejected(
-    mocker: MockerFixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_all_three_flags_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     parsed = _parse(
-        mocker, _reg(tmp_path), "--from", "2026-06-01", "--until", "2026-06-10", "--days", "3"
+        mocker,
+        display_mock,
+        _reg(tmp_path),
+        "--from",
+        "2026-06-01",
+        "--until",
+        "2026-06-10",
+        "--days",
+        "3",
     )
     assert parsed is None
-    assert "at most two" in capsys.readouterr().err
+    display_mock.error.assert_called_once_with(
+        "usage: at most two of --from, --until, --days may be given"
+    )
 
 
-def test_from_after_until_rejected(
-    mocker: MockerFixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "2026-06-10", "--until", "2026-06-01")
+def test_from_after_until_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(
+        mocker, display_mock, _reg(tmp_path), "--from", "2026-06-10", "--until", "2026-06-01"
+    )
     assert parsed is None
-    assert "after --until" in capsys.readouterr().err
+    display_mock.error.assert_called_once_with("usage: --from date is after --until date")
 
 
-def test_malformed_from_rejected(
-    mocker: MockerFixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
-    parsed = _parse(mocker, _reg(tmp_path), "--from", "june-first")
+def test_malformed_from_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "june-first")
     assert parsed is None
-    err = capsys.readouterr().err
-    assert "-f/--from" in err
-    assert "expects" in err
+    display_mock.error.assert_not_called()
 
 
-def test_negative_days_rejected(
-    mocker: MockerFixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
-    parsed = _parse(mocker, _reg(tmp_path), "--days", "-3")
+def test_negative_days_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--days", "-3")
     assert parsed is None
-    assert "must be >= 0" in capsys.readouterr().err
+    display_mock.error.assert_not_called()
 
 
-def test_days_missing_value_rejected(
-    mocker: MockerFixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_days_missing_value_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     # Previously the bare flag was silently treated as the positional registry
     # path; argparse now reports the missing value instead.
-    parsed = _parse(mocker, _reg(tmp_path), "--days")
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--days")
     assert parsed is None
-    assert "argument" in capsys.readouterr().err
+    display_mock.error.assert_not_called()
 
 
-def test_missing_registry_rejected(mocker: MockerFixture, capsys: pytest.CaptureFixture[str]):
+def test_missing_registry_rejected(mocker: MockerFixture, display_mock: Mock):
     _freeze_today(mocker)
-    parsed = parse_usage_args([], usage_line="u", usage_text="u")
+    parsed = parse_usage_args([], usage_line="u", usage_text="u", display=display_mock)
     assert parsed is None
-    assert capsys.readouterr().err
+    display_mock.error.assert_not_called()
 
 
 # --- day_in_range ------------------------------------------------------------

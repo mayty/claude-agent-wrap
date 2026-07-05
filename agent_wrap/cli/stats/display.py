@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Terminal rendering for the stats command."""
 
 from __future__ import annotations
@@ -9,17 +9,19 @@ from typing import TYPE_CHECKING
 from agent_wrap.cli.stats.render import range_label, render_core
 from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
 from agent_wrap.constants import USAGE_SOURCES
-from agent_wrap.domain.pricing.cost_format import fmt_cost_with_unknown
+from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.models import RowItem
 from agent_wrap.domain.pricing.models import Bucket
-from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.format import fmt_count
-from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.display.models import RowItemOrDivider
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
 
 
-def _model_display_rows(totals_by_model: dict[str, Bucket]) -> list[DisplayRow]:
+def _model_display_rows(
+    totals_by_model: dict[str, Bucket], display: DisplayService
+) -> list[DisplayRow]:
     """
     Render the per-model breakdown as a provider/model tree.
 
@@ -39,10 +41,14 @@ def _model_display_rows(totals_by_model: dict[str, Bucket]) -> list[DisplayRow]:
         }
         for model, bucket in totals_by_model.items()
     ]
-    return flatten_tree(build_project_tree(rows))
+    return flatten_tree(build_project_tree(rows), display=display)
 
 
-def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int) -> list[RowItem]:
+def _build_model_section(
+    totals_by_model: dict[str, Bucket],
+    leading_blanks: int,
+    display: DisplayService,
+) -> list[RowItemOrDivider]:
     """
     Build the per-model breakdown body rows (provider/model tree).
 
@@ -50,34 +56,36 @@ def _build_model_section(totals_by_model: dict[str, Bucket], leading_blanks: int
     LAST LAUNCH columns in the Total table (2) versus the Recent table (0).
     """
     blanks = [""] * leading_blanks
-    body: list[RowItem] = []
-    for dr in _model_display_rows(totals_by_model):
+    body: list[RowItemOrDivider] = []
+    for dr in _model_display_rows(totals_by_model, display):
         style = Ansi.DIM if dr.is_structural else Ansi.NONE
         body.append(
-            (
-                [
+            RowItem(
+                cells=[
                     dr.label,
                     *blanks,
-                    fmt_count(dr.bucket.msgs),
-                    fmt_count(dr.bucket.in_),
-                    fmt_count(dr.bucket.out),
-                    fmt_count(dr.bucket.cw),
-                    fmt_count(dr.bucket.cr),
+                    display.format_count(dr.bucket.msgs),
+                    display.format_count(dr.bucket.in_),
+                    display.format_count(dr.bucket.out),
+                    display.format_count(dr.bucket.cw),
+                    display.format_count(dr.bucket.cr),
                     dr.cost_str,
                 ],
-                style,
-                dr.prefix_len,
+                style=style,
+                prefix_len=dr.prefix_len,
             )
         )
     return body
 
 
-def render(
+def render(  # noqa: PLR0913
     rows: list[ProjectRow],
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     from_iso: str | None,
     until_iso: str | None,
+    *,
     orphaned: OrphanedResult | None = None,
+    display: DisplayService,
 ) -> str:
     # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
     # `cost_unknown` flag (set when a billable request had no known price) is the
@@ -90,6 +98,7 @@ def render(
         cost_fn=lambda _model, b: (b.cost, b.cost_unknown),
         build_model_section=_build_model_section,
         orphaned=orphaned,
+        display=display,
     )
 
 
@@ -97,6 +106,8 @@ def render_source_breakdown(
     totals_by_source: dict[str, dict[str, Bucket]],
     from_iso: str | None,
     until_iso: str | None,
+    *,
+    display: DisplayService,
 ) -> str:
     """
     Render the verbose "usage source breakdown" table for the selected window.
@@ -126,21 +137,21 @@ def render_source_breakdown(
     div = "__div__"
 
     def _row(label: str, b: Bucket, style: Ansi) -> RowItem:
-        return (
-            [
+        return RowItem(
+            cells=[
                 label,
-                fmt_count(b.msgs),
-                fmt_count(b.in_),
-                fmt_count(b.out),
-                fmt_count(b.cw),
-                fmt_count(b.cr),
-                fmt_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                display.format_count(b.msgs),
+                display.format_count(b.in_),
+                display.format_count(b.out),
+                display.format_count(b.cw),
+                display.format_count(b.cr),
+                display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
             ],
-            style,
-            0,
+            style=style,
+            prefix_len=0,
         )
 
-    body: list[RowItem] = []
+    body: list[RowItemOrDivider] = []
     total = Bucket()
     for source in USAGE_SOURCES:
         b = merged.get(source)
@@ -157,6 +168,6 @@ def render_source_breakdown(
     body.append(div)
     body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
 
-    shared_widths = compute_shared_widths([(headers, body, 1)], 6)
+    shared_widths = display.compute_shared_widths([(headers, body, 1)], 6)
     title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
-    return "\n".join(render_table(title, headers, aligns, body, 1, shared_widths))
+    return "\n".join(display.render_table(title, headers, aligns, body, 1, shared_widths))

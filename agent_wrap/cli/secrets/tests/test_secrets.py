@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from agent_wrap.cli.secrets.run import run as secrets_run
+from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
 
 
@@ -15,28 +16,36 @@ def test_run_requires_action(capsys: pytest.CaptureFixture[str]) -> None:
     assert "usage:" in capsys.readouterr().err  # argparse standard format
 
 
-def test_run_check_requires_sidecar(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_check_requires_sidecar() -> None:
     """'check' without a sidecar name returns 1."""
     assert secrets_run(["check"]) == 1
-    assert "Usage:" in capsys.readouterr().err
+    services.display_service.error.assert_called_once_with(  # type: ignore[union-attr]
+        "The 'check' action requires a sidecar name.  Usage: agent secrets check <sidecar>"
+    )
 
 
-def test_run_cleanup_rejects_extra_arg(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_cleanup_rejects_extra_arg() -> None:
     """'cleanup' with an extra argument returns 1."""
     assert secrets_run(["cleanup", "extra"]) == 1
-    assert "does not take a sidecar argument" in capsys.readouterr().err
+    services.display_service.error.assert_called_once_with(  # type: ignore[union-attr]
+        "The 'cleanup' action does not take a sidecar argument."
+    )
 
 
-def test_run_set_requires_sidecar(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_set_requires_sidecar() -> None:
     """'set' without a sidecar name returns 1."""
     assert secrets_run(["set"]) == 1
-    assert "Usage:" in capsys.readouterr().err
+    services.display_service.error.assert_called_once_with(  # type: ignore[union-attr]
+        "The 'set' action requires a sidecar name.  Usage: agent secrets set <sidecar>"
+    )
 
 
-def test_run_clear_requires_sidecar(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_clear_requires_sidecar() -> None:
     """'clear' without a sidecar name returns 1."""
     assert secrets_run(["clear"]) == 1
-    assert "Usage:" in capsys.readouterr().err
+    services.display_service.error.assert_called_once_with(  # type: ignore[union-attr]
+        "The 'clear' action requires a sidecar name.  Usage: agent secrets clear <sidecar>"
+    )
 
 
 def test_run_check_calls_sidecar_secrets_service() -> None:
@@ -50,9 +59,9 @@ def test_run_check_calls_sidecar_secrets_service() -> None:
         "telegram:TelegramChatId": True,
     }
 
-    rc = secrets_run(["check", "telegram"])
+    rc = secrets_run(["check", TELEGRAM_SIDECAR_NAME])
     assert rc == 0
-    services.secrets_service.check_secrets.assert_called_once_with("telegram")  # type: ignore[union-attr]
+    services.secrets_service.check_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
 
 
 def test_run_check_missing_secret_returns_one() -> None:
@@ -60,27 +69,27 @@ def test_run_check_missing_secret_returns_one() -> None:
     services.secrets_service.get_required_secrets.return_value = [("Token", "desc")]  # type: ignore[union-attr]
     services.secrets_service.check_secrets.return_value = {"telegram:Token": False}  # type: ignore[union-attr]
 
-    rc = secrets_run(["check", "telegram"])
+    rc = secrets_run(["check", TELEGRAM_SIDECAR_NAME])
     assert rc == 1
-    services.secrets_service.check_secrets.assert_called_once_with("telegram")  # type: ignore[union-attr]
+    services.secrets_service.check_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
 
 
 def test_run_set_non_interactive_returns_one() -> None:
     """'set' returns 1 when set_secrets raises RuntimeError."""
     services.secrets_service.set_secrets.side_effect = RuntimeError("non-interactive")  # type: ignore[union-attr]
 
-    rc = secrets_run(["set", "telegram"])
+    rc = secrets_run(["set", TELEGRAM_SIDECAR_NAME])
     assert rc == 1
-    services.secrets_service.set_secrets.assert_called_once_with("telegram")  # type: ignore[union-attr]
+    services.secrets_service.set_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
 
 
 def test_run_clear_removes_namespaced_keys() -> None:
     """'clear telegram' delegates to secrets_service.clear_secrets."""
     services.secrets_service.clear_secrets.return_value = ["telegram:Token"]  # type: ignore[union-attr]
 
-    rc = secrets_run(["clear", "telegram"])
+    rc = secrets_run(["clear", TELEGRAM_SIDECAR_NAME])
     assert rc == 0
-    services.secrets_service.clear_secrets.assert_called_once_with("telegram")  # type: ignore[union-attr]
+    services.secrets_service.clear_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
 
 
 def test_run_cleanup_removes_unknown_keys() -> None:

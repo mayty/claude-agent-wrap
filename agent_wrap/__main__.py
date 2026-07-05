@@ -12,6 +12,7 @@ import os
 import sys
 
 from agent_wrap.cli.commands import COMMANDS, command_meta, format_usage
+from agent_wrap.containers import services
 
 _MIN_ARGS = 2
 
@@ -20,7 +21,7 @@ def main() -> int:
     """Run the normal CLI dispatch path."""
     if len(sys.argv) < _MIN_ARGS:
         meta = command_meta()
-        print(format_usage(meta), file=sys.stderr, end="")
+        services.display_service.error(format_usage(meta), end="")
         return 1
 
     name = sys.argv[1]
@@ -28,7 +29,7 @@ def main() -> int:
 
     entry = COMMANDS.get(name)
     if entry is None:
-        print(f"Unknown command: {name}", file=sys.stderr)
+        services.display_service.error(f"Unknown command: {name}")
         return 1
 
     run_fn, _complete_fn = entry

@@ -12,6 +12,7 @@ import pytest
 import pytest_mock
 from pytest_mock import MockerFixture
 
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.io import (
     group_by_id,
     lightweight_project_summary,
@@ -163,7 +164,7 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixt
     )
     mock_ps = mocker.Mock(spec=ProviderService)
     mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps)
+    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
     data = read_session(project, "s1", pricing=pricing)
     assert data["session_meta"] is not None
     assert data["session_meta"]["session_id"] == "s1"
@@ -276,7 +277,7 @@ def test_read_session_merges_across_providers(tmp_path: Path, mocker: MockerFixt
     )
     mock_ps = mocker.Mock(spec=ProviderService)
     mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps)
+    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
     data = read_session(project, "s1", pricing=pricing)
     reqs = data["reqs"]
     assert len(reqs) == 2

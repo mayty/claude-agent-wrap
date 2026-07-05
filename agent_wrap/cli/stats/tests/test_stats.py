@@ -5,10 +5,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from agent_wrap.cli.stats.display import render, render_source_breakdown
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.stats.usage_args import parse_usage_args
+
+
+@pytest.fixture
+def display_service() -> Mock:
+    """Mock DisplayService that delegates formatting to the real implementation."""
+    return Mock(spec=DisplayService, wraps=DisplayService())
 
 
 def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
@@ -32,7 +42,7 @@ def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
 # ---------------------------------------------------------------------------
 
 
-def test_render_includes_orphaned_row() -> None:
+def test_render_includes_orphaned_row(display_service: Mock) -> None:
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     b = Bucket()
     b.add(
@@ -57,14 +67,14 @@ def test_render_includes_orphaned_row() -> None:
     )
     last_ts = datetime(2026, 6, 29, tzinfo=timezone.utc)
     orphaned = {"sessions": 1, "last_ts": last_ts, "total": b}
-    out = render([], {}, None, None, orphaned=orphaned)
+    out = render([], {}, None, None, orphaned=orphaned, display=display_service)
     assert "<orphaned>" in out
     assert "<orphaned> *" not in out
 
 
-def test_render_without_orphaned_has_no_row() -> None:
+def test_render_without_orphaned_has_no_row(display_service: Mock) -> None:
     """When orphaned is None, no <orphaned> row appears."""
-    out = render([], {}, None, None, orphaned=None)
+    out = render([], {}, None, None, orphaned=None, display=display_service)
     assert "<orphaned>" not in out
 
 
@@ -73,13 +83,13 @@ def test_render_without_orphaned_has_no_row() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_source_breakdown_lists_active_sources() -> None:
+def test_render_source_breakdown_lists_active_sources(display_service: Mock) -> None:
     by_source = {
         "native": {"bedrock/claude-opus-4-8": _source_bucket(3, in_=1000)},
         "standard_logging_object": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=500)},
         "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
     }
-    out = render_source_breakdown(by_source, None, None)
+    out = render_source_breakdown(by_source, None, None, display=display_service)
     assert "Usage source breakdown (all time):" in out
     assert "native" in out
     assert "standard_logging_object" in out
@@ -87,23 +97,23 @@ def test_render_source_breakdown_lists_active_sources() -> None:
     assert "TOTAL" in out
 
 
-def test_render_source_breakdown_omits_zero_msg_sources() -> None:
+def test_render_source_breakdown_omits_zero_msg_sources(display_service: Mock) -> None:
     by_source = {"native": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=100)}}
-    out = render_source_breakdown(by_source, None, None)
+    out = render_source_breakdown(by_source, None, None, display=display_service)
     assert "native" in out
     assert "standard_logging_object" not in out
 
 
-def test_render_source_breakdown_empty_when_no_activity() -> None:
-    assert render_source_breakdown({}, None, None) == ""
+def test_render_source_breakdown_empty_when_no_activity(display_service: Mock) -> None:
+    assert render_source_breakdown({}, None, None, display=display_service) == ""
 
 
-def test_render_source_breakdown_merges_across_models() -> None:
+def test_render_source_breakdown_merges_across_models(display_service: Mock) -> None:
     by_source = {
         "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
         "native": {"bedrock/claude-haiku-4-5": _source_bucket(1, in_=1)},
     }
-    out = render_source_breakdown(by_source, "2026-06-01", "2026-06-29")
+    out = render_source_breakdown(by_source, "2026-06-01", "2026-06-29", display=display_service)
     assert "Usage source breakdown (2026-06-01 … 2026-06-29):" in out
     assert "unrecoverable" in out
     assert "native" in out
@@ -114,25 +124,29 @@ def test_render_source_breakdown_merges_across_models() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_parse_usage_args_verbose_short_flag(tmp_path: Path) -> None:
+def test_parse_usage_args_verbose_short_flag(tmp_path: Path, display_service: Mock) -> None:
     reg = tmp_path / "projects.txt"
     reg.write_text("/x\n", encoding="utf-8")
-    parsed = parse_usage_args([str(reg), "-v"], usage_line="u", usage_text="u")
+    parsed = parse_usage_args(
+        [str(reg), "-v"], usage_line="u", usage_text="u", display=display_service
+    )
     assert parsed is not None
     assert parsed.verbose is True
 
 
-def test_parse_usage_args_verbose_long_flag(tmp_path: Path) -> None:
+def test_parse_usage_args_verbose_long_flag(tmp_path: Path, display_service: Mock) -> None:
     reg = tmp_path / "projects.txt"
     reg.write_text("/x\n", encoding="utf-8")
-    parsed = parse_usage_args([str(reg), "--verbose"], usage_line="u", usage_text="u")
+    parsed = parse_usage_args(
+        [str(reg), "--verbose"], usage_line="u", usage_text="u", display=display_service
+    )
     assert parsed is not None
     assert parsed.verbose is True
 
 
-def test_parse_usage_args_verbose_defaults_false(tmp_path: Path) -> None:
+def test_parse_usage_args_verbose_defaults_false(tmp_path: Path, display_service: Mock) -> None:
     reg = tmp_path / "projects.txt"
     reg.write_text("/x\n", encoding="utf-8")
-    parsed = parse_usage_args([str(reg)], usage_line="u", usage_text="u")
+    parsed = parse_usage_args([str(reg)], usage_line="u", usage_text="u", display=display_service)
     assert parsed is not None
     assert parsed.verbose is False

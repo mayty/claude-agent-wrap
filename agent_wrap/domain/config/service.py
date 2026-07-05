@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 Configuration file manipulation for agent-wrap.
 
@@ -12,13 +12,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR, GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
 from agent_wrap.lib.path_hash import project_path_hash
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -34,6 +36,9 @@ def _load_json(path: Path) -> dict[str, Any] | None:
 
 class ConfigService:
     """Configuration file manipulation for agent-wrap."""
+
+    def __init__(self, display_service: DisplayService) -> None:
+        self._display = display_service
 
     # statusline / hooks
 
@@ -224,7 +229,7 @@ class ConfigService:
                     bkp = link.parent / f"litellm-logs-bkp-{n}"
                     n += 1
                 link.rename(bkp)
-                print(f"agent-wrap: backed up pre-existing logs {link} -> {bkp}", file=sys.stderr)
+                self._display.info(f"agent-wrap: backed up pre-existing logs {link} -> {bkp}")
 
             link.symlink_to(target, target_is_directory=True)
         except OSError:

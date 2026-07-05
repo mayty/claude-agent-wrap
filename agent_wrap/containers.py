@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.create.service import CreateService
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.launch.service import LaunchService
     from agent_wrap.domain.logs.service import LogsService
     from agent_wrap.domain.pricing.service import PricingService
@@ -29,22 +30,31 @@ class Services:
     """
 
     @cached_property
+    def display_service(self) -> DisplayService:
+        from agent_wrap.domain.display.service import DisplayService
+
+        return DisplayService()
+
+    @cached_property
     def provider_service(self) -> ProviderService:
         from agent_wrap.domain.providers.service import ProviderService
 
-        return ProviderService(sidecar_service=self.sidecar_service)
+        return ProviderService(
+            sidecar_service=self.sidecar_service,
+            display_service=self.display_service,
+        )
 
     @cached_property
     def sidecar_service(self) -> SidecarService:
         from agent_wrap.domain.sidecars.service import SidecarService
 
-        return SidecarService()
+        return SidecarService(display_service=self.display_service)
 
     @cached_property
     def config_service(self) -> ConfigService:
         from agent_wrap.domain.config.service import ConfigService
 
-        return ConfigService()
+        return ConfigService(display_service=self.display_service)
 
     @cached_property
     def secrets_service(self) -> SecretsService:
@@ -53,19 +63,23 @@ class Services:
         return SecretsService(
             provider_service=self.provider_service,
             sidecar_service=self.sidecar_service,
+            display_service=self.display_service,
         )
 
     @cached_property
     def pricing_service(self) -> PricingService:
         from agent_wrap.domain.pricing.service import PricingService
 
-        return PricingService(provider_service=self.provider_service)
+        return PricingService(
+            provider_service=self.provider_service,
+            display_service=self.display_service,
+        )
 
     @cached_property
     def update_service(self) -> UpdateService:
         from agent_wrap.domain.updates.service import UpdateService
 
-        return UpdateService()
+        return UpdateService(display_service=self.display_service)
 
     @cached_property
     def launch_service(self) -> LaunchService:
@@ -78,19 +92,23 @@ class Services:
             provider_service=self.provider_service,
             sidecar_service=self.sidecar_service,
             build_service=self.build_service,
+            display_service=self.display_service,
         )
 
     @cached_property
     def build_service(self) -> BuildService:
         from agent_wrap.domain.build.service import BuildService
 
-        return BuildService(update_service=self.update_service)
+        return BuildService(
+            update_service=self.update_service,
+            display_service=self.display_service,
+        )
 
     @cached_property
     def create_service(self) -> CreateService:
         from agent_wrap.domain.create.service import CreateService
 
-        return CreateService()
+        return CreateService(display_service=self.display_service)
 
     @cached_property
     def logs_service(self) -> LogsService:
@@ -99,6 +117,7 @@ class Services:
         return LogsService(
             pricing_service=self.pricing_service,
             stats_service=self.stats_service,
+            display_service=self.display_service,
         )
 
     @cached_property

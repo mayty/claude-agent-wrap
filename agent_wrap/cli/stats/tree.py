@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Path-trie machinery for rendering the per-project (and per-model) tree."""
 
 from __future__ import annotations
@@ -6,12 +6,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.domain.pricing.cost_format import fmt_cost, fmt_cost_with_unknown
 from agent_wrap.domain.pricing.models import Bucket
 
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import ProjectRow
 
 
@@ -173,7 +173,7 @@ def _aggregate(node: Node) -> None:
             node.subtree_last_ts = r["last_ts"]
 
 
-def flatten_tree(root: Node) -> list[DisplayRow]:
+def flatten_tree(root: Node, *, display: DisplayService) -> list[DisplayRow]:
     """
     Walk the tree in display order, producing one DisplayRow per visible
     line. The root itself is not emitted; callers prepend their own banner.
@@ -223,7 +223,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
 
             if child.row is not None:
                 r = child.row
-                cost_str = fmt_cost(r["cost"])
+                cost_str = display.format_cost(r["cost"])
                 out.append(
                     DisplayRow(
                         label=label,
@@ -237,7 +237,7 @@ def flatten_tree(root: Node) -> list[DisplayRow]:
                     )
                 )
             else:
-                cost_str = fmt_cost_with_unknown(
+                cost_str = display.format_cost_with_unknown(
                     child.subtree_known_cost, unknown=child.subtree_unknown
                 )
                 out.append(

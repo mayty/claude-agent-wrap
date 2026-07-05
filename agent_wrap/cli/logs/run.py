@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 from agent_wrap.constants import (
@@ -79,7 +78,7 @@ def run(args: list[str]) -> int:
 
     if ns.stop:
         if ns.foreground or ns.port != LOGS_DEFAULT_PORT:
-            print("usage: agent logs --stop (takes no other arguments)", file=sys.stderr)
+            services.display_service.error("usage: agent logs --stop (takes no other arguments)")
             return 1
         return services.logs_service.stop_daemon()
 
@@ -88,7 +87,7 @@ def run(args: list[str]) -> int:
 
     running = services.logs_service.running_server()
     if running is not None:
-        print(services.logs_service.connect_line(running["port"]))
+        services.display_service.info(services.logs_service.connect_line(running["port"]))
         return 0
 
     return services.logs_service.spawn_background(ns.port)

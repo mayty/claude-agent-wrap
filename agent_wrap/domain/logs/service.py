@@ -35,6 +35,7 @@ from agent_wrap.lib.process_utils import pid_alive
 if TYPE_CHECKING:
     from types import FrameType
 
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.logs.models import DaemonState
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.service import StatsService
@@ -47,9 +48,11 @@ class LogsService:
         self,
         pricing_service: PricingService,
         stats_service: StatsService,
+        display_service: DisplayService,
     ) -> None:
         self._pricing = pricing_service
         self._stats = stats_service
+        self._display = display_service
 
     # Daemon lifecycle -------------------------------------------------
 
@@ -119,20 +122,20 @@ class LogsService:
         while time.monotonic() < deadline:
             state = self.running_server()
             if state is not None and state["pid"] == child.pid:
-                print(self.connect_line(state["port"]))
+                self._display.info(self.connect_line(state["port"]))
                 return 0
             time.sleep(POLL_INTERVAL_SEC)
         # Timed out — clean up the orphaned child.
         with contextlib.suppress(OSError):
             child.send_signal(signal.SIGTERM)
-        print("error: logs viewer started but did not become ready in time", file=sys.stderr)
+        self._display.error("error: logs viewer started but did not become ready in time")
         return 1
 
     def stop_daemon(self) -> int:
         """Stop a running background viewer, if any."""
         state = self.running_server()
         if state is None:
-            print("no viewer is running")
+            self._display.info("no viewer is running")
             return 0
         with contextlib.suppress(OSError):
             os.kill(state["pid"], signal.SIGTERM)
@@ -141,7 +144,7 @@ class LogsService:
             if not pid_alive(state["pid"]):
                 with contextlib.suppress(OSError):
                     state_file().unlink(missing_ok=True)
-                print("Logs viewer stopped.")
+                self._display.success("Logs viewer stopped.")
                 return 0
             time.sleep(POLL_INTERVAL_SEC)
         # SIGTERM didn't work — try SIGKILL as a last resort.
@@ -152,11 +155,10 @@ class LogsService:
             if not pid_alive(state["pid"]):
                 with contextlib.suppress(OSError):
                     state_file().unlink(missing_ok=True)
-                print("Logs viewer stopped.")
+                self._display.success("Logs viewer stopped.")
                 return 0
             time.sleep(POLL_INTERVAL_SEC)
-        print(
-            f"warning: viewer (pid {state['pid']}) did not stop in time; state file left in place.",
-            file=sys.stderr,
+        self._display.warning(
+            f"viewer (pid {state['pid']}) did not stop in time; state file left in place."
         )
         return 1

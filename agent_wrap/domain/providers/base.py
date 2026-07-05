@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import sys
 from abc import ABC, abstractmethod
 from functools import cache
 from typing import TYPE_CHECKING
@@ -13,6 +12,7 @@ from agent_wrap.domain.providers.constants import MODEL_CONTEXT_SUFFIX_RE
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.pricing.models import TokenUsage
     from agent_wrap.domain.providers.models import Tier
     from agent_wrap.domain.sidecars.service import Sidecar, SidecarService
@@ -31,8 +31,13 @@ class Provider(ABC):
     #: Provider name matching the AGENT_PROVIDER env var (e.g. "litellm-bedrock").
     name: str
 
-    def __init__(self, sidecar_service: SidecarService | None = None) -> None:
+    def __init__(
+        self,
+        sidecar_service: SidecarService,
+        display_service: DisplayService,
+    ) -> None:
         self._sidecar_service = sidecar_service
+        self._display = display_service
         self._usage_convention_warned = False
 
     @classmethod
@@ -168,14 +173,13 @@ class Provider(ABC):
         if fresh_in_tokens < 0:
             if not self._usage_convention_warned:
                 self._usage_convention_warned = True
-                print(
-                    "warning: token usage convention drift detected — "
+                self._display.warning(
+                    "token usage convention drift detected — "
                     f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "
                     f"cache-read ({cr_tokens}). Cost math assumes input_tokens is "
                     "inclusive of cache tokens; this record violates that. Reported "
                     "costs may be inaccurate until "
-                    "agent_wrap/domain/providers/base.py:_cost_for_tiers is revisited.",
-                    file=sys.stderr,
+                    "agent_wrap/domain/providers/base.py:_cost_for_tiers is revisited."
                 )
             fresh_in_tokens = 0
 

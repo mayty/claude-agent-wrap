@@ -10,7 +10,9 @@ import pytest_mock
 
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.service import LaunchService
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.service import Sidecar, SidecarService
@@ -21,7 +23,10 @@ from agent_wrap.exceptions import SecretNotFoundError
 @pytest.fixture
 def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
     """Return a LaunchService with spec-mocked dependencies."""
-    real_build = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    real_build = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     build_svc = mocker.Mock(spec=BuildService, wraps=real_build)
     sidecar_svc = mocker.Mock(spec=SidecarService)
     sidecar_svc.role_label = SidecarService.role_label
@@ -33,6 +38,7 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
         provider_service=mocker.Mock(spec=ProviderService),
         sidecar_service=sidecar_svc,
         build_service=build_svc,
+        display_service=mocker.Mock(spec=DisplayService),
     )
 
 
@@ -297,7 +303,6 @@ def test_host_network_env_not_set(launch_svc: LaunchService) -> None:
 
 def test_host_network_not_wsl(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
     mocker: pytest_mock.MockFixture,
     launch_svc: LaunchService,
 ) -> None:
@@ -305,7 +310,9 @@ def test_host_network_not_wsl(
     mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False)
     use, _, _ = launch_svc._resolve_host_network(None, ["-p", "8080:8080"])
     assert use is False
-    assert "only honored on WSL" in capsys.readouterr().err
+    launch_svc._display.warning.assert_any_call(  # type: ignore[union-attr]
+        "AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts."
+    )
 
 
 def test_host_network_wsl_no_agent_network(
@@ -321,7 +328,6 @@ def test_host_network_wsl_no_agent_network(
 
 def test_host_network_wsl_agent_network_specified(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
     mocker: pytest_mock.MockFixture,
     launch_svc: LaunchService,
 ) -> None:
@@ -329,7 +335,10 @@ def test_host_network_wsl_agent_network_specified(
     mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
     use, _, ports = launch_svc._resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
-    assert "AGENT_USE_HOST_NETWORK ignored" in capsys.readouterr().err
+    launch_svc._display.warning.assert_any_call(  # type: ignore[union-attr]
+        "AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already "
+        "specifies --network via agent-run-args."
+    )
     assert ports == ["-p", "8080:8080"]
 
 
@@ -340,9 +349,8 @@ def test_collect_sidecars_returns_provider_sidecars(
     mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
     # Sentinel placeholders — only compared for identity, no interface needed.
-    sentinel = [mocker.Mock(), mocker.Mock()]
-    # Provider mock — needs arbitrary attribute access (no single spec fits).
-    provider = mocker.MagicMock()
+    sentinel = [mocker.Mock(spec=Sidecar), mocker.Mock(spec=Sidecar)]
+    provider = mocker.Mock(spec=Provider)
     provider.sidecars.return_value = sentinel
     assert launch_svc._collect_sidecars(provider) == sentinel
 

@@ -8,15 +8,18 @@ import os
 from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from unittest.mock import Mock
 
 import pytest
 import pytest_mock
 
 from agent_wrap.cli.stats.tree import build_project_tree, flatten_tree
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
+from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.cost import usage_source
 from agent_wrap.domain.stats.scan import scan_logs_dir
 from agent_wrap.domain.stats.service import StatsService
@@ -32,7 +35,9 @@ if TYPE_CHECKING:
 
 class FakeProvider(Provider):
     def __init__(self, flat: dict[str, Any] | None = None, tiered: dict[str, Any] | None = None):
-        super().__init__(sidecar_service=None)
+        super().__init__(
+            sidecar_service=Mock(spec=SidecarService), display_service=Mock(spec=DisplayService)
+        )
         self._flat = flat or {}
         self._tiered = tiered
 
@@ -58,23 +63,26 @@ def fake_provider() -> FakeProvider:
 
 
 @pytest.fixture
-def pricing_service(mocker: pytest_mock.MockFixture, fake_provider: FakeProvider) -> PricingService:
+def pricing_service(
+    mocker: pytest_mock.MockerFixture, fake_provider: FakeProvider, display_mock: Mock
+) -> PricingService:
     """Return a PricingService backed by a mocked ProviderService (priced)."""
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
-    return PricingService(provider_service=mockps)
+    return PricingService(provider_service=mockps, display_service=display_mock)
 
 
 @pytest.fixture
 def pricing_service_empty(
-    mocker: pytest_mock.MockFixture,
+    mocker: pytest_mock.MockerFixture,
     fake_provider: FakeProvider,
+    display_mock: Mock,
 ) -> PricingService:
     """Return a PricingService backed by a mocked ProviderService (no pricing data)."""
     empty = FakeProvider(flat={})
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = empty
-    return PricingService(provider_service=mockps)
+    return PricingService(provider_service=mockps, display_service=display_mock)
 
 
 @pytest.fixture
@@ -178,8 +186,10 @@ def _unrecoverable_rec(model: str = "claude-opus-4-8") -> dict[str, Any]:
 
 
 @pytest.fixture
-def ps(mocker: pytest_mock.MockFixture) -> PricingService:
-    return PricingService(provider_service=mocker.Mock(spec=ProviderService))
+def ps(mocker: pytest_mock.MockerFixture, display_mock: Mock) -> PricingService:
+    return PricingService(
+        provider_service=mocker.Mock(spec=ProviderService), display_service=display_mock
+    )
 
 
 def test_exact_key_beats_date_stamped_siblings() -> None:
@@ -219,12 +229,13 @@ def test_empty_keys() -> None:
 
 
 def test_date_stamped_request_resolves_to_base_tier(
-    mocker: pytest_mock.MockFixture,
+    mocker: pytest_mock.MockerFixture,
     fake_provider: FakeProvider,
+    display_mock: Mock,
 ) -> None:
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
-    pricing = PricingService(provider_service=mockps)
+    pricing = PricingService(provider_service=mockps, display_service=display_mock)
     usage: TokenUsage = {
         "input_tokens": 1000,
         "output_tokens": 500,
@@ -239,12 +250,13 @@ def test_date_stamped_request_resolves_to_base_tier(
 
 
 def test_unknown_model_returns_none(
-    mocker: pytest_mock.MockFixture,
+    mocker: pytest_mock.MockerFixture,
     fake_provider: FakeProvider,
+    display_mock: Mock,
 ) -> None:
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
-    pricing = PricingService(provider_service=mockps)
+    pricing = PricingService(provider_service=mockps, display_service=display_mock)
     usage: TokenUsage = {
         "input_tokens": 1000,
         "output_tokens": 500,
@@ -286,6 +298,7 @@ def test_aggregate_projects_empty_marker_is_transient(
     pricing_service: PricingService,
     tmp_path: Path,
     success_rec: dict[str, Any],
+    display_mock: Mock,
 ) -> None:
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -299,7 +312,7 @@ def test_aggregate_projects_empty_marker_is_transient(
     row = rows[0]
     assert row["name"] == "runs"
     assert row["transient"] is True
-    display = flatten_tree(build_project_tree(rows))
+    display = flatten_tree(build_project_tree(rows), display=display_mock)
     group = next(dr for dr in display if dr.label.rstrip().endswith("runs"))
     assert group.transient is True
     assert " *" not in group.label
@@ -391,7 +404,7 @@ def test_file_culling_keeps_recent_mtime_but_filters_records(
 
 def test_aggregate_orphaned_folds_into_totals(
     pricing_service: PricingService,
-    mocker: pytest_mock.MockFixture,
+    mocker: pytest_mock.MockerFixture,
     tmp_path: Path,
     success_rec: dict[str, Any],
 ) -> None:
@@ -412,7 +425,7 @@ def test_aggregate_orphaned_folds_into_totals(
 
 def test_aggregate_orphaned_none_when_all_reachable(
     pricing_service: PricingService,
-    mocker: pytest_mock.MockFixture,
+    mocker: pytest_mock.MockerFixture,
     tmp_path: Path,
     success_rec: dict[str, Any],
 ) -> None:
@@ -549,11 +562,12 @@ def test_extract_usage_reads_nested_cache_creation_split(ps: PricingService) -> 
 
 def test_extract_usage_mixed_ttl_falls_back_to_5m_and_warns(
     ps: PricingService,
-    capsys: pytest.CaptureFixture[str],
+    display_mock: Mock,
 ) -> None:
     usage = ps.extract_usage(_flat_cache_response(1000), "mixed")
     assert usage["cache_creation"] == {}
     assert usage["cache_creation_input_tokens"] == 1000
-    assert "mixed 5m and 1h cache TTLs" in capsys.readouterr().err
+    display_mock.warning.assert_called_once()
+    assert "mixed 5m and 1h cache TTLs" in display_mock.warning.call_args[0][0]
     ps.extract_usage(_flat_cache_response(1000), "mixed")
-    assert capsys.readouterr().err == ""
+    display_mock.warning.assert_called_once()

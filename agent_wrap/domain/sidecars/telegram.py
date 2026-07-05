@@ -16,27 +16,30 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.sidecars.models import TelegramSidecarConfig
 
+from agent_wrap.constants import TELEGRAM_SIDECAR_LABEL, PollResult
 from agent_wrap.domain.sidecars.base import Sidecar
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
-from agent_wrap.lib.spinner import PollResult, Spinner
-
-_SPINNER = Spinner("telegram-sidecar")
 
 
 class TelegramSidecar(Sidecar):
     """The shared Telegram decision sidecar container, managed as a singleton sidecar."""
 
-    def __init__(self, config: TelegramSidecarConfig) -> None:
+    def __init__(
+        self,
+        config: TelegramSidecarConfig,
+        display_service: DisplayService,
+    ) -> None:
         self.config = config
+        self._display = display_service
         self._auth_token: str = ""
         self._bot_token: str = ""
         self._chat_id: str = ""
@@ -66,13 +69,12 @@ class TelegramSidecar(Sidecar):
             return  # headless run never uses the sidecar — don't pull
         if image_exists(self.config.image):
             return
-        print(
-            f"telegram-sidecar: pulling {self.config.image} (first run, may take a moment)…",
-            file=sys.stderr,
+        self._display.warning(
+            f"{TELEGRAM_SIDECAR_LABEL}: pulling {self.config.image} (first run, may take a moment)…"
         )
         _, rc = docker_run("pull", self.config.image, capture=False, timeout=600)
         if rc != 0:
-            msg = f"telegram-sidecar: failed to pull image {self.config.image}"
+            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to pull image {self.config.image}"
             raise SystemExit(msg)
 
     def ensure(
@@ -113,10 +115,7 @@ class TelegramSidecar(Sidecar):
         else:
             self._start()
             if not self._health_poll():
-                print(
-                    "telegram-sidecar: health check failed; recent logs:",
-                    file=sys.stderr,
-                )
+                self._display.error(f"{TELEGRAM_SIDECAR_LABEL}: health check failed; recent logs:")
                 try:
                     # Stream the container's stdout+stderr straight through
                     # (capture=False): a startup crash writes its traceback to
@@ -132,10 +131,9 @@ class TelegramSidecar(Sidecar):
 
         self._auth_token = self._register()
         if not self._auth_token:
-            print(
-                "telegram-sidecar: /register returned no auth_token; "
-                "notifications will be unavailable",
-                file=sys.stderr,
+            self._display.warning(
+                f"{TELEGRAM_SIDECAR_LABEL}: /register returned no auth_token; "
+                "notifications will be unavailable"
             )
 
         # Attach sidecar to agent's custom network if needed
@@ -157,7 +155,8 @@ class TelegramSidecar(Sidecar):
         not leave a stopped corpse behind.
         """
         if self._is_running():
-            _SPINNER.spin_while(
+            self._display.spin_while(
+                label=TELEGRAM_SIDECAR_LABEL,
                 message="stopping…",
                 done_message="stopped",
                 work=self._stop_and_remove,
@@ -185,13 +184,13 @@ class TelegramSidecar(Sidecar):
             return
         _, rc = docker_run("network", "create", self.config.network_name)
         if rc != 0:
-            msg = f"telegram-sidecar: failed to create docker network {self.config.network_name}"
+            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to create docker network {self.config.network_name}"
             raise SystemExit(msg)
 
     def _attach_to_network(self, network: str) -> None:
         _, rc = docker_run("network", "inspect", network)
         if rc != 0:
-            msg = f"telegram-sidecar: network '{network}' (from agent-run-args) does not exist"
+            msg = f"{TELEGRAM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) does not exist"
             raise SystemExit(msg)
 
         if self._is_on_network(network):
@@ -200,7 +199,7 @@ class TelegramSidecar(Sidecar):
         _, rc = docker_run("network", "connect", network, self.config.container_name)
         if rc != 0:
             msg = (
-                f"telegram-sidecar: failed to attach "
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to attach "
                 f"{self.config.container_name} to network '{network}'"
             )
             raise SystemExit(msg)
@@ -268,7 +267,7 @@ class TelegramSidecar(Sidecar):
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:
-            msg = f"telegram-sidecar: failed to start {self.config.container_name}"
+            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to start {self.config.container_name}"
             raise SystemExit(msg)
 
     def _health_poll(self) -> bool:
@@ -287,7 +286,8 @@ class TelegramSidecar(Sidecar):
                 return PollResult.FAILURE, status
             return PollResult.PENDING, status
 
-        return _SPINNER.poll_until(
+        return self._display.poll_until(
+            label=TELEGRAM_SIDECAR_LABEL,
             poll=poll,
             message="waiting for healthy",
             done_message="ready",
@@ -313,9 +313,8 @@ class TelegramSidecar(Sidecar):
                 data = json.loads(resp.read())
                 token = data.get("auth_token", "")
                 if not token:
-                    print(
-                        "telegram-sidecar: /register returned no auth_token",
-                        file=sys.stderr,
+                    self._display.warning(
+                        f"{TELEGRAM_SIDECAR_LABEL}: /register returned no auth_token"
                     )
                 return token
         except (
@@ -324,10 +323,7 @@ class TelegramSidecar(Sidecar):
             OSError,
             json.JSONDecodeError,
         ) as exc:
-            print(
-                f"telegram-sidecar: /register failed ({exc})",
-                file=sys.stderr,
-            )
+            self._display.warning(f"{TELEGRAM_SIDECAR_LABEL}: /register failed ({exc})")
             return ""
 
     def _unregister(self) -> None:

@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 import pytest_mock
 
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
     _build_pricing_table,
     _scrape_model_keys,
@@ -25,7 +26,7 @@ def bedrock() -> LiteLLMProvider:
     """Return a LiteLLMProvider for litellm-bedrock with no-op sidecar."""
     svc = Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = Mock(spec=LiteLLMSidecar)
-    ps = ProviderService(sidecar_service=svc)
+    ps = ProviderService(sidecar_service=svc, display_service=Mock(spec=DisplayService))
     p = ps.get_provider("litellm-bedrock")
     assert isinstance(p, LiteLLMProvider)
     return p
@@ -36,7 +37,7 @@ def bedrock_spec(mocker: pytest_mock.MockFixture) -> LiteLLMProvider:
     """Return a LiteLLMProvider with spec-mocked sidecar for sidecar tests."""
     svc = mocker.Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = mocker.Mock(spec=LiteLLMSidecar)
-    ps = ProviderService(sidecar_service=svc)
+    ps = ProviderService(sidecar_service=svc, display_service=Mock(spec=DisplayService))
     p = ps.get_provider("litellm-bedrock")
     assert isinstance(p, LiteLLMProvider)
     return p

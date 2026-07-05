@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unittest.mock import Mock
+
 from pathlib import Path
 from typing import Any
 
@@ -140,7 +145,9 @@ def test_get_behind_fetch_fails(tmp_path: Path, mocker: pytest_mock.MockFixture)
     assert _GitOps.get_behind_count() is None
 
 
-def test_get_behind_no_commits(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_get_behind_no_commits(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+) -> None:
     def fake_git(*args: Any, **kwargs: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
@@ -159,59 +166,71 @@ def test_get_behind_no_commits(tmp_path: Path, mocker: pytest_mock.MockFixture) 
 # --- check_updates ---
 
 
-def test_check_skip_env_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_skip_env_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, display_mock: Mock
+) -> None:
     monkeypatch.setenv("AGENT_SKIP_UPDATE_CHECK", "1")
-    assert UpdateService().check_updates() is False
+    assert UpdateService(display_service=display_mock).check_updates() is False
 
 
-def test_check_no_behind(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_check_no_behind(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.get_behind_count", return_value=None)
-    assert UpdateService().check_updates() is False
+    assert UpdateService(display_service=display_mock).check_updates() is False
 
 
-def test_check_user_says_no(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_check_user_says_no(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
     )
-    mocker.patch("builtins.input", return_value="n")
+    display_mock.prompt_confirm.return_value = False
     mock_apply = mocker.patch.object(UpdateService, "apply")
-    assert UpdateService().check_updates() is False
+    assert UpdateService(display_service=display_mock).check_updates() is False
     mock_apply.assert_not_called()
 
 
-def test_check_user_says_yes(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_check_user_says_yes(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
     )
-    mocker.patch("builtins.input", return_value="y")
+    display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply")
-    assert UpdateService().check_updates() is True
+    assert UpdateService(display_service=display_mock).check_updates() is True
     mock_apply.assert_called_once_with("origin/main")
 
 
 def test_check_master_announces_tag(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: pytest_mock.MockFixture
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
 ) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("master", 3, "v1.1"),
     )
-    mocker.patch("builtins.input", return_value="y")
+    display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply")
-    assert UpdateService().check_updates() is True
+    assert UpdateService(display_service=display_mock).check_updates() is True
     mock_apply.assert_called_once_with("v1.1")
-    assert "v1.1" in capsys.readouterr().out
+    display_mock.warning.assert_any_call("a new agent-wrap release (v1.1) is available.")
 
 
-def test_check_eof_error(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_check_eof_error(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
     )
-    mocker.patch("builtins.input", side_effect=EOFError)
-    assert UpdateService().check_updates() is False
+    display_mock.prompt_confirm.return_value = False
+    assert UpdateService(display_service=display_mock).check_updates() is False
 
 
 # --- _detect_claude_md_state ---
@@ -267,7 +286,7 @@ def test_propagation_matches_deletes(tmp_path: Path, mocker: pytest_mock.MockFix
 
 
 def test_propagation_customized_returns_conflict(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
 ) -> None:
     config_dir = tmp_path / ".claude"
     config_dir.mkdir(parents=True)
@@ -283,33 +302,37 @@ def test_propagation_customized_returns_conflict(
 
 
 def test_apply_cannot_determine_branch(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: pytest_mock.MockFixture
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
 ) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", return_value=("", 1))
-    rc = UpdateService().apply()
+    rc = UpdateService(display_service=display_mock).apply()
     assert rc == 1
-    captured = capsys.readouterr()
-    assert "Update failed:" in captured.err
-    assert "could not determine current branch" in captured.err
+    display_mock.error.assert_any_call("Update failed:")
+    display_mock.error.assert_any_call("could not determine current branch")
 
 
 def test_apply_cannot_get_head(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: pytest_mock.MockFixture
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
 ) -> None:
     mock_git = mocker.patch("agent_wrap.domain.updates.service._GitOps.git")
     mock_git.side_effect = [
         ("main", 0),  # symbolic-ref ok
         ("", 1),  # rev-parse HEAD fails
     ]
-    rc = UpdateService().apply("origin/main")
+    rc = UpdateService(display_service=display_mock).apply("origin/main")
     assert rc == 1
-    captured = capsys.readouterr()
-    assert "Update failed:" in captured.err
-    assert "could not get current HEAD" in captured.err
+    display_mock.error.assert_any_call("Update failed:")
+    display_mock.error.assert_any_call("could not get current HEAD")
 
 
 def test_apply_merge_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: pytest_mock.MockFixture
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
 ) -> None:
     def fake_git(*args: Any, **kwargs: Any):
         if args[0] == "symbolic-ref":
@@ -323,16 +346,17 @@ def test_apply_merge_fails(
         "agent_wrap.domain.updates.service._GitOps.git_full",
         return_value=("", 1, "fatal: not possible to fast-forward"),
     )
-    rc = UpdateService().apply("origin/main")
+    rc = UpdateService(display_service=display_mock).apply("origin/main")
     assert rc == 1
-    out = capsys.readouterr().out
-    assert "Update failed:" in out
-    assert "fatal: not possible to fast-forward" in out
+    display_mock.error.assert_any_call("Update failed:")
+    display_mock.error.assert_any_call("fatal: not possible to fast-forward")
     # Fast-forwards to the resolved target ref, not a raw branch pull.
     assert mock_full.call_args.args == ("merge", "--ff-only", "origin/main")
 
 
-def test_apply_merges_to_tag_target(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_apply_merges_to_tag_target(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+) -> None:
     def fake_git(*args: Any, **kwargs: Any):
         if args[0] == "symbolic-ref":
             return ("master", 0)
@@ -345,23 +369,27 @@ def test_apply_merges_to_tag_target(tmp_path: Path, mocker: pytest_mock.MockFixt
         "agent_wrap.domain.updates.service._GitOps.git_full", return_value=("", 0, "")
     )
     mocker.patch("subprocess.run").return_value.returncode = 0
-    rc = UpdateService().apply("v1.1")
+    rc = UpdateService(display_service=display_mock).apply("v1.1")
     assert rc == 0
     assert mock_full.call_args.args == ("merge", "--ff-only", "v1.1")
 
 
 def test_apply_recomputes_target_when_none(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: pytest_mock.MockFixture
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
 ) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", return_value=("master", 0))
     mocker.patch("agent_wrap.domain.updates.service._GitOps.get_behind_count", return_value=None)
-    rc = UpdateService().apply()
+    rc = UpdateService(display_service=display_mock).apply()
     assert rc == 0
-    assert "Already up to date" in capsys.readouterr().out
+    display_mock.success.assert_any_call("Already up to date")
 
 
 def test_apply_already_up_to_date(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], mocker: pytest_mock.MockFixture
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
 ) -> None:
     def fake_git(*args: Any, **kwargs: Any):
         if args[0] == "symbolic-ref":
@@ -373,6 +401,6 @@ def test_apply_already_up_to_date(
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", side_effect=fake_git)
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git_full", return_value=("", 0, ""))
     mocker.patch("subprocess.run").return_value.returncode = 0
-    rc = UpdateService().apply("origin/main")
+    rc = UpdateService(display_service=display_mock).apply("origin/main")
     assert rc == 0
-    assert "Already up to date" in capsys.readouterr().out
+    display_mock.success.assert_any_call("Already up to date")

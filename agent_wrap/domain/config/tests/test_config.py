@@ -5,17 +5,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from agent_wrap.constants import STATE_FILES
 from agent_wrap.domain.config.service import ConfigService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.lib.path_hash import project_path_hash
 
 
 @pytest.fixture
 def svc() -> ConfigService:
-    return ConfigService()
+    return ConfigService(display_service=Mock(spec=DisplayService))
 
 
 def test_injects_into_empty_file(svc: ConfigService, tmp_path: Path):
@@ -450,9 +452,7 @@ def test_link_litellm_logs_repoints_stale_symlink(svc: ConfigService, tmp_path: 
     assert link.resolve() == target.resolve()
 
 
-def test_link_litellm_logs_backs_up_real_directory(
-    svc: ConfigService, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_link_litellm_logs_backs_up_real_directory(svc: ConfigService, tmp_path: Path) -> None:
     project = tmp_path / "project"
     old = project / ".claude" / "litellm-logs"
     old.mkdir(parents=True)
@@ -467,7 +467,9 @@ def test_link_litellm_logs_backs_up_real_directory(
     assert (bkp / "litellm-bedrock" / "keep.txt").read_text() == "old data"
     assert link.is_symlink()
     assert link.resolve() == (tmp_path / "litellm-logs" / project_path_hash(project)).resolve()
-    assert "backed up" in capsys.readouterr().err
+    svc._display.info.assert_called_once_with(  # type: ignore[union-attr]
+        f"agent-wrap: backed up pre-existing logs {link} -> {bkp}"
+    )
 
 
 def test_link_litellm_logs_backup_suffix_on_collision(svc: ConfigService, tmp_path: Path) -> None:

@@ -29,18 +29,17 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
-from agent_wrap.domain.pricing.cost_format import fmt_cost_with_unknown
+from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
-from agent_wrap.lib.console import Ansi
-from agent_wrap.lib.format import fmt_count, fmt_ts
-from agent_wrap.lib.table import RowItem, compute_shared_widths, render_table
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
 
 # A "cost view" callback. cost/unknown MUST come from this, never `Bucket.cost`.
 CostFn = Callable[[str, Bucket], tuple[float, bool]]
-BuildModelSection = Callable[[dict[str, Bucket], int], list[RowItem]]
+BuildModelSection = Callable[[dict[str, Bucket], int, "DisplayService"], list[RowItemOrDivider]]
 
 
 class AggregatedDayRows(NamedTuple):
@@ -71,27 +70,28 @@ def range_label(from_iso: str | None, until_iso: str | None) -> str:
 def _build_total_body(
     tree_root: Node,
     display_rows: list[DisplayRow],
+    display: DisplayService,
     orphaned: OrphanedResult | None = None,
-) -> list[RowItem]:
-    body: list[RowItem] = []
+) -> list[RowItemOrDivider]:
+    body: list[RowItemOrDivider] = []
 
     body.append(
-        (
-            [
+        RowItem(
+            cells=[
                 "/",
                 str(tree_root.subtree_sessions),
-                fmt_ts(tree_root.subtree_last_ts),
-                fmt_count(tree_root.subtree_bucket.msgs),
-                fmt_count(tree_root.subtree_bucket.in_),
-                fmt_count(tree_root.subtree_bucket.out),
-                fmt_count(tree_root.subtree_bucket.cw),
-                fmt_count(tree_root.subtree_bucket.cr),
-                fmt_cost_with_unknown(
+                display.format_timestamp(tree_root.subtree_last_ts),
+                display.format_count(tree_root.subtree_bucket.msgs),
+                display.format_count(tree_root.subtree_bucket.in_),
+                display.format_count(tree_root.subtree_bucket.out),
+                display.format_count(tree_root.subtree_bucket.cw),
+                display.format_count(tree_root.subtree_bucket.cr),
+                display.format_cost_with_unknown(
                     tree_root.subtree_known_cost, unknown=tree_root.subtree_unknown
                 ),
             ],
-            Ansi.DIM,
-            0,
+            style=Ansi.DIM,
+            prefix_len=0,
         )
     )
     for dr in display_rows:
@@ -102,20 +102,20 @@ def _build_total_body(
         else:
             style = Ansi.NONE
         body.append(
-            (
-                [
+            RowItem(
+                cells=[
                     dr.label,
                     str(dr.sessions),
-                    fmt_ts(dr.last_ts),
-                    fmt_count(dr.bucket.msgs),
-                    fmt_count(dr.bucket.in_),
-                    fmt_count(dr.bucket.out),
-                    fmt_count(dr.bucket.cw),
-                    fmt_count(dr.bucket.cr),
+                    display.format_timestamp(dr.last_ts),
+                    display.format_count(dr.bucket.msgs),
+                    display.format_count(dr.bucket.in_),
+                    display.format_count(dr.bucket.out),
+                    display.format_count(dr.bucket.cw),
+                    display.format_count(dr.bucket.cr),
                     dr.cost_str,
                 ],
-                style,
-                dr.prefix_len,
+                style=style,
+                prefix_len=dr.prefix_len,
             )
         )
 
@@ -125,20 +125,20 @@ def _build_total_body(
         # per-model section of the By-day table.
         b = orphaned["total"]
         body.append(
-            (
-                [
+            RowItem(
+                cells=[
                     "<orphaned>",
                     str(orphaned["sessions"]),
-                    fmt_ts(orphaned["last_ts"]),
-                    fmt_count(b.msgs),
-                    fmt_count(b.in_),
-                    fmt_count(b.out),
-                    fmt_count(b.cw),
-                    fmt_count(b.cr),
-                    fmt_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                    display.format_timestamp(orphaned["last_ts"]),
+                    display.format_count(b.msgs),
+                    display.format_count(b.in_),
+                    display.format_count(b.out),
+                    display.format_count(b.cw),
+                    display.format_count(b.cr),
+                    display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
                 ],
-                Ansi.CYAN,
-                0,
+                style=Ansi.CYAN,
+                prefix_len=0,
             )
         )
 
@@ -181,8 +181,9 @@ def _build_recent_body(
     totals_by_day_by_model: dict[str, dict[str, Bucket]],
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
-) -> list[RowItem]:
-    body: list[RowItem] = []
+    display: DisplayService,
+) -> list[RowItemOrDivider]:
+    body: list[RowItemOrDivider] = []
 
     # The day dict is already restricted to the window at scan time; the
     # synthetic "?" key (records with no timestamp) is the one exception and is
@@ -196,7 +197,7 @@ def _build_recent_body(
             recent_models[model].merge(b)
 
     if recent_models:
-        body.extend(build_model_section(dict(recent_models), 0))
+        body.extend(build_model_section(dict(recent_models), 0, display))
 
     if shown_days:
         if body:
@@ -207,54 +208,54 @@ def _build_recent_body(
         )
 
         for d, b, day_cost, day_unknown in reversed(day_rows_data):
-            cost_str = fmt_cost_with_unknown(day_cost, unknown=day_unknown)
+            cost_str = display.format_cost_with_unknown(day_cost, unknown=day_unknown)
             body.append(
-                (
-                    [
+                RowItem(
+                    cells=[
                         d,
-                        fmt_count(b.msgs),
-                        fmt_count(b.in_),
-                        fmt_count(b.out),
-                        fmt_count(b.cw),
-                        fmt_count(b.cr),
+                        display.format_count(b.msgs),
+                        display.format_count(b.in_),
+                        display.format_count(b.out),
+                        display.format_count(b.cw),
+                        display.format_count(b.cr),
                         cost_str,
                     ],
-                    Ansi.NONE,
-                    0,
+                    style=Ansi.NONE,
+                    prefix_len=0,
                 )
             )
 
         body.append(_DIV)
         body.append(
-            (
-                [
+            RowItem(
+                cells=[
                     "TOTAL",
-                    fmt_count(total_b.msgs),
-                    fmt_count(total_b.in_),
-                    fmt_count(total_b.out),
-                    fmt_count(total_b.cw),
-                    fmt_count(total_b.cr),
-                    fmt_cost_with_unknown(total_cost, unknown=total_unknown),
+                    display.format_count(total_b.msgs),
+                    display.format_count(total_b.in_),
+                    display.format_count(total_b.out),
+                    display.format_count(total_b.cw),
+                    display.format_count(total_b.cr),
+                    display.format_cost_with_unknown(total_cost, unknown=total_unknown),
                 ],
-                Ansi.BOLD_YELLOW,
-                0,
+                style=Ansi.BOLD_YELLOW,
+                prefix_len=0,
             )
         )
         # Average over the days that actually have activity in the window.
         n_days = len(shown_days)
         body.append(
-            (
-                [
+            RowItem(
+                cells=[
                     "DAILY AVG",
-                    fmt_count(total_b.msgs // n_days),
-                    fmt_count(total_b.in_ // n_days),
-                    fmt_count(total_b.out // n_days),
-                    fmt_count(total_b.cw // n_days),
-                    fmt_count(total_b.cr // n_days),
-                    fmt_cost_with_unknown(total_cost / n_days, unknown=total_unknown),
+                    display.format_count(total_b.msgs // n_days),
+                    display.format_count(total_b.in_ // n_days),
+                    display.format_count(total_b.out // n_days),
+                    display.format_count(total_b.cw // n_days),
+                    display.format_count(total_b.cr // n_days),
+                    display.format_cost_with_unknown(total_cost / n_days, unknown=total_unknown),
                 ],
-                Ansi.BOLD_YELLOW,
-                0,
+                style=Ansi.BOLD_YELLOW,
+                prefix_len=0,
             )
         )
 
@@ -270,6 +271,7 @@ def render_core(  # noqa: PLR0913
     cost_fn: CostFn,
     build_model_section: BuildModelSection,
     orphaned: OrphanedResult | None = None,
+    display: DisplayService,
 ) -> str:
     # Two stacked tables over the same window: "Projects" (per-project tree) and
     # "By day" (per-model + per-day). Each table has internal sections separated
@@ -285,25 +287,25 @@ def render_core(  # noqa: PLR0913
     total_aligns = ["<", ">", "<", *shared_aligns]
 
     tree_root = build_project_tree(rows)
-    display_rows = flatten_tree(tree_root)
+    display_rows = flatten_tree(tree_root, display=display)
 
-    total_body = _build_total_body(tree_root, display_rows, orphaned)
+    total_body = _build_total_body(tree_root, display_rows, display, orphaned)
 
     # === By-day table: models (in window) + per-day (in window) + TOTAL ===
     recent_headers = ["MODEL / DATE", *shared_headers]
     recent_aligns = ["<", *shared_aligns]
 
-    recent_body = _build_recent_body(totals_by_day_by_model, cost_fn, build_model_section)
+    recent_body = _build_recent_body(totals_by_day_by_model, cost_fn, build_model_section, display)
 
     # === Shared widths for the trailing six numeric columns ===
-    shared_widths = compute_shared_widths(
+    shared_widths = display.compute_shared_widths(
         [(total_headers, total_body, 3), (recent_headers, recent_body, 1)],
         n_shared,
     )
 
     lines: list[str] = []
     lines.extend(
-        render_table(
+        display.render_table(
             f"Projects ({label}):",
             total_headers,
             total_aligns,
@@ -315,7 +317,7 @@ def render_core(  # noqa: PLR0913
     if recent_body:
         lines.append("")
         lines.extend(
-            render_table(
+            display.render_table(
                 f"By day ({label}):",
                 recent_headers,
                 recent_aligns,

@@ -7,14 +7,17 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import pytest_mock
 
 import agent_wrap.domain.stats.scan as scan_mod
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
+from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.scan import plan_pool, scan_logs_dir
 from agent_wrap.domain.stats.service import StatsService
 
@@ -27,7 +30,9 @@ _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
 class _FakeProvider(Provider):
     def __init__(self, flat: dict[str, Any] | None = None):
-        super().__init__(sidecar_service=None)
+        super().__init__(
+            sidecar_service=Mock(spec=SidecarService), display_service=Mock(spec=DisplayService)
+        )
         self._flat = flat or {}
 
     def sidecars(self) -> list[Any]:
@@ -41,12 +46,12 @@ class _FakeProvider(Provider):
 
 
 @pytest.fixture
-def pricing_service(mocker: pytest_mock.MockFixture) -> PricingService:
+def pricing_service(mocker: pytest_mock.MockFixture, display_mock: Mock) -> PricingService:
     """Return a priced PricingService."""
     fake = _FakeProvider(flat={"claude-opus-4-8": _RATES})
     mock_ps = mocker.Mock(spec=ProviderService)
     mock_ps.get_provider.return_value = fake
-    return PricingService(provider_service=mock_ps)
+    return PricingService(provider_service=mock_ps, display_service=display_mock)
 
 
 def _day_epoch(day: str) -> float:

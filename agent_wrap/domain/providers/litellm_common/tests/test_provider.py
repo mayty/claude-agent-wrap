@@ -5,9 +5,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest_mock
 
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
@@ -27,7 +29,9 @@ class ConcreteTestProvider(LiteLLMProvider):
         state_dir: Path | None = None,
         sidecar_service: SidecarService | None = None,
     ) -> None:
-        super().__init__(sidecar_service=sidecar_service)
+        if sidecar_service is None:
+            sidecar_service = Mock(spec=SidecarService)
+        super().__init__(sidecar_service=sidecar_service, display_service=Mock(spec=DisplayService))
         self._test_state_dir = state_dir
 
     def _state_dir(self) -> Path:

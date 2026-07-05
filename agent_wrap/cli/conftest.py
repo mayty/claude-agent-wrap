@@ -27,6 +27,7 @@ from agent_wrap.containers import services
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.create.service import CreateService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.service import LaunchService
 from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.pricing.service import PricingService
@@ -42,6 +43,7 @@ def _mock_all_services(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch.object(services, "build_service", mocker.Mock(spec=BuildService))
     mocker.patch.object(services, "config_service", mocker.Mock(spec=ConfigService))
     mocker.patch.object(services, "create_service", mocker.Mock(spec=CreateService))
+    mocker.patch.object(services, "display_service", mocker.Mock(spec=DisplayService))
     mocker.patch.object(services, "launch_service", mocker.Mock(spec=LaunchService))
     mocker.patch.object(services, "logs_service", mocker.Mock(spec=LogsService))
     mocker.patch.object(services, "pricing_service", mocker.Mock(spec=PricingService))

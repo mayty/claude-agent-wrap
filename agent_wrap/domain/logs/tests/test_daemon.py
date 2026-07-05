@@ -9,6 +9,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from agent_wrap.cli.logs import run as logs_mod
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.daemon import (
     read_state,
     state_file,
@@ -26,6 +27,7 @@ def logs_svc() -> LogsService:
     return LogsService(
         pricing_service=Mock(spec=PricingService),
         stats_service=Mock(spec=StatsService),
+        display_service=Mock(spec=DisplayService),
     )
 
 
@@ -105,16 +107,14 @@ def test_running_server_none_when_no_file(tmp_path: Path, logs_svc: LogsService)
 # --- background server: stop_daemon ----------------------------------------------
 
 
-def test_stop_when_not_running(
-    tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str], logs_svc: LogsService
-):
+def test_stop_when_not_running(tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService):
     mocker.patch.object(logs_svc, "running_server", return_value=None)
     assert logs_svc.stop_daemon() == 0
-    assert "no viewer is running" in capsys.readouterr().out
+    logs_svc._display.info.assert_any_call("no viewer is running")  # type: ignore[union-attr]
 
 
 def test_stop_daemon_sends_sigterm_and_removes_state(
-    tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str], logs_svc: LogsService
+    tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService
 ):
     write_state(pid=4242, port=9001)
     mocker.patch.object(logs_svc, "running_server", return_value={"pid": 4242, "port": 9001})
@@ -127,11 +127,11 @@ def test_stop_daemon_sends_sigterm_and_removes_state(
     assert logs_svc.stop_daemon() == 0
     assert (4242, signal.SIGTERM) in signals
     assert not state_file().exists()
-    assert "viewer stopped" in capsys.readouterr().out
+    logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # type: ignore[union-attr]
 
 
 def test_stop_daemon_sends_sigkill_after_timeout(
-    tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str], logs_svc: LogsService
+    tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService
 ):
     """After SIGTERM timeout, SIGKILL is sent and state is cleaned up."""
     write_state(pid=4242, port=9001)
@@ -160,4 +160,4 @@ def test_stop_daemon_sends_sigkill_after_timeout(
     assert (4242, signal.SIGTERM) in signals
     assert (4242, signal.SIGKILL) in signals
     assert not state_file().exists()
-    assert "viewer stopped" in capsys.readouterr().out
+    logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # type: ignore[union-attr]

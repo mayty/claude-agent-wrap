@@ -8,10 +8,12 @@ import tempfile
 import urllib.error
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import pytest_mock
 
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.sidecars.models import TelegramSidecarConfig
 from agent_wrap.domain.sidecars.telegram import TelegramSidecar
 
@@ -41,8 +43,10 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
     return TelegramSidecarConfig(**defaults)  # type: ignore[arg-type]
 
 
-def _sidecar(**overrides: object) -> TelegramSidecar:
-    return TelegramSidecar(_config(**overrides))
+def _sidecar(display: DisplayService | None = None, **overrides: object) -> TelegramSidecar:
+    if display is None:
+        display = Mock(spec=DisplayService)
+    return TelegramSidecar(_config(**overrides), display_service=display)
 
 
 _SECRETS = {"TelegramBotToken": "test-bot-token", "TelegramChatId": "test-chat-id"}
@@ -140,7 +144,7 @@ def test_release_still_stops_running_container_when_headless(
     """
     sc = _sidecar(headless=True)
     mocker.patch.object(sc, "_is_running", return_value=True)
-    mock_spin = mocker.patch("agent_wrap.domain.sidecars.telegram._SPINNER.spin_while")
+    mock_spin = mocker.patch.object(sc._display, "spin_while")
 
     sc.release()
 
@@ -302,19 +306,17 @@ def test_start_creates_log_dir(mocker: pytest_mock.MockFixture, tmp_path: Path) 
 
 
 def test_health_poll_healthy(mocker: pytest_mock.MockFixture) -> None:
-    mock_spin = mocker.patch(
-        "agent_wrap.domain.sidecars.telegram._SPINNER.poll_until", return_value=True
-    )
-    result = _sidecar()._health_poll()
+    sc = _sidecar()
+    mock_spin = mocker.patch.object(sc._display, "poll_until", return_value=True)
+    result = sc._health_poll()
     assert result is True
     mock_spin.assert_called_once()
 
 
 def test_health_poll_unhealthy(mocker: pytest_mock.MockFixture) -> None:
-    mock_spin = mocker.patch(
-        "agent_wrap.domain.sidecars.telegram._SPINNER.poll_until", return_value=False
-    )
-    result = _sidecar()._health_poll()
+    sc = _sidecar()
+    mock_spin = mocker.patch.object(sc._display, "poll_until", return_value=False)
+    result = sc._health_poll()
     assert result is False
     mock_spin.assert_called_once()
 
@@ -549,9 +551,10 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
     mock_unreg = mocker.patch.object(sc, "_unregister")
     # Run the work lambda inline so we observe the actual docker call: teardown
     # must `rm -f` (the container has no --rm), not merely `stop`.
-    mock_spin = mocker.patch(
-        "agent_wrap.domain.sidecars.telegram._SPINNER.spin_while",
-        side_effect=lambda *, message, done_message, work: work(),
+    mock_spin = mocker.patch.object(
+        sc._display,
+        "spin_while",
+        side_effect=lambda *, label, message, done_message, work: work(),
     )
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
 
@@ -571,7 +574,7 @@ def test_release_skips_when_not_running(mocker: pytest_mock.MockFixture) -> None
     sc._auth_token = "tok-rel"
     mocker.patch.object(sc, "_is_running", return_value=False)
     mock_unreg = mocker.patch.object(sc, "_unregister")
-    mock_spin = mocker.patch("agent_wrap.domain.sidecars.telegram._SPINNER.spin_while")
+    mock_spin = mocker.patch.object(sc._display, "spin_while")
 
     sc.release()
 

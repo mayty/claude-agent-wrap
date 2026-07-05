@@ -16,6 +16,7 @@ from agent_wrap.cli.rebuild.complete import complete as rebuild_complete
 from agent_wrap.cli.run.complete import complete as run_complete
 from agent_wrap.cli.stats.complete import complete as stats_complete
 from agent_wrap.cli.update.complete import complete as update_complete
+from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import unused_flags
 
@@ -214,10 +215,10 @@ class TestSecretsComplete:
         mocker.patch.object(
             services.secrets_service,
             "known_sidecars",
-            return_value=["litellm-bedrock", "telegram"],
+            return_value=["litellm-bedrock", TELEGRAM_SIDECAR_NAME],
         )
         result = _run_complete("secrets", 3, ["agent", "secrets", "check", ""])
-        assert "telegram" in result
+        assert TELEGRAM_SIDECAR_NAME in result
         assert "litellm-bedrock" in result
         assert len(result) == 2
 

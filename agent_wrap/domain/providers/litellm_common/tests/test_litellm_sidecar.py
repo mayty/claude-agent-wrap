@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import pytest_mock
 
+from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PollResult
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig
 from agent_wrap.lib.path_hash import project_path_hash
@@ -43,7 +46,7 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
 
 
 def _sidecar(tmp_path: Path, **overrides: object) -> LiteLLMSidecar:
-    return LiteLLMSidecar(_config(tmp_path, **overrides))
+    return LiteLLMSidecar(_config(tmp_path, **overrides), display_service=Mock(spec=DisplayService))
 
 
 _DOCKER = "agent_wrap.domain.sidecars.litellm.docker_run"
@@ -235,22 +238,20 @@ def test_ensure_returns_connectivity_args(tmp_path: Path, mocker: pytest_mock.Mo
 def test_ensure_existing_sidecar_does_not_reapprove(
     tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
-    # Callback spy — no class interface to spec against (pure callable).
-    started = mocker.MagicMock()
-    sc = _sidecar(tmp_path, on_started=started)
+    started_calls: list[str] = []
+    sc = _sidecar(tmp_path, on_started=started_calls.append)
     mocker.patch.object(sc, "_ensure_network")
     mocker.patch.object(sc, "_is_running", return_value=True)
     mocker.patch.object(sc, "_is_on_network", return_value=False)
     mocker.patch.object(sc, "_recover_master_key", return_value="sk-test-recovered")
     sc.ensure(use_host_net=False, agent_network=None)
     assert sc._master_key == "sk-test-recovered"
-    started.assert_not_called()
+    assert started_calls == []
 
 
 def test_ensure_first_launch_approves_once(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    # Callback spy — no class interface to spec against (pure callable).
-    started = mocker.MagicMock()
-    sc = _sidecar(tmp_path, on_started=started)
+    started_calls: list[str] = []
+    sc = _sidecar(tmp_path, on_started=started_calls.append)
     mocker.patch.object(sc, "_ensure_network")
     mocker.patch.object(sc, "_is_running", return_value=False)
     mocker.patch.object(sc, "_generate_master_key", return_value="sk-test-new")
@@ -258,7 +259,7 @@ def test_ensure_first_launch_approves_once(tmp_path: Path, mocker: pytest_mock.M
     mocker.patch.object(sc, "_health_poll", return_value=True)
     sc.ensure(use_host_net=False, agent_network=None, secrets={"api_key": "k"})
     assert sc._master_key == "sk-test-new"
-    started.assert_called_once_with("sk-test-new")
+    assert started_calls == ["sk-test-new"]
 
 
 def test_prepare_pulls_image(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -324,59 +325,62 @@ def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.Mo
 
 
 def test_release_stops_and_unapproves(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    # Callback spy — no class interface to spec against (pure callable).
-    stopping = mocker.MagicMock()
-    sc = _sidecar(tmp_path, on_stopping=stopping)
+    stopping_calls: list[str] = []
+    sc = _sidecar(tmp_path, on_stopping=stopping_calls.append)
+    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())
     mocker.patch.object(sc, "_is_running", return_value=True)
     mocker.patch.object(sc, "_recover_master_key", return_value="sk-test-key")
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     sc.release()
-    stopping.assert_called_once_with("sk-test-key")
+    assert stopping_calls == ["sk-test-key"]
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert len(stop_calls) == 1
 
 
 def test_release_no_stop_when_not_running(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """Idempotent: a no-op when the container isn't running."""
-    # Callback spy — no class interface to spec against (pure callable).
-    stopping = mocker.MagicMock()
-    sc = _sidecar(tmp_path, on_stopping=stopping)
+    stopping_calls: list[str] = []
+    sc = _sidecar(tmp_path, on_stopping=stopping_calls.append)
     mocker.patch.object(sc, "_is_running", return_value=False)
     mock_docker = mocker.patch(_DOCKER)
     sc.release()
-    stopping.assert_not_called()
+    assert stopping_calls == []
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert stop_calls == []
 
 
-def test_release_non_tty_prints_plain_line(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_release_non_tty_prints_plain_line(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """Non-TTY stop prints a single plain status line and still stops the container."""
     sc = _sidecar(tmp_path)
-    mocker.patch("sys.stderr.isatty", return_value=False)
+    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())
     mocker.patch.object(sc, "_is_running", return_value=True)
     mocker.patch.object(sc, "_recover_master_key", return_value="sk-test-key")
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     sc.release()
-    assert "litellm-sidecar: stopping…" in capsys.readouterr().err
+    sc._display.spin_while.assert_called_once_with(  # type: ignore[union-attr]
+        label=LITELLM_SIDECAR_LABEL,
+        message="stopping…",
+        done_message="stopped",
+        work=mocker.ANY,
+    )
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert len(stop_calls) == 1
 
 
-def test_release_tty_finalizes(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_release_tty_finalizes(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """TTY stop animates then clears the line and prints the 'stopped' finalize line."""
     sc = _sidecar(tmp_path)
-    mocker.patch("sys.stderr.isatty", return_value=True)
+    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())
     mocker.patch.object(sc, "_is_running", return_value=True)
     mocker.patch.object(sc, "_recover_master_key", return_value="sk-test-key")
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
     sc.release()
-    err = capsys.readouterr().err
-    assert "litellm-sidecar: stopped" in err
-    assert "\033[2K" in err
+    sc._display.spin_while.assert_called_once_with(  # type: ignore[union-attr]
+        label=LITELLM_SIDECAR_LABEL,
+        message="stopping…",
+        done_message="stopped",
+        work=mocker.ANY,
+    )
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert len(stop_calls) == 1
 
@@ -403,6 +407,9 @@ def test_health_poll_healthy_quick(
     fake_monotonic: None,
 ) -> None:
     sc = _sidecar(tmp_path)
+    mocker.patch.object(
+        sc._display, "poll_until", side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS
+    )
     mocker.patch(_DOCKER, return_value=("healthy", 0))
     mocker.patch.object(sc, "_is_running", return_value=True)
     assert sc._health_poll() is True
@@ -414,6 +421,9 @@ def test_health_poll_unhealthy(
     fake_monotonic: None,
 ) -> None:
     sc = _sidecar(tmp_path)
+    mocker.patch.object(
+        sc._display, "poll_until", side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS
+    )
     mocker.patch(_DOCKER, return_value=("unhealthy", 0))
     mocker.patch.object(sc, "_is_running", return_value=True)
     assert sc._health_poll() is False
@@ -425,6 +435,9 @@ def test_health_poll_container_gone(
     fake_monotonic: None,
 ) -> None:
     sc = _sidecar(tmp_path)
+    mocker.patch.object(
+        sc._display, "poll_until", side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS
+    )
     mocker.patch(_DOCKER, return_value=("", 1))
     assert sc._health_poll() is False
 

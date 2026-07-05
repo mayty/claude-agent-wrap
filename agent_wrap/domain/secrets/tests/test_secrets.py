@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unittest.mock import Mock
+
 import contextlib
 import json
 from pathlib import Path
@@ -52,7 +57,7 @@ def test_secret_not_found_error_repr() -> None:
 
 
 @pytest.fixture
-def secrets_paths(tmp_path: Path, mocker: pytest_mock.MockFixture) -> tuple[Path, Path]:
+def secrets_paths(tmp_path: Path, mocker: pytest_mock.MockerFixture) -> tuple[Path, Path]:
     """Point path constants into *tmp_path*."""
     secrets_path = tmp_path / "secrets.enc"
     keyfile_path = tmp_path / ".secrets-key"
@@ -65,7 +70,7 @@ def secrets_paths(tmp_path: Path, mocker: pytest_mock.MockFixture) -> tuple[Path
 
 
 @pytest.fixture
-def fixed_key(secrets_paths: tuple[Any, ...], mocker: pytest_mock.MockFixture) -> None:
+def fixed_key(secrets_paths: tuple[Any, ...], mocker: pytest_mock.MockerFixture) -> None:
     """Make _derive_key always return _FIXED_KEY."""
     KeyDerivation.derive_key.cache_clear()
     mocker.patch(_PATCH_DERIVE_KEY, return_value=_FIXED_KEY)
@@ -73,12 +78,16 @@ def fixed_key(secrets_paths: tuple[Any, ...], mocker: pytest_mock.MockFixture) -
 
 @pytest.fixture
 def svc(
-    secrets_paths: tuple[Any, ...], fixed_key: None, mocker: pytest_mock.MockFixture
+    secrets_paths: tuple[Any, ...],
+    fixed_key: None,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> SecretsService:
     """Return a SecretsService wired to temporary paths with a fixed key."""
     return SecretsService(
         provider_service=mocker.Mock(),
         sidecar_service=mocker.Mock(),
+        display_service=display_mock,
     )
 
 
@@ -86,7 +95,9 @@ def svc(
 # ---------------------------------------------------------------------------
 
 
-def test_derive_key_stable(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_derive_key_stable(
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, display_mock: Mock
+) -> None:
     """Same inputs → same key (repeatable)."""
     KeyDerivation.derive_key.cache_clear()
     keyfile = tmp_path / ".secrets-key"
@@ -101,14 +112,16 @@ def test_derive_key_stable(tmp_path: Path, mocker: pytest_mock.MockFixture) -> N
 
     mocker.patch("agent_wrap.domain.secrets.store.subprocess.run", return_value=_FakeResult())
 
-    k1 = KeyDerivation.derive_key()
+    k1 = KeyDerivation.derive_key(display=display_mock)
     KeyDerivation.derive_key.cache_clear()
-    k2 = KeyDerivation.derive_key()
+    k2 = KeyDerivation.derive_key(display=display_mock)
     assert k1 == k2
     assert len(k1) == 32
 
 
-def test_derive_key_creates_keyfile(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_derive_key_creates_keyfile(
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, display_mock: Mock
+) -> None:
     """Keyfile is generated on first use when missing."""
     KeyDerivation.derive_key.cache_clear()
     keyfile = tmp_path / ".secrets-key"
@@ -122,7 +135,7 @@ def test_derive_key_creates_keyfile(tmp_path: Path, mocker: pytest_mock.MockFixt
     mocker.patch("agent_wrap.domain.secrets.store.subprocess.run", return_value=_FakeResult())
 
     assert not keyfile.is_file()
-    KeyDerivation.derive_key()
+    KeyDerivation.derive_key(display=display_mock)
     assert keyfile.is_file()
     assert len(keyfile.read_bytes()) == 32
     # Permission check: must be owner-only (0o600 minus any umask stripping)
@@ -131,7 +144,7 @@ def test_derive_key_creates_keyfile(tmp_path: Path, mocker: pytest_mock.MockFixt
 
 
 def test_derive_key_empty_machine_id(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, display_mock: Mock
 ) -> None:
     """Warns when /etc/machine-id exists but is empty."""
     KeyDerivation.derive_key.cache_clear()
@@ -150,10 +163,10 @@ def test_derive_key_empty_machine_id(
 
     mocker.patch("agent_wrap.domain.secrets.store.subprocess.run", return_value=_FakeResult())
 
-    key = KeyDerivation.derive_key()
+    key = KeyDerivation.derive_key(display=display_mock)
     assert len(key) == 32
-    captured = capsys.readouterr()
-    assert "empty" in captured.err.lower()
+    display_mock.warning.assert_called_once()
+    assert "empty" in display_mock.warning.call_args[0][0].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -220,73 +233,85 @@ def test_decrypt_too_short() -> None:
 
 
 def test_read_all_empty_when_no_file(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
-    assert EncryptedFileStore.read_all() == {}
+    assert EncryptedFileStore.read_all(display=display_mock) == {}
 
 
 def test_read_all_returns_stored_data(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
-    EncryptedFileStore.write_all({"a": "1", "b": "2"})
-    assert EncryptedFileStore.read_all() == {"a": "1", "b": "2"}
+    EncryptedFileStore.write_all({"a": "1", "b": "2"}, display=display_mock)
+    assert EncryptedFileStore.read_all(display=display_mock) == {"a": "1", "b": "2"}
 
 
 def test_read_all_corrupt_file(
     svc: SecretsService,
     tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-    capsys: pytest.CaptureFixture[str],
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     secrets_path = tmp_path / "secrets.enc"
     secrets_path.write_bytes(b"not valid encrypted data")
-    result = EncryptedFileStore.read_all()
+    result = EncryptedFileStore.read_all(display=display_mock)
     assert result == {}
-    captured = capsys.readouterr()
-    assert "decrypt" in captured.err.lower()
+    display_mock.warning.assert_called_once()
+    assert "decrypt" in display_mock.warning.call_args[0][0].lower()
 
 
 def test_read_all_wrong_key_returns_empty(
     svc: SecretsService,
     tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-    capsys: pytest.CaptureFixture[str],
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """When the encryption key changes, _read_all warns and returns {}."""
-    EncryptedFileStore.write_all({"key": "val"})
+    EncryptedFileStore.write_all({"key": "val"}, display=display_mock)
 
     # Change the key
     KeyDerivation.derive_key.cache_clear()
     mocker.patch(_PATCH_DERIVE_KEY, return_value=b"x" * 32)
 
-    result = EncryptedFileStore.read_all()
+    result = EncryptedFileStore.read_all(display=display_mock)
     assert result == {}
-    captured = capsys.readouterr()
-    assert "decrypt" in captured.err.lower()
+    display_mock.warning.assert_called_once()
+    assert "decrypt" in display_mock.warning.call_args[0][0].lower()
 
 
 def test_write_all_creates_parent_dir(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockerFixture, display_mock: Mock
 ) -> None:
     nested = tmp_path / "sub" / "nested"
     mocker.patch(_PATCH_ENCRYPTED_FILE_PATH, nested / "secrets.enc")
-    EncryptedFileStore.write_all({"x": "y"})
+    EncryptedFileStore.write_all({"x": "y"}, display=display_mock)
     assert (nested / "secrets.enc").is_file()
 
 
 def test_write_all_overwrites(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
-    EncryptedFileStore.write_all({"old": "data"})
-    EncryptedFileStore.write_all({"new": "value"})
-    assert EncryptedFileStore.read_all() == {"new": "value"}
+    EncryptedFileStore.write_all({"old": "data"}, display=display_mock)
+    EncryptedFileStore.write_all({"new": "value"}, display=display_mock)
+    assert EncryptedFileStore.read_all(display=display_mock) == {"new": "value"}
 
 
 def test_write_all_atomic_no_partial_read(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """A failed write doesn't corrupt existing data."""
-    EncryptedFileStore.write_all({"good": "data"})
+    EncryptedFileStore.write_all({"good": "data"}, display=display_mock)
     secrets_path = tmp_path / "secrets.enc"
     original = secrets_path.read_bytes()
     # Simulate a failure during write by temporarily pointing path to a
@@ -294,11 +319,11 @@ def test_write_all_atomic_no_partial_read(
     # must remain intact.
     mocker.patch(_PATCH_ENCRYPTED_FILE_PATH, Path("/nonexistent/ro/secrets.enc"))
     with contextlib.suppress(OSError, PermissionError):
-        EncryptedFileStore.write_all({"bad": "write"})
+        EncryptedFileStore.write_all({"bad": "write"}, display=display_mock)
     # Restore and check original is intact
     mocker.patch(_PATCH_ENCRYPTED_FILE_PATH, secrets_path)
     assert secrets_path.read_bytes() == original
-    assert EncryptedFileStore.read_all() == {"good": "data"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {"good": "data"}
 
 
 # ---------------------------------------------------------------------------
@@ -306,13 +331,15 @@ def test_write_all_atomic_no_partial_read(
 # ---------------------------------------------------------------------------
 
 
-def test_read_found(tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService) -> None:
-    EncryptedFileStore.write_all({"ns:key": "stored-value"})
+def test_read_found(
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService, display_mock: Mock
+) -> None:
+    EncryptedFileStore.write_all({"ns:key": "stored-value"}, display=display_mock)
     assert svc.read("ns:key", "desc") == "stored-value"
 
 
 def test_read_missing_no_prompt(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService
 ) -> None:
     with pytest.raises(SecretNotFoundError) as exc:
         svc.read("ns:missing", "desc", prompt_on_missing=False)
@@ -320,22 +347,25 @@ def test_read_missing_no_prompt(
 
 
 def test_read_missing_with_prompt(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    svc: SecretsService,
+    display_mock: Mock,
 ) -> None:
-    mocker.patch("agent_wrap.domain.secrets.service.getpass.getpass", return_value="entered")
+    display_mock.prompt_secret.return_value = "entered"
 
     result = svc.read("ns:new", "desc", prompt_on_missing=True)
     assert result == "entered"
     # Verify it was persisted
-    assert EncryptedFileStore.read_all()["ns:new"] == "entered"
+    assert EncryptedFileStore.read_all(display=display_mock)["ns:new"] == "entered"
 
 
 def test_read_prompt_eof_error(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService, display_mock: Mock
 ) -> None:
-    mocker.patch("agent_wrap.domain.secrets.service.getpass.getpass", side_effect=EOFError)
+    display_mock.prompt_secret.side_effect = SystemExit
 
-    with pytest.raises(SecretNotFoundError):
+    with pytest.raises(SystemExit):
         svc.read("ns:key", "desc", prompt_on_missing=True)
 
 
@@ -344,21 +374,26 @@ def test_read_prompt_eof_error(
 # ---------------------------------------------------------------------------
 
 
-def test_write_stores(tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService) -> None:
-    mocker.patch("agent_wrap.domain.secrets.service.getpass.getpass", return_value="typed")
+def test_write_stores(
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService, display_mock: Mock
+) -> None:
+    display_mock.prompt_secret.return_value = "typed"
 
     svc._write("ns:key", "desc")
-    assert EncryptedFileStore.read_all()["ns:key"] == "typed"
+    assert EncryptedFileStore.read_all(display=display_mock)["ns:key"] == "typed"
 
 
 def test_write_preserves_other_keys(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    svc: SecretsService,
+    display_mock: Mock,
 ) -> None:
-    EncryptedFileStore.write_all({"existing": "keep-me"})
-    mocker.patch("agent_wrap.domain.secrets.service.getpass.getpass", return_value="new-val")
+    EncryptedFileStore.write_all({"existing": "keep-me"}, display=display_mock)
+    display_mock.prompt_secret.return_value = "new-val"
 
     svc._write("ns:new", "desc")
-    data = EncryptedFileStore.read_all()
+    data = EncryptedFileStore.read_all(display=display_mock)
     assert data["existing"] == "keep-me"
     assert data["ns:new"] == "new-val"
 
@@ -369,30 +404,36 @@ def test_write_preserves_other_keys(
 
 
 def test_delete_removes_key(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    svc: SecretsService,
+    display_mock: Mock,
 ) -> None:
-    EncryptedFileStore.write_all({"a": "1", "b": "2"})
+    EncryptedFileStore.write_all({"a": "1", "b": "2"}, display=display_mock)
     svc._delete("a")
-    assert EncryptedFileStore.read_all() == {"b": "2"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {"b": "2"}
 
 
 def test_delete_missing_is_noop(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    svc: SecretsService,
+    display_mock: Mock,
 ) -> None:
-    EncryptedFileStore.write_all({"a": "1"})
+    EncryptedFileStore.write_all({"a": "1"}, display=display_mock)
     svc._delete("nonexistent")  # no-op
-    assert EncryptedFileStore.read_all() == {"a": "1"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {"a": "1"}
 
 
 def test_list_keys_returns_sorted(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService, display_mock: Mock
 ) -> None:
-    EncryptedFileStore.write_all({"c": "3", "a": "1", "b": "2"})
+    EncryptedFileStore.write_all({"c": "3", "a": "1", "b": "2"}, display=display_mock)
     assert svc._list_keys() == ["a", "b", "c"]
 
 
 def test_list_keys_empty_store(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService
 ) -> None:
     assert svc._list_keys() == []
 
@@ -403,7 +444,10 @@ def test_list_keys_empty_store(
 
 
 def test_read_all_filters_non_strings(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """_read_all skips values that are not strings (e.g. int, None)."""
     # Bypass the public API to write a dict with a non-string value
@@ -411,7 +455,7 @@ def test_read_all_filters_non_strings(
     plaintext = json.dumps({"keep": "val", "drop_int": 42, "drop_none": None}).encode()
     encrypted.write_bytes(EncryptionPrimitives.encrypt(plaintext, _FIXED_KEY))
 
-    data = EncryptedFileStore.read_all()
+    data = EncryptedFileStore.read_all(display=display_mock)
     assert data == {"keep": "val"}
     assert "drop_int" not in data
     assert "drop_none" not in data
@@ -430,26 +474,37 @@ def _write_old_file(tmp_path: Path, data: dict[str, Any]) -> Path:
 
 
 def test_migrate_no_old_file(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
     # No crash, no side effects
-    assert EncryptedFileStore.read_all() == {}
+    assert EncryptedFileStore.read_all(display=display_mock) == {}
 
 
 def test_migrate_copies_data(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     _write_old_file(tmp_path, {"BedrockBearerToken": "bedrock-val"})
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    assert EncryptedFileStore.read_all() == {"litellm-bedrock:api_key": "bedrock-val"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {
+        "litellm-bedrock:api_key": "bedrock-val"
+    }
     assert not (tmp_path / "claude_keys.json").is_file()
 
 
 def test_migrate_all_keys(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     _write_old_file(
         tmp_path,
@@ -462,9 +517,9 @@ def test_migrate_all_keys(
         },
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    assert EncryptedFileStore.read_all() == {
+    assert EncryptedFileStore.read_all(display=display_mock) == {
         "litellm-bedrock:api_key": "b",
         "litellm-dashscope:api_key": "d",
         "litellm-deepseek:api_key": "ds",
@@ -474,7 +529,10 @@ def test_migrate_all_keys(
 
 
 def test_migrate_service_specific_credential_fallback(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """ServiceSpecificCredential used when BedrockBearerToken is missing."""
     _write_old_file(
@@ -482,13 +540,18 @@ def test_migrate_service_specific_credential_fallback(
         {"ServiceSpecificCredential": {"ServiceCredentialSecret": "ssc-secret"}},
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    assert EncryptedFileStore.read_all() == {"litellm-bedrock:api_key": "ssc-secret"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {
+        "litellm-bedrock:api_key": "ssc-secret"
+    }
 
 
 def test_migrate_bedrock_bearer_takes_priority(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """BedrockBearerToken wins over ServiceSpecificCredential when both present."""
     _write_old_file(
@@ -499,24 +562,29 @@ def test_migrate_bedrock_bearer_takes_priority(
         },
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    assert EncryptedFileStore.read_all() == {"litellm-bedrock:api_key": "bearer"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {
+        "litellm-bedrock:api_key": "bearer"
+    }
 
 
 def test_migrate_per_key_no_overwrite(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """Already-present keys are not overwritten during migration."""
-    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "existing"})
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "existing"}, display=display_mock)
     _write_old_file(
         tmp_path,
         {"BedrockBearerToken": "new-val", "DashScopeAPIKey": "ds-val"},
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    data = EncryptedFileStore.read_all()
+    data = EncryptedFileStore.read_all(display=display_mock)
     # Bedrock was already present — preserved
     assert data["litellm-bedrock:api_key"] == "existing"
     # DashScope was missing — migrated
@@ -524,14 +592,18 @@ def test_migrate_per_key_no_overwrite(
 
 
 def test_migrate_does_not_overwrite_existing(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """When the encrypted store already has all keys, nothing changes."""
     EncryptedFileStore.write_all(
         {
             "litellm-bedrock:api_key": "keep-b",
             "litellm-dashscope:api_key": "keep-d",
-        }
+        },
+        display=display_mock,
     )
     encrypted = tmp_path / "secrets.enc"
     encrypted_bytes = encrypted.read_bytes()
@@ -541,11 +613,11 @@ def test_migrate_does_not_overwrite_existing(
         {"BedrockBearerToken": "should-not-migrate", "DashScopeAPIKey": "also-skip"},
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
     # Encrypted file unchanged
     assert encrypted.read_bytes() == encrypted_bytes
-    assert EncryptedFileStore.read_all() == {
+    assert EncryptedFileStore.read_all(display=display_mock) == {
         "litellm-bedrock:api_key": "keep-b",
         "litellm-dashscope:api_key": "keep-d",
     }
@@ -554,26 +626,30 @@ def test_migrate_does_not_overwrite_existing(
 def test_migrate_corrupt_old_file(
     svc: SecretsService,
     tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-    capsys: pytest.CaptureFixture[str],
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     old = tmp_path / "claude_keys.json"
     old.write_text("not valid json")
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
     assert not old.is_file(), "corrupt old file should be deleted"
-    assert EncryptedFileStore.read_all() == {}
-    assert "corrupt" in capsys.readouterr().err.lower()
+    assert EncryptedFileStore.read_all(display=display_mock) == {}
+    display_mock.warning.assert_called_once()
+    assert "corrupt" in display_mock.warning.call_args[0][0].lower()
 
 
 def test_migrate_empty_old_file(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     old = tmp_path / "claude_keys.json"
     old.write_text(json.dumps({}))
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
     # Empty dict: no keys to migrate, but file is still removed
     assert not old.is_file()
@@ -582,18 +658,19 @@ def test_migrate_empty_old_file(
 def test_migrate_prints_message(
     svc: SecretsService,
     tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-    capsys: pytest.CaptureFixture[str],
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     _write_old_file(tmp_path, {"TelegramBotToken": "tg"})
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    assert "Migrated 1 secret" in capsys.readouterr().err
+    display_mock.success.assert_called_once()
+    assert "Migrated 1 secret" in display_mock.success.call_args[0][0]
 
 
 def test_read_triggers_migration(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, svc: SecretsService
 ) -> None:
     old = tmp_path / "claude_keys.json"
     old.write_text(json.dumps({"TelegramBotToken": "migrated-tg"}))
@@ -604,22 +681,28 @@ def test_read_triggers_migration(
 
 
 def test_write_triggers_migration(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, svc: SecretsService
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    svc: SecretsService,
+    display_mock: Mock,
 ) -> None:
     old = tmp_path / "claude_keys.json"
     old.write_text(json.dumps({"TelegramBotToken": "migrated-tg"}))
-    mocker.patch("agent_wrap.domain.secrets.service.getpass.getpass", return_value="new-val")
+    display_mock.prompt_secret.return_value = "new-val"
 
     svc._write("new-key", "desc")
 
-    data = EncryptedFileStore.read_all()
+    data = EncryptedFileStore.read_all(display=display_mock)
     assert data["telegram:TelegramBotToken"] == "migrated-tg"
     assert data["new-key"] == "new-val"
     assert not old.is_file()
 
 
 def test_migrate_skip_empty_values(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """Empty-string or missing keys are skipped (not migrated)."""
     _write_old_file(
@@ -631,14 +714,17 @@ def test_migrate_skip_empty_values(
         },
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
     # Nothing was migrated — all values were empty
-    assert EncryptedFileStore.read_all() == {}
+    assert EncryptedFileStore.read_all(display=display_mock) == {}
 
 
 def test_migrate_bedrock_empty_falls_back_to_ssc(
-    svc: SecretsService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    svc: SecretsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
 ) -> None:
     """Empty BedrockBearerToken falls back to ServiceSpecificCredential."""
     _write_old_file(
@@ -649,6 +735,8 @@ def test_migrate_bedrock_empty_falls_back_to_ssc(
         },
     )
 
-    EncryptedFileStore.maybe_migrate_old_fallback()
+    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
 
-    assert EncryptedFileStore.read_all() == {"litellm-bedrock:api_key": "ssc-secret"}
+    assert EncryptedFileStore.read_all(display=display_mock) == {
+        "litellm-bedrock:api_key": "ssc-secret"
+    }

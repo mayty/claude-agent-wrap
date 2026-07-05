@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
+from typing import TYPE_CHECKING
 
 from agent_wrap.constants import GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
 from agent_wrap.domain.updates.constants import REBUILD_FILES, RESOURCE_FILES
@@ -15,8 +15,10 @@ from agent_wrap.domain.updates.models import (
     MdPropagation,
     MdState,
 )
-from agent_wrap.lib.console import Ansi
 from agent_wrap.lib.utils import is_truthy_env
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
 
 
 class _GitOps:
@@ -181,45 +183,38 @@ class _GitOps:
         return short or commit
 
     @staticmethod
-    def print_status(before: str, after: str, pre_state: MdState) -> None:
+    def print_status(before: str, after: str, pre_state: MdState, display: DisplayService) -> None:
         """Print post-update status summary."""
         before_ref = _GitOps.resolve_ref(before)
         after_ref = _GitOps.resolve_ref(after)
-        print(f"{Ansi.BOLD_GREEN}Updated {before_ref} -> {after_ref}{Ansi.RESET}")
+        display.success(f"Updated {before_ref} -> {after_ref}")
 
         changed = _GitOps.changed_files(before, after)
 
         if changed & RESOURCE_FILES:
-            print(
-                f"{Ansi.BOLD_YELLOW}re-source agent-wrap.bashrc to apply latest changes{Ansi.RESET}"
-            )
+            display.warning("re-source agent-wrap.bashrc to apply latest changes")
         else:
-            print(f"{Ansi.BOLD_GREEN}no re-source needed{Ansi.RESET}")
+            display.success("no re-source needed")
 
         if changed & REBUILD_FILES:
-            print(f"{Ansi.BOLD_YELLOW}run 'agent rebuild' to apply latest changes{Ansi.RESET}")
+            display.warning("run 'agent rebuild' to apply latest changes")
         else:
-            print(f"{Ansi.BOLD_GREEN}no re-build needed{Ansi.RESET}")
+            display.success("no re-build needed")
 
         md_status = _GitOps.handle_claude_md_propagation(before, after, pre_state)
         if md_status == MdPropagation.UPDATED:
-            print(f"{Ansi.BOLD_GREEN}CLAUDE.md updated to new default{Ansi.RESET}")
+            display.success("CLAUDE.md updated to new default")
         elif md_status == MdPropagation.CONFLICT:
-            print(
-                f"{Ansi.BOLD_RED}CLAUDE.md changed upstream but you have local"
-                f" customizations{Ansi.RESET}"
-            )
-            print(
-                f'{Ansi.BOLD_RED}Review: git -C "{TOOL_DIR}" diff {before} {after}'
-                f" -- default-CLAUDE.md{Ansi.RESET}"
-            )
-            print(
-                f"{Ansi.BOLD_RED}Merge into .claude_config/.claude/CLAUDE.md"
-                f" or delete it to accept the new default{Ansi.RESET}"
+            display.error("CLAUDE.md changed upstream but you have local customizations")
+            display.error(f'Review: git -C "{TOOL_DIR}" diff {before} {after} -- default-CLAUDE.md')
+            display.error(
+                "Merge into .claude_config/.claude/CLAUDE.md or delete it to accept the new default"
             )
 
     @staticmethod
-    def fast_forward(target_ref: str, before: str, pre_state: MdState) -> int:
+    def fast_forward(
+        target_ref: str, before: str, pre_state: MdState, display: DisplayService
+    ) -> int:
         """
         Fast-forward to *target_ref* and report. Returns 0 on success, 1 on
         failure.
@@ -228,9 +223,9 @@ class _GitOps:
         # local fast-forward merge to the resolved target is sufficient.
         _, rc, stderr = _GitOps.git_full("merge", "--ff-only", target_ref, cwd=str(TOOL_DIR))
         if rc != 0:
-            print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}")
+            display.error("Update failed:")
             if stderr:
-                print(stderr)
+                display.error(stderr)
             return 1
 
         after, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
@@ -238,15 +233,18 @@ class _GitOps:
             return 1
 
         if before == after:
-            print(f"{Ansi.BOLD_GREEN}Already up to date{Ansi.RESET}")
+            display.success("Already up to date")
             return 0
 
-        _GitOps.print_status(before, after, pre_state)
+        _GitOps.print_status(before, after, pre_state, display)
         return 0
 
 
 class UpdateService:
     """Git-based self-update logic for agent-wrap."""
+
+    def __init__(self, display_service: DisplayService) -> None:
+        self._display = display_service
 
     def check_updates(self) -> bool:
         """
@@ -265,21 +263,11 @@ class UpdateService:
 
         branch, behind, target_ref = result
         if branch == "master":
-            print(
-                f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} a new agent-wrap release "
-                f"({target_ref}) is available."
-            )
+            self._display.warning(f"a new agent-wrap release ({target_ref}) is available.")
         else:
-            print(
-                f"{Ansi.BOLD_YELLOW}Note:{Ansi.RESET} agent-wrap is {behind} commit(s) "
-                f"behind origin/{branch}."
-            )
-        try:
-            ans = input("Update agent-wrap now? [y/N] ")
-        except (EOFError, KeyboardInterrupt):
-            return False
+            self._display.warning(f"agent-wrap is {behind} commit(s) behind origin/{branch}.")
 
-        if ans.lower() != "y":
+        if not self._display.prompt_confirm("Update agent-wrap now? [y/N]"):
             return False
 
         self.apply(target_ref)
@@ -295,22 +283,22 @@ class UpdateService:
         """
         _, rc = _GitOps.git("symbolic-ref", "--short", "HEAD", cwd=str(TOOL_DIR))
         if rc != 0:
-            print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
-            print("could not determine current branch", file=sys.stderr)
+            self._display.error("Update failed:")
+            self._display.error("could not determine current branch")
             return 1
 
         if target_ref is None:
             result = _GitOps.get_behind_count()
             if result is None:
-                print(f"{Ansi.BOLD_GREEN}Already up to date{Ansi.RESET}")
+                self._display.success("Already up to date")
                 return 0
             target_ref = result.target_ref
 
         before, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
         if rc != 0:
-            print(f"{Ansi.BOLD_RED}Update failed:{Ansi.RESET}", file=sys.stderr)
-            print("could not get current HEAD", file=sys.stderr)
+            self._display.error("Update failed:")
+            self._display.error("could not get current HEAD")
             return 1
 
         pre_state = _GitOps.detect_claude_md_state()
-        return _GitOps.fast_forward(target_ref, before, pre_state)
+        return _GitOps.fast_forward(target_ref, before, pre_state, self._display)

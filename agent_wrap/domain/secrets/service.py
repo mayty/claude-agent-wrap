@@ -1,16 +1,17 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Secrets domain service — encrypted storage and sidecar-aware orchestration."""
 
 from __future__ import annotations
 
-import getpass
 import sys
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.domain.secrets.store import EncryptedFileStore
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.sidecars.service import SidecarService
 
@@ -22,9 +23,11 @@ class SecretsService:
         self,
         provider_service: ProviderService,
         sidecar_service: SidecarService,
+        display_service: DisplayService,
     ) -> None:
         self._provider_service = provider_service
         self._sidecar_service = sidecar_service
+        self._display = display_service
 
     # -- Core CRUD ----------------------------------------------------------
 
@@ -39,8 +42,8 @@ class SecretsService:
         Raises :class:`SecretNotFoundError` when the key is absent and
         *prompt_on_missing* is ``False``.
         """
-        EncryptedFileStore.maybe_migrate_old_fallback()
-        data = EncryptedFileStore.read_all()
+        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
+        data = EncryptedFileStore.read_all(display=self._display)
         value = data.get(key)
         if value is not None:
             return value
@@ -48,61 +51,52 @@ class SecretsService:
         if not prompt_on_missing:
             raise SecretNotFoundError(key, description)
 
-        print(f"Secret: {description}", file=sys.stderr)
-        try:
-            entered = getpass.getpass("Value: ")
-        except EOFError:
-            raise SecretNotFoundError(key, description) from None
-
+        entered = self._display.prompt_secret(description)
         data[key] = entered
-        EncryptedFileStore.write_all(data)
+        EncryptedFileStore.write_all(data, display=self._display)
         return entered
 
     def _write(self, key: str, description: str) -> None:
         """Prompt the user for *key* and persist it to the encrypted store."""
-        EncryptedFileStore.maybe_migrate_old_fallback()
-        print(f"Secret: {description}", file=sys.stderr)
-        entered = getpass.getpass("Value: ")
-        data = EncryptedFileStore.read_all()
+        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
+        entered = self._display.prompt_secret(description)
+        data = EncryptedFileStore.read_all(display=self._display)
         data[key] = entered
-        EncryptedFileStore.write_all(data)
+        EncryptedFileStore.write_all(data, display=self._display)
 
     def _delete(self, key: str) -> None:
         """Remove *key* from the encrypted store.  No-op when absent."""
-        EncryptedFileStore.maybe_migrate_old_fallback()
-        data = EncryptedFileStore.read_all()
+        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
+        data = EncryptedFileStore.read_all(display=self._display)
         if key in data:
             del data[key]
-            EncryptedFileStore.write_all(data)
+            EncryptedFileStore.write_all(data, display=self._display)
 
     def _list_keys(self) -> list[str]:
         """Return all key names currently stored (sorted)."""
-        EncryptedFileStore.maybe_migrate_old_fallback()
-        return sorted(EncryptedFileStore.read_all().keys())
+        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
+        return sorted(EncryptedFileStore.read_all(display=self._display).keys())
 
     # -- Sidecar discovery --------------------------------------------------
 
     def known_sidecars(self) -> list[str]:
         """Return the sorted list of known sidecar names."""
         names = list(self._provider_service.discover_providers().keys())
-        names.append("telegram")
+        names.append(TELEGRAM_SIDECAR_NAME)
         return sorted(names)
 
     # -- Required secrets resolution ----------------------------------------
 
     def get_required_secrets(self, sidecar_name: str) -> list[tuple[str, str]]:
         """Return the required-secret ``(key, description)`` tuples for a sidecar."""
-        if sidecar_name == "telegram":
+        if sidecar_name == TELEGRAM_SIDECAR_NAME:
             return self._sidecar_service.telegram_required_secrets()
 
         try:
             provider = self._provider_service.get_provider(sidecar_name)
         except ProviderNotFoundError:
             known = ", ".join(self.known_sidecars())
-            print(
-                f"Unknown sidecar: {sidecar_name}  (known: {known})",
-                file=sys.stderr,
-            )
+            self._display.error(f"Unknown sidecar: {sidecar_name}  (known: {known})")
             raise SystemExit(1) from None
 
         return provider.required_secrets()

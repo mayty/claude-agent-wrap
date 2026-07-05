@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 import pytest_mock
 
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.key_approval import _api_key_approval_id
 from agent_wrap.domain.providers.litellm_dashscope.provider import DashscopeProvider
 from agent_wrap.domain.providers.service import ProviderService
@@ -24,7 +25,7 @@ def dashscope() -> DashscopeProvider:
     """Return a DashscopeProvider with no-op sidecar."""
     svc = Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = Mock(spec=LiteLLMSidecar)
-    ps = ProviderService(sidecar_service=svc)
+    ps = ProviderService(sidecar_service=svc, display_service=Mock(spec=DisplayService))
     p = ps.get_provider("litellm-dashscope")
     assert isinstance(p, DashscopeProvider)
     return p
@@ -35,7 +36,7 @@ def dashscope_spec(mocker: pytest_mock.MockFixture) -> DashscopeProvider:
     """Return a DashscopeProvider with spec-mocked sidecar for sidecar tests."""
     svc = mocker.Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = mocker.Mock(spec=LiteLLMSidecar)
-    ps = ProviderService(sidecar_service=svc)
+    ps = ProviderService(sidecar_service=svc, display_service=Mock(spec=DisplayService))
     p = ps.get_provider("litellm-dashscope")
     assert isinstance(p, DashscopeProvider)
     return p

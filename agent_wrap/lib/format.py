@@ -1,34 +1,9 @@
 # This file has been edited with the assistance of an AI tool.
-"""Formatting helpers shared by the usage-stats subcommands."""
+"""Date/time parsing helpers for the usage-stats domain."""
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
-
-from agent_wrap.lib.console import Ansi
-
-_THOUSAND = 1_000
-
-
-def color(s: str, code: Ansi) -> str:
-    return f"{code}{s}{Ansi.RESET}" if sys.stdout.isatty() else s
-
-
-def fmt_count(n: int) -> str:
-    # K is shown to one decimal; M and G to two.
-    units = "K", "M", "G"
-
-    if n < _THOUSAND:
-        return str(n)
-
-    value = float(n)
-    for unit in units:
-        value /= _THOUSAND
-        if value < _THOUSAND:
-            return f"{value:.1f}{unit}"
-
-    return f"{value:.1f}{units[-1]}"
 
 
 def parse_ts(s: str | None) -> datetime | None:
@@ -48,12 +23,6 @@ def epoch_to_dt(x: float | None) -> datetime | None:
         return datetime.fromtimestamp(x, tz=timezone.utc)
     except (ValueError, OSError, OverflowError):
         return None
-
-
-def fmt_ts(dt: datetime | None) -> str:
-    if dt is None:
-        return "—"
-    return dt.astimezone().strftime("%Y-%m-%d")
 
 
 def day_in_range(day_key: str, from_iso: str | None, until_iso: str | None) -> bool:

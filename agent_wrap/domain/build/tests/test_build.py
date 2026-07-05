@@ -10,13 +10,17 @@ import pytest_mock
 
 from agent_wrap.domain.build.models import ResolvedImage
 from agent_wrap.domain.build.service import BuildService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.updates.service import UpdateService
 
 
 @pytest.fixture
 def build_svc(mocker: pytest_mock.MockFixture) -> BuildService:
-    """Return a BuildService with spec-mocked UpdateService."""
-    return BuildService(update_service=mocker.Mock(spec=UpdateService))
+    """Return a BuildService with spec-mocked dependencies."""
+    return BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
 
 
 def test_from_claude_agent_image_exists(
@@ -36,7 +40,6 @@ def test_from_claude_agent_image_exists(
 def test_from_claude_agent_image_missing(
     build_svc: BuildService,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
     mocker: pytest_mock.MockFixture,
 ) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
@@ -48,13 +51,15 @@ def test_from_claude_agent_image_missing(
     )
     mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=False)
     assert build_svc._check_from_line(resolved) is False
-    assert "base image is not built" in capsys.readouterr().err
+    build_svc._display.error.assert_any_call(  # type: ignore[union-attr]
+        f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built."
+    )
+    assert build_svc._display.error.call_count == 2  # type: ignore[union-attr]
 
 
 def test_from_custom_image(
     build_svc: BuildService,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
     mocker: pytest_mock.MockFixture,
 ) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
@@ -65,7 +70,11 @@ def test_from_custom_image(
         context=tmp_path,
     )
     assert build_svc._check_from_line(resolved) is True
-    assert "inherits from" in capsys.readouterr().err
+    build_svc._display.warning.assert_called_once_with(  # type: ignore[union-attr]
+        f"'{resolved.dockerfile}' inherits from 'ubuntu:24.04' rather than"
+        " 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse"
+        " the base toolchain."
+    )
 
 
 def test_empty_dockerfile(build_svc: BuildService, tmp_path: Path) -> None:
@@ -97,9 +106,7 @@ def test_multistage_dockerfile_last_from_wins(
     assert build_svc._check_from_line(resolved) is True
 
 
-def test_multistage_dockerfile_last_custom_base(
-    build_svc: BuildService, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_multistage_dockerfile_last_custom_base(build_svc: BuildService, tmp_path: Path) -> None:
     """Multi-stage Dockerfile where last FROM is a custom image."""
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: test\nFROM claude-agent AS base\nFROM ubuntu:24.04\n")
@@ -109,7 +116,11 @@ def test_multistage_dockerfile_last_custom_base(
         context=tmp_path,
     )
     assert build_svc._check_from_line(resolved) is True
-    assert "inherits from" in capsys.readouterr().err
+    build_svc._display.warning.assert_called_once_with(  # type: ignore[union-attr]
+        f"'{resolved.dockerfile}' inherits from 'ubuntu:24.04' rather than"
+        " 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse"
+        " the base toolchain."
+    )
 
 
 # --- _do_rebuild ---
@@ -118,7 +129,6 @@ def test_multistage_dockerfile_last_custom_base(
 def test_do_rebuild_resolve_image_exit(
     build_svc: BuildService,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
     mocker: pytest_mock.MockFixture,
 ) -> None:
     mocker.patch.object(
@@ -126,10 +136,13 @@ def test_do_rebuild_resolve_image_exit(
         "resolve_image",
         side_effect=SystemExit("no Dockerfile.agent"),
     )
-    svc = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    svc = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     rc = svc._do_rebuild(full=False)
     assert rc == 1
-    assert "no Dockerfile.agent" in capsys.readouterr().err
+    svc._display.error.assert_called_once_with("no Dockerfile.agent")  # type: ignore[union-attr]
 
 
 def test_do_rebuild_full_build_fails(
@@ -143,7 +156,10 @@ def test_do_rebuild_full_build_fails(
     )
     mock_run = mocker.patch(f"{'agent_wrap.domain.build.service'}.subprocess.run")
     mock_run.return_value.returncode = 1
-    svc = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    svc = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     rc = svc._do_rebuild(full=True)
     assert rc == 1
     mock_run.assert_called_once()  # reason: subprocess was attempted
@@ -162,7 +178,10 @@ def test_do_rebuild_project_build_fails(
     )
     mock_run = mocker.patch(f"{'agent_wrap.domain.build.service'}.subprocess.run")
     mock_run.return_value.returncode = 1
-    svc = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    svc = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     rc = svc._do_rebuild(full=False)
     assert rc == 1
     mock_run.assert_called_once()  # reason: subprocess was attempted
@@ -181,7 +200,10 @@ def test_do_rebuild_check_from_line_fails(
     mock_run.return_value.returncode = 0
     mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=False)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: t\nFROM claude-agent\n")
-    svc = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    svc = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     rc = svc._do_rebuild(full=False)
     assert rc == 1
     mock_run.assert_called_once()  # reason: subprocess was attempted (check_from_line failed after build)
@@ -253,7 +275,10 @@ def test_do_rebuild_project_success(
     )
     mock_run = mocker.patch(f"{'agent_wrap.domain.build.service'}.subprocess.run")
     mock_run.return_value.returncode = 0
-    svc = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    svc = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     rc = svc._do_rebuild(full=False)
     assert rc == 0
 
@@ -272,7 +297,10 @@ def test_do_rebuild_full_base_then_project(
     mock_run = mocker.patch(f"{'agent_wrap.domain.build.service'}.subprocess.run")
     mock_run.return_value.returncode = 0
     mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=True)
-    svc = BuildService(update_service=mocker.Mock(spec=UpdateService))
+    svc = BuildService(
+        update_service=mocker.Mock(spec=UpdateService),
+        display_service=mocker.Mock(spec=DisplayService),
+    )
     rc = svc._do_rebuild(full=True)
     assert rc == 0
     # Base build + project build + docker images ls (only at end, not after base)

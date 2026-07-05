@@ -17,6 +17,7 @@ from agent_wrap.constants import (
     OPS_DIR,
     STATE_FILES,
     TELEGRAM_IMAGE,
+    TELEGRAM_SIDECAR_NAME,
     TOOL_DIR,
 )
 from agent_wrap.domain.launch.constants import (
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.providers.base import Provider
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.secrets.service import SecretsService
@@ -62,6 +64,7 @@ class LaunchService:
         provider_service: ProviderService,
         sidecar_service: SidecarService,
         build_service: BuildService,
+        display_service: DisplayService,
     ) -> None:
         self._config = config_service
         self._secrets = secrets_service
@@ -69,6 +72,7 @@ class LaunchService:
         self._provider_service = provider_service
         self._sidecar_service = sidecar_service
         self._build_service = build_service
+        self._display = display_service
 
     # Public entry point
 
@@ -82,11 +86,11 @@ class LaunchService:
         try:
             resolved = self._build_service.resolve_image(use_base=use_base)
         except SystemExit as e:
-            print(str(e), file=sys.stderr)
+            self._display.error(str(e))
             return 1
 
         if not docker_utils.image_exists(resolved.image):
-            print(self._get_image_missing_error(resolved.image, use_base=use_base), file=sys.stderr)
+            self._display.error(self._get_image_missing_error(resolved.image, use_base=use_base))
             return 1
 
         agent_user, port_args, extra_run_args = self._parse_dockerfile_directives(
@@ -108,7 +112,7 @@ class LaunchService:
 
         tracker = self._sidecar_service.create_tracker(TOOL_DIR)
 
-        print(f"--- Agent instance: {instance_id} ---")
+        self._display.banner(f"Agent instance: {instance_id}")
 
         running_handle: TextIO | None = None
         try:
@@ -121,8 +125,8 @@ class LaunchService:
                 per_sidecar_secrets=per_sidecar_secrets,
             )
 
-            print(
-                f"--- Launching Claude (Image: {resolved.image}, Config: {GLOBAL_CONFIG_DIR}) ---"
+            self._display.banner(
+                f"Launching Claude (Image: {resolved.image}, Config: {GLOBAL_CONFIG_DIR})"
             )
 
             cmd = [
@@ -314,9 +318,8 @@ class LaunchService:
             if optional:
                 return None
 
-            print(
-                f"Secrets for '{sidecar_name}' not found. Run 'agent secrets set {sidecar_name}'.",
-                file=sys.stderr,
+            self._display.error(
+                f"Secrets for '{sidecar_name}' not found. Run 'agent secrets set {sidecar_name}'."
             )
             raise SystemExit(1) from None
 
@@ -331,26 +334,21 @@ class LaunchService:
             return HostNetworkResult(use_host_net=False, host_net_args=[], port_args=port_args)
 
         if not docker_utils.is_wsl():
-            print(
-                "Note: AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts.",
-                file=sys.stderr,
-            )
+            self._display.warning("AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts.")
             return HostNetworkResult(use_host_net=False, host_net_args=[], port_args=port_args)
 
         if agent_network:
-            print(
-                "Warning: AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already "
-                "specifies --network via agent-run-args.",
-                file=sys.stderr,
+            self._display.warning(
+                "AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already "
+                "specifies --network via agent-run-args."
             )
             return HostNetworkResult(use_host_net=False, host_net_args=[], port_args=port_args)
 
         if port_args:
-            print(
-                "Warning: AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings "
+            self._display.warning(
+                "AGENT_USE_HOST_NETWORK is on — EXPOSE port mappings "
                 "skipped. Services bind on the WSL distro's interfaces directly; "
-                "ensure they listen on 127.0.0.1 to avoid LAN exposure.",
-                file=sys.stderr,
+                "ensure they listen on 127.0.0.1 to avoid LAN exposure."
             )
         return HostNetworkResult(
             use_host_net=True, host_net_args=["--network", "host"], port_args=[]
@@ -389,10 +387,7 @@ class LaunchService:
         headless: bool,
     ) -> TelegramSidecar:
         if headless:
-            print(
-                "Note: headless mode — Telegram sidecar will not be started.",
-                file=sys.stderr,
-            )
+            self._display.warning("headless mode — Telegram sidecar will not be started.")
         return self._sidecar_service.create_telegram_sidecar(
             image=TELEGRAM_IMAGE,
             container_name="agent-wrap-telegram",
@@ -426,7 +421,7 @@ class LaunchService:
 
         telegram_available = False
         tg_secrets = self._resolve_sidecar_secrets(
-            "telegram",
+            TELEGRAM_SIDECAR_NAME,
             self._sidecar_service.telegram_required_secrets(),
             optional=True,
             headless=headless,
@@ -499,9 +494,8 @@ class LaunchService:
         try:
             sidecar.on_exit()
         except Exception:  # noqa: BLE001
-            print(
-                f"sidecar.on_exit() failed for {type(sidecar).__name__}, continuing with release",
-                file=sys.stderr,
+            self._display.warning(
+                f"sidecar.on_exit() failed for {type(sidecar).__name__}, continuing with release"
             )
 
     def _get_image_missing_error(self, image: str, *, use_base: bool) -> str:

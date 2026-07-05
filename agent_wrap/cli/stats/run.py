@@ -1,9 +1,8 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `stats` subcommand — aggregate token usage stats from LiteLLM logs."""
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.stats.display import render, render_source_breakdown
@@ -45,10 +44,16 @@ _USAGE_LINE = (
 
 
 def _parse_usage_args(args: list[str]) -> UsageArgs | None:
-    return parse_usage_args(args, usage_line=_USAGE_LINE, usage_text=_USAGE_TEXT)
+    return parse_usage_args(
+        args,
+        usage_line=_USAGE_LINE,
+        usage_text=_USAGE_TEXT,
+        display=services.display_service,
+    )
 
 
 def run(args: list[str]) -> int:
+    dsp = services.display_service
     projects_file = AGENT_LAUNCHES_DIR / "projects.txt"
 
     # Inject tool-dir-derived paths into the args stream
@@ -59,10 +64,7 @@ def run(args: list[str]) -> int:
 
     projects = services.stats_service.load_projects(parsed.registry_path)
     if not projects:
-        print(
-            "usage: no projects recorded yet — launch `agent` once to register a project.",
-            file=sys.stderr,
-        )
+        dsp.error("usage: no projects recorded yet — launch `agent` once to register a project.")
         return 0
 
     stats = services.stats_service
@@ -98,32 +100,34 @@ def run(args: list[str]) -> int:
     )
 
     if not rows and orphaned is None:
-        print("usage: no LiteLLM logs found for any registered project.", file=sys.stderr)
+        dsp.error("usage: no LiteLLM logs found for any registered project.")
         return 0
 
-    print(
+    dsp.info(
         render(
             rows,
             totals_by_day_by_model,
             parsed.from_iso,
             parsed.until_iso,
             orphaned=orphaned,
+            display=dsp,
         )
     )
 
     if parsed.verbose:
-        breakdown = render_source_breakdown(totals_by_source, parsed.from_iso, parsed.until_iso)
+        breakdown = render_source_breakdown(
+            totals_by_source, parsed.from_iso, parsed.until_iso, display=dsp
+        )
         if breakdown:
-            print()
-            print(breakdown)
+            dsp.newline()
+            dsp.info(breakdown)
 
     # Footnote any successful requests whose usage was never recorded.
     unrecorded = sum(b.unrecorded for b in totals_by_model.values())
     if unrecorded:
-        print(
-            f"\nnote: {unrecorded} successful request(s) had unrecorded usage and "
+        dsp.warning(
+            f"note: {unrecorded} successful request(s) had unrecorded usage and "
             "contribute $0 to the totals above (response logged without a usage "
-            "block). Cost is understated by their unknown amount.",
-            file=sys.stderr,
+            "block). Cost is understated by their unknown amount."
         )
     return 0
