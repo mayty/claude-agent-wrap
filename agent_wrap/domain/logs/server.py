@@ -18,6 +18,7 @@ from agent_wrap.domain.logs.io import (
     list_sessions,
     projects_fingerprint,
     read_session,
+    read_strings,
     session_fingerprint,
     sessions_fingerprint,
 )
@@ -94,6 +95,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/session-stat": "_handle_session_stat",
         "/api/sessions-stat": "_handle_sessions_stat",
         "/api/projects-stat": "_handle_projects_stat",
+        "/api/strings": "_handle_strings",
     }
 
     def do_GET(self) -> None:
@@ -155,6 +157,21 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_projects_stat(self, _qs: dict[str, list[str]]) -> None:
         assert self.stats_service is not None
         self._send_json(projects_fingerprint(self.stats_service))
+
+    def _handle_strings(self, qs: dict[str, list[str]]) -> None:
+        logs_dirs = self._resolve_project(qs)
+        if logs_dirs is None:
+            return
+        session_id = qs.get("session", [None])[0]
+        if not session_id:
+            self._send_json({"error": "missing session param"}, 400)
+            return
+        body = read_strings(logs_dirs, session_id).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, default=str).encode("utf-8")

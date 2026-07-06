@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
-from agent_wrap.domain.logs.normalize import extract_alias, normalize_record
+from agent_wrap.domain.logs.normalize import (
+    extract_alias,
+    normalize_record,
+    normalize_record_unresolved,
+)
 
 if TYPE_CHECKING:
     from agent_wrap.domain.providers.litellm_common.models import LogRecord
@@ -142,6 +146,58 @@ def test_normalize_agent_id_none_without_header():
     # Main-loop requests have no x-claude-code-agent-id header.
     out = normalize_record(_raw_record(), {})
     assert out["agent_id"] is None
+
+
+# --- normalize_record_unresolved ---
+
+
+def test_normalize_record_unresolved_keeps_hashes():
+    """normalize_record_unresolved preserves hash: references without resolving."""
+    rec = {
+        "timing": {"start": 1.0, "completionStart": None, "end": 2.0},
+        "status": "success",
+        "model": "m",
+        "request": {
+            "body": {
+                "messages": [{"role": "user", "content": "hash:abc123"}],
+                "system": "hash:abc123",
+            },
+        },
+        "response": {
+            "choices": [{"message": {"content": "hash:abc123"}}],
+            "usage": {"prompt_tokens": 10},
+        },
+        "error": None,
+    }
+    out = normalize_record_unresolved(rec)
+    assert out["messages"] == [{"role": "user", "content": "hash:abc123"}]
+    assert out["system"] == "hash:abc123"
+    assert out["response"]["content"] == "hash:abc123"
+
+
+def test_normalize_record_still_resolves_hashes():
+    """normalize_record resolves hashes (existing behavior preserved)."""
+    strings = {"hash:abc123": "resolved content"}
+    rec = {
+        "timing": {"start": 1.0, "completionStart": None, "end": 2.0},
+        "status": "success",
+        "model": "m",
+        "request": {
+            "body": {
+                "messages": [{"role": "user", "content": "hash:abc123"}],
+                "system": "hash:abc123",
+            },
+        },
+        "response": {
+            "choices": [{"message": {"content": "hash:abc123"}}],
+            "usage": {"prompt_tokens": 10},
+        },
+        "error": None,
+    }
+    out = normalize_record(rec, strings)
+    assert out["messages"] == [{"role": "user", "content": "resolved content"}]
+    assert out["system"] == "resolved content"
+    assert out["response"]["content"] == "resolved content"
 
 
 # --- normalize_record hash resolution ---

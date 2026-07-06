@@ -45,6 +45,30 @@ def _extract_record_fields(
     return ExtractedFields(data, agent_id, reply, usage)
 
 
+def normalize_record_unresolved(rec: LogRecord) -> NormalizedRecordBase:
+    """
+    Reduce one raw log record to the shape the UI consumes, WITHOUT resolving
+    ``hash:<sha256>`` pointers.  Callers that want hash resolution should use
+    :func:`normalize_record` instead.
+
+    Pure (no I/O) so it can be unit-tested directly.
+    """
+    data, agent_id, reply, usage = _extract_record_fields(rec)
+
+    return {
+        "timing": rec.get("timing"),
+        "status": rec.get("status"),
+        "model": rec.get("model"),
+        "agent_id": agent_id,
+        "messages": data.get("messages") or [],
+        "system": data.get("system"),
+        "tools": data.get("tools") or [],
+        "response": reply,
+        "usage": usage,
+        "error": rec.get("error"),
+    }
+
+
 def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecordBase:
     """
     Reduce one raw log record to the shape the UI consumes.
@@ -54,21 +78,7 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecor
     ``response.choices[0].message``, resolving ``hash:<sha256>`` pointers.
     """
     resolved = resolve_hashes(rec, strings)
-
-    data, agent_id, reply, usage = _extract_record_fields(resolved)
-
-    return {
-        "timing": resolved.get("timing"),
-        "status": resolved.get("status"),
-        "model": resolved.get("model"),
-        "agent_id": agent_id,
-        "messages": data.get("messages") or [],
-        "system": data.get("system"),
-        "tools": data.get("tools") or [],
-        "response": reply,
-        "usage": usage,
-        "error": resolved.get("error"),
-    }
+    return normalize_record_unresolved(resolved)  # type: ignore[arg-type]
 
 
 def enrich_with_costs(

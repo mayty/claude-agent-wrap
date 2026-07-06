@@ -13,6 +13,49 @@ async function getJSON(url) {
   return r.json();
 }
 
+// Parse raw strings.jsonl content into a {hash: original} lookup dict.
+// Each line is a JSON object {"hash": "...", "original": "..."}.
+// Malformed lines are silently skipped.
+function parseStrings(text) {
+  const strings = {};
+  if (!text) return strings;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.hash && entry.original !== undefined) {
+        strings[entry.hash] = entry.original;
+      }
+    } catch (e) { /* skip corrupt lines */ }
+  }
+  return strings;
+}
+
+// Recursively resolve hash:<sha256> references in a record's tree, using the
+// strings table from /api/strings.  Returns a new object tree (does not
+// mutate the input).  When *strings* is empty, returns the input unchanged.
+function resolveRecord(r, strings) {
+  if (!strings || Object.keys(strings).length === 0) return r;
+
+  function walk(v) {
+    if (typeof v === "string") {
+      const resolved = strings[v];
+      return resolved !== undefined ? resolved : v;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) {
+        out[k] = walk(val);
+      }
+      return out;
+    }
+    return v;
+  }
+
+  return walk(r);
+}
+
 function fmtTs(ts) {
   if (!ts) return "—";
   // Timestamps are Unix epoch *seconds* (floats) in the new record format;
@@ -198,9 +241,11 @@ async function selectSession(s, item) {
   chatHead().innerHTML = "";
   chatBody().innerHTML = '<div class="hint">Loading…</div>';
   try {
+    const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
     const data = await getJSON(`/api/session?${sessionQuery(s)}`);
     if (gen !== state.gen) return; // another session was selected mid-fetch
-    const reqs = data.reqs;
+    const strings = parseStrings(stringsText);
+    const reqs = data.reqs.map(r => resolveRecord(r, strings));
     const session_meta = data.session_meta || s;
     renderChat(reqs, session_meta);
     // Seed the fingerprint from the state at fetch time, then poll for changes.
@@ -259,10 +304,12 @@ async function tick(s) {
   try {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
     if (fp === state.fp) return;
+    const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
     const data = await getJSON(`/api/session?${sessionQuery(s)}`);
     if (state.session !== s.session_id) return; // user moved on during the fetch
-    state.reqs = data.reqs;
-    state.groups = groupBySubagent(data.reqs);
+    const strings = parseStrings(stringsText);
+    state.reqs = data.reqs.map(r => resolveRecord(r, strings));
+    state.groups = groupBySubagent(state.reqs);
     updateSessionListItem(data.session_meta);
     state.fp = fp;
     const body = chatBody();

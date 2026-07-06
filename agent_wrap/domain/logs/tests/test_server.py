@@ -61,6 +61,16 @@ def _get_json(port: int, path: str) -> tuple[int, Any]:
         return e.code, json.loads(e.read())
 
 
+def _get_text(port: int, path: str) -> tuple[int, str]:
+    """GET *path* and return (status_code, body as text)."""
+    req = urllib.request.Request(_url(port, path))  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+
+
 def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
     """Start the logs HTTP server on *port* in a daemon thread and return the thread."""
     pricing = Mock(spec=PricingService)
@@ -85,7 +95,7 @@ def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
 def _write_session(project: Path, provider: str, session_id: str) -> Path:
     """Write a minimal messages.jsonl for *session_id* and return its dir."""
     sdir = project / ".claude" / "litellm-logs" / provider / session_id
-    sdir.mkdir(parents=True)
+    sdir.mkdir(parents=True, exist_ok=True)
     rec: dict[str, Any] = {
         "timing": {"start": 1000000.0, "completionStart": None, "end": 1000001.0},
         "model": "m/test",
@@ -167,6 +177,26 @@ class TestAPIEndpoints:
         status, body = _get_json(self.port, "/api/session?project=0")
         assert status == 400
         assert "missing session param" in body["error"]
+
+    # --- /api/strings -------------------------------------------------------
+
+    def test_strings_endpoint_returns_text(self):
+        sid = "abc12345-6789-abcd-ef01-234567890abc"
+        sdir = _write_session(self.project, "litellm-bedrock", sid)
+        (sdir / "strings.jsonl").write_text(
+            '{"hash": "hash:a", "original": "AAA"}\n', encoding="utf-8"
+        )
+        status, body = _get_text(self.port, f"/api/strings?project=0&session={sid}")
+        assert status == 200
+        assert "hash:a" in body
+        assert "AAA" in body
+
+    def test_strings_endpoint_empty_when_no_file(self):
+        sid = "abc12345-6789-abcd-ef01-234567890abc"
+        _write_session(self.project, "litellm-bedrock", sid)
+        status, body = _get_text(self.port, f"/api/strings?project=0&session={sid}")
+        assert status == 200
+        assert body == ""
 
     # --- /api/session-stat ---------------------------------------------------
 

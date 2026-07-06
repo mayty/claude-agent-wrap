@@ -22,6 +22,7 @@ from agent_wrap.domain.logs.io import (
     read_last_record_ts,
     read_meta_json,
     read_session,
+    read_strings,
     scan_session_meta,
     session_fingerprint,
     sessions_fingerprint,
@@ -171,6 +172,9 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixt
     data = read_session(project, "s1", pricing=pricing)
     assert data["session_meta"] is not None
     assert data["session_meta"]["session_id"] == "s1"
+    # Records are returned unresolved — the strings.jsonl mapping exists but is
+    # not applied to records (hash resolution moved to the frontend).
+    assert len(data["reqs"]) == 1
 
 
 def test_session_fingerprint_reflects_file(tmp_path: Path):
@@ -293,6 +297,28 @@ def test_read_session_merges_across_providers(tmp_path: Path, mocker: MockerFixt
     assert sm["providers"] == ["litellm-bedrock", "litellm-deepseek"]
     assert sm["count"] == 2
     assert sm["models"] == ["a", "b"]
+
+
+def test_read_strings_concatenates(tmp_path: Path):
+    """read_strings returns the raw strings.jsonl content concatenated."""
+    project = tmp_path / "proj"
+    sdir = _write_session(project, "litellm-bedrock", "s1", [_raw_record()])
+    (sdir / "strings.jsonl").write_text(
+        '{"hash": "hash:a", "original": "AAA"}\n{"hash": "hash:b", "original": "BBB"}\n',
+        encoding="utf-8",
+    )
+    result = read_strings(project, "s1")
+    assert "hash:a" in result
+    assert "AAA" in result
+    assert "hash:b" in result
+    assert "BBB" in result
+
+
+def test_read_strings_empty_when_no_file(tmp_path: Path):
+    """read_strings returns an empty string when no strings.jsonl exists."""
+    project = tmp_path / "proj"
+    _write_session(project, "litellm-bedrock", "s1", [_raw_record()])
+    assert read_strings(project, "s1") == ""
 
 
 def test_session_fingerprint_combines_across_providers(tmp_path: Path):

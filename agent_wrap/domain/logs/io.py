@@ -25,7 +25,7 @@ from agent_wrap.domain.logs.normalize import (
     enrich_with_costs,
     extract_alias,
     extract_title,
-    normalize_record,
+    normalize_record_unresolved,
 )
 from agent_wrap.lib.atomic import atomic_write_json
 
@@ -552,21 +552,23 @@ def _read_provider_session(
     provider: str,
     session_id: str,
     pricing: PricingService,
-) -> tuple[list[NormalizedRecord], ProviderSessionMeta | None]:
+) -> tuple[list[NormalizedRecord], ProviderSessionMeta | None, dict[str, str]]:
     """
     Read and normalize records from one provider's session directory.
 
-    Returns ``(records, meta_entry)`` where *meta_entry* has the same shape as
-    :func:`scan_session_meta` (or ``None`` when the directory has no records).
+    Returns ``(records, meta_entry, strings)`` where *meta_entry* has the same
+    shape as :func:`scan_session_meta` (or ``None`` when the directory has no
+    records) and *strings* is the ``{hash: original}`` map loaded from the
+    session's ``strings.jsonl``.
     """
     messages_file = session_dir / "messages.jsonl"
     if not messages_file.is_file():
-        return [], None
+        return [], None, {}
 
     # Read every raw record first so we capture a consistent snapshot of
     # messages.jsonl.  Strings are loaded *afterwards* because the callback
     # writes hashes to strings.jsonl before appending the record — loading
-    # strings after records guarantees every hash we encounter is resolved.
+    # strings after records guarantees every hash we encounter is resolvable.
     meta = SessionMeta()
     raw_records: list[dict[str, Any]] = []
     try:
@@ -585,13 +587,13 @@ def _read_provider_session(
         pass
 
     if meta.count == 0:
-        return [], None
+        return [], None, {}
 
     strings = load_strings(session_dir)
     records: list[NormalizedRecord] = []
     for rec in raw_records:
         raw_response = rec.get("response")
-        normalized = normalize_record(rec, strings)  # type: ignore[arg-type]
+        normalized = normalize_record_unresolved(rec)  # type: ignore[arg-type]
         enriched = enrich_with_costs(
             normalized, raw_response, provider, pricing, rec.get("request")
         )
@@ -608,7 +610,38 @@ def _read_provider_session(
         "last_ts": meta.last_ts,
         "models": sorted(meta.models),
     }
-    return records, entry
+    return records, entry, strings
+
+
+def read_strings(
+    project: Path | list[Path],
+    session_id: str,
+) -> str:
+    """
+    Return the raw ``strings.jsonl`` content for *session_id* across all
+    providers, concatenated.
+
+    Each line is a JSON object ``{"hash": "<sha256>", "original": "..."}`` —
+    the same format the LiteLLM callback writes to disk.  Providers without a
+    ``strings.jsonl`` are silently skipped.
+
+    Returns an empty string when no ``strings.jsonl`` files exist.
+    """
+    parts: list[str] = []
+    for logs_dir in _aslogs_dirs(project):
+        if not logs_dir.is_dir():
+            continue
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
+                continue
+            sf = provider_dir / session_id / "strings.jsonl"
+            if not sf.is_file():
+                continue
+            try:
+                parts.append(sf.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    return "".join(parts)
 
 
 def read_session(
@@ -637,7 +670,7 @@ def read_session(
         for provider_dir in logs_dir.iterdir():
             if not provider_dir.is_dir():
                 continue
-            records, entry = _read_provider_session(
+            records, entry, _strings = _read_provider_session(
                 provider_dir / session_id, provider_dir.name, session_id, pricing
             )
             all_records.extend(records)
