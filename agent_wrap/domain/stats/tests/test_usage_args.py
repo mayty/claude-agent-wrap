@@ -10,8 +10,8 @@ import pytest
 
 import agent_wrap.domain.stats.usage_args as ua
 from agent_wrap.domain.stats.constants import DEFAULT_DAYS
+from agent_wrap.domain.stats.format_utils import day_in_range
 from agent_wrap.domain.stats.usage_args import parse_usage_args
-from agent_wrap.lib.format import day_in_range
 
 if TYPE_CHECKING:
     from pathlib import Path

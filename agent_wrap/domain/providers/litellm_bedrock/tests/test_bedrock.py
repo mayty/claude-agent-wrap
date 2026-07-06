@@ -10,8 +10,7 @@ import pytest
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
-    _build_pricing_table,
-    _scrape_model_keys,
+    _BedrockPricing,
 )
 from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 from agent_wrap.domain.providers.service import ProviderService
@@ -112,7 +111,7 @@ _PAGE_HTML = (
 
 
 def test_scrape_model_keys_includes_fable():
-    keys = _scrape_model_keys(_PAGE_HTML)
+    keys = _BedrockPricing.scrape_model_keys(_PAGE_HTML)
     assert "claude-opus-4-8" in keys
     assert "claude-fable-5" in keys
 
@@ -129,7 +128,7 @@ def test_build_pricing_table_resolves_fable_row():
             }
         }
     }
-    table = _build_pricing_table(_PAGE_HTML, data_json, "US East (N. Virginia)")
+    table = _BedrockPricing.build_pricing_table(_PAGE_HTML, data_json, "US East (N. Virginia)")
     assert table["claude-fable-5"] == {
         "in": 10.0,
         "out": 50.0,

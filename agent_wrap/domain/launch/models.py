@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.sidecars.service import Sidecar
+    from agent_wrap.domain.sidecars.base import Sidecar
 
 
 class DockerfileDirectives(NamedTuple):

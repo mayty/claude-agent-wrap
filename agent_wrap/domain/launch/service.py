@@ -44,8 +44,8 @@ if TYPE_CHECKING:
     from agent_wrap.domain.providers.base import Provider
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.secrets.service import SecretsService
+    from agent_wrap.domain.sidecars.base import Sidecar
     from agent_wrap.domain.sidecars.service import (
-        Sidecar,
         SidecarService,
         SidecarTracker,
         TelegramSidecar,

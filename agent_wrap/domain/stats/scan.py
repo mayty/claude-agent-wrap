@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.stats.cost import usage_source
+from agent_wrap.domain.stats.format_utils import day_in_range, epoch_to_dt
 from agent_wrap.domain.stats.models import (
     AccumulatedRecord,
     DirResult,
@@ -17,7 +18,6 @@ from agent_wrap.domain.stats.models import (
     RawRecord,
     ScanProjectResult,
 )
-from agent_wrap.lib.format import day_in_range, epoch_to_dt
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import TokenUsage

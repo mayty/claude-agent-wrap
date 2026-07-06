@@ -7,8 +7,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.logs.constants import ALIAS_NAME_RE, TITLE_RE
+from agent_wrap.domain.logs.hash_resolver import resolve_hashes
 from agent_wrap.domain.logs.models import ExtractedFields, NormalizedRecordBase
-from agent_wrap.lib.hash_resolver import resolve_hashes
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.service import PricingService

@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.io import (
     group_by_id,
     lightweight_project_summary,
@@ -29,7 +30,6 @@ from agent_wrap.domain.logs.io import (
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.service import StatsService
-from agent_wrap.lib.hash_resolver import load_strings
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.constants import LOGS_CONTENT_TYPES
@@ -86,7 +86,17 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return logs_dirs
 
-    def do_GET(self):  # noqa: C901, PLR0911, PLR0912
+    _API_DISPATCH: ClassVar[dict[str, str]] = {
+        "/api/groups": "_handle_groups",
+        "/api/projects": "_handle_projects",
+        "/api/sessions": "_handle_sessions",
+        "/api/session": "_handle_session",
+        "/api/session-stat": "_handle_session_stat",
+        "/api/sessions-stat": "_handle_sessions_stat",
+        "/api/projects-stat": "_handle_projects_stat",
+    }
+
+    def do_GET(self) -> None:
         # Set by bind_port before the server starts — guaranteed non-None at runtime.
         assert self.stats_service is not None
         assert self.pricing is not None
@@ -95,42 +105,56 @@ class _Handler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
-        # API endpoints
-        if path == "/api/groups":
-            return self._send_json(list_groups(self.stats_service))
-        if path == "/api/projects":
-            return self._send_json(list_projects(self.stats_service))
-        if path == "/api/sessions":
-            logs_dirs = self._resolve_project(qs)
-            if logs_dirs is None:
-                return None
-            return self._send_json(list_sessions(logs_dirs))
-        if path == "/api/session":
-            logs_dirs = self._resolve_project(qs)
-            if logs_dirs is None:
-                return None
-            session_id = qs.get("session", [None])[0]
-            if not session_id:
-                return self._send_json({"error": "missing session param"}, 400)
-            return self._send_json(read_session(logs_dirs, session_id, pricing=self.pricing))
-        if path == "/api/session-stat":
-            logs_dirs = self._resolve_project(qs)
-            if logs_dirs is None:
-                return None
-            session_id = qs.get("session", [None])[0]
-            if not session_id:
-                return self._send_json({"error": "missing session param"}, 400)
-            return self._send_json(session_fingerprint(logs_dirs, session_id))
-        if path == "/api/sessions-stat":
-            logs_dirs = self._resolve_project(qs)
-            if logs_dirs is None:
-                return None
-            return self._send_json(sessions_fingerprint(logs_dirs))
-        if path == "/api/projects-stat":
-            return self._send_json(projects_fingerprint(self.stats_service))
+        method_name = self._API_DISPATCH.get(path)
+        if method_name is not None:
+            getattr(self, method_name)(qs)
+        else:
+            self._serve_static(path)
 
-        # Fall through to static file serving
-        return self._serve_static(path)
+    def _handle_groups(self, _qs: dict[str, list[str]]) -> None:
+        assert self.stats_service is not None
+        self._send_json(list_groups(self.stats_service))
+
+    def _handle_projects(self, _qs: dict[str, list[str]]) -> None:
+        assert self.stats_service is not None
+        self._send_json(list_projects(self.stats_service))
+
+    def _handle_sessions(self, qs: dict[str, list[str]]) -> None:
+        logs_dirs = self._resolve_project(qs)
+        if logs_dirs is None:
+            return
+        self._send_json(list_sessions(logs_dirs))
+
+    def _handle_session(self, qs: dict[str, list[str]]) -> None:
+        assert self.pricing is not None
+        logs_dirs = self._resolve_project(qs)
+        if logs_dirs is None:
+            return
+        session_id = qs.get("session", [None])[0]
+        if not session_id:
+            self._send_json({"error": "missing session param"}, 400)
+            return
+        self._send_json(read_session(logs_dirs, session_id, pricing=self.pricing))
+
+    def _handle_session_stat(self, qs: dict[str, list[str]]) -> None:
+        logs_dirs = self._resolve_project(qs)
+        if logs_dirs is None:
+            return
+        session_id = qs.get("session", [None])[0]
+        if not session_id:
+            self._send_json({"error": "missing session param"}, 400)
+            return
+        self._send_json(session_fingerprint(logs_dirs, session_id))
+
+    def _handle_sessions_stat(self, qs: dict[str, list[str]]) -> None:
+        logs_dirs = self._resolve_project(qs)
+        if logs_dirs is None:
+            return
+        self._send_json(sessions_fingerprint(logs_dirs))
+
+    def _handle_projects_stat(self, _qs: dict[str, list[str]]) -> None:
+        assert self.stats_service is not None
+        self._send_json(projects_fingerprint(self.stats_service))
 
     def _send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, default=str).encode("utf-8")

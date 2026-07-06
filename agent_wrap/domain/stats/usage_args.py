@@ -38,7 +38,7 @@ def _parse_days(value: str) -> int:
     return days
 
 
-def _parse_date_spec(value: str):
+def _parse_date_spec(value: str) -> date:
     """
     Argparse ``type`` for ``--from``/``--until``: parse a value into a ``date``.
 

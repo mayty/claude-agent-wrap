@@ -15,7 +15,8 @@ from agent_wrap.domain.launch.service import LaunchService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
-from agent_wrap.domain.sidecars.service import Sidecar, SidecarService
+from agent_wrap.domain.sidecars.base import Sidecar
+from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.updates.service import UpdateService
 from agent_wrap.exceptions import SecretNotFoundError
 

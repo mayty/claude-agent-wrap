@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_wrap.lib.hash_resolver import resolve_hashes
+from agent_wrap.domain.logs.hash_resolver import resolve_hashes
 
 # --- resolve_hashes ---
 

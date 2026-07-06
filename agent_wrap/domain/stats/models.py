@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -33,7 +33,7 @@ class Group:
         name: str,
         *,
         transient: bool,
-        new_bucket: Callable[[], Any],
+        new_bucket: Callable[[], Bucket],
     ) -> None:
         self.root = root
         self.name = name

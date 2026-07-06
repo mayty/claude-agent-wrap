@@ -26,7 +26,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
-from agent_wrap.constants import AGENT_LAUNCHES_DIR, BASE_IMAGE_NAME
+from agent_wrap.constants import AGENT_LAUNCHES_DIR
+from agent_wrap.domain.sidecars.constants import ROLE_LABEL, ROLE_VALUE
 from agent_wrap.lib.flock import any_live_locks, clear_lock_handle, lock_and_hold
 
 if TYPE_CHECKING:
@@ -37,8 +38,9 @@ class SidecarTracker:
     """Host-wide coordination state shared by every sidecar in a run."""
 
     #: Label marking an agent container (used by the runner's --label flags).
-    role_label: ClassVar[str] = "agent-wrap.role"
-    role_value: ClassVar[str] = BASE_IMAGE_NAME
+    role_label: ClassVar[str] = ROLE_LABEL
+    #: Label value identifying agent containers.
+    role_value: ClassVar[str] = ROLE_VALUE
 
     #: Sub-directory of the install root holding host-wide launch state.
     state_dirname: ClassVar[str] = AGENT_LAUNCHES_DIR.name

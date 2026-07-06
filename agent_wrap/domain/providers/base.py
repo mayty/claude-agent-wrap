@@ -15,7 +15,8 @@ if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.pricing.models import TokenUsage
     from agent_wrap.domain.providers.models import Tier
-    from agent_wrap.domain.sidecars.service import Sidecar, SidecarService
+    from agent_wrap.domain.sidecars.base import Sidecar
+    from agent_wrap.domain.sidecars.service import SidecarService
 
 
 class _ModelKeyMatcher:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
+from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.models import (
     CombinedSessionMeta,
     Fingerprint,
@@ -27,7 +28,6 @@ from agent_wrap.domain.logs.normalize import (
     normalize_record,
 )
 from agent_wrap.lib.atomic import atomic_write_json
-from agent_wrap.lib.hash_resolver import load_strings
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.service import PricingService

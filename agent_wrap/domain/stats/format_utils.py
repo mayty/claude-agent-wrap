@@ -1,18 +1,9 @@
 # This file has been edited with the assistance of an AI tool.
-"""Date/time parsing helpers for the usage-stats domain."""
+"""Date/time helpers for the usage-stats domain."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-
-
-def parse_ts(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def epoch_to_dt(x: float | None) -> datetime | None:

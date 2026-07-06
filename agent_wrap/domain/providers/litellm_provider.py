@@ -23,7 +23,7 @@ from agent_wrap.constants import LITELLM_IMAGE, TOOL_DIR
 from agent_wrap.domain.providers.base import Provider
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.sidecars.service import Sidecar
+    from agent_wrap.domain.sidecars.base import Sidecar
 
 
 class LiteLLMProvider(Provider):

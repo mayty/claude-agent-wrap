@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agent_wrap.domain.sidecars.base import Sidecar  # noqa: F401 — public re-export
+from agent_wrap.domain.sidecars.constants import ROLE_LABEL, ROLE_VALUE
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig, TelegramSidecarConfig
 from agent_wrap.domain.sidecars.telegram import TelegramSidecar
@@ -32,10 +32,10 @@ class SidecarService:
     create or manage sidecars.
     """
 
-    #: Label value used by ``SidecarTracker`` to identify agent containers.
-    role_label: str = SidecarTracker.role_label
-    #: Label role value used by ``SidecarTracker``.
-    role_value: str = SidecarTracker.role_value
+    #: Label value used to identify agent containers.
+    role_label: str = ROLE_LABEL
+    #: Label role value identifying agent containers.
+    role_value: str = ROLE_VALUE
 
     def __init__(self, display_service: DisplayService) -> None:
         self._display = display_service
