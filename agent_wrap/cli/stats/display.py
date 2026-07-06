@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING
 from agent_wrap.cli.stats.render import range_label, render_core
 from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
 from agent_wrap.constants import USAGE_SOURCES
-from agent_wrap.domain.display.constants import Ansi
-from agent_wrap.domain.display.models import RowItem
+from agent_wrap.domain.display.models import Ansi, RowItem
 from agent_wrap.domain.pricing.models import Bucket
 
 if TYPE_CHECKING:

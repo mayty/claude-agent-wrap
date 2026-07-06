@@ -10,7 +10,8 @@ import time
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import PollResult
-from agent_wrap.domain.display.constants import SPINNERS, Ansi
+from agent_wrap.domain.display.constants import SPINNERS
+from agent_wrap.domain.display.models import Ansi
 
 if TYPE_CHECKING:
     from collections.abc import Callable

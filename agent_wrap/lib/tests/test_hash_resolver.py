@@ -1,25 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
 from agent_wrap.lib.hash_resolver import resolve_hashes
-
-# ---------------------------------------------------------------------------
-# Helpers (data factories)
-# ---------------------------------------------------------------------------
-
-
-def _epoch(iso: str) -> float:
-    """ISO-8601 string -> Unix epoch seconds."""
-    return datetime.fromisoformat(iso).timestamp()
-
-
-def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
-    """Build a minimal record with a timing object whose start == end == iso."""
-    e = _epoch(iso)
-    return {"timing": {"start": e, "completionStart": None, "end": e}, **extra}
-
 
 # --- resolve_hashes ---
 

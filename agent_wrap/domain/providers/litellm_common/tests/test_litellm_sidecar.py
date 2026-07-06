@@ -42,6 +42,7 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
         "get_sidecar_cmd_args": list,
         "on_started": lambda _key: None,
         "on_stopping": lambda _key: None,
+        "required_secrets": [],
     }
     defaults.update(overrides)
     return LiteLLMSidecarConfig(**defaults)  # type: ignore[arg-type]

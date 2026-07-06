@@ -45,9 +45,7 @@ class LiteLLMSidecarConfig:
     # --- secrets ---
     #: Keys this sidecar requires from the secrets store.
     #: Each entry is ``(key_name, user_facing_description)``.
-    required_secrets: list[tuple[str, str]] = ()  # type: ignore[assignment]
-    # ^ mypy/pyrefly struggle with [] as a default for frozen dataclasses;
-    #   the immutable empty tuple is semantically identical and safer.
+    required_secrets: list[tuple[str, str]]
 
 
 @dataclass(frozen=True)

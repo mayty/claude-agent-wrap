@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import TYPE_CHECKING
+
+import pytest
 
 from agent_wrap.__main__ import _complete
 from agent_wrap.cli.commands import COMMANDS
@@ -19,15 +20,13 @@ from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import unused_flags
 
-if TYPE_CHECKING:
-    import pytest
-
 # ---------------------------------------------------------------------------
 # unused_flags tests
 # ---------------------------------------------------------------------------
 
 
-def _make_parser() -> argparse.ArgumentParser:
+@pytest.fixture
+def parser() -> argparse.ArgumentParser:
     """Build a test parser with known flags for unused_flags testing."""
     p = argparse.ArgumentParser()
     p.add_argument("-v", "--verbose", action="store_true")
@@ -40,9 +39,9 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 class TestUnusedFlags:
-    def test_all_flags_on_bare_tab(self) -> None:
+    def test_all_flags_on_bare_tab(self, parser: argparse.ArgumentParser) -> None:
         """All non-hidden flags returned when nothing consumed."""
-        result = unused_flags(_make_parser(), ["agent", "test", ""], 2)
+        result = unused_flags(parser, ["agent", "test", ""], 2)
         assert "-v" in result
         assert "--verbose" in result
         assert "-f" in result
@@ -55,51 +54,53 @@ class TestUnusedFlags:
         assert "--help" in result
         assert "--hidden" not in result
 
-    def test_consumed_flag_excluded(self) -> None:
+    def test_consumed_flag_excluded(self, parser: argparse.ArgumentParser) -> None:
         """A used flag is removed from candidates."""
-        result = unused_flags(_make_parser(), ["agent", "test", "--verbose", ""], 3)
+        result = unused_flags(parser, ["agent", "test", "--verbose", ""], 3)
         assert "-v" not in result
         assert "--verbose" not in result
         assert "-f" in result  # still available
 
-    def test_shorthand_excludes_long_form(self) -> None:
+    def test_shorthand_excludes_long_form(self, parser: argparse.ArgumentParser) -> None:
         """Using -v excludes --verbose (same action)."""
-        result = unused_flags(_make_parser(), ["agent", "test", "-v", ""], 3)
+        result = unused_flags(parser, ["agent", "test", "-v", ""], 3)
         assert "-v" not in result
         assert "--verbose" not in result
 
-    def test_long_form_excludes_shorthand(self) -> None:
+    def test_long_form_excludes_shorthand(self, parser: argparse.ArgumentParser) -> None:
         """Using --from excludes -f (same action)."""
-        result = unused_flags(_make_parser(), ["agent", "test", "--from", "x", ""], 4)
+        result = unused_flags(parser, ["agent", "test", "--from", "x", ""], 4)
         assert "-f" not in result
         assert "--from" not in result
 
-    def test_value_flag_prev_returns_empty(self) -> None:
+    def test_value_flag_prev_returns_empty(self, parser: argparse.ArgumentParser) -> None:
         """Previous word is a value-accepting flag → no flags returned."""
-        result = unused_flags(_make_parser(), ["agent", "test", "-d", ""], 3)
+        result = unused_flags(parser, ["agent", "test", "-d", ""], 3)
         assert result == []
 
-    def test_value_flag_with_value_then_tab_returns_unused(self) -> None:
+    def test_value_flag_with_value_then_tab_returns_unused(
+        self, parser: argparse.ArgumentParser
+    ) -> None:
         """After the value is typed, unused flags are returned."""
-        result = unused_flags(_make_parser(), ["agent", "test", "-d", "14", ""], 4)
+        result = unused_flags(parser, ["agent", "test", "-d", "14", ""], 4)
         assert "-d" not in result
         assert "--days" not in result
         assert "-v" in result
 
-    def test_equals_split_word_consumed(self) -> None:
+    def test_equals_split_word_consumed(self, parser: argparse.ArgumentParser) -> None:
         """--from= (split by COMP_WORDBREAKS) still consumes --from/-f."""
-        result = unused_flags(_make_parser(), ["agent", "test", "--from=", "-14d", ""], 4)
+        result = unused_flags(parser, ["agent", "test", "--from=", "-14d", ""], 4)
         assert "-f" not in result
         assert "--from" not in result
 
-    def test_store_true_flag_not_value_accepting(self) -> None:
+    def test_store_true_flag_not_value_accepting(self, parser: argparse.ArgumentParser) -> None:
         """Previous word is --verbose (store_true) → flags returned."""
-        result = unused_flags(_make_parser(), ["agent", "test", "--verbose", ""], 3)
+        result = unused_flags(parser, ["agent", "test", "--verbose", ""], 3)
         assert result != []
 
-    def test_prev_not_a_flag_returns_all_unused(self) -> None:
+    def test_prev_not_a_flag_returns_all_unused(self, parser: argparse.ArgumentParser) -> None:
         """Previous word is positional value → all unused flags returned."""
-        result = unused_flags(_make_parser(), ["agent", "test", "foo", ""], 3)
+        result = unused_flags(parser, ["agent", "test", "foo", ""], 3)
         assert "-v" in result
 
 

@@ -18,6 +18,79 @@ if TYPE_CHECKING:
     from agent_wrap.domain.sidecars.service import Sidecar, SidecarService
 
 
+class _ModelKeyMatcher:
+    """Model-key prefix matching for pricing table lookups."""
+
+    @staticmethod
+    def best_prefix_key(query: str, keys: Iterable[str]) -> str | None:
+        """
+        Pick the pricing-table key that best matches *query* under true-prefix matching.
+
+        A key matches when it is a prefix of the query or the query is a prefix of it,
+        so a date-stamped request id matches its base pricing key, and a base request
+        matches its newest date-stamped key. Among matches prefer, in order:
+          1. the longest shared prefix,
+          2. then the shortest key (an exact base key beats a longer date-stamped one),
+          3. then the alphabetically-greatest key (newer date suffix wins).
+        """
+        best: str | None = None
+        best_rank: tuple[int, int, str] | None = None
+        for k in keys:
+            if not (k.startswith(query) or query.startswith(k)):
+                continue
+            rank = (min(len(k), len(query)), -len(k), k)
+            if best_rank is None or rank > best_rank:
+                best, best_rank = k, rank
+        return best
+
+
+class _CostComputer:
+    """Token cost computation from tiered pricing data."""
+
+    @staticmethod
+    def cost_for_tiers(
+        tiers: list[Tier],
+        usage: TokenUsage,
+    ) -> tuple[float, bool]:
+        """
+        Calculate the cost of a single request given its applicable tier list.
+
+        *tiers* must be sorted by ``max_in`` (ascending). The first tier whose
+        ``max_in >= input_tokens`` wins; the last tier is the fallback.
+
+        Returns ``(cost, convention_warning_needed)``. The caller is responsible
+        for issuing the convention-drift warning at most once per provider instance.
+        """
+        in_tokens: int = usage["input_tokens"]
+        out_tokens: int = usage["output_tokens"]
+        cr_tokens: int = usage["cache_read_input_tokens"]
+
+        cc = usage.get("cache_creation", {})
+        cw_5m: int = cc.get("ephemeral_5m_input_tokens", 0) or 0
+        cw_1h: int = cc.get("ephemeral_1h_input_tokens", 0) or 0
+        if not (cw_5m or cw_1h):
+            cw_5m = usage.get("cache_creation_input_tokens", 0)
+
+        if not (in_tokens or out_tokens or cw_5m or cw_1h or cr_tokens):
+            return 0.0, False
+
+        tier = next((t for t in tiers if in_tokens <= t["max_in"]), tiers[-1])
+
+        fresh_in_tokens = in_tokens - cw_5m - cw_1h - cr_tokens
+        convention_warn = fresh_in_tokens < 0
+
+        fresh_in_tokens = max(fresh_in_tokens, 0)
+
+        cost = (
+            fresh_in_tokens * tier["in_"] / 1_000_000
+            + out_tokens * tier["out"] / 1_000_000
+            + cw_5m * tier["cw_5m"] / 1_000_000
+            + cw_1h * tier["cw_1h"] / 1_000_000
+            + cr_tokens * tier["cr"] / 1_000_000
+        )
+        return cost, convention_warn
+
+
 class Provider(ABC):
     """
     Abstract base class for model-routing providers.
@@ -117,36 +190,6 @@ class Provider(ABC):
             ]
         return table
 
-    # ------------------------------------------------------------------
-    # Model-key matching
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _best_prefix_key(query: str, keys: Iterable[str]) -> str | None:
-        """
-        Pick the pricing-table key that best matches *query* under true-prefix matching.
-
-        A key matches when it is a prefix of the query or the query is a prefix of it,
-        so a date-stamped request id matches its base pricing key, and a base request
-        matches its newest date-stamped key. Among matches prefer, in order:
-          1. the longest shared prefix,
-          2. then the shortest key (an exact base key beats a longer date-stamped one),
-          3. then the alphabetically-greatest key (newer date suffix wins).
-        """
-        best: str | None = None
-        best_rank: tuple[int, int, str] | None = None
-        for k in keys:
-            if not (k.startswith(query) or query.startswith(k)):
-                continue
-            rank = (min(len(k), len(query)), -len(k), k)
-            if best_rank is None or rank > best_rank:
-                best, best_rank = k, rank
-        return best
-
-    # ------------------------------------------------------------------
-    # Cost computation
-    # ------------------------------------------------------------------
-
     def _cost_for_tiers(self, tiers: list[Tier], usage: TokenUsage) -> float:
         """
         Calculate the cost of a single request given its applicable tier list.
@@ -154,42 +197,25 @@ class Provider(ABC):
         *tiers* must be sorted by ``max_in`` (ascending). The first tier whose
         ``max_in >= input_tokens`` wins; the last tier is the fallback.
         """
-        in_tokens: int = usage["input_tokens"]
-        out_tokens: int = usage["output_tokens"]
-        cr_tokens: int = usage["cache_read_input_tokens"]
-
-        cc = usage.get("cache_creation", {})
-        cw_5m: int = cc.get("ephemeral_5m_input_tokens", 0) or 0
-        cw_1h: int = cc.get("ephemeral_1h_input_tokens", 0) or 0
-        if not (cw_5m or cw_1h):
-            cw_5m = usage.get("cache_creation_input_tokens", 0)
-
-        if not (in_tokens or out_tokens or cw_5m or cw_1h or cr_tokens):
-            return 0.0
-
-        tier = next((t for t in tiers if in_tokens <= t["max_in"]), tiers[-1])
-
-        fresh_in_tokens = in_tokens - cw_5m - cw_1h - cr_tokens
-        if fresh_in_tokens < 0:
-            if not self._usage_convention_warned:
-                self._usage_convention_warned = True
-                self._display.warning(
-                    "token usage convention drift detected — "
-                    f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "
-                    f"cache-read ({cr_tokens}). Cost math assumes input_tokens is "
-                    "inclusive of cache tokens; this record violates that. Reported "
-                    "costs may be inaccurate until "
-                    "agent_wrap/domain/providers/base.py:_cost_for_tiers is revisited."
-                )
-            fresh_in_tokens = 0
-
-        return (
-            fresh_in_tokens * tier["in_"] / 1_000_000
-            + out_tokens * tier["out"] / 1_000_000
-            + cw_5m * tier["cw_5m"] / 1_000_000
-            + cw_1h * tier["cw_1h"] / 1_000_000
-            + cr_tokens * tier["cr"] / 1_000_000
-        )
+        cost, convention_warn = _CostComputer.cost_for_tiers(tiers, usage)
+        if convention_warn and not self._usage_convention_warned:
+            self._usage_convention_warned = True
+            in_tokens: int = usage["input_tokens"]
+            cc = usage.get("cache_creation", {})
+            cw_5m: int = cc.get("ephemeral_5m_input_tokens", 0) or 0
+            cw_1h: int = cc.get("ephemeral_1h_input_tokens", 0) or 0
+            if not (cw_5m or cw_1h):
+                cw_5m = usage.get("cache_creation_input_tokens", 0)
+            cr_tokens: int = usage["cache_read_input_tokens"]
+            self._display.warning(
+                "token usage convention drift detected — "
+                f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "
+                f"cache-read ({cr_tokens}). Cost math assumes input_tokens is "
+                "inclusive of cache tokens; this record violates that. Reported "
+                "costs may be inaccurate until "
+                "agent_wrap/domain/providers/base.py:_CostComputer.cost_for_tiers is revisited."
+            )
+        return cost
 
     def compute_cost(self, model: str, usage: TokenUsage) -> float | None:
         """
@@ -219,7 +245,7 @@ class Provider(ABC):
 
         tiers = None
         for key in unique:
-            match = self._best_prefix_key(key, table)
+            match = _ModelKeyMatcher.best_prefix_key(key, table)
             if match is not None:
                 tiers = table[match]
                 break

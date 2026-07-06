@@ -47,7 +47,12 @@ class PricingService:
     # ------------------------------------------------------------------
 
     def _collect_cache_ttls(self, node: Any, out: set[str]) -> None:
-        """Recursively gather every ``cache_control`` breakpoint's TTL into *out*."""
+        """
+        Recursively gather every ``cache_control`` breakpoint's TTL into *out*.
+
+        *node* is a recursively nested JSON-like structure (dict/list/scalar) —
+        ``Any`` is the honest type for arbitrary-depth traversal.
+        """
         if isinstance(node, dict):
             cc = node.get("cache_control")
             if isinstance(cc, dict):
@@ -146,6 +151,8 @@ class PricingService:
         try:
             p = self._provider_service.get_provider(provider)
         except Exception:  # noqa: BLE001
+            # Provider lookup is best-effort — any failure (unknown provider,
+            # misconfiguration, etc.) should silently fall back to unknown cost.
             return None
         return p.compute_cost(normalized, usage)
 

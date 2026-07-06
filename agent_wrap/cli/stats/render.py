@@ -29,8 +29,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
-from agent_wrap.domain.display.constants import Ansi
-from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
+from agent_wrap.domain.display.models import Ansi, RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
 
 if TYPE_CHECKING:

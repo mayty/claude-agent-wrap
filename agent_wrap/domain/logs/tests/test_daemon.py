@@ -7,7 +7,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.cli.logs import run as logs_mod
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.daemon import (
     read_state,
@@ -66,7 +65,7 @@ def test_write_thenread_state_round_trip():
 
 
 def test_pid_alive_true_for_running(mocker: MockerFixture):
-    mocker.patch.object(logs_mod.os, "kill", return_value=None)
+    mocker.patch("os.kill", return_value=None)
     assert pid_alive(123) is True
 
 
@@ -74,7 +73,7 @@ def test_pid_alive_false_for_dead(mocker: MockerFixture):
     def _kill(_pid: int, _sig: int) -> None:
         raise ProcessLookupError
 
-    mocker.patch.object(logs_mod.os, "kill", _kill)
+    mocker.patch("os.kill", _kill)
     assert pid_alive(123) is False
 
 
@@ -82,7 +81,7 @@ def test_pid_alive_true_for_permission_error(mocker: MockerFixture):
     def _kill(_pid: int, _sig: int) -> None:
         raise PermissionError
 
-    mocker.patch.object(logs_mod.os, "kill", _kill)
+    mocker.patch("os.kill", _kill)
     assert pid_alive(123) is True
 
 

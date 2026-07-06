@@ -9,15 +9,11 @@ Everything is Python stdlib only (``http.server``) — no extra dependency, no
 from __future__ import annotations
 
 import argparse
-import os
-from pathlib import Path
 
 from agent_wrap.constants import (
-    AGENT_LAUNCHES_DIR,  # noqa: F401  # referenced via globals() in run()
     LOGS_DEFAULT_PORT,
     LOGS_MAX_PORT,
     LOGS_MIN_PORT,
-    LOGS_TOOL_DIR_ENV,
 )
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
@@ -64,14 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run(args: list[str]) -> int:
     """Execute the `logs` subcommand."""
-    # A detached child is pinned to its launching parent's tool_dir so both
-    # sides resolve the same state file (see LOGS_TOOL_DIR_ENV / spawn_background).
-    env_dir = os.environ.get(LOGS_TOOL_DIR_ENV)
-    if env_dir:
-        tool_dir = Path(env_dir)
-        # Patch the module-level constant so state functions use the test's tmp_path.
-        globals()["AGENT_LAUNCHES_DIR"] = tool_dir / ".agent-launches"
-
     ns = parse_or_code(build_parser(), args)
     if isinstance(ns, int):
         return ns

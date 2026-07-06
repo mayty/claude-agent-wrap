@@ -82,15 +82,6 @@ def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
 # --- group / stats helpers ---------------------------------------------------
 
 
-def _make_stats_service(project: Path) -> Mock:
-    """Return a Mock StatsService that exposes *project* as group 0."""
-    svc = Mock(spec=StatsService)
-    svc.load_projects.return_value = [project]
-    svc.resolve_group.return_value = (project, project.name, False)
-    svc.orphaned_log_dirs.return_value = []  # type: ignore[implicit-any-empty-container]
-    return svc
-
-
 def _write_session(project: Path, provider: str, session_id: str) -> Path:
     """Write a minimal messages.jsonl for *session_id* and return its dir."""
     sdir = project / ".claude" / "litellm-logs" / provider / session_id
@@ -119,7 +110,10 @@ class TestAPIEndpoints:
         reg = tmp_path / ".agent-launches" / "projects.txt"
         reg.parent.mkdir(parents=True, exist_ok=True)
         reg.write_text("", encoding="utf-8")
-        stats = _make_stats_service(self.project)
+        stats = Mock(spec=StatsService)
+        stats.load_projects.return_value = [self.project]
+        stats.resolve_group.return_value = (self.project, self.project.name, False)
+        stats.orphaned_log_dirs.return_value = []  # type: ignore[implicit-any-empty-container]
         _start_server(self.port, stats)
 
     # --- /api/sessions -------------------------------------------------------

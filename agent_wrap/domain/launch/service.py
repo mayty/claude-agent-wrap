@@ -494,6 +494,8 @@ class LaunchService:
         try:
             sidecar.on_exit()
         except Exception:  # noqa: BLE001
+            # on_exit is a best-effort cleanup hook — failures must not block the
+            # release of shared resources (lock, network, container).
             self._display.warning(
                 f"sidecar.on_exit() failed for {type(sidecar).__name__}, continuing with release"
             )

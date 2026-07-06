@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def _extract_record_fields(
-    rec: Any,
+    rec: LogRecord,
 ) -> ExtractedFields:
     """Extract (data, agent_id, reply, usage) from a raw or resolved record."""
     psr = rec.get("request")

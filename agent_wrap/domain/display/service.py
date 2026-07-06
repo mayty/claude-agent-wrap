@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Centralized display output — domain service."""
 
 from __future__ import annotations
@@ -7,7 +7,8 @@ import sys
 from getpass import getpass
 from typing import TYPE_CHECKING, TextIO
 
-from agent_wrap.domain.display.constants import THOUSAND, Ansi
+from agent_wrap.domain.display.constants import THOUSAND
+from agent_wrap.domain.display.models import Ansi
 from agent_wrap.domain.display.spinner import Spinner
 
 if TYPE_CHECKING:
@@ -17,9 +18,66 @@ if TYPE_CHECKING:
     from agent_wrap.constants import PollResult
     from agent_wrap.domain.display.models import RowItemOrDivider
 
-# ---------------------------------------------------------------------------
-# DisplayService
-# ---------------------------------------------------------------------------
+
+class _TextStyler:
+    """ANSI text styling helpers."""
+
+    @staticmethod
+    def color(s: str, code: Ansi, *, stream: TextIO = sys.stdout) -> str:
+        """Wrap *s* in *code* / RESET when *stream* is a TTY, else return unchanged."""
+        if not stream.isatty():
+            return s
+        return f"{code}{s}{Ansi.RESET}"
+
+
+class _TableRenderer:
+    """Table layout computation and rendering helpers."""
+
+    @staticmethod
+    def widths_for(
+        headers: list[str],
+        body: list[RowItemOrDivider],
+        leading: int,
+        shared_widths: list[int],
+    ) -> list[int]:
+        """Compute column widths for a table."""
+        leading_widths = [len(headers[j]) for j in range(leading)]
+        for item in body:
+            if isinstance(item, str):  # divider sentinel
+                continue
+            cells = item.cells
+            for j in range(leading):
+                leading_widths[j] = max(leading_widths[j], len(cells[j]))
+        return leading_widths + shared_widths
+
+    @staticmethod
+    def render_row(
+        cells: list[str],
+        aligns: list[str],
+        widths: list[int],
+        style: Ansi = Ansi.NONE,
+        prefix_len: int = 0,
+    ) -> str:
+        """Render a single table row with alignment and optional styling."""
+        parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
+        sep = _TextStyler.color("│", Ansi.DIM)
+        if style:
+            if prefix_len:
+                # Keep tree glyphs at the default colour; style only content after prefix.
+                first = parts[0]
+                head = first[: 1 + prefix_len]
+                tail = first[1 + prefix_len :]
+                parts[0] = head + _TextStyler.color(tail, style)
+                parts[1:] = [_TextStyler.color(p, style) for p in parts[1:]]
+            else:
+                parts = [_TextStyler.color(p, style) for p in parts]
+        return sep + sep.join(parts) + sep
+
+    @staticmethod
+    def make_border(widths: list[int], left: str, mid: str, right: str) -> str:
+        """Render a horizontal border line."""
+        parts = ["─" * (w + 2) for w in widths]
+        return _TextStyler.color(left + mid.join(parts) + right, Ansi.DIM)
 
 
 class DisplayService:
@@ -40,7 +98,7 @@ class DisplayService:
     def warning(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stderr with yellow styling (TTY only)."""
         print(
-            self._color(message, Ansi.BOLD_YELLOW, stream=sys.stderr),
+            _TextStyler.color(message, Ansi.BOLD_YELLOW, stream=sys.stderr),
             end=end,
             flush=flush,
             file=sys.stderr,
@@ -48,7 +106,7 @@ class DisplayService:
 
     def success(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stdout with green styling (TTY only)."""
-        print(self._color(message, Ansi.BOLD_GREEN), end=end, flush=flush)
+        print(_TextStyler.color(message, Ansi.BOLD_GREEN), end=end, flush=flush)
 
     def banner(self, text: str) -> None:
         """Print a banner line to stdout."""
@@ -57,16 +115,6 @@ class DisplayService:
     def newline(self) -> None:
         """Print a blank line to stdout."""
         self.info("")
-
-    # ------------------------------------------------------------------
-    # Text styling
-    # ------------------------------------------------------------------
-
-    def _color(self, s: str, code: Ansi, *, stream: TextIO = sys.stdout) -> str:
-        """Wrap *s* in *code* / RESET when *stream* is a TTY, else return unchanged."""
-        if not stream.isatty():
-            return s
-        return f"{code}{s}{Ansi.RESET}"
 
     # ------------------------------------------------------------------
     # Formatting helpers
@@ -111,51 +159,6 @@ class DisplayService:
     # Table rendering
     # ------------------------------------------------------------------
 
-    def _widths_for(
-        self,
-        headers: list[str],
-        body: list[RowItemOrDivider],
-        leading: int,
-        shared_widths: list[int],
-    ) -> list[int]:
-        """Compute column widths for a table."""
-        leading_widths = [len(headers[j]) for j in range(leading)]
-        for item in body:
-            if isinstance(item, str):  # divider sentinel
-                continue
-            cells = item.cells
-            for j in range(leading):
-                leading_widths[j] = max(leading_widths[j], len(cells[j]))
-        return leading_widths + shared_widths
-
-    def _render_row(
-        self,
-        cells: list[str],
-        aligns: list[str],
-        widths: list[int],
-        style: Ansi = Ansi.NONE,
-        prefix_len: int = 0,
-    ) -> str:
-        """Render a single table row with alignment and optional styling."""
-        parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
-        sep = self._color("│", Ansi.DIM)
-        if style:
-            if prefix_len:
-                # Keep tree glyphs at the default colour; style only content after prefix.
-                first = parts[0]
-                head = first[: 1 + prefix_len]
-                tail = first[1 + prefix_len :]
-                parts[0] = head + self._color(tail, style)
-                parts[1:] = [self._color(p, style) for p in parts[1:]]
-            else:
-                parts = [self._color(p, style) for p in parts]
-        return sep + sep.join(parts) + sep
-
-    def _make_border(self, widths: list[int], left: str, mid: str, right: str) -> str:
-        """Render a horizontal border line."""
-        parts = ["─" * (w + 2) for w in widths]
-        return self._color(left + mid.join(parts) + right, Ansi.DIM)
-
     def render_table(  # noqa: PLR0913
         self,
         title: str,
@@ -166,19 +169,21 @@ class DisplayService:
         shared_widths: list[int],
     ) -> list[str]:
         """Render a complete table with Unicode box-drawing borders. Returns lines."""
-        widths = self._widths_for(headers, body, leading, shared_widths)
-        out: list[str] = [self._color(title, Ansi.DIM)]
-        out.append(self._make_border(widths, "┌", "┬", "┐"))
-        out.append(self._render_row(headers, aligns, widths, Ansi.DIM))
-        out.append(self._make_border(widths, "├", "┼", "┤"))
+        widths = _TableRenderer.widths_for(headers, body, leading, shared_widths)
+        out: list[str] = [_TextStyler.color(title, Ansi.DIM)]
+        out.append(_TableRenderer.make_border(widths, "┌", "┬", "┐"))
+        out.append(_TableRenderer.render_row(headers, aligns, widths, Ansi.DIM))
+        out.append(_TableRenderer.make_border(widths, "├", "┼", "┤"))
         for item in body:
             if isinstance(item, str):  # divider sentinel
-                out.append(self._make_border(widths, "├", "┼", "┤"))
+                out.append(_TableRenderer.make_border(widths, "├", "┼", "┤"))
             else:
                 out.append(
-                    self._render_row(item.cells, aligns, widths, item.style, item.prefix_len)
+                    _TableRenderer.render_row(
+                        item.cells, aligns, widths, item.style, item.prefix_len
+                    )
                 )
-        out.append(self._make_border(widths, "└", "┴", "┘"))
+        out.append(_TableRenderer.make_border(widths, "└", "┴", "┘"))
         return out
 
     def compute_shared_widths(
@@ -199,7 +204,7 @@ class DisplayService:
         return shared_widths
 
     # ------------------------------------------------------------------
-    # Spinner (public API delegates to _Spinner)
+    # Spinner (public API delegates to Spinner collaborator)
     # ------------------------------------------------------------------
 
     def spin_while(

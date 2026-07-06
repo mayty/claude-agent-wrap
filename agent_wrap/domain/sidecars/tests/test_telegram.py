@@ -327,7 +327,10 @@ def test_health_poll_unhealthy(mocker: pytest_mock.MockFixture) -> None:
 
 
 def test_register_success(mocker: pytest_mock.MockFixture) -> None:
-    # File-like context-manager mock — needs dunder access (spec= list breaks __enter__).
+    # urlopen response mock — needs dunder methods for context-manager
+    # protocol, which spec= lists cannot provide. MagicMock is used
+    # intentionally here.
+    # MagicMock needed for context-manager dunder support (__enter__/__exit__).
     mock_resp = mocker.MagicMock()
     mock_resp.read.return_value = json.dumps({"auth_token": "tok-abc-123"}).encode()
     mock_resp.__enter__.return_value = mock_resp
@@ -344,7 +347,10 @@ def test_register_success(mocker: pytest_mock.MockFixture) -> None:
 
 
 def test_register_missing_token(mocker: pytest_mock.MockFixture) -> None:
-    # File-like context-manager mock — needs dunder access (spec= list breaks __enter__).
+    # urlopen response mock — needs dunder methods for context-manager
+    # protocol, which spec= lists cannot provide. MagicMock is used
+    # intentionally here.
+    # MagicMock needed for context-manager dunder support (__enter__/__exit__).
     mock_resp = mocker.MagicMock()
     mock_resp.read.return_value = json.dumps({}).encode()
     mock_resp.__enter__.return_value = mock_resp
@@ -362,7 +368,10 @@ def test_register_http_error(mocker: pytest_mock.MockFixture) -> None:
 
 
 def test_unregister_sends_auth_header(mocker: pytest_mock.MockFixture) -> None:
-    # File-like context-manager mock — needs dunder access (spec= list breaks __enter__).
+    # urlopen response mock — needs dunder methods for context-manager
+    # protocol, which spec= lists cannot provide. MagicMock is used
+    # intentionally here.
+    # MagicMock needed for context-manager dunder support (__enter__/__exit__).
     mock_resp = mocker.MagicMock()
     mock_resp.__enter__.return_value = mock_resp
     mock_urlopen = mocker.patch(_URLOPEN, return_value=mock_resp)

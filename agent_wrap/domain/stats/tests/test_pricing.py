@@ -16,7 +16,7 @@ from agent_wrap.cli.stats.tree import build_project_tree, flatten_tree
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.providers.base import Provider
+from agent_wrap.domain.providers.base import Provider, _ModelKeyMatcher
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.cost import usage_source
@@ -198,7 +198,7 @@ def test_exact_key_beats_date_stamped_siblings() -> None:
         "claude-opus-4-8-20260514",
         "claude-opus-4-8-20260512",
     }
-    assert Provider._best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8"
+    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8"
 
 
 def test_newest_date_wins_without_bare_key() -> None:
@@ -206,21 +206,21 @@ def test_newest_date_wins_without_bare_key() -> None:
         "claude-opus-4-8-20260514",
         "claude-opus-4-8-20260512",
     }
-    assert Provider._best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8-20260514"
+    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8-20260514"
 
 
 def test_no_cross_model_match() -> None:
     keys = {"claude-opus-4-5", "claude-opus-4-7"}
-    assert Provider._best_prefix_key("claude-opus-4-8", keys) is None
+    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", keys) is None
 
 
 def test_longest_prefix_wins() -> None:
     keys = {"claude-opus-4", "claude-opus-4-8"}
-    assert Provider._best_prefix_key("claude-opus-4-8-20260514", keys) == "claude-opus-4-8"
+    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8-20260514", keys) == "claude-opus-4-8"
 
 
 def test_empty_keys() -> None:
-    assert Provider._best_prefix_key("claude-opus-4-8", []) is None
+    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", []) is None
 
 
 # ---------------------------------------------------------------------------

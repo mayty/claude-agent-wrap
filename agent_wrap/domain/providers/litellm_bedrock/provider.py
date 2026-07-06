@@ -6,7 +6,6 @@ from __future__ import annotations
 import gzip
 import html
 import json
-import re
 import time
 import urllib.error
 import urllib.request
@@ -17,11 +16,15 @@ if TYPE_CHECKING:
 
 from agent_wrap.domain.providers.litellm_bedrock.constants import (
     DEFAULT_REGION_LABEL,
+    MODEL_KEY_RE,
+    MODEL_NAME_RE,
     PRICING_CACHE_TTL_SECONDS,
     PRICING_DATA_URL,
     PRICING_FETCH_TIMEOUT,
     PRICING_PAGE_URL,
     PRICING_SCHEMAS,
+    ROW_RE,
+    SECTION_RE,
 )
 from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 
@@ -45,20 +48,9 @@ def _scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[
     src = html.unescape(page_html).replace("\\u003c", "<").replace("\\u003e", ">")
     src = src.replace('\\"', '"')
 
-    row_re = re.compile(r"<tr[^>]*>(?P<row>.*?</tr>)", re.DOTALL)
-    name_re = re.compile(r"Claude\s+([A-Za-z]+)\s+(\d+(?:\.\d+)*)")
-    key_re = re.compile(
-        r"priceOf!bedrockfoundationmodels/bedrockfoundationmodels!"
-        r"([A-Za-z0-9_-]+)"
-    )
-    section_re = re.compile(
-        r"<h2[^>]*>\s*(Global Cross-region Inference"
-        r"|Geo and In-region Cross-region Inference)\s*</h2>",
-        re.IGNORECASE,
-    )
     section_starts: list[tuple[int, str]] = [
         (m.start(), "geo" if m.group(1).lower().startswith("geo") else "global")
-        for m in section_re.finditer(src)
+        for m in SECTION_RE.finditer(src)
     ]
 
     def section_at(pos: int) -> str:
@@ -72,12 +64,12 @@ def _scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[
 
     rank = {"geo": 1, "global": 0}
     out: dict[str, tuple[int, tuple[str, ...], list[str]]] = {}
-    for m in row_re.finditer(src):
+    for m in ROW_RE.finditer(src):
         row = m.group("row")
-        nm = name_re.search(row)
+        nm = MODEL_NAME_RE.search(row)
         if not nm:
             continue
-        keys = key_re.findall(row)
+        keys = MODEL_KEY_RE.findall(row)
         schema = PRICING_SCHEMAS.get(len(keys))
         if schema is None:
             continue

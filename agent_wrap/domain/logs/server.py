@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.constants import LOGS_CONTENT_TYPES
@@ -21,6 +21,10 @@ from agent_wrap.domain.logs.io import (
     session_fingerprint,
     sessions_fingerprint,
 )
+
+if TYPE_CHECKING:
+    from agent_wrap.domain.pricing.service import PricingService
+    from agent_wrap.domain.stats.service import StatsService
 
 
 def resolve_static(path: str, *, root: Path | None = None) -> Path | None:
@@ -57,8 +61,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     # Set by bind_port before the server starts.  Must be set before any request
     # is served because read_session requires it.
-    pricing: Any = None
-    stats_service: Any = None
+    pricing: PricingService | None = None
+    stats_service: StatsService | None = None
 
     # Silence per-request log lines to stderr
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -75,6 +79,7 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             self._send_json({"error": f"invalid project id: {raw!r}"}, 400)
             return None
+        assert self.stats_service is not None  # set by bind_port before server starts
         logs_dirs = group_by_id(project_id, self.stats_service)
         if logs_dirs is None:
             self._send_json({"error": f"unknown project id: {project_id}"}, 400)
@@ -82,13 +87,17 @@ class _Handler(BaseHTTPRequestHandler):
         return logs_dirs
 
     def do_GET(self):  # noqa: C901, PLR0911, PLR0912
+        # Set by bind_port before the server starts — guaranteed non-None at runtime.
+        assert self.stats_service is not None
+        assert self.pricing is not None
+
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
 
         # API endpoints
         if path == "/api/groups":
-            return self._send_json(list_groups(self.stats_service))  # type: ignore[call-arg]
+            return self._send_json(list_groups(self.stats_service))
         if path == "/api/projects":
             return self._send_json(list_projects(self.stats_service))
         if path == "/api/sessions":
@@ -147,7 +156,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def bind_port(port: int, pricing: Any = None, stats_service: Any = None) -> ThreadingHTTPServer:
+def bind_port(
+    port: int,
+    pricing: PricingService | None = None,
+    stats_service: StatsService | None = None,
+) -> ThreadingHTTPServer:
     """Bind a ``ThreadingHTTPServer`` to the given port."""
     if pricing is not None:
         _Handler.pricing = pricing

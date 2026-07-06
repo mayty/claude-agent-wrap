@@ -1,28 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from agent_wrap.domain.logs.normalize import extract_alias, normalize_record
 
-# ---------------------------------------------------------------------------
-# Helpers (data factories)
-# ---------------------------------------------------------------------------
+if TYPE_CHECKING:
+    from agent_wrap.domain.providers.litellm_common.models import LogRecord
 
 
 def _epoch(iso: str) -> float:
     """ISO-8601 string -> Unix epoch seconds."""
     return datetime.fromisoformat(iso).timestamp()
 
-
-def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
-    """Build a minimal record with a timing object whose start == end == iso."""
-    e = _epoch(iso)
-    return {"timing": {"start": e, "completionStart": None, "end": e}, **extra}
-
-
-if TYPE_CHECKING:
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord
 
 # --- normalize_record ---
 

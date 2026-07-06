@@ -17,12 +17,14 @@ from typing import Any
 
 import pytest
 
+from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.secrets.store import (
     EncryptedFileStore,
     EncryptionPrimitives,
     KeyDerivation,
 )
+from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.exceptions import SecretNotFoundError
 
 # ---------------------------------------------------------------------------
@@ -86,8 +88,8 @@ def svc(
 ) -> SecretsService:
     """Return a SecretsService wired to temporary paths with a fixed key."""
     return SecretsService(
-        provider_service=mocker.Mock(),
-        sidecar_service=mocker.Mock(),
+        provider_service=mocker.Mock(spec=ProviderService),
+        sidecar_service=mocker.Mock(spec=SidecarService),
         display_service=display_mock,
     )
 
