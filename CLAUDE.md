@@ -20,9 +20,11 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | [docs/volume-mounts.md](docs/volume-mounts.md) | Debugging mount paths or per-project state persistence |
 | [docs/shell-commands.md](docs/shell-commands.md) | Adding/editing an `agent` verb or its flags |
 | [docs/container-environment.md](docs/container-environment.md) | Adding/editing container env var injection |
+| [docs/architecture.md](docs/architecture.md) | Understanding the codebase architecture |
+| [docs/testing-conventions.md](docs/testing-conventions.md) | Writing or reviewing tests |
 | [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `agent` function |
-| [agent_wrap/providers/litellm_common/README.md](agent_wrap/providers/litellm_common/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
-| Provider READMEs (`agent_wrap/providers/*/README.md`) | Provider-specific env vars, credentials, or model mappings |
+| [agent_wrap/domain/providers/litellm_common/README.md](agent_wrap/domain/providers/litellm_common/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
+| Provider READMEs (`agent_wrap/domain/providers/*/README.md`) | Provider-specific env vars, credentials, or model mappings |
 
 ## Runtime contract
 
@@ -36,7 +38,7 @@ Credentials live in `~/claude_keys.json`. Key names are documented in each provi
 
 ### Agent lifecycle
 
-See [agent_wrap/providers/litellm_common/README.md](agent_wrap/providers/litellm_common/README.md).
+See [agent_wrap/domain/providers/litellm_common/README.md](agent_wrap/domain/providers/litellm_common/README.md).
 
 ## Per-project customization
 
@@ -58,6 +60,42 @@ A `Makefile` provides all QA targets. Follow these rules:
 - **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck`.
 - **Fix lint/format errors with `make` first.** Auto-fix via `make lint` or `make format` before manual edits.
 - **Never `pip install` dependencies.** Add them to the `dev` dependency group in `pyproject.toml` and prompt the user to run `agent rebuild`.
+- **Never import a private (`_`-prefixed) name from another module.** If a name is
+  intended for import outside its defining module, it must be public (no underscore).
+  Ruff's `SLF001` only catches `obj._attr` access, not `from module import _name`,
+  so this is enforced by convention — enforce it in code review and when writing code.
+  If you find yourself writing `from foo import _bar`, rename `_bar` → `bar` in its
+  source module instead.
+- **`__init__.py` files must not re-export names from sibling modules.** Every
+  consumer imports directly from the module that defines the name.
+- **Module-level constants imported by more than one module belong in
+  `agent_wrap/constants.py`.**
+- **Data/type-carrying classes belong in ``models.py``.** Dataclasses, TypedDicts,
+  enums, type aliases, and plain data-holding classes must be defined in an optional
+  ``models.py`` within their domain subpackage — not scattered across service files.
+- **Module-level constants belong in ``constants.py``.** All module-level constants
+  (whether public or ``_``-prefixed) must be defined in an optional ``constants.py``
+  within their domain subpackage, neighboring ``models.py``.
+- **Domain service classes belong in ``service.py``.** Every domain service class
+  must be defined in ``service.py`` — not named after the subpackage (e.g.
+  ``build.py``), and not with a ``_service`` suffix (e.g. ``provider_service.py``).
+  Each domain subpackage defines exactly one service class in its ``service.py``.
+- **No pure-proxy service methods.** A service method that only delegates to another
+  callable (including one that only injects constructor dependencies before
+  forwarding) is forbidden. Inline the target's implementation into the service
+  method and delete the original target. See architecture.md rule 9.
+- **Namespace classes replace comment-separated function blocks.** Standalone
+  functions that share a micro-domain must be grouped into a namespace class
+  (``@staticmethod``-only, no instance state) instead of being divided by
+  ``# --- Topic ---`` comment separators.
+
+## Architecture
+
+Domain-layer architecture rules and project structure — see [docs/architecture.md](docs/architecture.md).
+
+## Test conventions
+
+See [docs/testing-conventions.md](docs/testing-conventions.md).
 
 ## Notes
 

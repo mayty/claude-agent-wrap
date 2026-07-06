@@ -1,4 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
+from enum import Enum, auto
 from pathlib import Path
 
 TOOL_DIR = Path(__file__).parent.parent.resolve()
@@ -18,3 +19,58 @@ TELEGRAM_IMAGE = (
     "mayty/claude-agent-wrap-telegram:0.1.0"
     "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
 )
+
+# ── logs viewer ──────────────────────────────────────────────────────────────
+
+# Env var name used by the detached logs-viewer child process to find the same
+# tool_dir (and thus state file) as the parent that launched it.
+LOGS_TOOL_DIR_ENV = "AGENT_LOGS_TOOL_DIR"
+
+# Port range for the local web viewer.
+LOGS_DEFAULT_PORT = 8765
+LOGS_MIN_PORT = 1
+LOGS_MAX_PORT = 65535
+
+# Extension → Content-Type mapping for the static file server.
+LOGS_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+}
+
+# ── stats ────────────────────────────────────────────────────────────────────
+
+# Recognised usage-source tags stamped onto records by the callback.
+USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")
+
+# Files below this count are scanned serially (fork overhead > benefit).
+SCAN_PARALLEL_MIN_FILES = 64
+
+# ── run ──────────────────────────────────────────────────────────────────────
+
+# In-container mount point for the agent-wrap ops directory.
+AGENT_WRAP_MOUNT = "/opt/agent-wrap"
+
+# Per-project state files mounted into the agent container.
+STATE_FILES = (
+    "daemon.lock",
+    "daemon.log",
+    "daemon.status.json",
+    "history.jsonl",
+)
+
+# ── display / sidecars ────────────────────────────────────────────────────────
+
+LITELLM_SIDECAR_LABEL = "litellm-sidecar"
+TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"
+TELEGRAM_SIDECAR_NAME = "telegram"
+
+
+class PollResult(Enum):
+    """Verdict a poll callback returns each tick to ``DisplayService.poll_until``."""
+
+    PENDING = auto()
+    SUCCESS = auto()
+    FAILURE = auto()

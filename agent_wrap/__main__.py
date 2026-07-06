@@ -2,86 +2,58 @@
 """
 agent-wrap CLI entry point.
 
-Dispatches subcommands to the agent_wrap.commands package.
-Called from agent-wrap.bashrc as: python3 -m agent_wrap <subcommand> [args...]
+Normal path:  python3 -m agent_wrap <verb> [args...]
+Complete path: AGENT_COMPLETE=1 python3 -m agent_wrap <cword> <word0> ...
 """
 
 from __future__ import annotations
 
-import pkgutil
+import os
 import sys
-from dataclasses import dataclass
-from importlib import import_module
-from typing import TYPE_CHECKING
 
-from agent_wrap import commands as commands_pkg
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from agent_wrap.cli.commands import COMMANDS, command_meta, format_usage
+from agent_wrap.containers import services
 
 _MIN_ARGS = 2
 
 
-@dataclass(frozen=True)
-class _Command:
-    name: str
-    module_path: str
-    usage: str
-    summary: str
-
-
-def _discover_commands() -> list[_Command]:
-    """Discover subcommand modules under agent_wrap.commands, sorted alphabetically."""
-
-    def _build(info: pkgutil.ModuleInfo) -> _Command:
-        module_path = f"{commands_pkg.__name__}.{info.name}"
-        mod = import_module(module_path)
-        return _Command(
-            name=info.name,
-            module_path=module_path,
-            usage=getattr(mod, "USAGE", ""),
-            summary=getattr(mod, "SUMMARY", ""),
-        )
-
-    discovered = [
-        _build(info)
-        for info in pkgutil.iter_modules(commands_pkg.__path__)
-        if not info.ispkg and not info.name.startswith("_")
-    ]
-    discovered.sort(key=lambda c: c.name)
-    return discovered
-
-
-def _format_usage(commands: list[_Command]) -> str:
-    """Render the help block from discovered commands."""
-    name_width = max((len(c.name) for c in commands), default=0)
-    usage_width = max((len(c.usage) for c in commands), default=0)
-    rows = [
-        f"  {c.name:<{name_width}}  {c.usage:<{usage_width}}  {c.summary}".rstrip()
-        for c in commands
-    ]
-    return "\n".join(["Usage: agent <command> [args...]", "", "Commands:", *rows]) + "\n"
-
-
 def main() -> int:
-    commands = _discover_commands()
-
+    """Run the normal CLI dispatch path."""
     if len(sys.argv) < _MIN_ARGS:
-        print(_format_usage(commands), file=sys.stderr, end="")
+        meta = command_meta()
+        services.display_service.error(format_usage(meta), end="")
         return 1
 
     name = sys.argv[1]
     args = sys.argv[2:]
 
-    match = next((c for c in commands if c.name == name), None)
-    if match is None:
-        print(f"Unknown command: {name}", file=sys.stderr)
+    entry = COMMANDS.get(name)
+    if entry is None:
+        services.display_service.error(f"Unknown command: {name}")
         return 1
 
-    mod = import_module(match.module_path)
-    run: Callable[..., int] = mod.run
-    return run(args)
+    run_fn, _complete_fn = entry
+    return run_fn(args)
+
+
+def _complete() -> None:
+    """Run the tab-completion dispatch path.  Prints candidates to stdout."""
+    cword = int(sys.argv[1])
+    words = sys.argv[2:]
+    verb = words[1] if len(words) > 1 else ""
+
+    if cword <= 1:
+        # Completing the verb itself
+        for name in sorted(COMMANDS):
+            print(name)
+    elif verb in COMMANDS:
+        _run_fn, complete_fn = COMMANDS[verb]
+        for candidate in complete_fn(cword, words):
+            print(candidate)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if os.environ.get("AGENT_COMPLETE"):
+        _complete()
+    else:
+        sys.exit(main())

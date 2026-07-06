@@ -22,18 +22,17 @@ hands ownership of the handle to the caller.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, TextIO
 
+from agent_wrap.exceptions import LockTimeoutError
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
-
-
-class LockTimeoutError(RuntimeError):
-    """Raised by :func:`file_lock` when the lock can't be acquired in time."""
 
 
 @contextmanager
@@ -113,3 +112,38 @@ def lock_and_hold(path: Path) -> TextIO | None:
         handle.close()
         return None
     return handle
+
+
+def clear_lock_handle(handle: TextIO | None, path: Path) -> None:
+    """Close a held lock handle and remove its backing file."""
+    if handle is not None:
+        handle.close()
+    with contextlib.suppress(OSError):
+        path.unlink()
+
+
+def any_live_locks(directory: Path, *, exclude_id: str | None = None) -> bool:
+    """
+    Walk *directory* of lock-held files, reaping stale entries and reporting liveness.
+
+    Each file is probed with a non-blocking lock: acquiring it proves the owner has
+    exited, so the stale file is unlinked while the lock is held. The walk continues
+    past the first live holder to reap stale siblings in the same pass.
+
+    Returns ``True`` if at least one file is still locked (owner alive).
+    """
+    if not directory.is_dir():
+        return False
+    live = False
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        if exclude_id is not None and path.name == exclude_id:
+            continue
+        with try_file_lock(path) as acquired:
+            if acquired:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+            else:
+                live = True
+    return live
