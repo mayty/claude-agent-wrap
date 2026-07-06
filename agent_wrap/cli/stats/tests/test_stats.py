@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
@@ -13,6 +13,9 @@ from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.stats.usage_args import parse_usage_args
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture

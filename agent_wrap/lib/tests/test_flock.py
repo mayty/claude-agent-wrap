@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import fcntl
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from agent_wrap.exceptions import LockTimeoutError
 from agent_wrap.lib.flock import file_lock, try_file_lock
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # --- file_lock ---
 

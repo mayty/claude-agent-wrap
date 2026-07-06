@@ -110,12 +110,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = [
-    "ARG",     # unused args in test fixtures are fine
     "PLR2004", # magic values in test assertions
     "SLF001",  # private member access needed for testing internals
     "S105",    # hardcoded strings in test data are fine
-    "TC002",   # type-checking block imports not needed in test files
-    "TC003",   # type-checking block imports not needed in test files
 ]
 "agent_wrap/containers.py" = [
     "PLC0415", # local imports in @cached_property methods are the ONE exception
@@ -123,16 +120,10 @@ ignore = [
 "ops/statusline.py" = [
     "BLE001", # broad except Exception -- statusline must never crash
 ]
-"agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py" = [
-    "PLR0911", # too many return statements -- pre-existing pattern with minor additions
-]
 "agent_wrap/domain/providers/litellm_common/litellm_runtime/**" = [
     "INP001",  # not a package — plain dir of files mounted into the sidecar container
     "TC001",   # imports from the parent package are runtime dependencies in sidecar context
     "TC002",   # same — sidecar-deployed files import at runtime, not just type-checking
-]
-"agent_wrap/domain/providers/litellm_common/litellm_runtime/string_hasher.py" = [
-    "PERF203", # try-except within loop -- justified for resilient line-by-line JSONL parsing
 ]
 "scripts/**" = [
     "INP001",  # individual scripts, not package
@@ -162,7 +153,7 @@ source = ["agent_wrap"]
 branch = true
 omit = [
     "*/tests/*",
-    "*/__pycache__/*",
+    "*/conftest.py",
 ]
 
 [tool.coverage.report]
@@ -183,10 +174,9 @@ preset = "strict"
 project_includes = [
     "agent_wrap",
     "ops/statusline.py",
+    "scripts",
 ]
 project_excludes = [
-    "__pycache__",
-    ".pytest_cache",
     # litellm_runtime/ is not a Python package — it's a directory of files
     # mounted into the sidecar container. Imports within it use sys.path
     # manipulation rather than package-relative imports.

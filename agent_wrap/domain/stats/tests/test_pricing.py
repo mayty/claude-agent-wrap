@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
 
 from agent_wrap.cli.stats.tree import build_project_tree, flatten_tree
 from agent_wrap.domain.display.service import DisplayService
@@ -26,6 +25,8 @@ from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest_mock
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +76,6 @@ def pricing_service(
 @pytest.fixture
 def pricing_service_empty(
     mocker: pytest_mock.MockerFixture,
-    fake_provider: FakeProvider,
     display_mock: Mock,
 ) -> PricingService:
     """Return a PricingService backed by a mocked ProviderService (no pricing data)."""

@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
-import pytest_mock
 
 from agent_wrap.lib.docker_utils import (
     docker_run,
@@ -17,6 +17,9 @@ from agent_wrap.lib.docker_utils import (
     is_rootless,
     is_wsl,
 )
+
+if TYPE_CHECKING:
+    import pytest_mock
 
 # --- docker_run ---
 

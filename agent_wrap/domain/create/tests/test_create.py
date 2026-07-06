@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 
 from agent_wrap.domain.create.service import CreateService
 from agent_wrap.domain.display.service import DisplayService
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture

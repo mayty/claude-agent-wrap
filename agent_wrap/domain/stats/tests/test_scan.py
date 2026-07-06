@@ -5,12 +5,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
 
 import agent_wrap.domain.stats.scan as scan_mod
 from agent_wrap.domain.display.service import DisplayService
@@ -20,6 +18,11 @@ from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.scan import plan_pool, scan_logs_dir
 from agent_wrap.domain.stats.service import StatsService
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest_mock
 
 # ---------------------------------------------------------------------------
 # fixtures / helpers

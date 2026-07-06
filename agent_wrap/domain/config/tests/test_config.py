@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
@@ -13,6 +13,9 @@ from agent_wrap.constants import STATE_FILES
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.lib.path_hash import project_path_hash
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture

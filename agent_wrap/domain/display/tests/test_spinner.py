@@ -5,12 +5,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
-
 from agent_wrap.constants import PollResult
 from agent_wrap.domain.display.service import DisplayService
 
 if TYPE_CHECKING:
+    import pytest
     import pytest_mock
 
 

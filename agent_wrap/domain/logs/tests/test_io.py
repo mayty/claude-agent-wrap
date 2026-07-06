@@ -4,13 +4,10 @@ import json
 import os
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
-from pytest_mock import MockerFixture
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.io import (
@@ -33,6 +30,12 @@ from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.lib.hash_resolver import load_strings
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest_mock
+    from pytest_mock import MockerFixture
 
 
 @pytest.fixture
@@ -394,7 +397,7 @@ def test_list_projects_filters_to_those_with_logs(
     assert projects[0]["id"] == 0
 
 
-def test_list_projects_empty_without_registry(tmp_path: Path, isolated_stats: StatsService) -> None:
+def test_list_projects_empty_without_registry(isolated_stats: StatsService) -> None:
     assert list_projects(isolated_stats) == []
 
 
@@ -426,7 +429,7 @@ def test_list_projects_aggregates_marked_group(
     assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
 
 
-def test_list_sessions_unions_group_members(tmp_path: Path, isolated_stats: StatsService) -> None:
+def test_list_sessions_unions_group_members(tmp_path: Path) -> None:
     """list_sessions over a list of logs dirs merges sessions from every member."""
     runs = tmp_path / "runs"
     a = runs / "agent-a"
@@ -714,9 +717,7 @@ def test_projects_fingerprint_reflects_changes(
     assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
 
 
-def test_projects_fingerprint_null_when_no_registry(
-    tmp_path: Path, isolated_stats: StatsService
-) -> None:
+def test_projects_fingerprint_null_when_no_registry(isolated_stats: StatsService) -> None:
     """No registry file → null fingerprint."""
     assert projects_fingerprint(isolated_stats) == {"mtime": None, "size": None}
 

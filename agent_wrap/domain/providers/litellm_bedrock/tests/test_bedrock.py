@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
@@ -19,6 +19,9 @@ from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
     SidecarService,
 )
+
+if TYPE_CHECKING:
+    import pytest_mock
 
 
 @pytest.fixture

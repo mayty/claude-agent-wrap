@@ -7,15 +7,17 @@ import json
 import tempfile
 import urllib.error
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.sidecars.models import TelegramSidecarConfig
 from agent_wrap.domain.sidecars.telegram import TelegramSidecar
+
+if TYPE_CHECKING:
+    import pytest_mock
 
 # --- test fixtures ---
 
@@ -554,7 +556,7 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
     mock_spin = mocker.patch.object(
         sc._display,
         "spin_while",
-        side_effect=lambda *, label, message, done_message, work: work(),
+        side_effect=lambda *, work, **_: work(),
     )
     mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
 

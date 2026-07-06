@@ -8,10 +8,13 @@ in ``agent_wrap/cli/conftest.py``.
 
 from __future__ import annotations
 
-import pytest
+from typing import TYPE_CHECKING
 
 from agent_wrap.cli.create.run import run as create_run
 from agent_wrap.containers import services
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_create_delegates_to_service() -> None:

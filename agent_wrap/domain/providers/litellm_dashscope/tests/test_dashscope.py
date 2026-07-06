@@ -4,11 +4,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.key_approval import _api_key_approval_id
@@ -18,6 +17,11 @@ from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
     SidecarService,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest_mock
 
 
 @pytest.fixture

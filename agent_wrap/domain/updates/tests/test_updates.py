@@ -6,13 +6,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from unittest.mock import Mock
 
-from pathlib import Path
-from typing import Any
+    import pytest
+    import pytest_mock
 
-import pytest
-import pytest_mock
+from typing import Any
 
 from agent_wrap.domain.updates.models import MdPropagation, MdState
 from agent_wrap.domain.updates.service import UpdateService, _GitOps
@@ -20,13 +20,13 @@ from agent_wrap.domain.updates.service import UpdateService, _GitOps
 # --- _get_behind_count ---
 
 
-def test_get_behind_not_git_dir(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_get_behind_not_git_dir(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", return_value=("", 1))
     assert _GitOps.get_behind_count() is None
 
 
-def test_get_behind_detached_head(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_detached_head(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -37,10 +37,8 @@ def test_get_behind_detached_head(tmp_path: Path, mocker: pytest_mock.MockFixtur
     assert _GitOps.get_behind_count() is None
 
 
-def test_get_behind_three_commits_non_master(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_three_commits_non_master(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -56,8 +54,8 @@ def test_get_behind_three_commits_non_master(
     assert result == ("main", 3, "origin/main")
 
 
-def test_get_behind_fetches_tags(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_fetches_tags(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -75,8 +73,8 @@ def test_get_behind_fetches_tags(tmp_path: Path, mocker: pytest_mock.MockFixture
     assert "--tags" in fetch_calls[0].args
 
 
-def test_get_behind_master_new_tag(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_master_new_tag(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -95,8 +93,8 @@ def test_get_behind_master_new_tag(tmp_path: Path, mocker: pytest_mock.MockFixtu
     assert result == ("master", 3, "v1.1")
 
 
-def test_get_behind_master_no_new_tag(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_master_no_new_tag(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -113,8 +111,8 @@ def test_get_behind_master_no_new_tag(tmp_path: Path, mocker: pytest_mock.MockFi
     assert _GitOps.get_behind_count() is None
 
 
-def test_get_behind_master_no_upstream_tag(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_master_no_upstream_tag(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -131,8 +129,8 @@ def test_get_behind_master_no_upstream_tag(tmp_path: Path, mocker: pytest_mock.M
     assert _GitOps.get_behind_count() is None
 
 
-def test_get_behind_fetch_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_get_behind_fetch_fails(mocker: pytest_mock.MockFixture) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -146,9 +144,9 @@ def test_get_behind_fetch_fails(tmp_path: Path, mocker: pytest_mock.MockFixture)
 
 
 def test_get_behind_no_commits(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+    mocker: pytest_mock.MockFixture,
 ) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "rev-parse":
             return (".git", 0)
         if args[0] == "symbolic-ref":
@@ -166,23 +164,17 @@ def test_get_behind_no_commits(
 # --- check_updates ---
 
 
-def test_check_skip_env_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, display_mock: Mock
-) -> None:
+def test_check_skip_env_set(monkeypatch: pytest.MonkeyPatch, display_mock: Mock) -> None:
     monkeypatch.setenv("AGENT_SKIP_UPDATE_CHECK", "1")
     assert UpdateService(display_service=display_mock).check_updates() is False
 
 
-def test_check_no_behind(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
-) -> None:
+def test_check_no_behind(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.get_behind_count", return_value=None)
     assert UpdateService(display_service=display_mock).check_updates() is False
 
 
-def test_check_user_says_no(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
-) -> None:
+def test_check_user_says_no(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
@@ -193,9 +185,7 @@ def test_check_user_says_no(
     mock_apply.assert_not_called()
 
 
-def test_check_user_says_yes(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
-) -> None:
+def test_check_user_says_yes(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
@@ -207,7 +197,6 @@ def test_check_user_says_yes(
 
 
 def test_check_master_announces_tag(
-    tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
 ) -> None:
@@ -222,9 +211,7 @@ def test_check_master_announces_tag(
     display_mock.warning.assert_any_call("a new agent-wrap release (v1.1) is available.")
 
 
-def test_check_eof_error(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
-) -> None:
+def test_check_eof_error(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
@@ -261,14 +248,14 @@ def test_detect_customized(tmp_path: Path) -> None:
     assert _GitOps.detect_claude_md_state() == MdState.CUSTOMIZED
 
 
-def test_detect_missing(tmp_path: Path) -> None:
+def test_detect_missing() -> None:
     assert _GitOps.detect_claude_md_state() == MdState.MISSING
 
 
 # --- _handle_claude_md_propagation ---
 
 
-def test_propagation_no_diff(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_propagation_no_diff(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", return_value=("", 0))
     result = _GitOps.handle_claude_md_propagation("abc", "def", MdState.MATCHES)
     assert result == MdPropagation.UNCHANGED
@@ -286,7 +273,7 @@ def test_propagation_matches_deletes(tmp_path: Path, mocker: pytest_mock.MockFix
 
 
 def test_propagation_customized_returns_conflict(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
+    tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
     config_dir = tmp_path / ".claude"
     config_dir.mkdir(parents=True)
@@ -302,7 +289,6 @@ def test_propagation_customized_returns_conflict(
 
 
 def test_apply_cannot_determine_branch(
-    tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
 ) -> None:
@@ -314,7 +300,6 @@ def test_apply_cannot_determine_branch(
 
 
 def test_apply_cannot_get_head(
-    tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
 ) -> None:
@@ -330,11 +315,10 @@ def test_apply_cannot_get_head(
 
 
 def test_apply_merge_fails(
-    tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
 ) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "symbolic-ref":
             return ("main", 0)
         if args[0] == "rev-parse":
@@ -354,10 +338,8 @@ def test_apply_merge_fails(
     assert mock_full.call_args.args == ("merge", "--ff-only", "origin/main")
 
 
-def test_apply_merges_to_tag_target(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, display_mock: Mock
-) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+def test_apply_merges_to_tag_target(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "symbolic-ref":
             return ("master", 0)
         if args[0] == "rev-parse":
@@ -375,7 +357,6 @@ def test_apply_merges_to_tag_target(
 
 
 def test_apply_recomputes_target_when_none(
-    tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
 ) -> None:
@@ -387,11 +368,10 @@ def test_apply_recomputes_target_when_none(
 
 
 def test_apply_already_up_to_date(
-    tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
 ) -> None:
-    def fake_git(*args: Any, **kwargs: Any):
+    def fake_git(*args: Any, **_: Any):
         if args[0] == "symbolic-ref":
             return ("main", 0)
         if args[0] == "rev-parse":

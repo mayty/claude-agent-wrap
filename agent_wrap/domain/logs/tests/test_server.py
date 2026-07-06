@@ -5,8 +5,7 @@ import socket
 import threading
 import time
 import urllib.request
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +13,9 @@ import pytest
 from agent_wrap.domain.logs.server import bind_port, resolve_static
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # --- resolve_static (path mapping + traversal safety) ---
 

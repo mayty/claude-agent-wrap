@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-import pytest_mock
 
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.constants import CENTRAL_LOGS_DIRNAME, MARKER_NAME
@@ -14,6 +13,8 @@ from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest_mock
 
 
 @pytest.fixture
@@ -27,9 +28,7 @@ def _marker(directory: Path, contents: str = "") -> None:
     (directory / MARKER_NAME).write_text(contents, encoding="utf-8")
 
 
-def test_no_marker_keeps_project_standalone(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_no_marker_keeps_project_standalone(tmp_path: Path, stats_svc: StatsService):
     proj = tmp_path / "solo"
     proj.mkdir()
     root, name, transient = stats_svc.resolve_group(proj)
@@ -38,9 +37,7 @@ def test_no_marker_keeps_project_standalone(
     assert transient is False
 
 
-def test_marker_with_content_uses_first_nonempty_line(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_marker_with_content_uses_first_nonempty_line(tmp_path: Path, stats_svc: StatsService):
     runs = tmp_path / "runs"
     _marker(runs, "\n  batch-feb \nignored second line\n")
     child = runs / "agent-xyz"
@@ -51,9 +48,7 @@ def test_marker_with_content_uses_first_nonempty_line(
     assert transient is True
 
 
-def test_empty_marker_falls_back_to_dir_name(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_empty_marker_falls_back_to_dir_name(tmp_path: Path, stats_svc: StatsService):
     # An empty marker still forms a transient group (named after its directory);
     # `transient` reflects marker presence, not name customization.
     runs = tmp_path / "runs"
@@ -66,9 +61,7 @@ def test_empty_marker_falls_back_to_dir_name(
     assert transient is True
 
 
-def test_marker_on_project_itself_is_found(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_marker_on_project_itself_is_found(tmp_path: Path, stats_svc: StatsService):
     proj = tmp_path / "proj"
     _marker(proj, "self-named")
     root, name, transient = stats_svc.resolve_group(proj)
@@ -77,9 +70,7 @@ def test_marker_on_project_itself_is_found(
     assert transient is True
 
 
-def test_nearest_marker_wins_when_nested(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_nearest_marker_wins_when_nested(tmp_path: Path, stats_svc: StatsService):
     outer = tmp_path / "outer"
     _marker(outer, "outer-group")
     inner = outer / "inner"
@@ -92,9 +83,7 @@ def test_nearest_marker_wins_when_nested(
     assert transient is True
 
 
-def test_two_projects_under_one_marker_share_a_group(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_two_projects_under_one_marker_share_a_group(tmp_path: Path, stats_svc: StatsService):
     runs = tmp_path / "runs"
     _marker(runs, "batch")
     a = runs / "a"
@@ -107,9 +96,7 @@ def test_two_projects_under_one_marker_share_a_group(
     assert name_a == name_b == "batch"
 
 
-def test_symlinked_projects_group_by_literal_path(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, stats_svc: StatsService
-):
+def test_symlinked_projects_group_by_literal_path(tmp_path: Path, stats_svc: StatsService):
     # Two physically-separate projects, symlinked into one marked common dir.
     # Grouping must follow the *literal* (symlinked) path so they aggregate,
     # even though their resolved physical locations differ.

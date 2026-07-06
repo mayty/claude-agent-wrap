@@ -3,11 +3,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
-
-import pytest_mock
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
@@ -15,6 +12,11 @@ from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
     SidecarService,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest_mock
 
 
 class ConcreteTestProvider(LiteLLMProvider):

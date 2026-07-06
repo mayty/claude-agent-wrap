@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,16 +55,19 @@ class StringHasher:
                 content = f.read()
 
             for line in content.splitlines():
-                try:
-                    entry = json.loads(line)
-                    if "hash" in entry:
-                        self._seen_hashes.add(entry["hash"])
-                except json.JSONDecodeError:
-                    # Skip malformed lines
-                    continue
+                entry = self._try_parse_json(line)
+                if entry is not None and "hash" in entry:
+                    self._seen_hashes.add(entry["hash"])
         except OSError:
             # If we can't read the file, just start with an empty set
             pass
+
+    def _try_parse_json(self, line: str) -> Any:
+        """Parse a JSON line, returning None for malformed lines."""
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            return None
 
     def hash_string(self, s: str) -> str:
         """

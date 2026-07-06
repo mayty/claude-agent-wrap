@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-import pytest_mock
 
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
@@ -18,6 +18,9 @@ from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.service import Sidecar, SidecarService
 from agent_wrap.domain.updates.service import UpdateService
 from agent_wrap.exceptions import SecretNotFoundError
+
+if TYPE_CHECKING:
+    import pytest_mock
 
 
 @pytest.fixture

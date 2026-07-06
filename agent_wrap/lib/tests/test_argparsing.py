@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
-
-import pytest
+from typing import TYPE_CHECKING
 
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _parser() -> argparse.ArgumentParser:

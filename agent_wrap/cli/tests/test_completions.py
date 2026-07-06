@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-
-import pytest
+from typing import TYPE_CHECKING
 
 from agent_wrap.__main__ import _complete
 from agent_wrap.cli.commands import COMMANDS
@@ -19,6 +18,9 @@ from agent_wrap.cli.update.complete import complete as update_complete
 from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import unused_flags
+
+if TYPE_CHECKING:
+    import pytest
 
 # ---------------------------------------------------------------------------
 # unused_flags tests

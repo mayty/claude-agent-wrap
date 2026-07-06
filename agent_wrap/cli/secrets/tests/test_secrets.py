@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-import pytest
+from typing import TYPE_CHECKING
 
 from agent_wrap.cli.secrets.run import run as secrets_run
 from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_run_requires_action(capsys: pytest.CaptureFixture[str]) -> None:

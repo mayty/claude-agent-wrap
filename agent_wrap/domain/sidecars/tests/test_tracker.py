@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from agent_wrap.domain.sidecars.tracker import SidecarTracker
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture

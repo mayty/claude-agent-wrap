@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from pytest_mock import MockerFixture
 
 import agent_wrap.domain.stats.usage_args as ua
 from agent_wrap.domain.stats.constants import DEFAULT_DAYS
@@ -17,6 +16,8 @@ from agent_wrap.lib.format import day_in_range
 if TYPE_CHECKING:
     from pathlib import Path
     from unittest.mock import Mock
+
+    from pytest_mock import MockerFixture
 
 # A fixed "today" so relative offsets and defaults are deterministic.
 _TODAY = date(2026, 6, 29)

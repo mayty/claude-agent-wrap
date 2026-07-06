@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
-import pytest_mock
 
 from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PollResult
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig
 from agent_wrap.lib.path_hash import project_path_hash
+
+if TYPE_CHECKING:
+    import pytest_mock
 
 # --- test fixtures ---
 
@@ -404,7 +406,6 @@ def fake_monotonic(mocker: pytest_mock.MockFixture) -> None:
 def test_health_poll_healthy_quick(
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
-    fake_monotonic: None,
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch.object(
@@ -418,7 +419,6 @@ def test_health_poll_healthy_quick(
 def test_health_poll_unhealthy(
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
-    fake_monotonic: None,
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch.object(
@@ -432,7 +432,6 @@ def test_health_poll_unhealthy(
 def test_health_poll_container_gone(
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
-    fake_monotonic: None,
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch.object(

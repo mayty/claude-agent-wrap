@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 from importlib import import_module
-
-from pytest_mock import MockerFixture
-from pytest_subtests import SubTests
+from typing import TYPE_CHECKING
 
 from agent_wrap.__main__ import main
 from agent_wrap.cli.commands import command_meta
 from agent_wrap.containers import services
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+    from pytest_subtests import SubTests
 
 
 def test_every_command_module_exposes_run_and_metadata(subtests: SubTests) -> None:

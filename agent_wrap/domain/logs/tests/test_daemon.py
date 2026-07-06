@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import signal
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-from pytest_mock import MockerFixture
 
 from agent_wrap.cli.logs import run as logs_mod
 from agent_wrap.domain.display.service import DisplayService
@@ -19,6 +18,11 @@ from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.lib.process_utils import pid_alive
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pytest_mock import MockerFixture
 
 
 @pytest.fixture
@@ -38,7 +42,7 @@ def test_state_file_path(tmp_path: Path):
     assert state_file() == tmp_path / ".agent-launches" / "logs-server.json"
 
 
-def test_read_state_missing_returns_none(tmp_path: Path):
+def test_read_state_missing_returns_none():
     assert read_state() is None
 
 
@@ -55,7 +59,7 @@ def test_read_state_rejects_wrong_shape(tmp_path: Path):
     assert read_state() is None
 
 
-def test_write_thenread_state_round_trip(tmp_path: Path):
+def test_write_thenread_state_round_trip():
     write_state(pid=4242, port=8765)
     state = read_state()
     assert state == {"pid": 4242, "port": 8765}
@@ -67,7 +71,7 @@ def test_pid_alive_true_for_running(mocker: MockerFixture):
 
 
 def test_pid_alive_false_for_dead(mocker: MockerFixture):
-    def _kill(pid: int, sig: int):
+    def _kill(_pid: int, _sig: int) -> None:
         raise ProcessLookupError
 
     mocker.patch.object(logs_mod.os, "kill", _kill)
@@ -75,47 +79,41 @@ def test_pid_alive_false_for_dead(mocker: MockerFixture):
 
 
 def test_pid_alive_true_for_permission_error(mocker: MockerFixture):
-    def _kill(pid: int, sig: int):
+    def _kill(_pid: int, _sig: int) -> None:
         raise PermissionError
 
     mocker.patch.object(logs_mod.os, "kill", _kill)
     assert pid_alive(123) is True
 
 
-def test_running_server_returns_state_when_alive(
-    tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService
-):
+def test_running_server_returns_state_when_alive(mocker: MockerFixture, logs_svc: LogsService):
     write_state(pid=4242, port=9001)
     mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=True)
     state = logs_svc.running_server()
     assert state == {"pid": 4242, "port": 9001}
 
 
-def test_running_server_removes_stale_file_when_dead(
-    tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService
-):
+def test_running_server_removes_stale_file_when_dead(mocker: MockerFixture, logs_svc: LogsService):
     write_state(pid=4242, port=9001)
     mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=False)
     assert logs_svc.running_server() is None
     assert not state_file().exists()
 
 
-def test_running_server_none_when_no_file(tmp_path: Path, logs_svc: LogsService):
+def test_running_server_none_when_no_file(logs_svc: LogsService):
     assert logs_svc.running_server() is None
 
 
 # --- background server: stop_daemon ----------------------------------------------
 
 
-def test_stop_when_not_running(tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService):
+def test_stop_when_not_running(mocker: MockerFixture, logs_svc: LogsService):
     mocker.patch.object(logs_svc, "running_server", return_value=None)
     assert logs_svc.stop_daemon() == 0
     logs_svc._display.info.assert_any_call("no viewer is running")  # type: ignore[union-attr]
 
 
-def test_stop_daemon_sends_sigterm_and_removes_state(
-    tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService
-):
+def test_stop_daemon_sends_sigterm_and_removes_state(mocker: MockerFixture, logs_svc: LogsService):
     write_state(pid=4242, port=9001)
     mocker.patch.object(logs_svc, "running_server", return_value={"pid": 4242, "port": 9001})
     signals: list[tuple[int, int]] = []
@@ -130,9 +128,7 @@ def test_stop_daemon_sends_sigterm_and_removes_state(
     logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # type: ignore[union-attr]
 
 
-def test_stop_daemon_sends_sigkill_after_timeout(
-    tmp_path: Path, mocker: MockerFixture, logs_svc: LogsService
-):
+def test_stop_daemon_sends_sigkill_after_timeout(mocker: MockerFixture, logs_svc: LogsService):
     """After SIGTERM timeout, SIGKILL is sent and state is cleaned up."""
     write_state(pid=4242, port=9001)
     mocker.patch.object(logs_svc, "running_server", return_value={"pid": 4242, "port": 9001})

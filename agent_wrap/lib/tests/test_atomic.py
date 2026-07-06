@@ -4,14 +4,18 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from threading import Barrier, Thread
+from typing import TYPE_CHECKING
 
 import pytest
-from pytest_mock import MockerFixture
 
 from agent_wrap.lib import atomic
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pytest_mock import MockerFixture
 
 # --- atomic_write_text ---
 
@@ -99,7 +103,7 @@ def test_concurrent_writers_do_not_crash(tmp_path: Path) -> None:
 def test_write_text_cleans_up_tmp_on_replace_failure(tmp_path: Path, mocker: MockerFixture) -> None:
     target = tmp_path / "out.txt"
 
-    def boom(self: Path, _target: Path) -> None:
+    def boom(_self: Path, _target: Path) -> None:
         raise OSError("replace failed")  # noqa: EM101, TRY003 -- test stub
 
     mocker.patch.object(atomic.Path, "replace", boom)
