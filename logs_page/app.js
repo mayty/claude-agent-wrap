@@ -13,6 +13,48 @@ async function getJSON(url) {
   return r.json();
 }
 
+// Read an NDJSON response stream, returning {meta, records}.
+// When *onRecord* is provided it is called for each record as it arrives
+// (before the record is appended to the returned array), enabling
+// progressive rendering.  When *onMeta* is provided it is called as soon
+// as the session_meta line is parsed, so the caller can render the header
+// before any records arrive.
+async function readNDJSONStream(response, onRecord, onMeta) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let meta = null;
+  const records = [];
+
+  function consumeLine(raw) {
+    let item;
+    try { item = JSON.parse(raw); } catch (e) { return; }
+    if (item.__type__ === "session_meta") {
+      meta = item;
+      if (onMeta) onMeta(item);
+    } else {
+      records.push(item);
+      if (onRecord) onRecord(item);
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      if (buffer.trim()) consumeLine(buffer.trim());
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (line.trim()) consumeLine(line.trim());
+    }
+  }
+  return { meta, records };
+}
+
 // Parse raw strings.jsonl content into a {hash: original} lookup dict.
 // Each line is a JSON object {"hash": "...", "original": "..."}.
 // Malformed lines are silently skipped.
@@ -236,19 +278,53 @@ async function selectSession(s, item) {
   // session can detect it has been superseded and discard its late response.
   const gen = ++state.gen;
   state.session = s.session_id;
+  state.reqs = [];
+  state.groups = null;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   chatHead().innerHTML = "";
   chatBody().innerHTML = '<div class="hint">Loading…</div>';
   try {
+    // Step 1: fetch strings first (unchanged)
     const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
-    const data = await getJSON(`/api/session?${sessionQuery(s)}`);
-    if (gen !== state.gen) return; // another session was selected mid-fetch
     const strings = parseStrings(stringsText);
-    const reqs = data.reqs.map(r => resolveRecord(r, strings));
-    const session_meta = data.session_meta || s;
-    renderChat(reqs, session_meta);
-    // Seed the fingerprint from the state at fetch time, then poll for changes.
+    if (gen !== state.gen) return;
+
+    // Step 2: stream session as NDJSON, rendering turns as they arrive
+    const response = await fetch(`/api/session?${sessionQuery(s)}`);
+    if (!response.ok) throw new Error(await response.text());
+
+    const body = chatBody();
+    body.innerHTML = "";
+    let displayIdx = 0;
+    const reqs = [];
+
+    const { meta } = await readNDJSONStream(response, (record) => {
+      if (gen !== state.gen) return;
+      const resolved = resolveRecord(record, strings);
+      reqs.push(resolved);
+      state.reqs = reqs;
+      body.appendChild(renderTurn(resolved, ++displayIdx));
+      renderChatHead();
+    }, (metaItem) => {
+      if (gen !== state.gen) return;
+      state.session_meta = metaItem;
+      renderChatHead();
+    });
+
+    if (gen !== state.gen) return;
+
+    // Step 3: finalize — tabs replace spinner, body stays intact
+    const session_meta = meta || s;
+    state.reqs = reqs;
+    state.session_meta = session_meta;
+    state.groups = groupBySubagent(reqs);
+    insertMarkers(state.groups);
+    applyTabFilter("main");
+    renderChatHead();
+    ensureScrollButton();
+
+    // Step 4: seed fingerprint and start polling
     try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
     catch (e) { state.fp = null; }
     if (gen !== state.gen) return;
@@ -305,22 +381,47 @@ async function tick(s) {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
     if (fp === state.fp) return;
     const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
-    const data = await getJSON(`/api/session?${sessionQuery(s)}`);
+    const response = await fetch(`/api/session?${sessionQuery(s)}`);
+    if (!response.ok) return;
+    const { meta, records } = await readNDJSONStream(response);
     if (state.session !== s.session_id) return; // user moved on during the fetch
     const strings = parseStrings(stringsText);
-    state.reqs = data.reqs.map(r => resolveRecord(r, strings));
-    state.groups = groupBySubagent(state.reqs);
-    updateSessionListItem(data.session_meta);
-    state.fp = fp;
+    const resolved = records.map(r => resolveRecord(r, strings));
+    const prevLen = state.reqs.length;
+
+    // Truncation fallback: if records were removed, do a full rebuild.
+    if (resolved.length < prevLen) {
+      state.reqs = resolved;
+      state.groups = groupBySubagent(state.reqs);
+      state.session_meta = meta || state.session_meta;
+      state.fp = fp;
+      updateSessionListItem(meta);
+      renderStream();
+      return;
+    }
+
+    // Append only new records to the body.
     const body = chatBody();
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    const prevTop = body.scrollTop;
-    renderStream();
+    for (let i = prevLen; i < resolved.length; i++) {
+      body.appendChild(renderTurn(resolved[i], i + 1));
+    }
+
+    // Update state with fresh data.
+    state.reqs = resolved;
+    state.groups = groupBySubagent(state.reqs);
+    state.session_meta = meta || state.session_meta;
+    updateSessionListItem(meta);
+    state.fp = fp;
+
+    // Rebuild markers and re-apply filter for the current tab.
+    removeMarkers();
+    insertMarkers(state.groups);
+    applyTabFilter(state.tab);
+    renderChatHead();
+
     if (atBottom) {
-      // Glide down to the new content rather than snapping to it.
-      body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
-    } else {
-      body.scrollTop = prevTop; // hold the user's place instantly (no visible shift)
+      scrollToBottom();
     }
   } catch (e) { /* transient; retry next tick */ }
 }
@@ -634,6 +735,12 @@ function applySectionHeights(bubble) {
 // (or error) as a left-aligned bubble below it. Clicking opens the full detail.
 function renderTurn(r, displayIdx) {
   const turn = el("div", "turn");
+  if (r.agent_id) {
+    turn.dataset.role = "sub";
+    turn.dataset.sub = r.agent_id;
+  } else {
+    turn.dataset.role = "main";
+  }
   turn.appendChild(captionEl(r, displayIdx));
 
   const userBubble = el("div", "bubble user");
@@ -795,7 +902,7 @@ function renderTabs(groups) {
     const t = el("div", "tab" + (state.tab === key ? " active" : ""));
     t.appendChild(el("span", null, label));
     if (n != null) t.appendChild(el("span", "n", `(${n})`));
-    t.onclick = () => { state.tab = key; renderStream(); };
+    t.onclick = () => { applyTabFilter(key); renderChatHead(); };
     return t;
   };
   bar.appendChild(tab("main", "Main agent", groups.main.length));
@@ -807,61 +914,123 @@ function renderTabs(groups) {
 }
 
 // Render the main stream with clickable "started"/"finished" markers spliced
-// into chronological position for each subagent.
-function renderMainStream(chat, groups) {
-  const markers = new Map(); // original record index -> [marker elements]
-  const pushMarker = (idx, m) => {
-    if (!markers.has(idx)) markers.set(idx, []);
-    markers.get(idx).push(m);
-  };
-  const marker = (g, kind, ts) => {
-    const done = kind !== "started";
-    const verb = kind === "started" ? "started"
-               : (g.lastTerminal ? "finished" : "last seen");
-    const m = el("div", "marker" + (done ? " done" : ""));
-    m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
-    m.appendChild(el("span", "when", fmtTs(ts)));
-    m.onclick = () => { state.tab = "sub:" + g.id; renderStream(); };
-    return m;
-  };
-  for (const g of groups.subs) {
-    pushMarker(g.firstIdx, marker(g, "started", recStart(state.reqs[g.firstIdx])));
-    pushMarker(g.lastIdx, marker(g, "finished", recStart(state.reqs[g.lastIdx])));
-  }
-  // Walk the global record order so markers land relative to main records.
-  let shown = 0;
-  state.reqs.forEach((r, i) => {
-    const ms = markers.get(i);
-    if (ms) for (const m of ms) chat.appendChild(m);
-    if (!r.agent_id) chat.appendChild(renderTurn(r, ++shown));
-  });
+// --- Marker management -----------------------------------------------------------
+
+function createMarker(g, kind, ts) {
+  const done = kind !== "started";
+  const verb = kind === "started" ? "started"
+             : (g.lastTerminal ? "finished" : "last seen");
+  const m = el("div", "marker" + (done ? " done" : ""));
+  m.dataset.role = "marker";
+  m.dataset.sub = g.id;
+  m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
+  m.appendChild(el("span", "when", fmtTs(ts)));
+  m.onclick = () => { applyTabFilter("sub:" + g.id); renderChatHead(); };
+  return m;
 }
 
-function renderStream() {
-  const head = document.querySelector("#chat .chat-head");
+function removeMarkers() {
+  chatBody().querySelectorAll(':scope > [data-role="marker"]').forEach(m => m.remove());
+}
+
+function insertMarkers(groups) {
+  if (!groups || !groups.subs.length) return;
   const body = chatBody();
+  const turns = body.querySelectorAll(':scope > .turn');
+  const placements = [];
+  for (const g of groups.subs) {
+    placements.push({ idx: g.firstIdx, marker: createMarker(g, "started", recStart(state.reqs[g.firstIdx])) });
+    placements.push({ idx: g.lastIdx, marker: createMarker(g, "finished", recStart(state.reqs[g.lastIdx])) });
+  }
+  // Insert descending so earlier insertBefore calls don't shift later reference positions.
+  placements.sort((a, b) => b.idx - a.idx);
+  for (const p of placements) {
+    const ref = turns[p.idx];
+    if (ref && ref.parentNode === body) body.insertBefore(p.marker, ref);
+    else body.appendChild(p.marker);
+  }
+}
+
+// --- Tab visibility filter -------------------------------------------------------
+
+function applyTabFilter(tab) {
+  // Capture whether user was at the bottom before changing the view.
+  const body = chatBody();
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+
+  // Remove previous sub-tab visibility classes (only matches elements that
+  // have it — typically few, from the previous sub-tab view).
+  body.querySelectorAll('.tab-visible').forEach(el => el.classList.remove('tab-visible'));
+
+  // Set data-tab on #chat — CSS handles everything for "all" and "main"
+  document.getElementById("chat").dataset.tab = tab;
+
+  // For sub tabs (few elements), mark matching elements as visible
+  if (tab.startsWith("sub:")) {
+    const id = tab.slice(4);
+    body.querySelectorAll(`:scope > [data-role="sub"][data-sub="${id}"]`).forEach(el => {
+      el.classList.add('tab-visible');
+    });
+  }
+
+  state.tab = tab;
+  ensureScrollButton();
+
+  // If user was at the bottom of the previous view, scroll to the new bottom.
+  if (atBottom) {
+    scrollToBottom();
+  }
+}
+
+function renderChatHead() {
+  const head = chatHead();
   head.innerHTML = "";
-  body.innerHTML = "";
   const s = state.session_meta;
-  const hash = s.session_id.slice(0, 8);
-  const stats = sessionStats(state.reqs);
+  if (!s) return;
+
+  const hash = (s.session_id || "").slice(0, 8);
 
   // Line 1: title — prefer the parsed title, fall back to alias or hash
   const title = s.title || s.alias || hash;
   head.appendChild(el("h2", "chat-title", title));
 
-  // Line 2: alias · hash · reqs · cache · cost
+  // Line 2: alias · hash · reqs · cache · cost (partial during streaming)
   {
     const parts = [];
     if (s.alias) parts.push(s.alias);
     parts.push(hash);
-    parts.push(state.reqs.length + " req");
-    if (stats.cacheRate != null) parts.push(stats.cacheRate + "% cached");
-    parts.push("Cost: " + fmtCost(stats.cost));
+    if (state.reqs.length) {
+      const stats = sessionStats(state.reqs);
+      parts.push(state.reqs.length + " req");
+      if (stats.cacheRate != null) parts.push(stats.cacheRate + "% cached");
+      parts.push("Cost: " + fmtCost(stats.cost));
+    } else if (s.count != null) {
+      parts.push(s.count + " req");
+    }
+    if (s.providers && s.providers.length) {
+      parts.push(s.providers.join(", "));
+    }
     const statsEl = el("div", "chat-stats");
     statsEl.textContent = parts.join(" · ");
     head.appendChild(statsEl);
   }
+
+  // Line 3: tabs (only once groups are known; spinner while streaming)
+  if (state.groups && state.reqs.length) {
+    head.appendChild(renderTabs(state.groups));
+  } else if (state.reqs.length > 0 || (s.count && s.count > 0)) {
+    const bar = el("div", "tabs");
+    const spinner = el("div", "tab loading");
+    spinner.textContent = "Loading…";
+    bar.appendChild(spinner);
+    head.appendChild(bar);
+  }
+}
+
+function renderStream() {
+  const body = chatBody();
+  body.innerHTML = "";
+  renderChatHead();
 
   if (!state.reqs.length) {
     body.appendChild(el("div", "hint", "No requests in this session."));
@@ -869,20 +1038,9 @@ function renderStream() {
     return;
   }
 
-  // Line 3: agents bar
-  const groups = state.groups;
-  head.appendChild(renderTabs(groups));
-
-  if (state.tab === "all") {
-    state.reqs.forEach((r, i) => body.appendChild(renderTurn(r, i + 1)));
-  } else if (state.tab.startsWith("sub:")) {
-    const id = state.tab.slice(4);
-    const g = groups.subs.find(x => x.id === id);
-    if (g) g.items.forEach((it, i) => body.appendChild(renderTurn(it.r, i + 1)));
-    else renderMainStream(body, groups); // stale tab → fall back to main
-  } else {
-    renderMainStream(body, groups);
-  }
+  state.reqs.forEach((r, i) => body.appendChild(renderTurn(r, i + 1)));
+  if (state.groups) insertMarkers(state.groups);
+  applyTabFilter(state.tab);
   ensureScrollButton();
 }
 
@@ -903,7 +1061,8 @@ document.addEventListener("keydown", (e) => {
   const target = back ? back.querySelector(".modal-body") : chatBody();
   if (!target) return;
   e.preventDefault();
-  target.scrollTo({ top: e.key === "Home" ? 0 : target.scrollHeight, behavior: "smooth" });
+  if (e.key === "Home") target.scrollTo({ top: 0, behavior: "smooth" });
+  else scrollToBottom();
 });
 
 // ---------------------------------------------------------------------------
@@ -919,6 +1078,10 @@ function updateScrollButtons() {
   const toBot = body.querySelector(".scroll-to-bottom-btn");
   if (toTop) toTop.classList.toggle("visible", !atTop);
   if (toBot) toBot.classList.toggle("visible", !atBottom);
+}
+
+function scrollToBottom() {
+  chatBody().scrollTo({ top: chatBody().scrollHeight, behavior: "smooth" });
 }
 
 function ensureScrollButton() {
@@ -937,9 +1100,7 @@ function ensureScrollButton() {
   const wrapBot = el("div", "scroll-btn-wrap-bot");
   const btnBot = el("button", "scroll-btn scroll-to-bottom-btn");
   btnBot.title = "Scroll to bottom";
-  btnBot.onclick = () => {
-    body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
-  };
+  btnBot.onclick = () => { scrollToBottom(); };
   wrapBot.appendChild(btnBot);
   body.appendChild(wrapBot);
 

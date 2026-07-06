@@ -35,7 +35,9 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
 .chat-head .chat-title { font-size: 15px; font-weight: 600; margin: 0 0 2px; padding: 0; }
 .chat-head .chat-stats { color: var(--muted); font-size: 11px; letter-spacing: 0.02em;
                           margin-bottom: 8px; }
-.chat-body { flex: 1; overflow-y: auto; padding: 0 22px 16px; position: relative; }
+.chat-body { flex: 1; overflow-y: auto; padding: 0 22px 16px; position: relative;
+           transition: opacity 0.3s; }
+
 .item { padding: 9px 14px; cursor: pointer; border-bottom: 1px solid var(--border);
         font-size: 13px; }
 .item:hover { background: rgba(137,180,250,.08); }
@@ -134,6 +136,12 @@ pre::-webkit-scrollbar-corner { background: transparent; }
               color: var(--accent); font-weight: 600; }
 .tab .n { color: var(--muted); margin-left: 5px; }
 .tab.active .n { color: var(--accent); }
+.tab.loading { cursor: default; color: var(--muted); font-style: italic; }
+
+/* Tab visibility driven by data-tab on #chat */
+#chat[data-tab="all"] .chat-body > [data-role="marker"] { display: none; }
+#chat[data-tab="main"] .chat-body > [data-role="sub"] { display: none; }
+#chat[data-tab^="sub:"] .chat-body > [data-role]:not(.tab-visible) { display: none; }
 .marker { cursor: pointer; color: var(--accent); font-size: 12px; font-style: italic;
           border: 1px dashed var(--border); border-radius: 6px; padding: 6px 12px;
           margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }

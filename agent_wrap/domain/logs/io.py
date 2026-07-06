@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import heapq
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,8 @@ from agent_wrap.domain.logs.normalize import (
 from agent_wrap.lib.atomic import atomic_write_json
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.providers.litellm_common.models import LogRecord, MetaData
     from agent_wrap.domain.stats.service import StatsService
@@ -691,3 +694,129 @@ def read_session(
 
     all_records.sort(key=lambda r: (r["timing"] or {}).get("start") or 0)
     return {"reqs": all_records, "session_meta": combined_meta}
+
+
+def _iter_normalized_records(
+    messages_file: Path,
+    provider: str,
+    pricing: PricingService,
+) -> Generator[tuple[float, NormalizedRecord], None, None]:
+    """
+    Yield ``(start_ts, NormalizedRecord)`` tuples from *messages_file* as each line is read.
+
+    Does not buffer the whole file — records flow out one at a time so an
+    N-way merge can start producing output immediately.
+    """
+    if not messages_file.is_file():
+        return
+    try:
+        with messages_file.open("r", encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                try:
+                    rec = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                timing = rec.get("timing") or {}
+                start = timing.get("start") or 0
+                raw_response = rec.get("response")
+                normalized = normalize_record_unresolved(rec)  # type: ignore[arg-type]
+                enriched = enrich_with_costs(
+                    normalized, raw_response, provider, pricing, rec.get("request")
+                )
+                normalized.update(enriched)  # type: ignore[arg-type]
+                yield (start, normalized)  # type: ignore[arg-type]
+    except OSError:
+        return
+
+
+def _stream_session_meta(
+    project: Path | list[Path],
+    session_id: str,
+) -> CombinedSessionMeta | None:
+    """Build ``CombinedSessionMeta`` from ``meta.json`` caches (no file scan)."""
+    combined_meta: CombinedSessionMeta | None = None
+    for session_dir, provider_name in _iter_provider_session_dirs(project, session_id):
+        cached = read_meta_json(session_dir)
+        if cached is None:
+            continue
+        entry: ProviderSessionMeta = {
+            "provider": provider_name,
+            "session_id": session_id,
+            "alias": cached.get("alias"),
+            "title": cached.get("title"),
+            "count": cached.get("count", 0),
+            "first_ts": cast("float | None", cached.get("first_ts")),
+            "last_ts": cached.get("last_ts"),
+            "models": cached.get("models") or [],
+        }
+        if combined_meta is None:
+            combined_meta = {
+                "session_id": entry["session_id"],
+                "alias": entry["alias"],
+                "title": entry["title"],
+                "count": entry["count"],
+                "first_ts": entry["first_ts"],
+                "last_ts": entry["last_ts"],
+                "models": entry["models"],
+                "providers": [entry["provider"]],
+            }
+        else:
+            _merge_session_meta(combined_meta, entry)
+    return combined_meta
+
+
+def _iter_provider_session_dirs(
+    project: Path | list[Path],
+    session_id: str,
+) -> Generator[tuple[Path, str], None, None]:
+    """Yield ``(session_dir, provider_name)`` for every provider that has *session_id*."""
+    for logs_dir in _aslogs_dirs(project):
+        if not logs_dir.is_dir():
+            continue
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
+                continue
+            session_dir = provider_dir / session_id
+            if session_dir.is_dir():
+                yield session_dir, provider_dir.name
+
+
+def _stream_session_iterators(
+    project: Path | list[Path],
+    session_id: str,
+    pricing: PricingService,
+) -> list[Generator[tuple[float, NormalizedRecord], None, None]]:
+    """Build one lazy iterator per provider ``messages.jsonl`` for N-way merge."""
+    iterators: list[Generator[tuple[float, NormalizedRecord], None, None]] = []
+    for session_dir, provider_name in _iter_provider_session_dirs(project, session_id):
+        messages_file = session_dir / "messages.jsonl"
+        if messages_file.is_file():
+            iterators.append(_iter_normalized_records(messages_file, provider_name, pricing))
+    return iterators
+
+
+def stream_session(
+    project: Path | list[Path],
+    session_id: str,
+    pricing: PricingService,
+) -> Generator[Any, None, None]:
+    """
+    Stream a session as NDJSON lines via N-way merge across provider files.
+
+    The first line is a ``{"__type__": "session_meta", ...}`` header built
+    from the ``meta.json`` cache (O(1) per provider).  Records follow,
+    N-way merged via :func:`heapq.merge` so output begins after reading
+    just one line from each file.
+    """
+    combined_meta = _stream_session_meta(project, session_id)
+    meta_line: dict[str, Any] = {"__type__": "session_meta"}
+    if combined_meta is not None:
+        meta_line.update(combined_meta)
+    yield meta_line
+
+    iterators = _stream_session_iterators(project, session_id, pricing)
+    for _ts, record in heapq.merge(*iterators, key=lambda x: x[0]):
+        yield record

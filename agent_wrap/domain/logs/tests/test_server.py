@@ -71,6 +71,22 @@ def _get_text(port: int, path: str) -> tuple[int, str]:
         return e.code, e.read().decode("utf-8")
 
 
+def _get_ndjson(port: int, path: str) -> tuple[int, list[dict[str, Any]]]:
+    """GET *path* and return (status_code, list of parsed NDJSON lines)."""
+    req = urllib.request.Request(_url(port, path))  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8")
+            lines: list[dict[str, Any]] = []
+            for raw_line in body.split("\n"):
+                stripped = raw_line.strip()
+                if stripped:
+                    lines.append(json.loads(stripped))
+            return resp.status, lines
+    except urllib.error.HTTPError as e:
+        return e.code, [json.loads(e.read())]
+
+
 def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
     """Start the logs HTTP server on *port* in a daemon thread and return the thread."""
     pricing = Mock(spec=PricingService)
@@ -103,6 +119,13 @@ def _write_session(project: Path, provider: str, session_id: str) -> Path:
     }
     with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
+    # Write meta.json so stream_session can pick it up from cache.
+    meta: dict[str, Any] = {
+        "count": 1,
+        "last_ts": 1000001.0,
+        "models": ["test"],
+    }
+    (sdir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return sdir
 
 
@@ -166,12 +189,15 @@ class TestAPIEndpoints:
 
     def test_session_returns_details(self):
         sid = "abc12345-6789-abcd-ef01-234567890abc"
-        status, body = _get_json(self.port, f"/api/session?project=0&session={sid}")
+        status, lines = _get_ndjson(self.port, f"/api/session?project=0&session={sid}")
         assert status == 200
-        assert isinstance(body, dict)
-        assert "reqs" in body
-        assert "session_meta" in body
-        assert body["session_meta"]["session_id"] == sid
+        assert len(lines) >= 2
+        # First line is the meta header
+        assert lines[0]["__type__"] == "session_meta"
+        assert lines[0]["session_id"] == sid
+        # Subsequent lines are records (no __type__)
+        for line in lines[1:]:
+            assert "__type__" not in line
 
     def test_session_missing_session_returns_400(self):
         status, body = _get_json(self.port, "/api/session?project=0")

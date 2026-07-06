@@ -17,13 +17,15 @@ from agent_wrap.domain.logs.io import (
     list_projects,
     list_sessions,
     projects_fingerprint,
-    read_session,
     read_strings,
     session_fingerprint,
     sessions_fingerprint,
+    stream_session,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.service import StatsService
 
@@ -136,7 +138,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not session_id:
             self._send_json({"error": "missing session param"}, 400)
             return
-        self._send_json(read_session(logs_dirs, session_id, pricing=self.pricing))
+        self._stream_ndjson(stream_session(logs_dirs, session_id, pricing=self.pricing))
 
     def _handle_session_stat(self, qs: dict[str, list[str]]) -> None:
         logs_dirs = self._resolve_project(qs)
@@ -180,6 +182,22 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _stream_ndjson(self, items: Iterable[Any], status: int = 200) -> None:
+        """
+        Send an NDJSON response stream from an iterable of dicts.
+
+        Each item is serialized as one JSON line and flushed immediately so
+        the client can process lines as they arrive.
+        """
+        self.send_response(status)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        for item in items:
+            line = json.dumps(item, default=str).encode("utf-8") + b"\n"
+            self.wfile.write(line)
+            self.wfile.flush()
 
     def _serve_static(self, path: str) -> None:
         sf = resolve_static(path)
