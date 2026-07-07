@@ -514,6 +514,18 @@ function renderContent(content, parent) {
       box.appendChild(el("div", "block-label", "thinking"));
       box.appendChild(Object.assign(el("pre"), { textContent: asText(block.thinking) }));
       parent.appendChild(box);
+    } else if (type === "image") {
+      const src = block.source;
+      if (src && src.data) {
+        const box = el("div", "block-image");
+        const img = el("img", "content-image");
+        img.src = "data:" + (src.media_type || "image/png") + ";base64," + src.data;
+        img.alt = "Image";
+        img.title = "Click to view full size";
+        img.onclick = function(e) { e.stopPropagation(); showImageOverlay(img.src); };
+        box.appendChild(img);
+        parent.appendChild(box);
+      }
     } else {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", type));
@@ -830,6 +842,31 @@ function closeModal() {
 
 function onModalKey(e) {
   if (e.key === "Escape") closeModal();
+}
+
+function closeImageOverlay() {
+  const back = $("image-overlay");
+  if (back) back.remove();
+  document.removeEventListener("keydown", onImageOverlayKey);
+}
+
+function onImageOverlayKey(e) {
+  if (e.key === "Escape") closeImageOverlay();
+}
+
+function showImageOverlay(src) {
+  closeImageOverlay();
+  const back = el("div", "modal-backdrop");
+  back.id = "image-overlay";
+  back.onclick = function(e) { if (e.target === back) closeImageOverlay(); };
+
+  const img = el("img", "image-overlay-img");
+  img.src = src;
+  img.style.cssText = "max-width:90vw;max-height:90vh;object-fit:contain;border-radius:6px;";
+  back.appendChild(img);
+
+  document.body.appendChild(back);
+  document.addEventListener("keydown", onImageOverlayKey);
 }
 
 function openModal(r, displayIdx) {
