@@ -468,6 +468,18 @@ function asText(v) {
   return JSON.stringify(v, null, 2);
 }
 
+// Extract plain text from content (string or [{type:"text", text:"..."}, ...] array).
+function extractText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(function(b) { return b && b.type === "text"; })
+      .map(function(b) { return b.text || ""; })
+      .join("\n");
+  }
+  return "";
+}
+
 function renderContent(content, parent) {
   if (typeof content === "string") {
     parent.appendChild(Object.assign(el("pre"), { textContent: content }));
@@ -730,6 +742,9 @@ function captionEl(r, displayIdx) {
   if (r.status && r.status !== "success") {
     cap.appendChild(el("span", "fail", `· ${r.status}`));
   }
+  if (isClassifierRequest(r)) {
+    cap.appendChild(el("span", "auto-badge", "auto"));
+  }
   cap.appendChild(el("span", "when", fmtTs(recStart(r))));
   return cap;
 }
@@ -757,9 +772,65 @@ function applySectionHeights(bubble) {
   pres.forEach((p) => { p.style.maxHeight = `${Math.round(per)}px`; });
 }
 
+// Compact rendering for auto classifier requests — shows the evaluated
+// command and result instead of the usual user/assistant chat bubbles.
+// Clicking opens the full detail modal.
+function renderClassifierTurn(r, displayIdx) {
+  const turn = el("div", "turn");
+  turn.dataset.role = "main";
+
+  // Caption line with auto badge (captionEl adds the badge for classifiers)
+  turn.appendChild(captionEl(r, displayIdx));
+
+  const block = el("div", "classifier-block");
+
+  // Evaluated command
+  const cmd = extractEvaluatedCommand(r);
+  if (cmd) {
+    // Extract tool name from the first word (e.g. "Bash", "Read", "Write")
+    const firstSpace = cmd.indexOf(" ");
+    const tool = firstSpace !== -1 ? cmd.slice(0, firstSpace).trim() : "";
+    const body = firstSpace !== -1 ? cmd.slice(firstSpace + 1).trim() : cmd;
+
+    const cmdBox = el("div", "block-tool_use");
+    cmdBox.appendChild(el("div", "block-label", "eval · " + tool));
+    const pre = Object.assign(el("pre"), { textContent: body });
+    cmdBox.appendChild(pre);
+    addCopyButton(cmdBox, pre);
+    block.appendChild(cmdBox);
+  }
+
+  // Result
+  const parsed = parseClassifierResult(r);
+  const resultEl = el("div", "classifier-result");
+  if (parsed.unparseable) {
+    resultEl.textContent = "? Unparseable";
+    resultEl.className = "classifier-result blocked";
+  } else if (parsed.allowed) {
+    resultEl.textContent = "✓ Allowed";
+    resultEl.className = "classifier-result allowed";
+  } else {
+    resultEl.textContent = "✗ Blocked";
+    resultEl.className = "classifier-result blocked";
+  }
+  block.appendChild(resultEl);
+
+  if (parsed.reason) {
+    block.appendChild(el("div", "classifier-reason", parsed.reason));
+  }
+
+  turn.appendChild(block);
+  turn.onclick = () => openModal(r, displayIdx);
+  return turn;
+}
+
 // One turn: the latest user message as a right-aligned bubble and the response
 // (or error) as a left-aligned bubble below it. Clicking opens the full detail.
 function renderTurn(r, displayIdx) {
+  if (isClassifierRequest(r)) {
+    return renderClassifierTurn(r, displayIdx);
+  }
+
   const turn = el("div", "turn");
   if (r.agent_id) {
     turn.dataset.role = "sub";
@@ -926,6 +997,90 @@ function looksTerminal(r) {
   const calls = resp.tool_calls;
   if (Array.isArray(calls) && calls.length) return false;
   return !!resp.content;
+}
+
+// Does a record look like an auto classifier request?
+function isClassifierRequest(r) {
+  // Check 1: system prompt defines block output rules
+  var sysText = extractText(r.system);
+  if (!sysText || sysText.indexOf("<block>no</block>") === -1 || sysText.indexOf("<block>yes</block>") === -1) {
+    return false;
+  }
+  // Check 2: user messages contain a <transcript>...</transcript> block group
+  var msgs = r.messages || [];
+  for (var i = 0; i < msgs.length; i++) {
+    var mt = extractText(msgs[i].content);
+    if (mt.indexOf("<transcript>") !== -1 && mt.indexOf("</transcript>") !== -1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Extract the evaluated command from a classifier request's transcript.
+// Walks the content blocks of the transcript message to find the </transcript>
+// block, then returns the previous block's text.
+function extractEvaluatedCommand(r) {
+  var msgs = r.messages || [];
+  for (var i = 0; i < msgs.length; i++) {
+    var content = msgs[i].content;
+    if (!Array.isArray(content)) continue;
+    for (var j = 0; j < content.length; j++) {
+      var block = content[j];
+      if (block && block.type === "text" && typeof block.text === "string" && block.text.indexOf("</transcript>") !== -1) {
+        if (j > 0) {
+          var prev = content[j - 1];
+          if (prev && prev.type === "text" && typeof prev.text === "string") {
+            return prev.text.trim();
+          }
+        }
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+// Parse the classifier result from a record's response, mirroring Claude
+// Code's FIo / oJa functions.  Combines thinking blocks and content text
+// because the <block> tag can appear in either (DeepSeek puts it inside
+// thinking, Anthropic puts it in content).
+function parseClassifierResult(r) {
+  var resp = r.response || {};
+  var parts = [];
+  var thoughts = resp.thinking_blocks;
+  if (Array.isArray(thoughts)) {
+    for (var i = 0; i < thoughts.length; i++) {
+      if (thoughts[i] && thoughts[i].thinking) {
+        parts.push(thoughts[i].thinking);
+      }
+    }
+  }
+  var contentText = extractText(resp.content);
+  if (contentText) parts.push(contentText);
+  var fullText = parts.join("\n");
+
+  // Mirror FIo: match <block>yes or <block>no
+  var blockRe = /<block>(yes|no)\b(<\/block>)?/gi;
+  var matches = [];
+  var m;
+  while ((m = blockRe.exec(fullText)) !== null) {
+    matches.push(m);
+  }
+  if (matches.length === 0) {
+    return { allowed: false, reason: null, unparseable: true };
+  }
+  var isYes = matches[0][1].toLowerCase() === "yes";
+  // Mirror oJa: extract reason (only for blocked)
+  var reason = null;
+  if (isYes) {
+    var reasonRe = /<reason>([\s\S]*?)<\/reason>/g;
+    var rm = reasonRe.exec(fullText);
+    if (rm) {
+      reason = rm[1].trim();
+    }
+  }
+  return { allowed: !isYes, reason: reason, unparseable: false };
 }
 
 // Partition the time-ordered records into the main stream and per-agent-id

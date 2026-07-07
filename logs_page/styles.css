@@ -4,6 +4,7 @@
   --muted: #6c7086; --border: #313244; --accent: #89b4fa;
   --user: #313244; --assistant: #1e3a3a; --system: #3a2e1e;
   --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8; --thinking: #2a3a1e;
+  --auto-badge: #cba6f7; --allowed: #a6e3a1; --blocked: #f38ba8;
 }
 * { box-sizing: border-box; }
 /* Slim, translucent scrollbars everywhere (chat column, session list, modal),
@@ -207,3 +208,19 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .scroll-btn.visible { opacity: .85; }
 .scroll-btn:hover { background: var(--border); opacity: 1; }
 .scroll-btn:hover::after { background: var(--accent); }
+
+/* --- Auto classifier requests --- */
+
+/* Badge in the turn caption line */
+.caption .auto-badge { color: var(--auto-badge); font-size: 10px; font-weight: 600;
+                        text-transform: uppercase; margin-left: 2px; }
+
+/* Compact classifier block replacing the usual chat bubbles */
+.classifier-block { border: 1px solid var(--border); border-radius: 8px;
+                    padding: 10px 14px; margin: 6px 0 12px;
+                    background: var(--panel); }
+.classifier-block .classifier-result { font-size: 13px; font-weight: 600; }
+.classifier-block .classifier-result.allowed { color: var(--allowed); }
+.classifier-block .classifier-result.blocked { color: var(--blocked); }
+.classifier-block .classifier-reason { color: var(--muted); font-size: 12px;
+                                       margin-top: 4px; }
