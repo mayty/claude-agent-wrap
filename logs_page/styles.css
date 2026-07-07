@@ -3,7 +3,7 @@
   --bg: #1e1e2e; --panel: #181825; --panel2: #11111b; --fg: #cdd6f4;
   --muted: #6c7086; --border: #313244; --accent: #89b4fa;
   --user: #313244; --assistant: #1e3a3a; --system: #3a2e1e;
-  --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8;
+  --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8; --thinking: #2a3a1e;
 }
 * { box-sizing: border-box; }
 /* Slim, translucent scrollbars everywhere (chat column, session list, modal),
@@ -104,6 +104,8 @@ body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
                   margin: 6px 0; }
 .block-tool_result { background: var(--result); border-radius: 5px; padding: 6px 9px;
                      margin: 6px 0; }
+.block-thinking { background: var(--thinking); border-radius: 5px; padding: 6px 9px;
+                  margin: 6px 0; }
 .block-label { font-size: 10px; color: var(--accent); text-transform: uppercase;
                letter-spacing: .05em; margin-bottom: 3px; }
 pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.45

@@ -509,6 +509,11 @@ function renderContent(content, parent) {
       box.appendChild(el("div", "block-label", "tool_result"));
       box.appendChild(Object.assign(el("pre"), { textContent: asText(block.content) }));
       parent.appendChild(box);
+    } else if (type === "thinking") {
+      const box = el("div", "block-thinking");
+      box.appendChild(el("div", "block-label", "thinking"));
+      box.appendChild(Object.assign(el("pre"), { textContent: asText(block.thinking) }));
+      parent.appendChild(box);
     } else {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", type));
@@ -557,14 +562,14 @@ function addCopyButton(host, pre) {
 // row) or a bare single-content `<pre>` (wrapped on the fly). Idempotent.
 function decorateSections(container) {
   container
-    .querySelectorAll(".block-text, .block-tool_use, .block-tool_result")
+    .querySelectorAll(".block-text, .block-tool_use, .block-tool_result, .block-thinking")
     .forEach((box) => {
       if (box.querySelector(":scope > .copy-btn")) return;
       const pre = box.querySelector("pre");
       if (pre) addCopyButton(box, pre);
     });
   container.querySelectorAll("pre").forEach((pre) => {
-    if (pre.closest(".block-text, .block-tool_use, .block-tool_result, .section")) return;
+    if (pre.closest(".block-text, .block-tool_use, .block-tool_result, .block-thinking, .section")) return;
     const wrap = el("div", "section");
     pre.replaceWith(wrap);
     wrap.appendChild(pre);
@@ -582,6 +587,15 @@ function msgEl(role, content) {
 function renderResponse(resp, parent) {
   const m = el("div", "msg role-assistant");
   m.appendChild(el("div", "role", "response"));
+  const thoughts = resp && resp.thinking_blocks;
+  if (Array.isArray(thoughts)) {
+    for (const tb of thoughts) {
+      const box = el("div", "block-thinking");
+      box.appendChild(el("div", "block-label", "thinking"));
+      box.appendChild(Object.assign(el("pre"), { textContent: asText(tb.thinking) }));
+      m.appendChild(box);
+    }
+  }
   if (resp && resp.content) renderContent(resp.content, m);
   const calls = resp && resp.tool_calls;
   if (Array.isArray(calls)) {
@@ -593,7 +607,7 @@ function renderResponse(resp, parent) {
       m.appendChild(box);
     }
   }
-  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length))) {
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !(Array.isArray(thoughts) && thoughts.length))) {
     m.appendChild(el("div", "meta", "(empty response)"));
   }
   parent.appendChild(m);
@@ -779,6 +793,15 @@ function renderTurn(r, displayIdx) {
 // Like renderResponse but appends content/tool_calls straight into `parent`
 // without wrapping in a `.msg` block (the bubble is the wrapper here).
 function renderResponseInto(resp, parent) {
+  const thoughts = resp && resp.thinking_blocks;
+  if (Array.isArray(thoughts)) {
+    for (const tb of thoughts) {
+      const box = el("div", "block-thinking");
+      box.appendChild(el("div", "block-label", "thinking"));
+      box.appendChild(Object.assign(el("pre"), { textContent: asText(tb.thinking) }));
+      parent.appendChild(box);
+    }
+  }
   if (resp && resp.content) renderContent(resp.content, parent);
   const calls = resp && resp.tool_calls;
   if (Array.isArray(calls)) {
@@ -790,7 +813,7 @@ function renderResponseInto(resp, parent) {
       parent.appendChild(box);
     }
   }
-  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length))) {
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !(Array.isArray(thoughts) && thoughts.length))) {
     parent.appendChild(el("div", "meta", "(empty response)"));
   }
 }
