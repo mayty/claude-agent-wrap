@@ -534,6 +534,38 @@ function asText(v) {
   return JSON.stringify(v, null, 2);
 }
 
+// Pretty-print a tool input value for display. If it's valid JSON that is NOT a
+// single-key-string-value object, pretty-print it with "description" sorted first.
+// Otherwise return the value as-is (compact single-line for simple shapes, or the
+// original text for unparseable strings).
+function prettyToolInput(v) {
+  let obj;
+  if (typeof v === "string") {
+    try { obj = JSON.parse(v); } catch (e) { return v; }
+  } else if (v != null && typeof v === "object" && !Array.isArray(v)) {
+    obj = v;
+  } else {
+    return asText(v);
+  }
+
+  const keys = Object.keys(obj);
+  // Single-key string-value objects stay compact (e.g. {"command": "ls -la"})
+  if (keys.length === 1 && typeof obj[keys[0]] === "string") {
+    return JSON.stringify(obj);
+  }
+
+  // Bring "description" to the top
+  if ("description" in obj) {
+    const reordered = { description: obj.description };
+    for (const [k, val] of Object.entries(obj)) {
+      if (k !== "description") reordered[k] = val;
+    }
+    return JSON.stringify(reordered, null, 2);
+  }
+
+  return JSON.stringify(obj, null, 2);
+}
+
 // Extract plain text from content (string or [{type:"text", text:"..."}, ...] array).
 function extractText(content) {
   if (typeof content === "string") return content;
@@ -609,7 +641,7 @@ function renderContent(content, parent) {
     } else if (type === "tool_use") {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_use · ${block.name || ""}`));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(block.input) }));
+      box.appendChild(Object.assign(el("pre"), { textContent: prettyToolInput(block.input) }));
       parent.appendChild(box);
     } else if (type === "tool_result") {
       const box = el("div", "block-tool_result");
@@ -716,7 +748,7 @@ function renderResponse(resp, parent) {
       const fn = (c && c.function) || {};
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_call · ${fn.name || ""}`));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(fn.arguments) }));
+      box.appendChild(Object.assign(el("pre"), { textContent: prettyToolInput(fn.arguments) }));
       m.appendChild(box);
     }
   }
@@ -978,7 +1010,7 @@ function renderResponseInto(resp, parent) {
       const fn = (c && c.function) || {};
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_call · ${fn.name || ""}`));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(fn.arguments) }));
+      box.appendChild(Object.assign(el("pre"), { textContent: prettyToolInput(fn.arguments) }));
       parent.appendChild(box);
     }
   }
