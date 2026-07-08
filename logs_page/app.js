@@ -422,38 +422,54 @@ function updateSessionListItem(meta) {
 // transient failure doesn't kill the interval — the next tick retries.
 async function tick(s) {
   if (state.session !== s.session_id) return;
+  if (state.tickInFlight) return;
+  state.tickInFlight = true;
   try {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
     if (fp === state.fp) return;
     const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
-    const response = await fetch(`/api/session?${sessionQuery(s)}`);
+    const fromIndex = state.reqs.length;
+    const response = await fetch(`/api/session?${sessionQuery(s)}&from=${fromIndex}`);
     if (!response.ok) return;
     const { meta, records } = await readNDJSONStream(response);
     if (state.session !== s.session_id) return; // user moved on during the fetch
     const strings = parseStrings(stringsText);
     const resolved = records.map(r => resolveRecord(r, strings));
-    const prevLen = state.reqs.length;
 
-    // Truncation fallback: if records were removed, do a full rebuild.
-    if (resolved.length < prevLen) {
-      state.reqs = resolved;
-      state.groups = groupBySubagent(state.reqs);
+    // If no new records arrived, just refresh metadata and fingerprint.
+    if (resolved.length === 0) {
       state.session_meta = meta || state.session_meta;
       state.fp = fp;
       updateSessionListItem(meta);
+      renderChatHead();
+      return;
+    }
+
+    // If the total count is less than what we already have, records were
+    // deleted or the session was rebuilt — do a full re-fetch and rebuild.
+    if (meta && meta.count < state.reqs.length) {
+      const fullResp = await fetch(`/api/session?${sessionQuery(s)}`);
+      if (!fullResp.ok) return;
+      const full = await readNDJSONStream(fullResp);
+      if (state.session !== s.session_id) return;
+      const fullResolved = full.records.map(r => resolveRecord(r, strings));
+      state.reqs = fullResolved;
+      state.groups = groupBySubagent(state.reqs);
+      state.session_meta = full.meta || state.session_meta;
+      state.fp = fp;
+      updateSessionListItem(full.meta);
       renderStream();
       return;
     }
 
-    // Append only new records to the body.
+    // Normal append path: only new records were returned.
     const body = chatBody();
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    for (let i = prevLen; i < resolved.length; i++) {
-      body.appendChild(renderTurn(resolved[i], i + 1));
+    for (const r of resolved) {
+      state.reqs.push(r);
+      body.appendChild(renderTurn(r, state.reqs.length));
     }
 
-    // Update state with fresh data.
-    state.reqs = resolved;
     state.groups = groupBySubagent(state.reqs);
     state.session_meta = meta || state.session_meta;
     updateSessionListItem(meta);
@@ -469,6 +485,7 @@ async function tick(s) {
       scrollToBottom();
     }
   } catch (e) { /* transient; retry next tick */ }
+  finally { state.tickInFlight = false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -482,29 +499,33 @@ function startListPolling() {
 }
 
 async function listTick() {
+  if (state.listTickInFlight) return;
+  state.listTickInFlight = true;
   try {
-    const fp = fpKey(await getJSON("/api/projects-stat"));
-    if (state.projectsFp === null) {
-      state.projectsFp = fp; // seed on first tick, no re-fetch needed
-    } else if (fp !== state.projectsFp) {
-      state.projectsFp = fp;
-      const projects = await getJSON("/api/projects");
-      renderProjectsList(projects);
-    }
-  } catch (e) { /* transient */ }
+    try {
+      const fp = fpKey(await getJSON("/api/projects-stat"));
+      if (state.projectsFp === null) {
+        state.projectsFp = fp; // seed on first tick, no re-fetch needed
+      } else if (fp !== state.projectsFp) {
+        state.projectsFp = fp;
+        const projects = await getJSON("/api/projects");
+        renderProjectsList(projects);
+      }
+    } catch (e) { /* transient */ }
 
-  if (state.project == null) return;
+    if (state.project == null) return;
 
-  try {
-    const fp = fpKey(await getJSON(`/api/sessions-stat?project=${state.project}`));
-    if (state.sessionsFp === null) {
-      state.sessionsFp = fp; // seed on first tick for this project
-    } else if (fp !== state.sessionsFp) {
-      state.sessionsFp = fp;
-      const sessions = await getJSON(`/api/sessions?project=${state.project}`);
-      renderSessionsList(sessions);
-    }
-  } catch (e) { /* transient */ }
+    try {
+      const fp = fpKey(await getJSON(`/api/sessions-stat?project=${state.project}`));
+      if (state.sessionsFp === null) {
+        state.sessionsFp = fp; // seed on first tick for this project
+      } else if (fp !== state.sessionsFp) {
+        state.sessionsFp = fp;
+        const sessions = await getJSON(`/api/sessions?project=${state.project}`);
+        renderSessionsList(sessions);
+      }
+    } catch (e) { /* transient */ }
+  } finally { state.listTickInFlight = false; }
 }
 
 function asText(v) {
@@ -1185,12 +1206,73 @@ function renderTabs(groups) {
     t.onclick = () => { applyTabFilter(key); renderChatHead(); };
     return t;
   };
+
   bar.appendChild(tab("main", "Main agent", groups.main.length));
-  for (const g of groups.subs) {
-    bar.appendChild(tab("sub:" + g.id, subLabel(g)));
+
+  if (groups.subs.length === 0) {
+    return bar;
   }
+
+  if (groups.subs.length === 1) {
+    const g = groups.subs[0];
+    bar.appendChild(tab("all", "All", total));
+    bar.appendChild(tab("sub:" + g.id, subLabel(g)));
+    return bar;
+  }
+
+  // 2+ subagents: dropdown selector
   bar.appendChild(tab("all", "All", total));
+  bar.appendChild(renderSubagentDropdown(groups));
   return bar;
+}
+
+function renderSubagentDropdown(groups) {
+  const wrap = el("div", "tab-dropdown");
+
+  // Trigger tab — same .tab class as other tabs
+  const activeSub = groups.subs.find(function(g) { return state.tab === "sub:" + g.id; });
+  const trigger = el("div", "tab");
+  trigger.textContent = activeSub ? subLabel(activeSub) : "Select subagent (" + groups.subs.length + ")";
+  trigger.appendChild(el("span", "tab-arrow", " ▾"));
+
+  // Menu
+  const menu = el("div", "tab-dropdown-menu");
+  for (var i = 0; i < groups.subs.length; i++) {
+    var g = groups.subs[i];
+    var item = el("div", "tab-dropdown-item");
+    item.textContent = subLabel(g);
+    if (state.tab === "sub:" + g.id) item.classList.add("active");
+    item.onclick = (function(id) {
+      return function(e) {
+        e.stopPropagation();
+        applyTabFilter("sub:" + id);
+        renderChatHead();
+        menu.style.display = "none";
+      };
+    })(g.id);
+    menu.appendChild(item);
+  }
+
+  trigger.onclick = function(e) {
+    e.stopPropagation();
+    if (menu.style.display === "block") {
+      menu.style.display = "none";
+    } else {
+      menu.style.display = "block";
+      setTimeout(function() {
+        document.addEventListener("click", function close(e) {
+          if (!wrap.contains(e.target)) {
+            menu.style.display = "none";
+            document.removeEventListener("click", close);
+          }
+        });
+      }, 0);
+    }
+  };
+
+  wrap.appendChild(trigger);
+  wrap.appendChild(menu);
+  return wrap;
 }
 
 // Render the main stream with clickable "started"/"finished" markers spliced

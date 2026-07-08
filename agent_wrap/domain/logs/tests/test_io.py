@@ -12,9 +12,6 @@ import pytest
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.io import (
-    _iter_normalized_records,
-    _stream_session_meta,
-    group_by_id,
     lightweight_project_summary,
     list_groups,
     list_projects,
@@ -28,7 +25,6 @@ from agent_wrap.domain.logs.io import (
     scan_session_meta,
     session_fingerprint,
     sessions_fingerprint,
-    stream_session,
     write_meta_json,
 )
 from agent_wrap.domain.pricing.service import PricingService
@@ -178,6 +174,46 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixt
     # Records are returned unresolved — the strings.jsonl mapping exists but is
     # not applied to records (hash resolution moved to the frontend).
     assert len(data["reqs"]) == 1
+
+
+def test_read_session_from_index(tmp_path: Path, mocker: MockerFixture):
+    """from_index slices records but session_meta still reflects the full count."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            _ts_rec("2026-06-01T00:00:00+00:00", model="m/a"),
+            _ts_rec("2026-06-05T00:00:00+00:00", model="m/b"),
+            _ts_rec("2026-06-05T01:00:00+00:00", model="m/c"),
+        ],
+    )
+    mock_ps = mocker.Mock(spec=ProviderService)
+    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
+    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
+    data = read_session(project, "s1", pricing=pricing, from_index=1)
+    assert data["session_meta"] is not None
+    assert data["session_meta"]["count"] == 3
+    assert len(data["reqs"]) == 2
+
+
+def test_read_session_from_index_beyond(tmp_path: Path, mocker: MockerFixture):
+    """from_index beyond total records returns empty reqs but full session_meta."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
+    )
+    mock_ps = mocker.Mock(spec=ProviderService)
+    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
+    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
+    data = read_session(project, "s1", pricing=pricing, from_index=99)
+    assert data["session_meta"] is not None
+    assert data["session_meta"]["count"] == 1
+    assert len(data["reqs"]) == 0
 
 
 def test_session_fingerprint_reflects_file(tmp_path: Path):
@@ -531,10 +567,9 @@ def test_orphaned_group_exposed_and_readable(
     assert orphaned["sessions"] == 1
 
     # Resolving the group id yields the central dirs; reading them returns s2.
-    dirs = group_by_id(orphaned["id"], isolated_stats)
-    assert dirs is not None
-    assert dirs == [hash_b]
-    assert [s["session_id"] for s in list_sessions(dirs)] == ["s2"]
+    assert 0 <= orphaned["id"] < len(groups)
+    assert groups[orphaned["id"]]["logs_dirs"] == [hash_b]
+    assert [s["session_id"] for s in list_sessions(groups[orphaned["id"]]["logs_dirs"])] == ["s2"]
 
 
 def test_no_orphaned_group_when_all_reachable(
@@ -969,207 +1004,3 @@ def _naming_record(content: str) -> Any:
             "error": None,
         },
     )
-
-
-# --- stream_session & _iter_normalized_records ------------------------------
-
-
-def test_iter_normalized_records_yields_per_line(tmp_path: Path, mocker: MockerFixture) -> None:
-    """Each line of messages.jsonl yields one (start_ts, NormalizedRecord) tuple."""
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    f = tmp_path / "messages.jsonl"
-    rec = {
-        "timing": {"start": 10.0, "completionStart": None, "end": 11.0},
-        "status": "success",
-        "model": "m/a",
-        "request": {"body": {"data": {"messages": [{"role": "user", "content": "hi"}]}}},
-        "response": {"choices": [{"message": {"content": "hey"}}]},
-    }
-    f.write_text(json.dumps(rec) + "\n", encoding="utf-8")
-
-    results = list(_iter_normalized_records(f, "litellm-bedrock", pricing))
-    assert len(results) == 1
-    ts, norm = results[0]
-    assert ts == 10.0
-    assert norm["model"] == "m/a"
-    assert norm["messages"] == [{"role": "user", "content": "hi"}]
-
-
-def test_iter_normalized_records_empty_file(tmp_path: Path, mocker: MockerFixture) -> None:
-    """An empty file yields nothing."""
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    f = tmp_path / "messages.jsonl"
-    f.write_text("", encoding="utf-8")
-    assert list(_iter_normalized_records(f, "litellm-bedrock", pricing)) == []
-
-
-def test_iter_normalized_records_missing_file(tmp_path: Path, mocker: MockerFixture) -> None:
-    """A missing file yields nothing (no error)."""
-    mock_ps = mocker.Mock(spec=ProviderService)
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-    assert list(_iter_normalized_records(tmp_path / "nope.jsonl", "p", pricing)) == []
-
-
-def test_iter_normalized_records_skips_corrupt_lines(tmp_path: Path, mocker: MockerFixture) -> None:
-    """Non-JSON lines are silently skipped."""
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    f = tmp_path / "messages.jsonl"
-    rec = {
-        "timing": {"start": 10.0, "completionStart": None, "end": 11.0},
-        "status": "success",
-        "model": "m/a",
-        "request": {"body": {"data": {"messages": [{"role": "user", "content": "hi"}]}}},
-        "response": {"choices": [{"message": {"content": "hey"}}]},
-    }
-    f.write_text("garbage\n" + json.dumps(rec) + "\n", encoding="utf-8")
-    assert len(list(_iter_normalized_records(f, "litellm-bedrock", pricing))) == 1
-
-
-def test_stream_session_yields_meta_then_records(tmp_path: Path, mocker: MockerFixture) -> None:
-    """First item has __type__: session_meta, subsequent items are records."""
-    project = tmp_path / "proj"
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [
-            _ts_rec("2026-06-05T00:00:00+00:00", model="m/a"),
-            _ts_rec("2026-06-05T00:01:00+00:00", model="m/a"),
-        ],
-    )
-    items = list(stream_session(project, "s1", pricing))
-    assert len(items) >= 2
-    assert items[0]["__type__"] == "session_meta"
-    # Record items should not have __type__
-    for item in items[1:]:
-        assert "__type__" not in item
-        assert "timing" in item
-
-
-def test_stream_session_empty(tmp_path: Path, mocker: MockerFixture) -> None:
-    """Session with no records yields only a meta line."""
-    project = tmp_path / "proj"
-    mock_ps = mocker.Mock(spec=ProviderService)
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    items = list(stream_session(project, "nonexistent", pricing))
-    assert len(items) == 1
-    assert items[0]["__type__"] == "session_meta"
-
-
-def test_stream_session_matches_read_session(tmp_path: Path, mocker: MockerFixture) -> None:
-    """stream_session produces the same records as read_session (order & content)."""
-    project = tmp_path / "proj"
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [
-            _ts_rec("2026-06-05T00:00:00+00:00", model="m/a"),
-            _ts_rec("2026-06-05T00:01:00+00:00", model="m/a"),
-        ],
-    )
-    # read_session for comparison
-    ref = read_session(project, "s1", pricing)
-    ref_records = ref["reqs"]
-
-    items = list(stream_session(project, "s1", pricing))
-    # Skip meta line
-    streamed_records = [it for it in items if "__type__" not in it]
-    assert len(streamed_records) == len(ref_records)
-    for sr, rr in zip(streamed_records, ref_records, strict=True):
-        assert sr["model"] == rr["model"]
-        assert sr["timing"] == rr["timing"]
-        assert sr["messages"] == rr["messages"]
-
-
-def test_stream_session_merges_across_providers(tmp_path: Path, mocker: MockerFixture) -> None:
-    """Records from two providers are interleaved in timestamp order."""
-    project = tmp_path / "proj"
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
-
-    sdir_a = _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
-    )
-    sdir_b = _write_session(
-        project,
-        "litellm-deepseek",
-        "s1",
-        [_ts_rec("2026-06-05T00:01:00+00:00", model="m/b")],
-    )
-    # Write meta.json caches so _stream_session_meta picks them up.
-    for sdir in (sdir_a, sdir_b):
-        _write_meta_file(
-            sdir,
-            {
-                "count": 1,
-                "last_ts": _epoch("2026-06-05T00:01:00+00:00"),
-                "models": ["a"],
-            },
-        )
-    items = list(stream_session(project, "s1", pricing))
-    records = [it for it in items if "__type__" not in it]
-    assert len(records) == 2
-    assert records[0]["model"] == "m/a"
-    assert records[1]["model"] == "m/b"
-    # Meta should be merged across both providers
-    meta = items[0]
-    assert meta["__type__"] == "session_meta"
-    assert meta.get("providers") == ["litellm-bedrock", "litellm-deepseek"]
-
-
-def test_stream_session_meta_uses_cache(
-    tmp_path: Path,
-) -> None:
-    """_stream_session_meta uses meta.json cache to build combined meta."""
-    project = tmp_path / "proj"
-    sdir = _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
-    )
-    _write_meta_file(
-        sdir,
-        {
-            "count": 3,
-            "last_ts": _epoch("2026-06-06T00:00:00+00:00"),
-            "models": ["a", "b"],
-            "alias": "meta-alias",
-            "title": "Meta Title",
-        },
-    )
-    combined = _stream_session_meta(project, "s1")
-    assert combined is not None
-    assert combined["count"] == 3
-    assert combined["alias"] == "meta-alias"
-    assert combined["title"] == "Meta Title"
-    assert combined["session_id"] == "s1"
-
-
-def test_stream_session_meta_none_without_cache(tmp_path: Path) -> None:
-    """_stream_session_meta returns None when no cache exists."""
-    combined = _stream_session_meta(tmp_path, "nonexistent")
-    assert combined is None

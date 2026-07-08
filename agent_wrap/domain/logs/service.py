@@ -19,6 +19,7 @@ from agent_wrap.constants import (
 )
 from agent_wrap.domain.logs.constants import (
     LOG_FILE_NAME,
+    LOGS_VIEWER_LABEL,
     POLL_INTERVAL_SEC,
     SPAWN_TIMEOUT_SEC,
     STOP_TIMEOUT_SEC,
@@ -29,7 +30,7 @@ from agent_wrap.domain.logs.daemon import (
     state_file,
     write_state,
 )
-from agent_wrap.domain.logs.server import bind_port
+from agent_wrap.domain.logs.server import bind_port, stop_cache
 from agent_wrap.lib.process_utils import pid_alive
 
 if TYPE_CHECKING:
@@ -100,6 +101,7 @@ class LogsService:
             pass
         finally:
             server.server_close()
+            stop_cache()
         return 0
 
     def spawn_background(self, port: int) -> int:
@@ -117,14 +119,29 @@ class LogsService:
             env=env,
             start_new_session=True,
         )
-        # Wait for child to publish its state, or timeout.
-        deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            state = self.running_server()
-            if state is not None and state["pid"] == child.pid:
-                self._display.info(self.connect_line(state["port"]))
-                return 0
-            time.sleep(POLL_INTERVAL_SEC)
+        # Wait for child to publish its state, or timeout. Animate a spinner so
+        # the user isn't staring at a blank screen during the cold start.
+        captured_port: list[int | None] = [None]
+
+        def _wait_for_child() -> None:
+            deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
+            while time.monotonic() < deadline:
+                state = self.running_server()
+                if state is not None and state["pid"] == child.pid:
+                    captured_port[0] = state["port"]
+                    return
+                time.sleep(POLL_INTERVAL_SEC)
+
+        self._display.spin_while(
+            label=LOGS_VIEWER_LABEL,
+            message="starting…",
+            done_message=lambda: self.connect_line(captured_port[0]) if captured_port[0] else None,
+            work=_wait_for_child,
+        )
+
+        if captured_port[0] is not None:
+            return 0
+
         # Timed out — clean up the orphaned child.
         with contextlib.suppress(OSError):
             child.send_signal(signal.SIGTERM)

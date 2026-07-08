@@ -149,6 +149,21 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .tab.active .n { color: var(--accent); }
 .tab.loading { cursor: default; color: var(--muted); font-style: italic; }
 
+/* Subagent dropdown */
+.tab-dropdown { position: relative; display: inline-block; }
+.tab-arrow { color: var(--muted); font-size: 10px; }
+
+.tab-dropdown-menu { display: none; position: absolute; top: 100%; left: 0;
+                     z-index: 10; min-width: 100%;
+                     background: var(--panel); border: 1px solid var(--border);
+                     border-radius: 6px; max-height: 320px; overflow-y: auto;
+                     box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+
+.tab-dropdown-item { padding: 7px 12px; font-size: 12px; cursor: pointer;
+                     white-space: nowrap; color: var(--fg); }
+.tab-dropdown-item:hover { background: rgba(137,180,250,.08); }
+.tab-dropdown-item.active { color: var(--accent); font-weight: 600; }
+
 /* Tab visibility driven by data-tab on #chat */
 #chat[data-tab="all"] .chat-body > [data-role="marker"] { display: none; }
 #chat[data-tab="main"] .chat-body > [data-role="sub"] { display: none; }
