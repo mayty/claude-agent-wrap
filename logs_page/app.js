@@ -218,14 +218,6 @@ function el(tag, cls, text) {
   return e;
 }
 
-function showError(containerId, message) {
-  const container = $(containerId);
-  const box = el("div", "err-box");
-  box.appendChild(Object.assign(el("pre"), { textContent: "Error: " + message }));
-  container.innerHTML = "";
-  container.appendChild(box);
-}
-
 function renderProjectsList(projects) {
   const list = $("proj-list");
   list.innerHTML = "";
@@ -1049,7 +1041,7 @@ function showImageOverlay(src) {
   back.id = "image-overlay";
   back.onclick = function(e) { if (e.target === back) closeImageOverlay(); };
 
-  const img = el("img", "image-overlay-img");
+  const img = el("img");
   img.src = src;
   img.style.cssText = "max-width:90vw;max-height:90vh;object-fit:contain;border-radius:6px;";
   back.appendChild(img);
@@ -1187,14 +1179,14 @@ function looksTerminal(r) {
 // Does a record look like an auto classifier request?
 function isClassifierRequest(r) {
   // Check 1: system prompt defines block output rules
-  var sysText = extractText(r.system);
+  const sysText = extractText(r.system);
   if (!sysText || sysText.indexOf("<block>no</block>") === -1 || sysText.indexOf("<block>yes</block>") === -1) {
     return false;
   }
   // Check 2: user messages contain a <transcript>...</transcript> block group
-  var msgs = r.messages || [];
-  for (var i = 0; i < msgs.length; i++) {
-    var mt = extractText(msgs[i].content);
+  const msgs = r.messages || [];
+  for (let i = 0; i < msgs.length; i++) {
+    const mt = extractText(msgs[i].content);
     if (mt.indexOf("<transcript>") !== -1 && mt.indexOf("</transcript>") !== -1) {
       return true;
     }
@@ -1206,15 +1198,15 @@ function isClassifierRequest(r) {
 // Walks the content blocks of the transcript message to find the </transcript>
 // block, then returns the previous block's text.
 function extractEvaluatedCommand(r) {
-  var msgs = r.messages || [];
-  for (var i = 0; i < msgs.length; i++) {
-    var content = msgs[i].content;
+  const msgs = r.messages || [];
+  for (let i = 0; i < msgs.length; i++) {
+    const content = msgs[i].content;
     if (!Array.isArray(content)) continue;
-    for (var j = 0; j < content.length; j++) {
-      var block = content[j];
+    for (let j = 0; j < content.length; j++) {
+      const block = content[j];
       if (block && block.type === "text" && typeof block.text === "string" && block.text.indexOf("</transcript>") !== -1) {
         if (j > 0) {
-          var prev = content[j - 1];
+          const prev = content[j - 1];
           if (prev && prev.type === "text" && typeof prev.text === "string") {
             return prev.text.trim();
           }
@@ -1231,36 +1223,36 @@ function extractEvaluatedCommand(r) {
 // because the <block> tag can appear in either (DeepSeek puts it inside
 // thinking, Anthropic puts it in content).
 function parseClassifierResult(r) {
-  var resp = r.response || {};
-  var parts = [];
-  var thoughts = getThinkingBlocks(resp);
+  const resp = r.response || {};
+  const parts = [];
+  const thoughts = getThinkingBlocks(resp);
   if (thoughts) {
-    for (var i = 0; i < thoughts.length; i++) {
+    for (let i = 0; i < thoughts.length; i++) {
       if (thoughts[i] && thoughts[i].thinking) {
         parts.push(thoughts[i].thinking);
       }
     }
   }
-  var contentText = extractText(resp.content);
+  const contentText = extractText(resp.content);
   if (contentText) parts.push(contentText);
-  var fullText = parts.join("\n");
+  const fullText = parts.join("\n");
 
   // Mirror FIo: match <block>yes or <block>no
-  var blockRe = /<block>(yes|no)\b(<\/block>)?/gi;
-  var matches = [];
-  var m;
+  const blockRe = /<block>(yes|no)\b(<\/block>)?/gi;
+  const matches = [];
+  let m;
   while ((m = blockRe.exec(fullText)) !== null) {
     matches.push(m);
   }
   if (matches.length === 0) {
     return { allowed: false, reason: null, unparseable: true };
   }
-  var isYes = matches[0][1].toLowerCase() === "yes";
+  const isYes = matches[0][1].toLowerCase() === "yes";
   // Mirror oJa: extract reason (only for blocked)
-  var reason = null;
+  let reason = null;
   if (isYes) {
-    var reasonRe = /<reason>([\s\S]*?)<\/reason>/g;
-    var rm = reasonRe.exec(fullText);
+    const reasonRe = /<reason>([\s\S]*?)<\/reason>/g;
+    const rm = reasonRe.exec(fullText);
     if (rm) {
       reason = rm[1].trim();
     }
@@ -1351,9 +1343,9 @@ function renderSubagentDropdown(groups) {
 
   // Menu
   const menu = el("div", "tab-dropdown-menu");
-  for (var i = 0; i < groups.subs.length; i++) {
-    var g = groups.subs[i];
-    var item = el("div", "tab-dropdown-item");
+  for (let i = 0; i < groups.subs.length; i++) {
+    const g = groups.subs[i];
+    const item = el("div", "tab-dropdown-item");
     item.textContent = subLabel(g);
     if (state.tab === "sub:" + g.id) item.classList.add("active");
     item.onclick = (function(id) {
@@ -1522,14 +1514,6 @@ function renderStream() {
   if (state.groups) insertMarkers(state.groups);
   applyTabFilter(state.tab);
   ensureScrollButton();
-}
-
-function renderChat(reqs, s) {
-  state.reqs = reqs;
-  state.session_meta = s;
-  state.groups = groupBySubagent(reqs, buildSubagentCallMap(reqs));
-  state.tab = "main";
-  renderStream();
 }
 
 // Home/End scroll the request pop-up when it is open, otherwise the session

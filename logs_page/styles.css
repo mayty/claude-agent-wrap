@@ -221,7 +221,6 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .scroll-to-top-btn::after { margin-bottom: 3px;
                             clip-path: polygon(0 100%, 50% 0, 100% 100%,
                                                75% 100%, 50% 35%, 25% 100%); }
-.scroll-btn.visible { opacity: .85; }
 .scroll-btn:hover { background: var(--border); opacity: 1; }
 .scroll-btn:hover::after { background: var(--accent); }
 
