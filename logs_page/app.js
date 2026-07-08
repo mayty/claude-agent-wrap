@@ -480,6 +480,35 @@ function extractText(content) {
   return "";
 }
 
+// Return the response's thinking blocks, preferring the top-level field but
+// falling back to LiteLLM's Bedrock-adapter location for signature-only
+// blocks (display: "omitted") that it sometimes drops from the top level.
+function getThinkingBlocks(resp) {
+  if (!resp) return null;
+  if (Array.isArray(resp.thinking_blocks) && resp.thinking_blocks.length) {
+    return resp.thinking_blocks;
+  }
+  const psf = resp.provider_specific_fields;
+  if (psf && Array.isArray(psf.thinking_blocks) && psf.thinking_blocks.length) {
+    return psf.thinking_blocks;
+  }
+  return null;
+}
+
+// Render one thinking block. Anthropic's display: "omitted" mode returns a
+// signature only (no visible reasoning text) for many turns — show that
+// thinking occurred instead of leaving a blank box.
+function appendThinkingBlock(tb, parent) {
+  const box = el("div", "block-thinking");
+  box.appendChild(el("div", "block-label", "thinking"));
+  if (tb && tb.thinking) {
+    box.appendChild(Object.assign(el("pre"), { textContent: asText(tb.thinking) }));
+  } else {
+    box.appendChild(el("div", "meta", "(thinking occurred; not shown by the model)"));
+  }
+  parent.appendChild(box);
+}
+
 function renderContent(content, parent) {
   if (typeof content === "string") {
     parent.appendChild(Object.assign(el("pre"), { textContent: content }));
@@ -522,10 +551,7 @@ function renderContent(content, parent) {
       box.appendChild(Object.assign(el("pre"), { textContent: asText(block.content) }));
       parent.appendChild(box);
     } else if (type === "thinking") {
-      const box = el("div", "block-thinking");
-      box.appendChild(el("div", "block-label", "thinking"));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(block.thinking) }));
-      parent.appendChild(box);
+      appendThinkingBlock(block, parent);
     } else if (type === "image") {
       const src = block.source;
       if (src && src.data) {
@@ -611,13 +637,10 @@ function msgEl(role, content) {
 function renderResponse(resp, parent) {
   const m = el("div", "msg role-assistant");
   m.appendChild(el("div", "role", "response"));
-  const thoughts = resp && resp.thinking_blocks;
-  if (Array.isArray(thoughts)) {
+  const thoughts = getThinkingBlocks(resp);
+  if (thoughts) {
     for (const tb of thoughts) {
-      const box = el("div", "block-thinking");
-      box.appendChild(el("div", "block-label", "thinking"));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(tb.thinking) }));
-      m.appendChild(box);
+      appendThinkingBlock(tb, m);
     }
   }
   if (resp && resp.content) renderContent(resp.content, m);
@@ -631,7 +654,7 @@ function renderResponse(resp, parent) {
       m.appendChild(box);
     }
   }
-  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !(Array.isArray(thoughts) && thoughts.length))) {
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !thoughts)) {
     m.appendChild(el("div", "meta", "(empty response)"));
   }
   parent.appendChild(m);
@@ -876,13 +899,10 @@ function renderTurn(r, displayIdx) {
 // Like renderResponse but appends content/tool_calls straight into `parent`
 // without wrapping in a `.msg` block (the bubble is the wrapper here).
 function renderResponseInto(resp, parent) {
-  const thoughts = resp && resp.thinking_blocks;
-  if (Array.isArray(thoughts)) {
+  const thoughts = getThinkingBlocks(resp);
+  if (thoughts) {
     for (const tb of thoughts) {
-      const box = el("div", "block-thinking");
-      box.appendChild(el("div", "block-label", "thinking"));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(tb.thinking) }));
-      parent.appendChild(box);
+      appendThinkingBlock(tb, parent);
     }
   }
   if (resp && resp.content) renderContent(resp.content, parent);
@@ -896,7 +916,7 @@ function renderResponseInto(resp, parent) {
       parent.appendChild(box);
     }
   }
-  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !(Array.isArray(thoughts) && thoughts.length))) {
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !thoughts)) {
     parent.appendChild(el("div", "meta", "(empty response)"));
   }
 }
@@ -1048,8 +1068,8 @@ function extractEvaluatedCommand(r) {
 function parseClassifierResult(r) {
   var resp = r.response || {};
   var parts = [];
-  var thoughts = resp.thinking_blocks;
-  if (Array.isArray(thoughts)) {
+  var thoughts = getThinkingBlocks(resp);
+  if (thoughts) {
     for (var i = 0; i < thoughts.length; i++) {
       if (thoughts[i] && thoughts[i].thinking) {
         parts.push(thoughts[i].thinking);
