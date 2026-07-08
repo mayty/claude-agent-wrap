@@ -362,7 +362,7 @@ async function selectSession(s, item) {
     const session_meta = meta || s;
     state.reqs = reqs;
     state.session_meta = session_meta;
-    state.groups = groupBySubagent(reqs);
+    state.groups = groupBySubagent(reqs, buildSubagentCallMap(reqs));
     insertMarkers(state.groups);
     applyTabFilter("main");
     renderChatHead();
@@ -454,7 +454,7 @@ async function tick(s) {
       if (state.session !== s.session_id) return;
       const fullResolved = full.records.map(r => resolveRecord(r, strings));
       state.reqs = fullResolved;
-      state.groups = groupBySubagent(state.reqs);
+      state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
       state.session_meta = full.meta || state.session_meta;
       state.fp = fp;
       updateSessionListItem(full.meta);
@@ -470,7 +470,7 @@ async function tick(s) {
       body.appendChild(renderTurn(r, state.reqs.length));
     }
 
-    state.groups = groupBySubagent(state.reqs);
+    state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
     state.session_meta = meta || state.session_meta;
     updateSessionListItem(meta);
     state.fp = fp;
@@ -1091,22 +1091,89 @@ function openModal(r, displayIdx) {
   document.addEventListener("keydown", onModalKey);
 }
 
+// Normalize prompt text for comparison: extract from content (string or content
+// array), strip <system-reminder> blocks, collapse whitespace, and trim.
+// Does NOT truncate — callers needing a short snippet should slice the result.
+function normalizePrompt(content) {
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .map(b => (typeof b === "string" ? b : (b && b.type === "text" ? b.text : "")))
+      .filter(t => typeof t === "string")
+      .join("\n");
+  }
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  text = text.replace(/\s+/g, " ");
+  return text;
+}
+
 // Plain text of a record's first user message, with leading <system-reminder>
 // blocks stripped, for use as a subagent's human-readable label.
 function firstPromptSnippet(r) {
   const msgs = r.messages || [];
   if (!msgs.length) return "";
-  const c = msgs[0].content;
-  let text = "";
-  if (typeof c === "string") {
-    text = c;
-  } else if (Array.isArray(c)) {
-    text = c.map(b => (typeof b === "string" ? b : (b && b.type === "text" ? b.text : "")))
-            .filter(t => typeof t === "string").join("\n");
+  return normalizePrompt(msgs[0].content).slice(0, 60);
+}
+
+// Extract tool calls that spawn subagents from a main-agent record's response.
+// Returns an array of { name, subagent_type, description, prompt } objects.
+// Handles both tool_use blocks (response.content) and tool_calls arrays.
+function extractSubagentToolCalls(r) {
+  const calls = [];
+  const resp = r.response || {};
+
+  // Check response.content for tool_use blocks with subagent_type
+  if (Array.isArray(resp.content)) {
+    for (const block of resp.content) {
+      if (block && block.type === "tool_use" && block.input && block.input.subagent_type) {
+        calls.push({
+          name: block.name,
+          subagent_type: block.input.subagent_type,
+          description: block.input.description,
+          prompt: block.input.prompt,
+        });
+      }
+    }
   }
-  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-  text = text.replace(/\s+/g, " ");
-  return text.slice(0, 60);
+
+  // Check response.tool_calls for function calls with subagent_type
+  if (Array.isArray(resp.tool_calls)) {
+    for (const tc of resp.tool_calls) {
+      const fn = tc && tc.function;
+      if (!fn || !fn.arguments) continue;
+      let args;
+      try { args = JSON.parse(fn.arguments); } catch (e) { continue; }
+      if (args && args.subagent_type) {
+        calls.push({
+          name: fn.name,
+          subagent_type: args.subagent_type,
+          description: args.description,
+          prompt: args.prompt,
+        });
+      }
+    }
+  }
+
+  return calls;
+}
+
+// Build a lookup map from normalized prompt text to { subagent_type, description }.
+// Scans all main-agent records for tool calls that spawn subagents.
+// First-match-wins when two tool calls normalize to the same prompt string.
+function buildSubagentCallMap(reqs) {
+  const map = {};
+  for (const r of reqs) {
+    if (r.agent_id) continue;
+    for (const call of extractSubagentToolCalls(r)) {
+      const key = normalizePrompt(call.prompt);
+      if (key && !map[key]) {
+        map[key] = { subagent_type: call.subagent_type, description: call.description };
+      }
+    }
+  }
+  return map;
 }
 
 // Does a record look like a subagent's final turn (a text answer, no tool call)?
@@ -1203,7 +1270,7 @@ function parseClassifierResult(r) {
 
 // Partition the time-ordered records into the main stream and per-agent-id
 // subagent streams (ordered by first appearance).
-function groupBySubagent(reqs) {
+function groupBySubagent(reqs, subagentCallMap) {
   const main = [];
   const subById = new Map();
   reqs.forEach((r, i) => {
@@ -1214,6 +1281,18 @@ function groupBySubagent(reqs) {
       g = { id, ordinal: subById.size + 1, short: id.slice(0, 7),
             snippet: firstPromptSnippet(r), firstIdx: i, lastIdx: i,
             lastTerminal: false, items: [] };
+      // Match subagent to its parent tool call
+      if (subagentCallMap) {
+        const msgs = r.messages || [];
+        if (msgs.length) {
+          const key = normalizePrompt(msgs[0].content);
+          const match = subagentCallMap[key];
+          if (match) {
+            g.subagent_type = match.subagent_type;
+            g.description = match.description;
+          }
+        }
+      }
       subById.set(id, g);
     }
     g.items.push({ r, i });
@@ -1225,6 +1304,9 @@ function groupBySubagent(reqs) {
 
 function subLabel(g) {
   const cnt = `(${g.items.length})`;
+  if (g.subagent_type && g.description) {
+    return `${g.subagent_type}: ${g.description} ${cnt}`;
+  }
   return g.snippet ? `⌁ ${g.short} ${cnt} · "${g.snippet}…"` : `⌁ ${g.short} ${cnt}`;
 }
 
@@ -1317,7 +1399,11 @@ function createMarker(g, kind, ts) {
   const m = el("div", "marker" + (done ? " done" : ""));
   m.dataset.role = "marker";
   m.dataset.sub = g.id;
-  m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
+  if (g.subagent_type && g.description) {
+    m.appendChild(el("span", null, `${g.subagent_type}: ${g.description} ${verb}`));
+  } else {
+    m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
+  }
   m.appendChild(el("span", "when", fmtTs(ts)));
   m.onclick = () => { applyTabFilter("sub:" + g.id); renderChatHead(); };
   return m;
@@ -1441,7 +1527,7 @@ function renderStream() {
 function renderChat(reqs, s) {
   state.reqs = reqs;
   state.session_meta = s;
-  state.groups = groupBySubagent(reqs);
+  state.groups = groupBySubagent(reqs, buildSubagentCallMap(reqs));
   state.tab = "main";
   renderStream();
 }
