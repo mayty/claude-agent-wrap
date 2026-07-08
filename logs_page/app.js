@@ -145,6 +145,48 @@ function fmtCost(c) {
   return "$" + c.toFixed(2);
 }
 
+// Positions (within `s`) of every separator matching [.\-:].
+function separatorOffsets(s) {
+  const offsets = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "." || s[i] === "-" || s[i] === ":") offsets.push(i);
+  }
+  return offsets;
+}
+
+// Render a session's model list, collapsing to at most 3 shared-prefix groups
+// (cut on [.\-:]) when there are more than 3 distinct models. Returns the
+// display string; callers should also set a title with the full list when
+// `models.length > 3` so the raw ids stay discoverable on hover.
+function collapseModels(models) {
+  if (models.length <= 3) return models.join(", ");
+
+  const offsets = models.map(separatorOffsets);
+  const maxDepth = Math.max(...offsets.map((o) => o.length));
+
+  let groups = null;
+  for (let depth = maxDepth; depth >= 0; depth--) {
+    const prefixes = models.map((m, i) => {
+      const o = offsets[i];
+      return depth < o.length ? m.slice(0, o[depth]) : m;
+    });
+    const order = [];
+    const counts = new Map();
+    for (const p of prefixes) {
+      if (!counts.has(p)) order.push(p);
+      counts.set(p, (counts.get(p) || 0) + 1);
+    }
+    if (order.length <= 3 || depth === 0) {
+      groups = order.map((p) => ({ prefix: p, count: counts.get(p) }));
+      break;
+    }
+  }
+
+  return groups
+    .map((g) => (g.count > 1 ? `${g.prefix}… (${g.count})` : g.prefix))
+    .join(", ");
+}
+
 function sessionStats(reqs) {
   let totalCost = 0;
   let cacheRead = 0;
@@ -230,8 +272,10 @@ function renderSessionsList(sessions) {
       sessItem.appendChild(top);
     }
     const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
-    sessItem.appendChild(el("div", "meta",
-      `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
+    const metaEl = el("div", "meta",
+      `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${collapseModels(s.models)}` : ""));
+    if (s.models.length > 3) metaEl.title = s.models.join("\n");
+    sessItem.appendChild(metaEl);
     sessItem.title = s.session_id;
     sessItem.onclick = () => selectSession(s, sessItem);
     if (state.session === s.session_id) sessItem.classList.add("active");
@@ -368,7 +412,8 @@ function updateSessionListItem(meta) {
   const sub = meta.alias ? state.session.slice(0, 8) + ' · ' : '';
   metaEl.textContent =
     sub + meta.count + ' req · ' + fmtTs(meta.last_ts) +
-    (meta.models.length ? ' · ' + meta.models.join(', ') : '');
+    (meta.models.length ? ' · ' + collapseModels(meta.models) : '');
+  metaEl.title = meta.models.length > 3 ? meta.models.join('\n') : '';
 }
 
 // One poll: if the session the user opened is still open and its fingerprint
