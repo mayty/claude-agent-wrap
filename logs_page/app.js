@@ -457,9 +457,15 @@ async function tick(s) {
     // Normal append path: only new records were returned.
     const body = chatBody();
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    // Insert before the sticky scroll-to-bottom wrapper (rather than
+    // appending after it) so it stays the last element in flow — position:
+    // sticky only tracks the viewport bottom while it has no later siblings.
+    const wrapBot = body.querySelector(".scroll-btn-wrap-bot");
     for (const r of resolved) {
       state.reqs.push(r);
-      body.appendChild(renderTurn(r, state.reqs.length));
+      const turnEl = renderTurn(r, state.reqs.length);
+      if (wrapBot) body.insertBefore(turnEl, wrapBot);
+      else body.appendChild(turnEl);
     }
 
     state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
