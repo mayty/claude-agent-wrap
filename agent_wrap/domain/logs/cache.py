@@ -540,8 +540,9 @@ class LogsCache:
     def _merge_combined(self, existing: CombinedSessionMeta, meta: Any) -> None:
         """Merge a ProviderSessionMeta-like dict into a CombinedSessionMeta in-place."""
         provider = meta.get("provider", "")
-        existing["providers"].append(provider)
-        existing["providers"].sort()
+        if provider not in existing["providers"]:
+            existing["providers"].append(provider)
+            existing["providers"].sort()
         existing["count"] += meta.get("count", 0)
         if meta.get("first_ts") and (
             not existing["first_ts"] or meta["first_ts"] < existing["first_ts"]

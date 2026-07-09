@@ -278,6 +278,28 @@ def test_list_sessions_providers_field_shape(tmp_path: Path):
     assert "provider" not in sessions[0]
 
 
+def test_list_sessions_dedupes_provider_on_session_id_collision(tmp_path: Path) -> None:
+    """Two unrelated logs dirs sharing a session_id and provider merge without a duplicate badge."""
+    a = tmp_path / "proj-a"
+    b = tmp_path / "proj-b"
+    _write_session(
+        a,
+        "litellm-bedrock",
+        "s1",
+        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
+    )
+    _write_session(
+        b,
+        "litellm-bedrock",
+        "s1",
+        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
+    )
+    sessions = list_sessions([logs_dir(a), logs_dir(b)])
+    assert len(sessions) == 1
+    assert sessions[0]["providers"] == ["litellm-bedrock"]
+    assert sessions[0]["count"] == 2
+
+
 def test_read_session_merges_across_providers(tmp_path: Path, mocker: MockerFixture):
     """Records from two providers are interleaved by timestamp."""
     project = tmp_path / "proj"

@@ -368,8 +368,9 @@ def scan_session_meta(session_dir: Path, provider: str) -> ProviderSessionMeta |
 
 def _merge_session_meta(existing: CombinedSessionMeta, meta: ProviderSessionMeta) -> None:
     """Merge *meta* (from one provider) into *existing* (the combined entry)."""
-    existing["providers"].append(meta["provider"])
-    existing["providers"].sort()
+    if meta["provider"] not in existing["providers"]:
+        existing["providers"].append(meta["provider"])
+        existing["providers"].sort()
     existing["count"] += meta["count"]
     if meta["first_ts"] and (not existing["first_ts"] or meta["first_ts"] < existing["first_ts"]):
         existing["first_ts"] = meta["first_ts"]

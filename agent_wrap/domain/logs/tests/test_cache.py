@@ -173,6 +173,43 @@ class TestHotCache:
             cache.stop()
 
 
+class TestMergeCombined:
+    def test_merge_combined_dedupes_repeated_provider(self, pricing: PricingService) -> None:
+        """Merging a second meta entry from the same provider doesn't duplicate the badge."""
+        stats = Mock(spec=StatsService)
+        stats.load_projects.return_value = cast("list[Path]", [])
+        stats.resolve_group.return_value = (_CWD, ".", False)
+        stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
+        cache = LogsCache(stats, pricing)
+        try:
+            existing = {
+                "session_id": "s1",
+                "alias": None,
+                "title": None,
+                "count": 1,
+                "first_ts": 1.0,
+                "last_ts": 1.0,
+                "models": ["a"],
+                "providers": ["litellm-bedrock"],
+            }
+            cache._merge_combined(
+                existing,
+                {
+                    "provider": "litellm-bedrock",
+                    "count": 1,
+                    "first_ts": 5.0,
+                    "last_ts": 5.0,
+                    "models": ["b"],
+                    "alias": None,
+                    "title": None,
+                },
+            )
+            assert existing["providers"] == ["litellm-bedrock"]
+            assert existing["count"] == 2
+        finally:
+            cache.stop()
+
+
 class TestThreadSafety:
     def test_concurrent_reads_dont_crash(self, pricing: PricingService) -> None:
         stats = Mock(spec=StatsService)

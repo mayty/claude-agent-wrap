@@ -11,7 +11,7 @@ LOGS_VIEWER_LABEL = "logs-viewer"
 LOG_FILE_NAME = "logs-server.log"
 
 # Parent -> child handshake / stop-wait timing.
-SPAWN_TIMEOUT_SEC = 30.0
+SPAWN_TIMEOUT_SEC = 900.0
 STOP_TIMEOUT_SEC = 3.0
 POLL_INTERVAL_SEC = 0.05
 
