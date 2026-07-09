@@ -11,6 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 import agent_wrap.domain.stats.scan as scan_mod
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
@@ -155,7 +156,9 @@ def test_scan_log_dirs_serial_matches_scan_logs_dir(
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 3, records_per=2)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)  # force serial
-    cache = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    cache = StatsService(pricing_service, config_service=Mock(spec=ConfigService)).scan_log_dirs(
+        dirs, from_iso=None, until_iso=None
+    )
     for d in dirs:
         expect = scan_logs_dir(d, pricing_service, from_iso=None, until_iso=None)
         got = cache[d]
@@ -172,9 +175,13 @@ def test_scan_log_dirs_parallel_matches_serial(
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=2)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)
-    serial = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    serial = StatsService(pricing_service, config_service=Mock(spec=ConfigService)).scan_log_dirs(
+        dirs, from_iso=None, until_iso=None
+    )
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 1)
-    parallel = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    parallel = StatsService(pricing_service, config_service=Mock(spec=ConfigService)).scan_log_dirs(
+        dirs, from_iso=None, until_iso=None
+    )
 
     def norm(cache: dict[Any, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -202,7 +209,9 @@ def test_scan_log_dirs_parallel_totals_match_records(
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=3)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 1)  # force parallel
-    cache = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    cache = StatsService(pricing_service, config_service=Mock(spec=ConfigService)).scan_log_dirs(
+        dirs, from_iso=None, until_iso=None
+    )
     total_msgs = sum(
         b.msgs for _, _, by_day, _ in cache.values() for v in by_day.values() for b in v.values()
     )

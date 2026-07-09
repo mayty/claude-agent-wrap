@@ -11,9 +11,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.domain.logs.server import bind_port, resolve_static
+from agent_wrap.domain.logs.cache import LogsCache
+from agent_wrap.domain.logs.server import bind_port, get_handler, resolve_static
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -83,7 +83,7 @@ def _get_ndjson(port: int, path: str) -> tuple[int, list[dict[str, Any]]]:
         return e.code, [json.loads(e.read())]
 
 
-def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
+def _start_server(port: int, cache: LogsCache) -> threading.Thread:
     """Start the logs HTTP server on *port* in a daemon thread and return the thread."""
     pricing = Mock(spec=PricingService)
     pricing.request_cache_ttl.return_value = None
@@ -93,7 +93,8 @@ def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
         "cache_read_input_tokens": 0,
     }
     pricing.compute_cost.return_value = 0.001
-    server = bind_port(port, pricing=pricing, stats_service=stats_service)
+    handler = get_handler(pricing, cache)
+    server = bind_port(port, handler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     # Give the server a moment to start accepting connections.
@@ -127,17 +128,31 @@ def api_server(tmp_path: Path) -> tuple[int, Path]:
     """Start the logs server against a fresh project; return (port, project_dir)."""
     port = _find_free_port()
     project = tmp_path / "testproj"
-    _write_session(project, "litellm-bedrock", "abc12345-6789-abcd-ef01-234567890abc")
-    # list_groups needs the registry file to exist; its contents are
-    # served by the mocked StatsService.load_projects.
-    reg = tmp_path / ".agent-launches" / "projects.txt"
-    reg.parent.mkdir(parents=True, exist_ok=True)
-    reg.write_text("", encoding="utf-8")
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = [project]
-    stats.resolve_group.return_value = (project, project.name, False)
-    stats.orphaned_log_dirs.return_value = []  # type: ignore[implicit-any-empty-container]
-    _start_server(port, stats)
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    _write_session(project, "litellm-bedrock", sid)
+    cache = Mock(spec=LogsCache)
+    cache.get_logs_dirs.side_effect = lambda pid: (
+        [project / ".claude" / "litellm-logs"] if pid == 0 else None
+    )
+    cache.get_sessions.return_value = [
+        {
+            "session_id": sid,
+            "count": 1,
+            "first_ts": 1000000.0,
+            "last_ts": 1000001.0,
+            "models": ["test"],
+            "providers": ["litellm-bedrock"],
+            "alias": None,
+            "title": None,
+        }
+    ]
+    cache.get_sessions_fingerprint.return_value = {"mtime": 1, "size": 100}
+    cache.get_session_fingerprint.return_value = {"mtime": 1, "size": 100}
+    cache.get_hot_session.return_value = None
+    cache.get_groups.return_value = []  # type: ignore[implicit-any-empty-container]
+    cache.get_projects.return_value = []  # type: ignore[implicit-any-empty-container]
+    cache.get_projects_fingerprint.return_value = {"mtime": None, "size": None}  # type: ignore[implicit-any-empty-container]
+    _start_server(port, cache)
     return port, project
 
 

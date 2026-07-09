@@ -62,7 +62,7 @@ def run(args: list[str]) -> int:
     if parsed is None:
         return 1 if args and args[0] not in ("-h", "--help") else 0
 
-    projects = services.stats_service.load_projects(parsed.registry_path)
+    projects = services.config_service.read_project_paths()
     if not projects:
         dsp.error("usage: no projects recorded yet — launch `agent` once to register a project.")
         return 0

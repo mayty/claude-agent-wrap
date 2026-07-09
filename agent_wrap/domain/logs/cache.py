@@ -24,6 +24,7 @@ from agent_wrap.domain.logs.io import (
 )
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.logs.models import (
         CombinedSessionMeta,
         Fingerprint,
@@ -48,10 +49,14 @@ class LogsCache:
     """
 
     def __init__(
-        self, stats_service: StatsService, pricing_service: PricingService | None = None
+        self,
+        stats_service: StatsService,
+        config_service: ConfigService,
+        pricing_service: PricingService,
     ) -> None:
         self._stats_service = stats_service
         self._pricing_service = pricing_service
+        self._config = config_service
         self._hot_lock = threading.Lock()
         self._stop_event = threading.Event()
 
@@ -75,13 +80,7 @@ class LogsCache:
         self._known_messages: dict[Path, tuple[int, int]] = {}  # path -> (mtime_ns, size)
         self._known_project_paths: set[str] = set()
 
-        # Populate synchronously so the cache is ready before the server accepts
-        # connections, then start the background poller.
-        with log_event("Startup", "building initial session cache"):
-            self._rebuild_all()
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
-        log_event("Startup", "background update thread started")
+        self._thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Public read accessors
@@ -158,9 +157,20 @@ class LogsCache:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        with log_event("Startup", "building initial session cache"):
+            self._rebuild_all()
+        self._thread.start()
+        log_event("Startup", "background update thread started")
+
     def stop(self) -> None:
+        thread = self._thread
+        if thread is None:
+            msg = "ThreadNotRunning"
+            raise RuntimeError(msg)
         self._stop_event.set()
-        self._thread.join(timeout=5.0)
+        thread.join(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Background poller
@@ -250,14 +260,16 @@ class LogsCache:
 
     def _rebuild_all(self) -> None:
         """Full rebuild from disk — called at startup and on projects.txt additions."""
+        raw_projects = self._config.read_project_paths()
+
         with log_event("Rebuild", "listing groups"):
-            groups = list_groups(self._stats_service)
+            groups = list_groups(self._stats_service, raw_projects)
 
         with log_event("Rebuild", "listing projects"):
-            projects = list_projects(self._stats_service)
+            projects = list_projects(groups)
 
         with log_event("Rebuild", "computing projects fingerprint"):
-            fp = projects_fingerprint(self._stats_service)
+            fp = projects_fingerprint(raw_projects)
 
         sessions: dict[int, list[CombinedSessionMeta]] = {}
         sessions_fp: dict[int, Fingerprint] = {}
@@ -432,11 +444,7 @@ class LogsCache:
             )
 
     def _read_project_paths(self) -> set[str]:
-        try:
-            lines = self._projects_txt_path.read_text(encoding="utf-8").splitlines()
-            return {line.strip() for line in lines if line.strip()}
-        except OSError:
-            return set()
+        return {str(p) for p in self._config.read_project_paths()}
 
     def _handle_projects_txt_change(self) -> None:
         """Handle added/removed paths in projects.txt."""

@@ -117,6 +117,7 @@ class Services:
         return LogsService(
             pricing_service=self.pricing_service,
             stats_service=self.stats_service,
+            config_service=self.config_service,
             display_service=self.display_service,
         )
 
@@ -124,7 +125,10 @@ class Services:
     def stats_service(self) -> StatsService:
         from agent_wrap.domain.stats.service import StatsService
 
-        return StatsService(pricing_service=self.pricing_service)
+        return StatsService(
+            pricing_service=self.pricing_service,
+            config_service=self.config_service,
+        )
 
 
 services = Services()

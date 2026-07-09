@@ -145,7 +145,7 @@ def _aslogs_dirs(project: Path | list[Path]) -> list[Path]:
     return project if isinstance(project, list) else [logs_dir(project)]
 
 
-def list_groups(stats_service: StatsService) -> list[GroupInfo]:
+def list_groups(stats_service: StatsService, projects: list[Path]) -> list[GroupInfo]:
     """
     Group registered projects into transient projects by ``.agent_stats_leaf``.
 
@@ -164,11 +164,8 @@ def list_groups(stats_service: StatsService) -> list[GroupInfo]:
     behind by deleted projects / stale registry entries — its ``logs_dirs`` are the
     central ``<hash>`` dirs themselves and it has no member ``paths``.
     """
-    registry = AGENT_LAUNCHES_DIR / "projects.txt"
-    if not registry.is_file():
+    if not projects:
         return []
-
-    projects = stats_service.load_projects(registry)
     names: dict[Path, str] = {}
     members: dict[Path, list[Path]] = {}
     for path in projects:
@@ -205,10 +202,10 @@ def list_groups(stats_service: StatsService) -> list[GroupInfo]:
     return groups
 
 
-def list_projects(stats_service: StatsService) -> list[ProjectInfo]:
+def list_projects(groups: list[GroupInfo]) -> list[ProjectInfo]:
     """List transient projects (grouped) that have LiteLLM logs."""
     out: list[ProjectInfo] = []
-    for idx, group in enumerate(list_groups(stats_service)):
+    for idx, group in enumerate(groups):
         session_count = 0
         max_last_ts: float | None = None
         for logs_dir in group["logs_dirs"]:
@@ -501,7 +498,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
     return {"mtime": best_mtime, "size": total_size}
 
 
-def projects_fingerprint(stats_service: StatsService) -> Fingerprint:
+def projects_fingerprint(projects: list[Path]) -> Fingerprint:
     """
     Return a change-marker for all registered projects that have logs.
 
@@ -523,7 +520,7 @@ def projects_fingerprint(stats_service: StatsService) -> Fingerprint:
     except OSError:
         return {"mtime": None, "size": None}
 
-    for project in stats_service.load_projects(registry):
+    for project in projects:
         fp = sessions_fingerprint(project)
         if fp["mtime"] is None:
             continue

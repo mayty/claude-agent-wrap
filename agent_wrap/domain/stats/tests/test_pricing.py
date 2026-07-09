@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.cli.stats.tree import build_project_tree, flatten_tree
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
@@ -284,7 +285,9 @@ def test_aggregate_projects_merges_marked_group(
     b = runs / "agent-b"
     _write_session_log(a, "s1", [success_rec])
     _write_session_log(b, "s2", [success_rec])
-    rows, _totals, _by_day, _by_source = StatsService(pricing_service).aggregate_projects([a, b])
+    rows, _totals, _by_day, _by_source = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_projects([a, b])
     assert len(rows) == 1
     row = rows[0]
     assert row["path"] == runs
@@ -307,7 +310,9 @@ def test_aggregate_projects_empty_marker_is_transient(
     b = runs / "agent-b"
     _write_session_log(a, "s1", [success_rec])
     _write_session_log(b, "s2", [success_rec])
-    rows, _totals, _by_day, _by_source = StatsService(pricing_service).aggregate_projects([a, b])
+    rows, _totals, _by_day, _by_source = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_projects([a, b])
     assert len(rows) == 1
     row = rows[0]
     assert row["name"] == "runs"
@@ -327,7 +332,9 @@ def test_aggregate_projects_keeps_unmarked_separate(
     b = tmp_path / "proj-b"
     _write_session_log(a, "s1", [success_rec])
     _write_session_log(b, "s2", [success_rec])
-    rows, _totals, _by_day, _by_source = StatsService(pricing_service).aggregate_projects([a, b])
+    rows, _totals, _by_day, _by_source = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_projects([a, b])
     assert {r["name"] for r in rows} == {"proj-a", "proj-b"}
     assert all(r["transient"] is False for r in rows)
 
@@ -344,7 +351,9 @@ def test_aggregate_projects_windows_sessions_and_totals(
     proj = tmp_path / "proj"
     _write_session_log(proj, "in", [_dated_rec("2026-06-15")])
     _write_session_log(proj, "out", [_dated_rec("2026-01-01")])
-    rows, _totals, by_day, _by_source = StatsService(pricing_service).aggregate_projects(
+    rows, _totals, by_day, _by_source = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_projects(
         [proj],
         from_iso="2026-06-01",
         until_iso="2026-06-30",
@@ -412,7 +421,9 @@ def test_aggregate_orphaned_folds_into_totals(
     _write_central_log(tmp_path, "hashB", "s2", [success_rec, success_rec])
     totals_by_model: dict[str, Bucket] = {}
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
-    orphaned = StatsService(pricing_service).aggregate_orphaned(
+    orphaned = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_orphaned(
         [],
         totals_by_model,
         totals_by_day_by_model,
@@ -434,7 +445,9 @@ def test_aggregate_orphaned_none_when_all_reachable(
     project = tmp_path / "proj"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
-    orphaned = StatsService(pricing_service).aggregate_orphaned([project], {}, {}, {})
+    orphaned = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_orphaned([project], {}, {}, {})
     assert orphaned is None
 
 
@@ -467,7 +480,9 @@ def test_aggregate_projects_returns_per_source_totals(
 ) -> None:
     proj = tmp_path / "proj"
     _write_session_log(proj, "s1", [success_rec, _slo_rec(), _unrecoverable_rec()])
-    _rows, _totals, _by_day, by_source = StatsService(pricing_service).aggregate_projects([proj])
+    _rows, _totals, _by_day, by_source = StatsService(
+        pricing_service, config_service=Mock(spec=ConfigService)
+    ).aggregate_projects([proj])
     # by_source is {source: {model: Bucket}} — merge model buckets within each source.
     merged: dict[str, Bucket] = defaultdict(Bucket)
     for source, by_model in by_source.items():

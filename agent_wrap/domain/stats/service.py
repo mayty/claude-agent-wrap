@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import SCAN_PARALLEL_MIN_FILES, TOOL_DIR
@@ -33,7 +32,9 @@ from agent_wrap.domain.stats.scan import (
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from pathlib import Path
 
+    from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.pricing.models import Bucket
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.models import RawFileResult, RawRecord, ScanCache
@@ -42,8 +43,9 @@ if TYPE_CHECKING:
 class StatsService:
     """Token usage stats aggregation service."""
 
-    def __init__(self, pricing_service: PricingService) -> None:
+    def __init__(self, pricing_service: PricingService, config_service: ConfigService) -> None:
         self._pricing = pricing_service
+        self._config = config_service
 
     def aggregate_projects(
         self,
@@ -187,20 +189,6 @@ class StatsService:
             price_buckets(by_source, self._pricing)
             cache[logs_dir] = DirResult(sessions, last_ts, by_day, by_source)
         return cache
-
-    # Project-registry delegates (used by LogsService)----------------
-
-    def load_projects(self, registry: Path) -> list[Path]:
-        """Read registered project paths from *registry*."""
-        seen: set[str] = set()
-        out: list[Path] = []
-        for line in registry.read_text(encoding="utf-8", errors="replace").splitlines():
-            s = line.strip()
-            if not s or s in seen:
-                continue
-            seen.add(s)
-            out.append(Path(s))
-        return out
 
     def resolve_group(self, path: Path) -> GroupResult:
         """

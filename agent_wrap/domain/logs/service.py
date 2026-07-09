@@ -17,6 +17,7 @@ from agent_wrap.constants import (
     LOGS_TOOL_DIR_ENV,
     TOOL_DIR,
 )
+from agent_wrap.domain.logs.cache import LogsCache
 from agent_wrap.domain.logs.constants import (
     LOG_FILE_NAME,
     LOGS_VIEWER_LABEL,
@@ -31,12 +32,13 @@ from agent_wrap.domain.logs.daemon import (
     state_file,
     write_state,
 )
-from agent_wrap.domain.logs.server import bind_port, stop_cache
+from agent_wrap.domain.logs.server import bind_port, get_handler
 from agent_wrap.lib.process_utils import pid_alive
 
 if TYPE_CHECKING:
     from types import FrameType
 
+    from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.logs.models import DaemonState
     from agent_wrap.domain.pricing.service import PricingService
@@ -50,10 +52,12 @@ class LogsService:
         self,
         pricing_service: PricingService,
         stats_service: StatsService,
+        config_service: ConfigService,
         display_service: DisplayService,
     ) -> None:
         self._pricing = pricing_service
         self._stats = stats_service
+        self._config = config_service
         self._display = display_service
 
     # Daemon lifecycle -------------------------------------------------
@@ -90,7 +94,10 @@ class LogsService:
             os.dup2(lf.fileno(), sys.stderr.fileno())
 
         log_event("Logs server", "starting")
-        server = bind_port(port, pricing=self._pricing, stats_service=self._stats)
+        logs_cache = LogsCache(self._stats, self._config, self._pricing)
+        logs_cache.start()
+        handler = get_handler(self._pricing, logs_cache)
+        server = bind_port(port, handler)
         actual_port = server.server_address[1]
         write_state(os.getpid(), actual_port)
         log_event("Logs server", "started")
@@ -109,7 +116,7 @@ class LogsService:
             pass
         finally:
             server.server_close()
-            stop_cache()
+            logs_cache.stop()
         return 0
 
     def spawn_background(self, port: int) -> int:

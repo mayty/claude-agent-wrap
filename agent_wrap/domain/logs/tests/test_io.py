@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.io import (
@@ -41,7 +42,9 @@ if TYPE_CHECKING:
 @pytest.fixture
 def stats_svc() -> StatsService:
     """Return a StatsService with a no-op pricing service."""
-    return StatsService(pricing_service=Mock(spec=PricingService))
+    return StatsService(
+        pricing_service=Mock(spec=PricingService), config_service=Mock(spec=ConfigService)
+    )
 
 
 @pytest.fixture
@@ -49,7 +52,18 @@ def isolated_stats(mocker: pytest_mock.MockFixture, tmp_path: Path) -> StatsServ
     """Return a StatsService with TOOL_DIR isolated from real filesystem."""
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
     mocker.patch("agent_wrap.domain.logs.io.AGENT_LAUNCHES_DIR", tmp_path / ".agent-launches")
-    return StatsService(pricing_service=Mock(spec=PricingService))
+    mocker.patch(
+        "agent_wrap.domain.config.service.AGENT_LAUNCHES_DIR", tmp_path / ".agent-launches"
+    )
+    return StatsService(
+        pricing_service=Mock(spec=PricingService), config_service=Mock(spec=ConfigService)
+    )
+
+
+@pytest.fixture
+def config_svc() -> ConfigService:
+    """Return a real ConfigService for reading the project registry."""
+    return ConfigService(display_service=Mock(spec=DisplayService))
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +477,7 @@ def test_load_strings_round_trip(tmp_path: Path):
 
 
 def test_list_projects_filters_to_those_with_logs(
-    tmp_path: Path, isolated_stats: StatsService
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
 ) -> None:
     tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
@@ -478,21 +492,27 @@ def test_list_projects_filters_to_those_with_logs(
     (tool_dir / ".agent-launches" / "projects.txt").write_text(
         f"{with_logs}\n{without_logs}\n", encoding="utf-8"
     )
-    projects = list_projects(isolated_stats)
-    assert [p["path"] for p in projects] == [str(with_logs)]
-    assert projects[0]["sessions"] == 1
-    assert projects[0]["id"] == 0
+    raw_projects = config_svc.read_project_paths()
+    groups = list_groups(isolated_stats, raw_projects)
+    result = list_projects(groups)
+    assert [p["path"] for p in result] == [str(with_logs)]
+    assert result[0]["sessions"] == 1
+    assert result[0]["id"] == 0
 
 
-def test_list_projects_empty_without_registry(isolated_stats: StatsService) -> None:
-    assert list_projects(isolated_stats) == []
+def test_list_projects_empty_without_registry(
+    isolated_stats: StatsService, config_svc: ConfigService
+) -> None:
+    raw_projects = config_svc.read_project_paths()
+    groups = list_groups(isolated_stats, raw_projects)
+    assert list_projects(groups) == []
 
 
 # --- .agent_stats_leaf grouping --------------------------------------------
 
 
 def test_list_projects_aggregates_marked_group(
-    tmp_path: Path, isolated_stats: StatsService
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
 ) -> None:
     """Two projects under a .agent_stats_leaf marker collapse to one entry."""
     tool_dir = tmp_path
@@ -507,9 +527,11 @@ def test_list_projects_aggregates_marked_group(
     _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
 
-    projects = list_projects(isolated_stats)
-    assert len(projects) == 1
-    p = projects[0]
+    raw_projects = config_svc.read_project_paths()
+    groups = list_groups(isolated_stats, raw_projects)
+    result = list_projects(groups)
+    assert len(result) == 1
+    p = result[0]
     assert p["name"] == "batch-feb"
     assert p["path"] == str(runs)
     assert p["sessions"] == 2
@@ -528,7 +550,9 @@ def test_list_sessions_unions_group_members(tmp_path: Path) -> None:
     assert [s["session_id"] for s in sessions] == ["s2", "s1"]
 
 
-def test_unmarked_projects_stay_separate(tmp_path: Path, isolated_stats: StatsService) -> None:
+def test_unmarked_projects_stay_separate(
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
+) -> None:
     """Without a marker, each project remains its own entry (regression guard)."""
     tool_dir = tmp_path
     (tool_dir / ".agent-launches").mkdir(parents=True)
@@ -538,8 +562,10 @@ def test_unmarked_projects_stay_separate(tmp_path: Path, isolated_stats: StatsSe
     _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
 
-    projects = list_projects(isolated_stats)
-    assert {p["name"] for p in projects} == {"proj-a", "proj-b"}
+    raw_projects = config_svc.read_project_paths()
+    groups = list_groups(isolated_stats, raw_projects)
+    result = list_projects(groups)
+    assert {p["name"] for p in result} == {"proj-a", "proj-b"}
 
 
 # --- <orphaned> synthetic group --------------------------------------------
@@ -556,7 +582,7 @@ def _write_central(tool_dir: Path, hash_name: str, session_id: str, records: lis
 
 
 def test_orphaned_group_exposed_and_readable(
-    tmp_path: Path, isolated_stats: StatsService, mocker: MockerFixture
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService, mocker: MockerFixture
 ) -> None:
     """Central log dirs with no registered project surface as an <orphaned> group."""
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
@@ -579,13 +605,14 @@ def test_orphaned_group_exposed_and_readable(
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
     # The orphaned group is appended last with the synthetic name.
-    groups = list_groups(isolated_stats)
+    raw_projects = config_svc.read_project_paths()
+    groups = list_groups(isolated_stats, raw_projects)
     assert groups[-1]["name"] == "<orphaned>"
     assert groups[-1]["logs_dirs"] == [hash_b]
 
-    projects = list_projects(isolated_stats)
-    assert "<orphaned>" in {p["name"] for p in projects}
-    orphaned = next(p for p in projects if p["name"] == "<orphaned>")
+    result = list_projects(groups)
+    assert "<orphaned>" in {p["name"] for p in result}
+    orphaned = next(p for p in result if p["name"] == "<orphaned>")
     assert orphaned["sessions"] == 1
 
     # Resolving the group id yields the central dirs; reading them returns s2.
@@ -595,7 +622,7 @@ def test_orphaned_group_exposed_and_readable(
 
 
 def test_no_orphaned_group_when_all_reachable(
-    tmp_path: Path, isolated_stats: StatsService, mocker: MockerFixture
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService, mocker: MockerFixture
 ) -> None:
     """No orphaned group is appended when every central dir is project-reachable."""
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
@@ -609,7 +636,8 @@ def test_no_orphaned_group_when_all_reachable(
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    assert all(g["name"] != "<orphaned>" for g in list_groups(isolated_stats))
+    raw_projects = config_svc.read_project_paths()
+    assert all(g["name"] != "<orphaned>" for g in list_groups(isolated_stats, raw_projects))
 
 
 # --- read_last_record_ts ---
@@ -752,7 +780,7 @@ def test_lightweight_project_summary_skips_empty_sessions(tmp_path: Path):
 
 
 def test_list_projects_lightweight_produces_same_shape(
-    tmp_path: Path, isolated_stats: StatsService
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
 ) -> None:
     """Output dict must have the same keys as before the optimization."""
     tool_dir = tmp_path
@@ -765,16 +793,20 @@ def test_list_projects_lightweight_produces_same_shape(
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
-    projects = list_projects(isolated_stats)
-    assert len(projects) == 1
-    p = projects[0]
+    raw_projects = config_svc.read_project_paths()
+    groups = list_groups(isolated_stats, raw_projects)
+    result = list_projects(groups)
+    assert len(result) == 1
+    p = result[0]
     assert set(p.keys()) == {"id", "path", "name", "sessions", "last_ts"}
     assert p["sessions"] == 1
     assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
 
 
+@pytest.mark.usefixtures("isolated_stats")
 def test_projects_fingerprint_reflects_changes(
-    tmp_path: Path, isolated_stats: StatsService
+    tmp_path: Path,
+    config_svc: ConfigService,
 ) -> None:
     """Fingerprint changes when a record is appended anywhere across projects."""
     tool_dir = tmp_path
@@ -787,7 +819,8 @@ def test_projects_fingerprint_reflects_changes(
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    fp1 = projects_fingerprint(isolated_stats)
+    raw_projects = config_svc.read_project_paths()
+    fp1 = projects_fingerprint(raw_projects)
     assert isinstance(fp1["mtime"], int)
     assert isinstance(fp1["size"], int)
     assert fp1["size"] > 0
@@ -799,13 +832,18 @@ def test_projects_fingerprint_reflects_changes(
         "s2",
         [_ts_rec("2026-06-05T01:00:00+00:00", model="m/b")],
     )
-    fp2 = projects_fingerprint(isolated_stats)
+    raw_projects = config_svc.read_project_paths()
+    fp2 = projects_fingerprint(raw_projects)
     assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
 
 
-def test_projects_fingerprint_null_when_no_registry(isolated_stats: StatsService) -> None:
+@pytest.mark.usefixtures("isolated_stats")
+def test_projects_fingerprint_null_when_no_registry(
+    config_svc: ConfigService,
+) -> None:
     """No registry file → null fingerprint."""
-    assert projects_fingerprint(isolated_stats) == {"mtime": None, "size": None}
+    raw_projects = config_svc.read_project_paths()
+    assert projects_fingerprint(raw_projects) == {"mtime": None, "size": None}
 
 
 # --- meta.json caching (read_meta_json / write_meta_json / scan_session_meta) ---

@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.daemon import (
     log_event,
@@ -32,6 +33,7 @@ def logs_svc() -> LogsService:
     return LogsService(
         pricing_service=Mock(spec=PricingService),
         stats_service=Mock(spec=StatsService),
+        config_service=Mock(spec=ConfigService),
         display_service=Mock(spec=DisplayService),
     )
 

@@ -13,6 +13,8 @@ from unittest.mock import Mock
 import pytest
 
 import agent_wrap.domain.stats.service as stats_mod
+from agent_wrap.domain.config.service import ConfigService
+from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.cache import LogsCache
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
@@ -67,15 +69,43 @@ def pricing() -> PricingService:
 def isolated_stats(tmp_path: Path) -> StatsService:
     stats_mod.TOOL_DIR = tmp_path
     (tmp_path / ".agent-launches").mkdir(parents=True, exist_ok=True)
-    return StatsService(Mock(spec=PricingService))
+    return StatsService(Mock(spec=PricingService), Mock(spec=ConfigService))
+
+
+@pytest.fixture
+def config_svc() -> ConfigService:
+    return ConfigService(display_service=Mock(spec=DisplayService))
+
+
+@pytest.fixture
+def config_mock() -> ConfigService:
+    mock = Mock(spec=ConfigService)
+    mock.read_project_paths.return_value = cast("list[Path]", [])
+    return mock
 
 
 _CWD = Path()
 
 
+@pytest.fixture
+def started_cache(
+    pricing: PricingService, config_mock: ConfigService
+) -> Generator[LogsCache, None, None]:
+    stats = Mock(spec=StatsService)
+    stats.resolve_group.return_value = (_CWD, ".", False)
+    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
+    cache = LogsCache(stats, config_mock, pricing)
+    cache.start()
+    try:
+        yield cache
+    finally:
+        cache.stop()
+
+
 def test_cache_populated_when_registry_exists(
     tmp_path: Path,
     pricing: PricingService,
+    config_svc: ConfigService,
 ) -> None:
     """Cache populates from a project that has a litellm-logs symlink."""
     stats_mod.TOOL_DIR = tmp_path
@@ -90,8 +120,9 @@ def test_cache_populated_when_registry_exists(
 
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing)
-    cache = LogsCache(real_stats, pricing)
+    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
     try:
         groups = cache.get_groups()
         assert len(groups) == 1
@@ -107,11 +138,13 @@ def test_cache_populated_when_registry_exists(
 def test_cache_empty_when_no_registry(
     tmp_path: Path,
     pricing: PricingService,
+    config_svc: ConfigService,
 ) -> None:
     """Returns empty lists when projects.txt doesn't exist."""
     stats_mod.TOOL_DIR = tmp_path / "nonexistent"
-    real_stats = stats_mod.StatsService(pricing)
-    cache = LogsCache(real_stats, pricing)
+    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
     try:
         assert cache.get_groups() == []
         assert cache.get_projects() == []
@@ -123,133 +156,84 @@ def test_cache_empty_when_no_registry(
 
 
 def test_get_logs_dirs_returns_none_for_unknown_project(
-    pricing: PricingService,
+    started_cache: LogsCache,
 ) -> None:
     """Unknown project id returns None."""
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        assert cache.get_logs_dirs(999) is None
-        assert cache.get_sessions(999) is None
-        assert cache.get_sessions_fingerprint(999) is None
-    finally:
-        cache.stop()
+    assert started_cache.get_logs_dirs(999) is None
+    assert started_cache.get_sessions(999) is None
+    assert started_cache.get_sessions_fingerprint(999) is None
 
 
-def test_get_session_fingerprint_unknown(pricing: PricingService) -> None:
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        assert cache.get_session_fingerprint(999, "abc") is None
-    finally:
-        cache.stop()
+def test_get_session_fingerprint_unknown(
+    started_cache: LogsCache,
+) -> None:
+    assert started_cache.get_session_fingerprint(999, "abc") is None
 
 
-def test_store_and_retrieve(pricing: PricingService) -> None:
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        cache.set_hot_session(
-            0, "sid1", [{"__type__": "session_meta", "session_id": "sid1"}], "strings-data"
-        )
-        hot = cache.get_hot_session(0, "sid1")
-        assert hot is not None
-        assert hot == ([{"__type__": "session_meta", "session_id": "sid1"}], "strings-data")
-    finally:
-        cache.stop()
+def test_store_and_retrieve(started_cache: LogsCache) -> None:
+    started_cache.set_hot_session(
+        0, "sid1", [{"__type__": "session_meta", "session_id": "sid1"}], "strings-data"
+    )
+    hot = started_cache.get_hot_session(0, "sid1")
+    assert hot is not None
+    assert hot == ([{"__type__": "session_meta", "session_id": "sid1"}], "strings-data")
 
 
-def test_miss_for_different_session(pricing: PricingService) -> None:
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        cache.set_hot_session(0, "sid1", [{"k": "v"}], "strings")
-        assert cache.get_hot_session(0, "sid2") is None
-        assert cache.get_hot_session(1, "sid1") is None
-    finally:
-        cache.stop()
+def test_miss_for_different_session(started_cache: LogsCache) -> None:
+    started_cache.set_hot_session(0, "sid1", [{"k": "v"}], "strings")
+    assert started_cache.get_hot_session(0, "sid2") is None
+    assert started_cache.get_hot_session(1, "sid1") is None
 
 
-def test_overwrite_replaces(pricing: PricingService) -> None:
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        cache.set_hot_session(0, "s", [{"data": "old"}], "old-strings")
-        cache.set_hot_session(0, "s", [{"data": "new"}], "new-strings")
-        hot = cache.get_hot_session(0, "s")
-        assert hot is not None
-        assert hot[0] == [{"data": "new"}]
-        assert hot[1] == "new-strings"
-    finally:
-        cache.stop()
+def test_overwrite_replaces(started_cache: LogsCache) -> None:
+    started_cache.set_hot_session(0, "s", [{"data": "old"}], "old-strings")
+    started_cache.set_hot_session(0, "s", [{"data": "new"}], "new-strings")
+    hot = started_cache.get_hot_session(0, "s")
+    assert hot is not None
+    assert hot[0] == [{"data": "new"}]
+    assert hot[1] == "new-strings"
 
 
-def test_merge_combined_dedupes_repeated_provider(pricing: PricingService) -> None:
+def test_merge_combined_dedupes_repeated_provider(
+    started_cache: LogsCache,
+) -> None:
     """Merging a second meta entry from the same provider doesn't duplicate the badge."""
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        existing = {
-            "session_id": "s1",
+    existing = {
+        "session_id": "s1",
+        "alias": None,
+        "title": None,
+        "count": 1,
+        "first_ts": 1.0,
+        "last_ts": 1.0,
+        "models": ["a"],
+        "providers": ["litellm-bedrock"],
+    }
+    started_cache._merge_combined(
+        existing,
+        {
+            "provider": "litellm-bedrock",
+            "count": 1,
+            "first_ts": 5.0,
+            "last_ts": 5.0,
+            "models": ["b"],
             "alias": None,
             "title": None,
-            "count": 1,
-            "first_ts": 1.0,
-            "last_ts": 1.0,
-            "models": ["a"],
-            "providers": ["litellm-bedrock"],
-        }
-        cache._merge_combined(
-            existing,
-            {
-                "provider": "litellm-bedrock",
-                "count": 1,
-                "first_ts": 5.0,
-                "last_ts": 5.0,
-                "models": ["b"],
-                "alias": None,
-                "title": None,
-            },
-        )
-        assert existing["providers"] == ["litellm-bedrock"]
-        assert existing["count"] == 2
-    finally:
-        cache.stop()
+        },
+    )
+    assert existing["providers"] == ["litellm-bedrock"]
+    assert existing["count"] == 2
 
 
-def test_concurrent_reads_dont_crash(pricing: PricingService) -> None:
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
+def test_concurrent_reads_dont_crash(started_cache: LogsCache) -> None:
     errors: list[BaseException] = []
 
     def reader() -> None:
         try:
             for _ in range(100):
-                cache.get_groups()
-                cache.get_projects()
-                cache.get_projects_fingerprint()
-                cache.get_hot_session(0, "x")
+                started_cache.get_groups()
+                started_cache.get_projects()
+                started_cache.get_projects_fingerprint()
+                started_cache.get_hot_session(0, "x")
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -260,26 +244,21 @@ def test_concurrent_reads_dont_crash(pricing: PricingService) -> None:
         t.join()
 
     assert not errors
-    cache.stop()
 
 
-def test_stop_terminates_poll_thread(pricing: PricingService) -> None:
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    cache.stop()
+def test_stop_terminates_poll_thread(started_cache: LogsCache) -> None:
+    started_cache.stop()
     # If stop() returned, the thread is joined.  Give it a bit more time.
     time.sleep(0.1)
     # Access still works after stop.
-    _groups = cache.get_groups()
+    _groups = started_cache.get_groups()
     assert isinstance(_groups, list)
 
 
 def test_oserror_handled_gracefully_during_poll(
     tmp_path: Path,
     pricing: PricingService,
+    config_svc: ConfigService,
     mocker: MockerFixture,
 ) -> None:
     """An OSError during stat doesn't kill the poll thread."""
@@ -294,8 +273,9 @@ def test_oserror_handled_gracefully_during_poll(
     (project / ".claude" / "litellm-logs").symlink_to(logs_target, target_is_directory=True)
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing)
-    cache = LogsCache(real_stats, pricing)
+    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
     try:
         # Force an OSError during the poll by making iterdir raise.
         original_iterdir = Path.iterdir
@@ -321,6 +301,7 @@ def test_oserror_handled_gracefully_during_poll(
 def test_gather_directory_manifest_and_path_to_key_are_consistent(
     tmp_path: Path,
     pricing: PricingService,
+    config_svc: ConfigService,
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
 ) -> None:
@@ -335,8 +316,9 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(
     write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
     (launches / "projects.txt").write_text(f"{proj_a}\n{proj_b}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing)
-    cache = LogsCache(real_stats, pricing)
+    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
     try:
         manifest, path_to_key = cache._gather_directory_manifest()
         assert manifest.keys() == path_to_key.keys()
@@ -356,6 +338,7 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(
 def test_changed_session_resolved_via_manifest_diff(
     tmp_path: Path,
     pricing: PricingService,
+    config_svc: ConfigService,
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
 ) -> None:
@@ -368,8 +351,9 @@ def test_changed_session_resolved_via_manifest_diff(
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing)
-    cache = LogsCache(real_stats, pricing)
+    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
     try:
         sessions = cache.get_sessions(0)
         assert sessions is not None
@@ -391,6 +375,7 @@ def test_changed_session_resolved_via_manifest_diff(
 def test_deleted_session_removed_after_directory_disappears(
     tmp_path: Path,
     pricing: PricingService,
+    config_svc: ConfigService,
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
 ) -> None:
@@ -403,8 +388,9 @@ def test_deleted_session_removed_after_directory_disappears(
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing)
-    cache = LogsCache(real_stats, pricing)
+    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
     try:
         assert cache.get_session_fingerprint(0, "sess-1") is not None
 
@@ -430,25 +416,17 @@ def test_deleted_session_removed_after_directory_disappears(
 )
 def test_resolve_deleted_project(
     tmp_path: Path,
-    pricing: PricingService,
+    started_cache: LogsCache,
     *,
     relative_to_group: bool,
     expected_pid: int | None,
 ) -> None:
     """Resolution is pure path comparison — no filesystem access needed."""
-    stats = Mock(spec=StatsService)
-    stats.load_projects.return_value = cast("list[Path]", [])
-    stats.resolve_group.return_value = (_CWD, ".", False)
-    stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
-    cache = LogsCache(stats, pricing)
-    try:
-        logs_dir = tmp_path / "logs"
-        cache._groups = [{"root": logs_dir, "name": "g", "paths": [], "logs_dirs": [logs_dir]}]
-        if relative_to_group:
-            mf_path = logs_dir / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-        else:
-            mf_path = tmp_path / "elsewhere" / "sess-1" / "messages.jsonl"
+    logs_dir = tmp_path / "logs"
+    started_cache._groups = [{"root": logs_dir, "name": "g", "paths": [], "logs_dirs": [logs_dir]}]
+    if relative_to_group:
+        mf_path = logs_dir / "litellm-bedrock" / "sess-1" / "messages.jsonl"
+    else:
+        mf_path = tmp_path / "elsewhere" / "sess-1" / "messages.jsonl"
 
-        assert cache._resolve_deleted_project(mf_path) == expected_pid
-    finally:
-        cache.stop()
+    assert started_cache._resolve_deleted_project(mf_path) == expected_pid

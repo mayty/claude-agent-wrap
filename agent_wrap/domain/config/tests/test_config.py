@@ -405,9 +405,10 @@ def test_record_project_keeps_file_sorted(
     monkeypatch.delenv("PWD", raising=False)
     svc.record_project()
 
-    lines = projects_file.read_text().splitlines()
-    assert lines == sorted(lines)
-    assert str(extra) in lines
+    # The on-disk format may be compressed; verify expanded paths are sorted.
+    paths = svc.read_project_paths()
+    assert paths == sorted(paths)
+    assert extra in paths
 
 
 # --- link_litellm_logs ---
