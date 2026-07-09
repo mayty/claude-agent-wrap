@@ -239,3 +239,16 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .classifier-block .classifier-result.blocked { color: var(--blocked); }
 .classifier-block .classifier-reason { color: var(--muted); font-size: 12px;
                                        margin-top: 4px; }
+
+/* Loading hash spinner */
+.loading-hash {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); font-style: italic;
+}
+.spinner-icon {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; flex-shrink: 0;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+@keyframes spinner-rotate { to { transform: rotate(360deg); } }

@@ -5,7 +5,12 @@ const chatBody = () => document.querySelector("#chat .chat-body");
 const chatHead = () => document.querySelector("#chat .chat-head");
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
               poll: null, fp: null, gen: 0,
-              listPoll: null, projectsFp: null, sessionsFp: null };
+              listPoll: null, projectsFp: null, sessionsFp: null,
+              rawReqs: [], pendingHashes: null };
+
+function hasPendingHashes() {
+  return state.pendingHashes !== null && state.pendingHashes.size > 0;
+}
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -82,7 +87,14 @@ function resolveRecord(r, strings) {
   function walk(v) {
     if (typeof v === "string") {
       const resolved = strings[v];
-      return resolved !== undefined ? resolved : v;
+      if (resolved !== undefined) return resolved;
+      // Detect unresolved hash references (format: "hash:" + 64 hex chars).
+      if (/^hash:[a-f0-9]{64}$/.test(v)) {
+        if (state.pendingHashes === null) state.pendingHashes = new Set();
+        state.pendingHashes.add(v);
+        return "➳ Loading…";
+      }
+      return v;
     }
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === "object") {
@@ -218,6 +230,31 @@ function el(tag, cls, text) {
   return e;
 }
 
+// Replace "➳ Loading…" text nodes in `container` with spinner elements.
+// Uses exact-match so JSON-stringified tool inputs (where the placeholder is
+// embedded in a larger string) are left alone.
+function replaceLoadingPlaceholders(container) {
+  const placeholder = "➳ Loading…";
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    null,
+    false
+  );
+  const textNodes = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.trim() === placeholder) {
+      textNodes.push(walker.currentNode);
+    }
+  }
+  for (const node of textNodes) {
+    const span = document.createElement("span");
+    span.className = "loading-hash";
+    span.innerHTML = '<span class="spinner-icon"></span> Loading…';
+    node.parentNode.replaceChild(span, node);
+  }
+}
+
 function renderProjectsList(projects) {
   const list = $("proj-list");
   list.innerHTML = "";
@@ -315,6 +352,8 @@ async function selectSession(s, item) {
   const gen = ++state.gen;
   state.session = s.session_id;
   state.reqs = [];
+  state.rawReqs = [];
+  state.pendingHashes = null;
   state.groups = null;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
@@ -334,11 +373,14 @@ async function selectSession(s, item) {
     body.innerHTML = "";
     let displayIdx = 0;
     const reqs = [];
+    const rawReqs = [];
 
     const { meta } = await readNDJSONStream(response, (record) => {
       if (gen !== state.gen) return;
+      rawReqs.push(record);
       const resolved = resolveRecord(record, strings);
       reqs.push(resolved);
+      state.rawReqs = rawReqs;
       state.reqs = reqs;
       body.appendChild(renderTurn(resolved, ++displayIdx));
       renderChatHead();
@@ -353,6 +395,7 @@ async function selectSession(s, item) {
     // Step 3: finalize — tabs replace spinner, body stays intact
     const session_meta = meta || s;
     state.reqs = reqs;
+    state.rawReqs = rawReqs;
     state.session_meta = session_meta;
     state.groups = groupBySubagent(reqs, buildSubagentCallMap(reqs));
     insertMarkers(state.groups);
@@ -418,7 +461,7 @@ async function tick(s) {
   state.tickInFlight = true;
   try {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
-    if (fp === state.fp) return;
+    if (fp === state.fp && !hasPendingHashes()) return;
     const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
     const fromIndex = state.reqs.length;
     const response = await fetch(`/api/session?${sessionQuery(s)}&from=${fromIndex}`);
@@ -426,6 +469,27 @@ async function tick(s) {
     const { meta, records } = await readNDJSONStream(response);
     if (state.session !== s.session_id) return; // user moved on during the fetch
     const strings = parseStrings(stringsText);
+
+    // fp unchanged + pending hashes: try to resolve without fetching session data.
+    if (fp === state.fp && hasPendingHashes()) {
+      let anyResolved = false;
+      for (const h of state.pendingHashes) {
+        if (strings[h] !== undefined) { anyResolved = true; break; }
+      }
+      if (anyResolved) {
+        state.pendingHashes = new Set();  // clear; resolveRecord repopulates
+        state.reqs = state.rawReqs.map(r => resolveRecord(r, strings));
+        if (!hasPendingHashes()) state.pendingHashes = null;
+        const scrollTop = chatBody().scrollTop;
+        renderStream();
+        requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+      }
+      state.fp = fp;
+      renderChatHead();
+      return;
+    }
+
+    for (const r of records) state.rawReqs.push(r);
     const resolved = records.map(r => resolveRecord(r, strings));
 
     // If no new records arrived, just refresh metadata and fingerprint.
@@ -440,17 +504,21 @@ async function tick(s) {
     // If the total count is less than what we already have, records were
     // deleted or the session was rebuilt — do a full re-fetch and rebuild.
     if (meta && meta.count < state.reqs.length) {
+      const scrollTop = chatBody().scrollTop;
       const fullResp = await fetch(`/api/session?${sessionQuery(s)}`);
       if (!fullResp.ok) return;
       const full = await readNDJSONStream(fullResp);
       if (state.session !== s.session_id) return;
       const fullResolved = full.records.map(r => resolveRecord(r, strings));
+      state.rawReqs = full.records;
       state.reqs = fullResolved;
+      state.pendingHashes = null;
       state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
       state.session_meta = full.meta || state.session_meta;
       state.fp = fp;
       updateSessionListItem(full.meta);
       renderStream();
+      requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
       return;
     }
 
@@ -603,6 +671,7 @@ function appendThinkingBlock(tb, parent) {
     box.appendChild(el("div", "meta", "(thinking occurred; not shown by the model)"));
   }
   parent.appendChild(box);
+  replaceLoadingPlaceholders(box);
 }
 
 function renderContent(content, parent) {
@@ -667,6 +736,7 @@ function renderContent(content, parent) {
       parent.appendChild(box);
     }
   }
+  replaceLoadingPlaceholders(parent);
 }
 
 // Copy `text` to the clipboard, flashing the button to confirm. Uses the async
@@ -850,6 +920,7 @@ function renderFullDetail(r) {
     body.appendChild(msgEl(m.role || "user", m.content));
   }
   renderResponse(r.response, body);
+  replaceLoadingPlaceholders(body);
   return body;
 }
 
@@ -989,6 +1060,7 @@ function renderTurn(r, displayIdx) {
   if (info) turn.appendChild(info);
 
   turn.onclick = () => openModal(r, displayIdx);
+  replaceLoadingPlaceholders(turn);
   return turn;
 }
 
