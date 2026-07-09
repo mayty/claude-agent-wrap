@@ -25,6 +25,7 @@ from agent_wrap.domain.logs.constants import (
     STOP_TIMEOUT_SEC,
 )
 from agent_wrap.domain.logs.daemon import (
+    log_event,
     read_state,
     state_dir,
     state_file,
@@ -76,16 +77,23 @@ class LogsService:
 
     def serve_foreground(self, port: int) -> int:
         """Blocking HTTP serve loop — the detached child's body. Writes state then blocks."""
-        server = bind_port(port, pricing=self._pricing, stats_service=self._stats)
-        actual_port = server.server_address[1]
-        write_state(os.getpid(), actual_port)
-        # Redirect stdout/stderr to the logfile so the child never writes to the
-        # parent's terminal (the Popen's DEVNULL handles the immediate handles, but
-        # sub-libraries might reopen; the logfile captures them all).
+        # Redirect stdout/stderr to the logfile before doing any work, so the child
+        # never writes to the parent's terminal (the Popen's DEVNULL handles the
+        # immediate handles, but sub-libraries might reopen; the logfile captures
+        # them all) and so startup logging below actually lands somewhere —
+        # Popen wired stdout/stderr to DEVNULL, so anything printed before this
+        # redirect is lost.
+        state_dir().mkdir(parents=True, exist_ok=True)
         logfile = state_dir() / LOG_FILE_NAME
         with logfile.open("a", encoding="utf-8") as lf:
             os.dup2(lf.fileno(), sys.stdout.fileno())
             os.dup2(lf.fileno(), sys.stderr.fileno())
+
+        log_event("Logs server", "starting")
+        server = bind_port(port, pricing=self._pricing, stats_service=self._stats)
+        actual_port = server.server_address[1]
+        write_state(os.getpid(), actual_port)
+        log_event("Logs server", "started")
 
         def _handle_signal(signum: int, frame: FrameType | None) -> None:  # noqa: ARG001
             # server.shutdown() blocks on __is_shut_down.wait() which deadlocks

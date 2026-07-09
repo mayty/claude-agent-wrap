@@ -1,3 +1,4 @@
+# This file has been edited with the assistance of an AI tool.
 from __future__ import annotations
 
 import json
@@ -17,8 +18,6 @@ from agent_wrap.domain.stats.service import StatsService
 if TYPE_CHECKING:
     from pathlib import Path
 
-# --- resolve_static (path mapping + traversal safety) ---
-
 
 def test_resolve_static_maps_root_to_index(tmp_path: Path):
     assert resolve_static("/", root=tmp_path) == (tmp_path / "index.html").resolve()
@@ -35,9 +34,6 @@ def test_resolve_static_rejects_traversal(tmp_path: Path):
     # Escaping the page dir must be refused, not resolved to a sibling file.
     assert resolve_static("/../logs.py", root=page) is None
     assert resolve_static("/../../etc/passwd", root=page) is None
-
-
-# --- HTTP handler helpers ----------------------------------------------------
 
 
 def _find_free_port() -> int:
@@ -105,9 +101,6 @@ def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
     return t
 
 
-# --- group / stats helpers ---------------------------------------------------
-
-
 def _write_session(project: Path, provider: str, session_id: str) -> Path:
     """Write a minimal messages.jsonl for *session_id* and return its dir."""
     sdir = project / ".claude" / "litellm-logs" / provider / session_id
@@ -129,126 +122,134 @@ def _write_session(project: Path, provider: str, session_id: str) -> Path:
     return sdir
 
 
-# --- API endpoint tests ------------------------------------------------------
+@pytest.fixture
+def api_server(tmp_path: Path) -> tuple[int, Path]:
+    """Start the logs server against a fresh project; return (port, project_dir)."""
+    port = _find_free_port()
+    project = tmp_path / "testproj"
+    _write_session(project, "litellm-bedrock", "abc12345-6789-abcd-ef01-234567890abc")
+    # list_groups needs the registry file to exist; its contents are
+    # served by the mocked StatsService.load_projects.
+    reg = tmp_path / ".agent-launches" / "projects.txt"
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    reg.write_text("", encoding="utf-8")
+    stats = Mock(spec=StatsService)
+    stats.load_projects.return_value = [project]
+    stats.resolve_group.return_value = (project, project.name, False)
+    stats.orphaned_log_dirs.return_value = []  # type: ignore[implicit-any-empty-container]
+    _start_server(port, stats)
+    return port, project
 
 
-class TestAPIEndpoints:
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.port = _find_free_port()
-        self.project = tmp_path / "testproj"
-        _write_session(self.project, "litellm-bedrock", "abc12345-6789-abcd-ef01-234567890abc")
-        # list_groups needs the registry file to exist; its contents are
-        # served by the mocked StatsService.load_projects.
-        reg = tmp_path / ".agent-launches" / "projects.txt"
-        reg.parent.mkdir(parents=True, exist_ok=True)
-        reg.write_text("", encoding="utf-8")
-        stats = Mock(spec=StatsService)
-        stats.load_projects.return_value = [self.project]
-        stats.resolve_group.return_value = (self.project, self.project.name, False)
-        stats.orphaned_log_dirs.return_value = []  # type: ignore[implicit-any-empty-container]
-        _start_server(self.port, stats)
+def test_sessions_returns_list(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions?project=0")
+    assert status == 200
+    assert isinstance(body, list)
+    assert len(body) == 1
+    assert body[0]["session_id"] == "abc12345-6789-abcd-ef01-234567890abc"
+    assert body[0]["count"] == 1
 
-    # --- /api/sessions -------------------------------------------------------
 
-    def test_sessions_returns_list(self):
-        status, body = _get_json(self.port, "/api/sessions?project=0")
-        assert status == 200
-        assert isinstance(body, list)
-        assert len(body) == 1
-        assert body[0]["session_id"] == "abc12345-6789-abcd-ef01-234567890abc"
-        assert body[0]["count"] == 1
+def test_sessions_missing_project_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions")
+    assert status == 400
+    assert "missing project param" in body["error"]
 
-    def test_sessions_missing_project_returns_400(self):
-        status, body = _get_json(self.port, "/api/sessions")
-        assert status == 400
-        assert "missing project param" in body["error"]
 
-    def test_sessions_invalid_project_returns_400(self):
-        status, body = _get_json(self.port, "/api/sessions?project=notanumber")
-        assert status == 400
-        assert "invalid project id" in body["error"]
+def test_sessions_invalid_project_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions?project=notanumber")
+    assert status == 400
+    assert "invalid project id" in body["error"]
 
-    def test_sessions_unknown_project_returns_400(self):
-        status, body = _get_json(self.port, "/api/sessions?project=99")
-        assert status == 400
-        assert "unknown project id" in body["error"]
 
-    # --- /api/sessions-stat --------------------------------------------------
+def test_sessions_unknown_project_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions?project=99")
+    assert status == 400
+    assert "unknown project id" in body["error"]
 
-    def test_sessions_stat_returns_fingerprint(self):
-        status, body = _get_json(self.port, "/api/sessions-stat?project=0")
-        assert status == 200
-        assert isinstance(body, dict)
-        assert "mtime" in body
-        assert "size" in body
-        assert body["mtime"] is not None
-        assert body["size"] is not None
 
-    # --- /api/session --------------------------------------------------------
+def test_sessions_stat_returns_fingerprint(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions-stat?project=0")
+    assert status == 200
+    assert isinstance(body, dict)
+    assert "mtime" in body
+    assert "size" in body
+    assert body["mtime"] is not None
+    assert body["size"] is not None
 
-    def test_session_returns_details(self):
-        sid = "abc12345-6789-abcd-ef01-234567890abc"
-        status, lines = _get_ndjson(self.port, f"/api/session?project=0&session={sid}")
-        assert status == 200
-        assert len(lines) >= 2
-        # First line is the meta header
-        assert lines[0]["__type__"] == "session_meta"
-        assert lines[0]["session_id"] == sid
-        # Subsequent lines are records (no __type__)
-        for line in lines[1:]:
-            assert "__type__" not in line
 
-    def test_session_missing_session_returns_400(self):
-        status, body = _get_json(self.port, "/api/session?project=0")
-        assert status == 400
-        assert "missing session param" in body["error"]
+def test_session_returns_details(api_server: tuple[int, Path]):
+    port, _project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    status, lines = _get_ndjson(port, f"/api/session?project=0&session={sid}")
+    assert status == 200
+    assert len(lines) >= 2
+    # First line is the meta header
+    assert lines[0]["__type__"] == "session_meta"
+    assert lines[0]["session_id"] == sid
+    # Subsequent lines are records (no __type__)
+    for line in lines[1:]:
+        assert "__type__" not in line
 
-    # --- /api/strings -------------------------------------------------------
 
-    def test_strings_endpoint_returns_text(self):
-        sid = "abc12345-6789-abcd-ef01-234567890abc"
-        sdir = _write_session(self.project, "litellm-bedrock", sid)
-        (sdir / "strings.jsonl").write_text(
-            '{"hash": "hash:a", "original": "AAA"}\n', encoding="utf-8"
-        )
-        status, body = _get_text(self.port, f"/api/strings?project=0&session={sid}")
-        assert status == 200
-        assert "hash:a" in body
-        assert "AAA" in body
+def test_session_missing_session_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/session?project=0")
+    assert status == 400
+    assert "missing session param" in body["error"]
 
-    def test_strings_endpoint_empty_when_no_file(self):
-        sid = "abc12345-6789-abcd-ef01-234567890abc"
-        _write_session(self.project, "litellm-bedrock", sid)
-        status, body = _get_text(self.port, f"/api/strings?project=0&session={sid}")
-        assert status == 200
-        assert body == ""
 
-    # --- /api/session-stat ---------------------------------------------------
+def test_strings_endpoint_returns_text(api_server: tuple[int, Path]):
+    port, project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    sdir = _write_session(project, "litellm-bedrock", sid)
+    (sdir / "strings.jsonl").write_text('{"hash": "hash:a", "original": "AAA"}\n', encoding="utf-8")
+    status, body = _get_text(port, f"/api/strings?project=0&session={sid}")
+    assert status == 200
+    assert "hash:a" in body
+    assert "AAA" in body
 
-    def test_session_stat_returns_fingerprint(self):
-        sid = "abc12345-6789-abcd-ef01-234567890abc"
-        status, body = _get_json(self.port, f"/api/session-stat?project=0&session={sid}")
-        assert status == 200
-        assert isinstance(body, dict)
-        assert "mtime" in body
-        assert "size" in body
 
-    def test_session_stat_missing_session_returns_400(self):
-        status, body = _get_json(self.port, "/api/session-stat?project=0")
-        assert status == 400
-        assert "missing session param" in body["error"]
+def test_strings_endpoint_empty_when_no_file(api_server: tuple[int, Path]):
+    port, project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    _write_session(project, "litellm-bedrock", sid)
+    status, body = _get_text(port, f"/api/strings?project=0&session={sid}")
+    assert status == 200
+    assert body == ""
 
-    # --- /api/groups (unchanged by our fix, but verify not broken) -----------
 
-    def test_groups_returns_list(self):
-        status, body = _get_json(self.port, "/api/groups")
-        assert status == 200
-        assert isinstance(body, list)
+def test_session_stat_returns_fingerprint(api_server: tuple[int, Path]):
+    port, _project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    status, body = _get_json(port, f"/api/session-stat?project=0&session={sid}")
+    assert status == 200
+    assert isinstance(body, dict)
+    assert "mtime" in body
+    assert "size" in body
 
-    # --- /api/projects (unchanged, but verify not broken) -------------------
 
-    def test_projects_returns_list(self):
-        status, body = _get_json(self.port, "/api/projects")
-        assert status == 200
-        assert isinstance(body, list)
+def test_session_stat_missing_session_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/session-stat?project=0")
+    assert status == 400
+    assert "missing session param" in body["error"]
+
+
+def test_groups_returns_list(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/groups")
+    assert status == 200
+    assert isinstance(body, list)
+
+
+def test_projects_returns_list(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/projects")
+    assert status == 200
+    assert isinstance(body, list)

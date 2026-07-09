@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import signal
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -9,6 +10,7 @@ import pytest
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.daemon import (
+    log_event,
     read_state,
     state_file,
     write_state,
@@ -62,6 +64,23 @@ def test_write_thenread_state_round_trip():
     write_state(pid=4242, port=8765)
     state = read_state()
     assert state == {"pid": 4242, "port": 8765}
+
+
+def test_log_event_prints_timestamped_message(capsys: pytest.CaptureFixture[str]):
+    log_event("Category", "hello")
+    out = capsys.readouterr().out
+    assert re.fullmatch(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] Category: hello\n", out)
+
+
+def test_log_event_context_manager_logs_completion(capsys: pytest.CaptureFixture[str]):
+    with log_event("Category", "hello"):
+        pass
+    lines = capsys.readouterr().out.splitlines()
+    assert re.fullmatch(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] Category: hello", lines[0])
+    assert re.fullmatch(
+        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] Category: hello completed in \d+\.\d{2}s",
+        lines[1],
+    )
 
 
 def test_pid_alive_true_for_running(mocker: MockerFixture):

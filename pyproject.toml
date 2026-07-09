@@ -21,7 +21,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["agent_wrap"]
 python_files = ["test_*.py"]
-python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "-v",

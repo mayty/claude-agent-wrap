@@ -5,12 +5,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
+from agent_wrap.cli.commands import COMMANDS
 from agent_wrap.cli.secrets.run import run as secrets_run
 from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Callable
+
+    from pytest_mock import MockerFixture
 
 
 def test_run_requires_action(capsys: pytest.CaptureFixture[str]) -> None:
@@ -102,3 +107,43 @@ def test_run_cleanup_removes_unknown_keys() -> None:
     rc = secrets_run(["cleanup"])
     assert rc == 0
     services.secrets_service.cleanup_secrets.assert_called_once()  # type: ignore[union-attr]
+
+
+@pytest.fixture
+def run_complete() -> Callable[[int, list[str]], list[str]]:
+    """Return a callable that invokes the registered complete() for 'secrets'."""
+    _run_fn, complete_fn = COMMANDS["secrets"]
+    return complete_fn
+
+
+def test_complete_cword_2_shows_subcommands(
+    run_complete: Callable[[int, list[str]], list[str]],
+) -> None:
+    result = run_complete(2, ["agent", "secrets", ""])
+    assert "check" in result
+    assert "set" in result
+    assert "clear" in result
+    assert "cleanup" in result
+
+
+def test_complete_cword_3_cleanup_no_sidecar(
+    run_complete: Callable[[int, list[str]], list[str]],
+) -> None:
+    result = run_complete(3, ["agent", "secrets", "cleanup", ""])
+    assert result == []
+
+
+def test_complete_cword_3_check_shows_sidecars(
+    run_complete: Callable[[int, list[str]], list[str]],
+    mocker: MockerFixture,
+) -> None:
+    """Verify sidecar names include 'telegram' (always present)."""
+    mocker.patch.object(
+        services.secrets_service,
+        "known_sidecars",
+        return_value=["litellm-bedrock", TELEGRAM_SIDECAR_NAME],
+    )
+    result = run_complete(3, ["agent", "secrets", "check", ""])
+    assert TELEGRAM_SIDECAR_NAME in result
+    assert "litellm-bedrock" in result
+    assert len(result) == 2

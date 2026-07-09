@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.domain.logs.constants import CACHE_POLL_INTERVAL_SEC
+from agent_wrap.domain.logs.daemon import log_event
 from agent_wrap.domain.logs.io import (
     list_groups,
     list_projects,
@@ -76,9 +77,11 @@ class LogsCache:
 
         # Populate synchronously so the cache is ready before the server accepts
         # connections, then start the background poller.
-        self._rebuild_all()
+        with log_event("Startup", "building initial session cache"):
+            self._rebuild_all()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
+        log_event("Startup", "background update thread started")
 
     # ------------------------------------------------------------------
     # Public read accessors
@@ -165,27 +168,42 @@ class LogsCache:
 
     def _poll_loop(self) -> None:
         while not self._stop_event.wait(CACHE_POLL_INTERVAL_SEC):
-            with contextlib.suppress(Exception):
+            with log_event("Update", "poll tick"), contextlib.suppress(Exception):
                 self._poll_once()
 
     def _poll_once(self) -> None:
         # 1. Check projects.txt for added/removed paths.
         if self._projects_txt_changed():
-            self._handle_projects_txt_change()
+            with log_event("Update", "handling projects.txt change"):
+                self._handle_projects_txt_change()
 
         # 2. Walk known groups' logs_dirs, stat messages.jsonl files, diff.
-        new_manifest = self._gather_directory_manifest()
-        changed, deleted = self._diff_manifest(new_manifest)
+        with log_event("Update", "scanning session directories"):
+            new_manifest, path_to_key = self._gather_directory_manifest()
+
+        with log_event("Update", "diffing manifest"):
+            changed, deleted = self._diff_manifest(new_manifest, path_to_key)
 
         if changed or deleted:
-            self._apply_incremental_updates(changed, deleted, new_manifest)
+            with log_event("Update", "applying incremental updates"):
+                self._apply_incremental_updates(changed, deleted, new_manifest)
         else:
             self._known_messages = new_manifest
 
-    def _gather_directory_manifest(self) -> dict[Path, tuple[int, int]]:
-        """Stat every messages.jsonl under known groups; return {path: (mtime_ns, size)}."""
+    def _gather_directory_manifest(
+        self,
+    ) -> tuple[dict[Path, tuple[int, int]], dict[Path, tuple[int, str]]]:
+        """
+        Stat every messages.jsonl under known groups in a single walk.
+
+        Returns ``(manifest, path_to_key)`` where *manifest* maps
+        ``path -> (mtime_ns, size)`` and *path_to_key* maps
+        ``path -> (project_id, session_id)`` — every key in *manifest* is
+        guaranteed to have a matching entry in *path_to_key*.
+        """
         manifest: dict[Path, tuple[int, int]] = {}
-        for group in self._groups:
+        path_to_key: dict[Path, tuple[int, str]] = {}
+        for pid, group in enumerate(self._groups):
             for logs_dir in group["logs_dirs"]:
                 if not logs_dir.is_dir():
                     continue
@@ -203,57 +221,28 @@ class LogsCache:
                         except OSError:
                             continue
                         manifest[mf] = (st.st_mtime_ns, st.st_size)
-        return manifest
+                        path_to_key[mf] = (pid, session_dir.name)
+        return manifest, path_to_key
 
     def _diff_manifest(
-        self, new_manifest: dict[Path, tuple[int, int]]
-    ) -> tuple[list[tuple[list[Path], str]], list[tuple[int, str]]]:
+        self,
+        new_manifest: dict[Path, tuple[int, int]],
+        path_to_key: dict[Path, tuple[int, str]],
+    ) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
         """Compare *new_manifest* against ``_known_messages``; return (changed, deleted)."""
-        path_to_key = self._build_path_to_key()
-
-        changed: list[tuple[list[Path], str]] = []
-        for mf_path, stat_info in new_manifest.items():
-            known = self._known_messages.get(mf_path)
-            if known is None or known != stat_info:
-                pid, sid = self._resolve_session_identity(mf_path, path_to_key)
-                if pid is not None:
-                    changed.append((self._groups[pid]["logs_dirs"], sid))
-
-        deleted = [
+        changed: list[tuple[int, str]] = [
             path_to_key[mf_path]
-            for mf_path in set(self._known_messages) - set(new_manifest)
-            if mf_path in path_to_key
+            for mf_path, stat_info in new_manifest.items()
+            if self._known_messages.get(mf_path) != stat_info
         ]
 
+        deleted: list[tuple[int, str]] = []
+        for mf_path in set(self._known_messages) - set(new_manifest):
+            pid = self._resolve_deleted_project(mf_path)
+            if pid is not None:
+                deleted.append((pid, mf_path.parent.name))
+
         return changed, deleted
-
-    def _resolve_session_identity(
-        self, mf_path: Path, path_to_key: dict[Path, tuple[int, str]]
-    ) -> tuple[int | None, str]:
-        """Return ``(project_id, session_id)`` for *mf_path*."""
-        key_info = path_to_key.get(mf_path)
-        if key_info is not None:
-            return key_info
-        pid = self._find_project_for_path(mf_path)
-        return (pid, mf_path.parent.name)
-
-    def _build_path_to_key(self) -> dict[Path, tuple[int, str]]:
-        """Build reverse map: messages.jsonl path -> (project_id, session_id)."""
-        path_to_key: dict[Path, tuple[int, str]] = {}
-        for pid in self._sessions:
-            for sm in self._sessions[pid]:
-                sid = sm["session_id"]
-                logs_dirs_list = self._groups[pid]["logs_dirs"] if pid < len(self._groups) else []
-                for logs_dir in logs_dirs_list:
-                    if not logs_dir.is_dir():
-                        continue
-                    for provider_dir in logs_dir.iterdir():
-                        if not provider_dir.is_dir():
-                            continue
-                        mf = provider_dir / sid / "messages.jsonl"
-                        if mf.is_file():
-                            path_to_key[mf] = (pid, sid)
-        return path_to_key
 
     # ------------------------------------------------------------------
     # Rebuild
@@ -261,23 +250,30 @@ class LogsCache:
 
     def _rebuild_all(self) -> None:
         """Full rebuild from disk — called at startup and on projects.txt additions."""
-        groups = list_groups(self._stats_service)
-        projects = list_projects(self._stats_service)
-        fp = projects_fingerprint(self._stats_service)
+        with log_event("Rebuild", "listing groups"):
+            groups = list_groups(self._stats_service)
+
+        with log_event("Rebuild", "listing projects"):
+            projects = list_projects(self._stats_service)
+
+        with log_event("Rebuild", "computing projects fingerprint"):
+            fp = projects_fingerprint(self._stats_service)
 
         sessions: dict[int, list[CombinedSessionMeta]] = {}
         sessions_fp: dict[int, Fingerprint] = {}
         session_fp: dict[tuple[int, str], Fingerprint] = {}
         known_messages: dict[Path, tuple[int, int]] = {}
-
-        for idx, group in enumerate(groups):
-            sess = list_sessions(group["logs_dirs"])
-            sessions[idx] = sess
-            sessions_fp[idx] = sessions_fingerprint(group["logs_dirs"])
-            for sm in sess:
-                key = (idx, sm["session_id"])
-                session_fp[key] = session_fingerprint(group["logs_dirs"], sm["session_id"])
-                self._record_known_messages(group["logs_dirs"], sm["session_id"], known_messages)
+        with log_event("Rebuild", "scanning sessions per group"):
+            for idx, group in enumerate(groups):
+                sess = list_sessions(group["logs_dirs"])
+                sessions[idx] = sess
+                sessions_fp[idx] = sessions_fingerprint(group["logs_dirs"])
+                for sm in sess:
+                    key = (idx, sm["session_id"])
+                    session_fp[key] = session_fingerprint(group["logs_dirs"], sm["session_id"])
+                    self._record_known_messages(
+                        group["logs_dirs"], sm["session_id"], known_messages
+                    )
 
         self._track_projects_txt_state()
 
@@ -325,7 +321,7 @@ class LogsCache:
 
     def _apply_incremental_updates(
         self,
-        changed: list[tuple[list[Path], str]],
+        changed: list[tuple[int, str]],
         deleted: list[tuple[int, str]],
         new_manifest: dict[Path, tuple[int, int]],
     ) -> None:
@@ -357,14 +353,11 @@ class LogsCache:
                 hot_needed = True
         return hot_needed
 
-    def _apply_changes(self, changed: list[tuple[list[Path], str]]) -> bool:
+    def _apply_changes(self, changed: list[tuple[int, str]]) -> bool:
         """Re-scan changed sessions.  Return True if hot cache needs refresh."""
         hot_needed = False
-        for logs_dirs, sid in changed:
-            pid = self._find_project_for_logs_dirs(logs_dirs)
-            if pid is None:
-                continue
-
+        for pid, sid in changed:
+            logs_dirs = self._groups[pid]["logs_dirs"]
             combined = self._scan_session_across_providers(logs_dirs, sid)
             self._upsert_session(pid, sid, combined)
             self._session_fp[(pid, sid)] = session_fingerprint(logs_dirs, sid)
@@ -516,24 +509,16 @@ class LogsCache:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _find_project_for_path(self, mf_path: Path) -> int | None:
-        """Return the project id whose logs_dirs contain *mf_path*, or None."""
-        session_id = mf_path.parent.name
-        for pid, group in enumerate(self._groups):
-            for logs_dir in group["logs_dirs"]:
-                if not logs_dir.is_dir():
-                    continue
-                for provider_dir in logs_dir.iterdir():
-                    if not provider_dir.is_dir():
-                        continue
-                    if (provider_dir / session_id / "messages.jsonl") == mf_path:
-                        return pid
-        return None
+    def _resolve_deleted_project(self, mf_path: Path) -> int | None:
+        """
+        Return the project id whose logs_dirs is an ancestor of *mf_path*, or None.
 
-    def _find_project_for_logs_dirs(self, logs_dirs: list[Path]) -> int | None:
-        """Return the project id for a given *logs_dirs* list."""
+        Used only for paths that no longer exist on disk (deleted between polls),
+        where the fresh manifest walk can't supply the mapping. Pure path
+        comparison — no filesystem I/O.
+        """
         for pid, group in enumerate(self._groups):
-            if group["logs_dirs"] == logs_dirs:
+            if any(mf_path.is_relative_to(logs_dir) for logs_dir in group["logs_dirs"]):
                 return pid
         return None
 

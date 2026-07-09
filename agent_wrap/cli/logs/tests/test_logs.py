@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import pytest
 
+from agent_wrap.cli.logs.complete import complete as logs_complete
 from agent_wrap.cli.logs.run import build_parser, run
 from agent_wrap.containers import services
-
-# --- arg parsing ---
 
 
 def test_parse_port_default() -> None:
@@ -53,9 +52,6 @@ def test_parse_port_unknown_arg(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_parsestop_daemon_flag() -> None:
     assert build_parser().parse_args(["--stop"]).stop is True
-
-
-# --- run() dispatch -----------------------------------------------------------
 
 
 def test_runstop_daemon_dispatches_tostop_daemon() -> None:
@@ -102,3 +98,27 @@ def test_run_spawns_when_not_running() -> None:
 
 def test_run_help_returns_zero() -> None:
     assert run(["-h"]) == 0
+
+
+def test_complete_bare_tab_shows_flags() -> None:
+    result = logs_complete(2, ["agent", "logs", ""])
+    assert "--port" in result
+    assert "--stop" in result
+    assert "--foreground" not in result  # hidden
+
+
+def test_complete_port_consumed() -> None:
+    result = logs_complete(3, ["agent", "logs", "--stop", ""])
+    assert "--stop" not in result
+    assert "--port" in result
+
+
+def test_complete_port_value_position_returns_empty() -> None:
+    """--port takes a value; tabbing right after shows nothing."""
+    result = logs_complete(3, ["agent", "logs", "--port", ""])
+    assert result == []
+
+
+def test_complete_after_port_value() -> None:
+    result = logs_complete(4, ["agent", "logs", "--port", "8765", ""])
+    assert "--stop" in result
