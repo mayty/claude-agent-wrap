@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.pricing.service.PricingService."""
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.pricing.service import PricingService
+from agent_wrap.domain.providers.service import ProviderService
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import TokenUsage
@@ -20,13 +21,8 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def display_mock() -> Mock:
-    return Mock()
-
-
-@pytest.fixture
 def provider_mock() -> Mock:
-    return Mock()
+    return Mock(spec=ProviderService)
 
 
 @pytest.fixture
@@ -415,7 +411,7 @@ def test_extract_usage_mixed_ttl_warns_once(svc: PricingService, display_mock: M
 # ---------------------------------------------------------------------------
 
 
-def test_compute_cost_normalizes_and_delegates(svc: PricingService, provider_mock: Mock) -> None:
+def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
     usage: TokenUsage = {
         "input_tokens": 100,
         "output_tokens": 50,
@@ -423,21 +419,23 @@ def test_compute_cost_normalizes_and_delegates(svc: PricingService, provider_moc
         "cache_read_input_tokens": 0,
         "cache_creation": {},
     }
-    provider_mock.compute_cost.return_value = 0.005
-    svc._provider_service.get_provider.return_value = provider_mock
+    fake_provider = Mock()
+    fake_provider.compute_cost.return_value = 0.005
+    svc._provider_service.get_provider.return_value = fake_provider
 
     cost = svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage)
     assert cost == 0.005
-    provider_mock.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
+    fake_provider.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
 
 
-def test_compute_cost_display_name_is_normalized(svc: PricingService, provider_mock: Mock) -> None:
+def test_compute_cost_display_name_is_normalized(svc: PricingService) -> None:
     usage = _zero_usage()
-    provider_mock.compute_cost.return_value = 0.0
-    svc._provider_service.get_provider.return_value = provider_mock
+    fake_provider = Mock()
+    fake_provider.compute_cost.return_value = 0.0
+    svc._provider_service.get_provider.return_value = fake_provider
 
     svc.compute_cost("litellm-bedrock", "Claude Opus 4.7", usage=usage)
-    provider_mock.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
+    fake_provider.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
 
 
 def test_compute_cost_unknown_provider_returns_none(
@@ -447,11 +445,12 @@ def test_compute_cost_unknown_provider_returns_none(
     assert svc.compute_cost("unknown-provider", "claude-opus-4-7", usage=_zero_usage()) is None
 
 
-def test_compute_cost_slash_prefixed_model(svc: PricingService, provider_mock: Mock) -> None:
+def test_compute_cost_slash_prefixed_model(svc: PricingService) -> None:
     """Model like 'bedrock/claude-opus-4-7' → strip prefix before normalize."""
     usage = _zero_usage()
-    provider_mock.compute_cost.return_value = 0.0
-    svc._provider_service.get_provider.return_value = provider_mock
+    fake_provider = Mock()
+    fake_provider.compute_cost.return_value = 0.0
+    svc._provider_service.get_provider.return_value = fake_provider
 
     svc.compute_cost("litellm-bedrock", "bedrock/claude-opus-4-7", usage=usage)
-    provider_mock.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
+    fake_provider.compute_cost.assert_called_once_with("claude-opus-4-7", usage)

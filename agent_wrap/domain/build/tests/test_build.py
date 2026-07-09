@@ -132,22 +132,21 @@ def test_multistage_dockerfile_last_custom_base(build_svc: BuildService, tmp_pat
 
 def test_do_rebuild_resolve_image_exit(
     mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
 ) -> None:
     mocker.patch.object(
         BuildService,
         "resolve_image",
         side_effect=SystemExit("no Dockerfile.agent"),
     )
-    svc = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    rc = svc._do_rebuild(full=False)
+    rc = build_svc._do_rebuild(full=False)
     assert rc == 1
-    svc._display.error.assert_called_once_with("no Dockerfile.agent")  # type: ignore[union-attr]
+    build_svc._display.error.assert_called_once_with("no Dockerfile.agent")  # type: ignore[union-attr]
 
 
-def test_do_rebuild_full_build_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_do_rebuild_full_build_fails(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
     mock_resolve = mocker.patch.object(BuildService, "resolve_image")
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
@@ -156,16 +155,14 @@ def test_do_rebuild_full_build_fails(tmp_path: Path, mocker: pytest_mock.MockFix
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 1
-    svc = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    rc = svc._do_rebuild(full=True)
+    rc = build_svc._do_rebuild(full=True)
     assert rc == 1
     mock_run.assert_called_once()  # reason: subprocess was attempted
 
 
-def test_do_rebuild_project_build_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_do_rebuild_project_build_fails(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image")
@@ -176,16 +173,14 @@ def test_do_rebuild_project_build_fails(tmp_path: Path, mocker: pytest_mock.Mock
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 1
-    svc = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    rc = svc._do_rebuild(full=False)
+    rc = build_svc._do_rebuild(full=False)
     assert rc == 1
     mock_run.assert_called_once()  # reason: subprocess was attempted
 
 
-def test_do_rebuild_check_from_line_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_do_rebuild_check_from_line_fails(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
     mock_resolve = mocker.patch.object(BuildService, "resolve_image")
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
@@ -196,13 +191,9 @@ def test_do_rebuild_check_from_line_fails(tmp_path: Path, mocker: pytest_mock.Mo
     mock_run.return_value.returncode = 0
     mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=False)
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: t\nFROM claude-agent\n")
-    svc = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    rc = svc._do_rebuild(full=False)
+    rc = build_svc._do_rebuild(full=False)
     assert rc == 1
-    mock_run.assert_called_once()  # reason: subprocess was attempted (check_from_line failed after build)
+    mock_run.assert_not_called()  # reason: guard clause returns early before docker build
 
 
 # --- run() ---
@@ -258,7 +249,9 @@ def test_docker_build_no_host_network_by_default(
 # --- _do_rebuild success path ---
 
 
-def test_do_rebuild_project_success(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_do_rebuild_project_success(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image")
@@ -269,15 +262,13 @@ def test_do_rebuild_project_success(tmp_path: Path, mocker: pytest_mock.MockFixt
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
-    svc = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    rc = svc._do_rebuild(full=False)
+    rc = build_svc._do_rebuild(full=False)
     assert rc == 0
 
 
-def test_do_rebuild_full_base_then_project(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_do_rebuild_full_base_then_project(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: t\nFROM claude-agent\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image")
@@ -289,11 +280,7 @@ def test_do_rebuild_full_base_then_project(tmp_path: Path, mocker: pytest_mock.M
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
     mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=True)
-    svc = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    rc = svc._do_rebuild(full=True)
+    rc = build_svc._do_rebuild(full=True)
     assert rc == 0
     # Base build + project build + docker images ls (only at end, not after base)
     assert mock_run.call_count == 3

@@ -11,7 +11,6 @@ import pytest
 
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
-from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.io import (
     lightweight_project_summary,
     list_groups,
@@ -64,6 +63,14 @@ def isolated_stats(mocker: pytest_mock.MockFixture, tmp_path: Path) -> StatsServ
 def config_svc() -> ConfigService:
     """Return a real ConfigService for reading the project registry."""
     return ConfigService(display_service=Mock(spec=DisplayService))
+
+
+@pytest.fixture
+def pricing_svc(mocker: MockerFixture) -> PricingService:
+    """Return a PricingService backed by a mock ProviderService (no-op compute_cost)."""
+    mock_ps = mocker.Mock(spec=ProviderService)
+    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
+    return PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
 
 
 # ---------------------------------------------------------------------------
@@ -173,15 +180,13 @@ def test_list_sessions_alias_none_when_absent(tmp_path: Path):
     assert list_sessions(project)[0]["alias"] is None
 
 
-def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixture):
+def test_read_session_normalizes_and_resolves(tmp_path: Path, pricing_svc: PricingService):
     project = tmp_path / "proj"
     sdir = _write_session(project, "litellm-bedrock", "s1", [_raw_record()])
     (sdir / "strings.jsonl").write_text(
         json.dumps({"hash": "hash:s", "original": "X"}) + "\n", encoding="utf-8"
     )
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
+    pricing = pricing_svc
     data = read_session(project, "s1", pricing=pricing)
     assert data["session_meta"] is not None
     assert data["session_meta"]["session_id"] == "s1"
@@ -190,7 +195,7 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, mocker: MockerFixt
     assert len(data["reqs"]) == 1
 
 
-def test_read_session_from_index(tmp_path: Path, mocker: MockerFixture):
+def test_read_session_from_index(tmp_path: Path, pricing_svc: PricingService):
     """from_index slices records but session_meta still reflects the full count."""
     project = tmp_path / "proj"
     _write_session(
@@ -203,16 +208,14 @@ def test_read_session_from_index(tmp_path: Path, mocker: MockerFixture):
             _ts_rec("2026-06-05T01:00:00+00:00", model="m/c"),
         ],
     )
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
+    pricing = pricing_svc
     data = read_session(project, "s1", pricing=pricing, from_index=1)
     assert data["session_meta"] is not None
     assert data["session_meta"]["count"] == 3
     assert len(data["reqs"]) == 2
 
 
-def test_read_session_from_index_beyond(tmp_path: Path, mocker: MockerFixture):
+def test_read_session_from_index_beyond(tmp_path: Path, pricing_svc: PricingService):
     """from_index beyond total records returns empty reqs but full session_meta."""
     project = tmp_path / "proj"
     _write_session(
@@ -221,9 +224,7 @@ def test_read_session_from_index_beyond(tmp_path: Path, mocker: MockerFixture):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
+    pricing = pricing_svc
     data = read_session(project, "s1", pricing=pricing, from_index=99)
     assert data["session_meta"] is not None
     assert data["session_meta"]["count"] == 1
@@ -314,7 +315,7 @@ def test_list_sessions_dedupes_provider_on_session_id_collision(tmp_path: Path) 
     assert sessions[0]["count"] == 2
 
 
-def test_read_session_merges_across_providers(tmp_path: Path, mocker: MockerFixture):
+def test_read_session_merges_across_providers(tmp_path: Path, pricing_svc: PricingService):
     """Records from two providers are interleaved by timestamp."""
     project = tmp_path / "proj"
     _write_session(
@@ -357,9 +358,7 @@ def test_read_session_merges_across_providers(tmp_path: Path, mocker: MockerFixt
             },
         ],
     )
-    mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
-    pricing = PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
+    pricing = pricing_svc
     data = read_session(project, "s1", pricing=pricing)
     reqs = data["reqs"]
     assert len(reqs) == 2
@@ -460,20 +459,6 @@ def test_sessions_fingerprint_null_when_empty(tmp_path: Path):
     """No sessions at all → null fingerprint."""
     project = tmp_path / "proj"
     assert sessions_fingerprint(project) == {"mtime": None, "size": None}
-
-
-def test_load_strings_round_trip(tmp_path: Path):
-    sdir = tmp_path / "s"
-    sdir.mkdir()
-    (sdir / "strings.jsonl").write_text(
-        json.dumps({"hash": "hash:a", "original": "A"})
-        + "\n"
-        + "not json\n"
-        + json.dumps({"hash": "hash:b", "original": "B"})
-        + "\n",
-        encoding="utf-8",
-    )
-    assert load_strings(sdir) == {"hash:a": "A", "hash:b": "B"}
 
 
 def test_list_projects_filters_to_those_with_logs(

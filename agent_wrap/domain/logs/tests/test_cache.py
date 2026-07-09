@@ -73,6 +73,12 @@ def isolated_stats(tmp_path: Path) -> StatsService:
 
 
 @pytest.fixture
+def real_stats(pricing: PricingService) -> StatsService:
+    """Return a StatsService backed by the real (mock-priced) PricingService."""
+    return StatsService(pricing, config_service=Mock(spec=ConfigService))
+
+
+@pytest.fixture
 def config_svc() -> ConfigService:
     return ConfigService(display_service=Mock(spec=DisplayService))
 
@@ -106,6 +112,7 @@ def test_cache_populated_when_registry_exists(
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
+    real_stats: StatsService,
 ) -> None:
     """Cache populates from a project that has a litellm-logs symlink."""
     stats_mod.TOOL_DIR = tmp_path
@@ -120,7 +127,6 @@ def test_cache_populated_when_registry_exists(
 
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
@@ -139,10 +145,10 @@ def test_cache_empty_when_no_registry(
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
+    real_stats: StatsService,
 ) -> None:
     """Returns empty lists when projects.txt doesn't exist."""
     stats_mod.TOOL_DIR = tmp_path / "nonexistent"
-    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
@@ -260,6 +266,7 @@ def test_oserror_handled_gracefully_during_poll(
     pricing: PricingService,
     config_svc: ConfigService,
     mocker: MockerFixture,
+    real_stats: StatsService,
 ) -> None:
     """An OSError during stat doesn't kill the poll thread."""
     stats_mod.TOOL_DIR = tmp_path
@@ -273,7 +280,6 @@ def test_oserror_handled_gracefully_during_poll(
     (project / ".claude" / "litellm-logs").symlink_to(logs_target, target_is_directory=True)
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
@@ -298,12 +304,13 @@ def test_oserror_handled_gracefully_during_poll(
         cache.stop()
 
 
-def test_gather_directory_manifest_and_path_to_key_are_consistent(
+def test_gather_directory_manifest_and_path_to_key_are_consistent(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
 ) -> None:
     """path_to_key covers exactly the manifest's keys, with correct (pid, sid)."""
     stats_mod.TOOL_DIR = tmp_path
@@ -316,7 +323,6 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(
     write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
     (launches / "projects.txt").write_text(f"{proj_a}\n{proj_b}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
@@ -335,12 +341,13 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(
         cache.stop()
 
 
-def test_changed_session_resolved_via_manifest_diff(
+def test_changed_session_resolved_via_manifest_diff(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
 ) -> None:
     """A modified messages.jsonl is re-scanned and reflected in cached sessions."""
     stats_mod.TOOL_DIR = tmp_path
@@ -351,7 +358,6 @@ def test_changed_session_resolved_via_manifest_diff(
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
@@ -372,12 +378,13 @@ def test_changed_session_resolved_via_manifest_diff(
         cache.stop()
 
 
-def test_deleted_session_removed_after_directory_disappears(
+def test_deleted_session_removed_after_directory_disappears(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
 ) -> None:
     """A session whose directory vanishes between polls is dropped from the cache."""
     stats_mod.TOOL_DIR = tmp_path
@@ -388,7 +395,6 @@ def test_deleted_session_removed_after_directory_disappears(
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
-    real_stats = stats_mod.StatsService(pricing, config_service=Mock(spec=ConfigService))
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:

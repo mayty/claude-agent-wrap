@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.launch.launch.LaunchService."""
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.domain.build.models import DockerfileAgentInfo
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
@@ -27,11 +28,7 @@ if TYPE_CHECKING:
 @pytest.fixture
 def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
     """Return a LaunchService with spec-mocked dependencies."""
-    real_build = BuildService(
-        update_service=mocker.Mock(spec=UpdateService),
-        display_service=mocker.Mock(spec=DisplayService),
-    )
-    build_svc = mocker.Mock(spec=BuildService, wraps=real_build)
+    build_svc = mocker.Mock(spec=BuildService)
     sidecar_svc = mocker.Mock(spec=SidecarService)
     sidecar_svc.role_label = SidecarService.role_label
     sidecar_svc.role_value = SidecarService.role_value
@@ -288,6 +285,11 @@ def test_parse_directives_with_dockerfile(tmp_path: Path, launch_svc: LaunchServ
         "# agent-user: customuser\n"
         "EXPOSE 8080\n"
         "# agent-run-args: --cap-add SYS_ADMIN\n"
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(
+        agent_user="customuser",
+        expose_ports=["8080"],
+        extra_run_args=["--cap-add", "SYS_ADMIN"],
     )
     user, ports, extras = launch_svc._parse_dockerfile_directives(dockerfile)
     assert user == "customuser"

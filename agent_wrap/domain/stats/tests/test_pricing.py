@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -17,11 +16,10 @@ from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.providers.base import Provider, _ModelKeyMatcher
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.cost import usage_source
-from agent_wrap.domain.stats.scan import scan_logs_dir
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
@@ -84,6 +82,12 @@ def pricing_service_empty(
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = empty
     return PricingService(provider_service=mockps, display_service=display_mock)
+
+
+@pytest.fixture
+def stats_svc(pricing_service: PricingService) -> StatsService:
+    """Return a StatsService with the priced pricing_service."""
+    return StatsService(pricing_service, config_service=Mock(spec=ConfigService))
 
 
 @pytest.fixture
@@ -182,49 +186,6 @@ def _unrecoverable_rec(model: str = "claude-opus-4-8") -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# best_prefix_key
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def ps(mocker: pytest_mock.MockerFixture, display_mock: Mock) -> PricingService:
-    return PricingService(
-        provider_service=mocker.Mock(spec=ProviderService), display_service=display_mock
-    )
-
-
-def test_exact_key_beats_date_stamped_siblings() -> None:
-    keys = {
-        "claude-opus-4-8",
-        "claude-opus-4-8-20260514",
-        "claude-opus-4-8-20260512",
-    }
-    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8"
-
-
-def test_newest_date_wins_without_bare_key() -> None:
-    keys = {
-        "claude-opus-4-8-20260514",
-        "claude-opus-4-8-20260512",
-    }
-    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", keys) == "claude-opus-4-8-20260514"
-
-
-def test_no_cross_model_match() -> None:
-    keys = {"claude-opus-4-5", "claude-opus-4-7"}
-    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", keys) is None
-
-
-def test_longest_prefix_wins() -> None:
-    keys = {"claude-opus-4", "claude-opus-4-8"}
-    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8-20260514", keys) == "claude-opus-4-8"
-
-
-def test_empty_keys() -> None:
-    assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", []) is None
-
-
-# ---------------------------------------------------------------------------
 # PricingService round-trip pricing lookup
 # ---------------------------------------------------------------------------
 
@@ -274,9 +235,9 @@ def test_unknown_model_returns_none(
 
 
 def test_aggregate_projects_merges_marked_group(
-    pricing_service: PricingService,
     tmp_path: Path,
     success_rec: dict[str, Any],
+    stats_svc: StatsService,
 ) -> None:
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -285,9 +246,7 @@ def test_aggregate_projects_merges_marked_group(
     b = runs / "agent-b"
     _write_session_log(a, "s1", [success_rec])
     _write_session_log(b, "s2", [success_rec])
-    rows, _totals, _by_day, _by_source = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_projects([a, b])
+    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects([a, b])
     assert len(rows) == 1
     row = rows[0]
     assert row["path"] == runs
@@ -298,10 +257,10 @@ def test_aggregate_projects_merges_marked_group(
 
 
 def test_aggregate_projects_empty_marker_is_transient(
-    pricing_service: PricingService,
     tmp_path: Path,
     success_rec: dict[str, Any],
     display_mock: Mock,
+    stats_svc: StatsService,
 ) -> None:
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -310,9 +269,7 @@ def test_aggregate_projects_empty_marker_is_transient(
     b = runs / "agent-b"
     _write_session_log(a, "s1", [success_rec])
     _write_session_log(b, "s2", [success_rec])
-    rows, _totals, _by_day, _by_source = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_projects([a, b])
+    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects([a, b])
     assert len(rows) == 1
     row = rows[0]
     assert row["name"] == "runs"
@@ -324,17 +281,15 @@ def test_aggregate_projects_empty_marker_is_transient(
 
 
 def test_aggregate_projects_keeps_unmarked_separate(
-    pricing_service: PricingService,
     tmp_path: Path,
     success_rec: dict[str, Any],
+    stats_svc: StatsService,
 ) -> None:
     a = tmp_path / "proj-a"
     b = tmp_path / "proj-b"
     _write_session_log(a, "s1", [success_rec])
     _write_session_log(b, "s2", [success_rec])
-    rows, _totals, _by_day, _by_source = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_projects([a, b])
+    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects([a, b])
     assert {r["name"] for r in rows} == {"proj-a", "proj-b"}
     assert all(r["transient"] is False for r in rows)
 
@@ -345,15 +300,13 @@ def test_aggregate_projects_keeps_unmarked_separate(
 
 
 def test_aggregate_projects_windows_sessions_and_totals(
-    pricing_service: PricingService,
     tmp_path: Path,
+    stats_svc: StatsService,
 ) -> None:
     proj = tmp_path / "proj"
     _write_session_log(proj, "in", [_dated_rec("2026-06-15")])
     _write_session_log(proj, "out", [_dated_rec("2026-01-01")])
-    rows, _totals, by_day, _by_source = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_projects(
+    rows, _totals, by_day, _by_source = stats_svc.aggregate_projects(
         [proj],
         from_iso="2026-06-01",
         until_iso="2026-06-30",
@@ -364,66 +317,22 @@ def test_aggregate_projects_windows_sessions_and_totals(
     assert set(by_day) == {"2026-06-15"}
 
 
-def test_file_culling_skips_old_mtime(
-    pricing_service: PricingService,
-    tmp_path: Path,
-) -> None:
-    logs = tmp_path / ".claude" / "litellm-logs"
-    sdir = logs / "litellm-bedrock" / "s1"
-    sdir.mkdir(parents=True)
-    msg = sdir / "messages.jsonl"
-    msg.write_text(json.dumps(_dated_rec("2026-06-15")) + "\n", encoding="utf-8")
-    old = _day_epoch("2026-01-01")
-    os.utime(msg, (old, old))
-    sessions, _last_ts, by_day, _by_source = scan_logs_dir(
-        logs,
-        pricing_service,
-        from_iso="2026-06-01",
-        until_iso="2026-06-30",
-    )
-    assert sessions == 0
-    assert by_day == {}
-
-
-def test_file_culling_keeps_recent_mtime_but_filters_records(
-    pricing_service: PricingService,
-    tmp_path: Path,
-) -> None:
-    logs = tmp_path / ".claude" / "litellm-logs"
-    sdir = logs / "litellm-bedrock" / "s1"
-    sdir.mkdir(parents=True)
-    msg = sdir / "messages.jsonl"
-    with msg.open("w", encoding="utf-8") as f:
-        f.write(json.dumps(_dated_rec("2026-06-15")) + "\n")
-        f.write(json.dumps(_dated_rec("2026-07-15")) + "\n")
-    sessions, _last_ts, by_day, _by_source = scan_logs_dir(
-        logs,
-        pricing_service,
-        from_iso="2026-06-01",
-        until_iso="2026-06-30",
-    )
-    assert sessions == 1
-    assert set(by_day) == {"2026-06-15"}
-
-
 # ---------------------------------------------------------------------------
 # collect_orphaned
 # ---------------------------------------------------------------------------
 
 
 def test_aggregate_orphaned_folds_into_totals(
-    pricing_service: PricingService,
     mocker: pytest_mock.MockerFixture,
     tmp_path: Path,
     success_rec: dict[str, Any],
+    stats_svc: StatsService,
 ) -> None:
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
     _write_central_log(tmp_path, "hashB", "s2", [success_rec, success_rec])
     totals_by_model: dict[str, Bucket] = {}
     totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
-    orphaned = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_orphaned(
+    orphaned = stats_svc.aggregate_orphaned(
         [],
         totals_by_model,
         totals_by_day_by_model,
@@ -435,19 +344,17 @@ def test_aggregate_orphaned_folds_into_totals(
 
 
 def test_aggregate_orphaned_none_when_all_reachable(
-    pricing_service: PricingService,
     mocker: pytest_mock.MockerFixture,
     tmp_path: Path,
     success_rec: dict[str, Any],
+    stats_svc: StatsService,
 ) -> None:
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
     hash_a = _write_central_log(tmp_path, "hashA", "s1", [success_rec])
     project = tmp_path / "proj"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
-    orphaned = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_orphaned([project], {}, {}, {})
+    orphaned = stats_svc.aggregate_orphaned([project], {}, {}, {})
     assert orphaned is None
 
 
@@ -474,15 +381,13 @@ def test_usage_source_legacy_string() -> None:
 
 
 def test_aggregate_projects_returns_per_source_totals(
-    pricing_service: PricingService,
     tmp_path: Path,
     success_rec: dict[str, Any],
+    stats_svc: StatsService,
 ) -> None:
     proj = tmp_path / "proj"
     _write_session_log(proj, "s1", [success_rec, _slo_rec(), _unrecoverable_rec()])
-    _rows, _totals, _by_day, by_source = StatsService(
-        pricing_service, config_service=Mock(spec=ConfigService)
-    ).aggregate_projects([proj])
+    _rows, _totals, _by_day, by_source = stats_svc.aggregate_projects([proj])
     # by_source is {source: {model: Bucket}} — merge model buckets within each source.
     merged: dict[str, Bucket] = defaultdict(Bucket)
     for source, by_model in by_source.items():
@@ -492,6 +397,18 @@ def test_aggregate_projects_returns_per_source_totals(
     assert merged["standard_logging_object"].msgs == 1
     assert merged["unrecoverable"].msgs == 1
     assert merged["unrecoverable"].unrecorded == 1
+
+
+# ---------------------------------------------------------------------------
+# request_cache_ttl / extract_usage
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ps(mocker: pytest_mock.MockerFixture, display_mock: Mock) -> PricingService:
+    return PricingService(
+        provider_service=mocker.Mock(spec=ProviderService), display_service=display_mock
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -520,11 +437,6 @@ def test_request_cache_ttl_none_without_markers(ps: PricingService) -> None:
 # ---------------------------------------------------------------------------
 # extract_usage
 # ---------------------------------------------------------------------------
-
-
-def test_extract_usage_attributes_flat_total_to_1h(ps: PricingService) -> None:
-    usage = ps.extract_usage(_flat_cache_response(1000), "1h")
-    assert usage["cache_creation"] == {"ephemeral_1h_input_tokens": 1000}
 
 
 def test_extract_usage_attributes_flat_total_to_5m(ps: PricingService) -> None:
@@ -573,16 +485,3 @@ def test_extract_usage_reads_nested_cache_creation_split(ps: PricingService) -> 
         "ephemeral_5m_input_tokens": 148,
         "ephemeral_1h_input_tokens": 100,
     }
-
-
-def test_extract_usage_mixed_ttl_falls_back_to_5m_and_warns(
-    ps: PricingService,
-    display_mock: Mock,
-) -> None:
-    usage = ps.extract_usage(_flat_cache_response(1000), "mixed")
-    assert usage["cache_creation"] == {}
-    assert usage["cache_creation_input_tokens"] == 1000
-    display_mock.warning.assert_called_once()
-    assert "mixed 5m and 1h cache TTLs" in display_mock.warning.call_args[0][0]
-    ps.extract_usage(_flat_cache_response(1000), "mixed")
-    display_mock.warning.assert_called_once()

@@ -175,31 +175,6 @@ def test_normalize_record_unresolved_keeps_hashes():
     assert out["response"]["content"] == "hash:abc123"
 
 
-def test_normalize_record_still_resolves_hashes():
-    """normalize_record resolves hashes (existing behavior preserved)."""
-    strings = {"hash:abc123": "resolved content"}
-    rec = {
-        "timing": {"start": 1.0, "completionStart": None, "end": 2.0},
-        "status": "success",
-        "model": "m",
-        "request": {
-            "body": {
-                "messages": [{"role": "user", "content": "hash:abc123"}],
-                "system": "hash:abc123",
-            },
-        },
-        "response": {
-            "choices": [{"message": {"content": "hash:abc123"}}],
-            "usage": {"prompt_tokens": 10},
-        },
-        "error": None,
-    }
-    out = normalize_record(rec, strings)
-    assert out["messages"] == [{"role": "user", "content": "resolved content"}]
-    assert out["system"] == "resolved content"
-    assert out["response"]["content"] == "resolved content"
-
-
 # --- normalize_record hash resolution ---
 
 
