@@ -42,7 +42,7 @@ Trade-offs:
 
 What counts as "an update available" depends on the branch. On `master`, the prompt only appears when a **newer tag** has been published upstream, and the update fast-forwards to that tag's commit — untagged commits pushed after the latest tag do not trigger a prompt. On any other branch, the check is commit-based: any upstream commit triggers the prompt and the update fast-forwards to the branch tip.
 
-Set `AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. The check is also auto-skipped on any error path — non-git wrap-dir, detached HEAD, fetch failure, or 10-second fetch timeout — so a flaky or offline network never blocks a launch.
+Set `AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the check entirely. The check is also auto-skipped on any error path — non-git wrap-dir, detached HEAD, fetch failure, or 10-second fetch timeout — so a flaky or offline network never blocks a launch. On `agent run`, it's likewise skipped whenever Claude Code is invoked headlessly (`-p`/`--print`/`--bare`/`--safe-mode` — the same flags that skip the Telegram sidecar), since the `y/N` prompt would otherwise block on `input()` with no one to answer it.
 
 Other verbs (`agent stats`, `agent create`, and `agent update` itself) do not perform the check.
 
