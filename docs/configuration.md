@@ -57,3 +57,14 @@ AGENT_EXPECTED_QUEUE_DEPTH=512 agent run
 ```
 
 Set it to a positive integer; a non-numeric or non-positive value is ignored and the default applies.
+
+## `AGENT_DAY_START_UTC` (stats day-boundary offset)
+
+`agent stats` buckets usage into calendar days. `AGENT_DAY_START_UTC` sets how many hours past UTC midnight a "day" begins — negative values start a day before UTC midnight. Unset, it defaults to `-<host's local UTC offset in hours>`, so days align with host-local midnight, matching prior behavior.
+
+```sh
+# Days start at 04:00 UTC instead of local midnight.
+AGENT_DAY_START_UTC=4 agent stats
+```
+
+Unlike `AGENT_EXPECTED_QUEUE_DEPTH`, a malformed value here is a hard error rather than a silent fallback — an unnoticed typo would otherwise corrupt every day bucket. It must parse as an integer and satisfy `-24 < value < 24`; anything else raises at startup.

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -194,6 +194,35 @@ def test_file_culling_keeps_recent_mtime_but_filters_records(
     )
     assert sessions == 1
     assert set(by_day) == {"2026-06-15"}
+
+
+def test_day_start_hours_shifts_record_bucket(
+    pricing_service: PricingService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    # A record timestamped just after UTC midnight falls on the next UTC day
+    # once the day-start offset is pushed forward past that instant.
+    mocker.patch.object(scan_mod, "DAY_START_HOURS", 0)
+    ts = datetime(2026, 6, 15, 1, 0, 0, tzinfo=timezone.utc).timestamp()
+    logs = tmp_path / ".claude" / "litellm-logs"
+    sdir = logs / "litellm-bedrock" / "s1"
+    sdir.mkdir(parents=True)
+    msg = sdir / "messages.jsonl"
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": ts},
+        "response": {"usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
+    }
+    msg.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    _sessions, _last_ts, by_day_0, _by_source = scan_logs_dir(logs, pricing_service)
+    assert set(by_day_0) == {"2026-06-15"}
+
+    mocker.patch.object(scan_mod, "DAY_START_HOURS", 2)
+    _sessions, _last_ts, by_day_2, _by_source = scan_logs_dir(logs, pricing_service)
+    assert set(by_day_2) == {"2026-06-14"}
 
 
 # ---------------------------------------------------------------------------

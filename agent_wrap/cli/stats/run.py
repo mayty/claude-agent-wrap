@@ -22,7 +22,7 @@ _USAGE_TEXT = (
     "usage stats from each project's .claude/litellm-logs/ directories.\n\n"
     "Output is a per-project table plus a per-model and per-day breakdown,\n"
     "both over the same usage window. Models are displayed as <provider>/<model>.\n"
-    "Day buckets use host-local time.\n\n"
+    "Day buckets use host-local time by default; override with AGENT_DAY_START_UTC.\n\n"
     "Selection range (at most two of --from/--until/--days may be combined):\n"
     "  -f, --from D    inclusive lower bound; D is YYYY-MM-DD or -Nd (e.g. -14d)\n"
     "  -u, --until D   inclusive upper bound; same format as --from\n"

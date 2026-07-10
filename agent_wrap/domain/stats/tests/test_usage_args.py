@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,10 +24,12 @@ _TODAY = date(2026, 6, 29)
 
 
 def _freeze_today(mocker: MockerFixture):
-    # _today() returns an aware datetime whose local date is _TODAY; a noon naive
-    # datetime made aware via astimezone keeps the calendar day in any local tz.
-    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0).astimezone()
+    # _today() returns a UTC-aware datetime; pin DAY_START_HOURS to 0 too, so
+    # get_day() reduces to plain UTC-date extraction regardless of the CI host's
+    # real local offset, matching the noon-UTC frozen instant below.
+    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
     mocker.patch.object(ua, "_today", return_value=frozen)
+    mocker.patch.object(ua, "DAY_START_HOURS", 0)
 
 
 def _parse(mocker: MockerFixture, display_mock: Mock, reg: Path, *flags: str):

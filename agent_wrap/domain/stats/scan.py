@@ -9,6 +9,7 @@ import os
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+from agent_wrap.domain.stats.constants import DAY_START_HOURS
 from agent_wrap.domain.stats.cost import usage_source
 from agent_wrap.domain.stats.format_utils import day_in_range, epoch_to_dt
 from agent_wrap.domain.stats.models import (
@@ -18,6 +19,7 @@ from agent_wrap.domain.stats.models import (
     RawRecord,
     ScanProjectResult,
 )
+from agent_wrap.lib.daytime import get_day
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import TokenUsage
@@ -57,7 +59,7 @@ def file_predates_range(messages_file: Path, from_iso: str | None) -> bool:
     mtime_day = epoch_to_dt(mtime)
     if mtime_day is None:
         return False
-    return mtime_day.astimezone().strftime("%Y-%m-%d") < from_iso
+    return get_day(mtime_day, DAY_START_HOURS).isoformat() < from_iso
 
 
 def enumerate_session_files(logs_dir: Path, from_iso: str | None) -> list[tuple[str, Path]]:
@@ -134,7 +136,7 @@ def accumulate_record(
         )
 
     ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
-    day_key = ts.astimezone().strftime("%Y-%m-%d") if ts else "?"
+    day_key = get_day(ts, DAY_START_HOURS).isoformat() if ts else "?"
     if not day_in_range(day_key, from_iso, until_iso):
         return AccumulatedRecord(
             accumulated=False,

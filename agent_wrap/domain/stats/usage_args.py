@@ -4,19 +4,25 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.domain.stats.constants import DEFAULT_DAYS, RELATIVE_DATE_RE, VALUE_FLAGS
+from agent_wrap.domain.stats.constants import (
+    DAY_START_HOURS,
+    DEFAULT_DAYS,
+    RELATIVE_DATE_RE,
+    VALUE_FLAGS,
+)
 from agent_wrap.domain.stats.models import UsageArgs
+from agent_wrap.lib.daytime import get_day
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
 
 
 def _today() -> datetime:
-    return datetime.now().astimezone()
+    return datetime.now(timezone.utc)
 
 
 def _parse_days(value: str) -> int:
@@ -48,7 +54,7 @@ def _parse_date_spec(value: str) -> date:
     """
     rel = RELATIVE_DATE_RE.match(value)
     if rel is not None:
-        return _today().date() - timedelta(days=int(rel.group(1)))
+        return get_day(_today(), DAY_START_HOURS) - timedelta(days=int(rel.group(1)))
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007
     except ValueError:
@@ -87,7 +93,7 @@ def _combine_bounds(
     Open sides are returned as the ``date.min`` / ``date.max`` sentinels;
     :func:`_resolve_range` maps those back to None at the ISO boundary.
     """
-    today = _today().date()
+    today = get_day(_today(), DAY_START_HOURS)
     # Bounds are inclusive on both sides, so an N-day window offsets by N-1.
     # ``--days 0`` (days_given but no count) means "unlimited" — timedelta.max
     # saturates the bare side to an open sentinel via _shift.
