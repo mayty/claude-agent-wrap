@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.cli.stats.complete import complete as stats_complete
 from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
@@ -153,3 +154,34 @@ def test_parse_usage_args_verbose_defaults_false(tmp_path: Path, display_service
     parsed = parse_usage_args([str(reg)], usage_line="u", usage_text="u", display=display_service)
     assert parsed is not None
     assert parsed.verbose is False
+
+
+def test_complete_bare_tab_shows_all_flags() -> None:
+    result = stats_complete(2, ["agent", "stats", ""])
+    assert "-v" in result
+    assert "--verbose" in result
+    assert "-f" in result
+    assert "--from" in result
+
+
+def test_complete_verbose_consumed() -> None:
+    result = stats_complete(3, ["agent", "stats", "-v", ""])
+    assert "-v" not in result
+    assert "--verbose" not in result
+    assert "-f" in result  # still available
+
+
+def test_complete_shorthand_excludes_long() -> None:
+    result = stats_complete(3, ["agent", "stats", "-u", ""])
+    assert "-u" not in result
+    assert "--until" not in result
+
+
+def test_complete_value_flag_prev_returns_empty() -> None:
+    result = stats_complete(3, ["agent", "stats", "-d", ""])
+    assert result == []
+
+
+def test_complete_after_date_value() -> None:
+    result = stats_complete(4, ["agent", "stats", "-d", "14", ""])
+    assert "-v" in result

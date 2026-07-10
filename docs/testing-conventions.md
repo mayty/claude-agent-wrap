@@ -12,6 +12,19 @@ How tests are organized, mocked, and written in this project. All code contribut
   arguments). Never test domain logic through the CLI.
 - **Lib tests** live in `agent_wrap/lib/tests/`.
 
+## Test structure
+
+- **No test classes.** Tests are flat, top-level `def test_...():` functions —
+  never grouped inside `class Test...:` blocks. Shared setup that would have
+  lived in a class attribute or `setup_method` belongs in a module-level
+  `@pytest.fixture` instead; shared state is passed explicitly as a function
+  parameter (never `self.<attr>`).
+- Rely on descriptive `test_<subject>_<scenario>` names for grouping, not
+  comment banners — banners are an antipattern. If a file's test groups are
+  genuinely distinct concerns, split them into separate files instead
+  (e.g. per-command completion tests live in each command's own
+  `tests/` directory, not bundled into one file).
+
 ## Test isolation
 
 - **CLI tests**: mock `services.<xxx>_service` (the singleton on `agent_wrap.containers`)

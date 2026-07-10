@@ -17,24 +17,28 @@ from agent_wrap.constants import (
     LOGS_TOOL_DIR_ENV,
     TOOL_DIR,
 )
+from agent_wrap.domain.logs.cache import LogsCache
 from agent_wrap.domain.logs.constants import (
     LOG_FILE_NAME,
+    LOGS_VIEWER_LABEL,
     POLL_INTERVAL_SEC,
     SPAWN_TIMEOUT_SEC,
     STOP_TIMEOUT_SEC,
 )
 from agent_wrap.domain.logs.daemon import (
+    log_info,
     read_state,
     state_dir,
     state_file,
     write_state,
 )
-from agent_wrap.domain.logs.server import bind_port
+from agent_wrap.domain.logs.server import bind_port, get_handler
 from agent_wrap.lib.process_utils import pid_alive
 
 if TYPE_CHECKING:
     from types import FrameType
 
+    from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.logs.models import DaemonState
     from agent_wrap.domain.pricing.service import PricingService
@@ -48,10 +52,12 @@ class LogsService:
         self,
         pricing_service: PricingService,
         stats_service: StatsService,
+        config_service: ConfigService,
         display_service: DisplayService,
     ) -> None:
         self._pricing = pricing_service
         self._stats = stats_service
+        self._config = config_service
         self._display = display_service
 
     # Daemon lifecycle -------------------------------------------------
@@ -75,16 +81,26 @@ class LogsService:
 
     def serve_foreground(self, port: int) -> int:
         """Blocking HTTP serve loop — the detached child's body. Writes state then blocks."""
-        server = bind_port(port, pricing=self._pricing, stats_service=self._stats)
-        actual_port = server.server_address[1]
-        write_state(os.getpid(), actual_port)
-        # Redirect stdout/stderr to the logfile so the child never writes to the
-        # parent's terminal (the Popen's DEVNULL handles the immediate handles, but
-        # sub-libraries might reopen; the logfile captures them all).
+        # Redirect stdout/stderr to the logfile before doing any work, so the child
+        # never writes to the parent's terminal (the Popen's DEVNULL handles the
+        # immediate handles, but sub-libraries might reopen; the logfile captures
+        # them all) and so startup logging below actually lands somewhere —
+        # Popen wired stdout/stderr to DEVNULL, so anything printed before this
+        # redirect is lost.
+        state_dir().mkdir(parents=True, exist_ok=True)
         logfile = state_dir() / LOG_FILE_NAME
         with logfile.open("a", encoding="utf-8") as lf:
             os.dup2(lf.fileno(), sys.stdout.fileno())
             os.dup2(lf.fileno(), sys.stderr.fileno())
+
+        log_info("Logs server", "starting")
+        logs_cache = LogsCache(self._stats, self._config, self._pricing)
+        logs_cache.start()
+        handler = get_handler(self._pricing, logs_cache)
+        server = bind_port(port, handler)
+        actual_port = server.server_address[1]
+        write_state(os.getpid(), actual_port)
+        log_info("Logs server", "started")
 
         def _handle_signal(signum: int, frame: FrameType | None) -> None:  # noqa: ARG001
             # server.shutdown() blocks on __is_shut_down.wait() which deadlocks
@@ -100,6 +116,8 @@ class LogsService:
             pass
         finally:
             server.server_close()
+            logs_cache.stop()
+            log_info("Logs server", "stopped")
         return 0
 
     def spawn_background(self, port: int) -> int:
@@ -117,14 +135,29 @@ class LogsService:
             env=env,
             start_new_session=True,
         )
-        # Wait for child to publish its state, or timeout.
-        deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            state = self.running_server()
-            if state is not None and state["pid"] == child.pid:
-                self._display.info(self.connect_line(state["port"]))
-                return 0
-            time.sleep(POLL_INTERVAL_SEC)
+        # Wait for child to publish its state, or timeout. Animate a spinner so
+        # the user isn't staring at a blank screen during the cold start.
+        captured_port: list[int | None] = [None]
+
+        def _wait_for_child() -> None:
+            deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
+            while time.monotonic() < deadline:
+                state = self.running_server()
+                if state is not None and state["pid"] == child.pid:
+                    captured_port[0] = state["port"]
+                    return
+                time.sleep(POLL_INTERVAL_SEC)
+
+        self._display.spin_while(
+            label=LOGS_VIEWER_LABEL,
+            message="starting…",
+            done_message=lambda: self.connect_line(captured_port[0]) if captured_port[0] else None,
+            work=_wait_for_child,
+        )
+
+        if captured_port[0] is not None:
+            return 0
+
         # Timed out — clean up the orphaned child.
         with contextlib.suppress(OSError):
             child.send_signal(signal.SIGTERM)

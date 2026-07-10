@@ -9,6 +9,7 @@ instead of jq.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR, GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
+from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
 from agent_wrap.lib.path_hash import project_path_hash
 
@@ -235,7 +237,16 @@ class ConfigService:
         except OSError:
             pass  # non-fatal — logging must never block a launch
 
-    # project registry
+    # project registry -------------------------------------------------
+
+    def read_project_paths(self) -> list[Path]:
+        """Return expanded project paths from the registry file."""
+        registry = AGENT_LAUNCHES_DIR / "projects.txt"
+        try:
+            text = registry.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        return [Path(p) for p in ProjectRegistry.decompress(text.splitlines())]
 
     def record_project(self) -> None:
         """
@@ -248,35 +259,27 @@ class ConfigService:
         Failures are non-fatal — the agent launch must not depend on this.
         """
         try:
-            launches_dir = AGENT_LAUNCHES_DIR
-            launches_dir.mkdir(parents=True, exist_ok=True)
-            projects_file = launches_dir / "projects.txt"
-
             cwd = self._current_project_path()
             try:
                 cwd_target: Path | None = Path(cwd).resolve()
             except OSError:
                 cwd_target = None
 
-            existing: list[str] = []
-            if projects_file.exists():
-                existing = [
-                    line.strip() for line in projects_file.read_text().splitlines() if line.strip()
-                ]
-
             kept: list[str] = []
-            for entry in existing:
+            for entry_path in self.read_project_paths():
                 if cwd_target is not None:
                     try:
-                        if Path(entry).resolve() == cwd_target:
+                        if entry_path.resolve() == cwd_target:
                             continue  # alias of cwd — superseded
                     except OSError:
                         pass  # keep entries we can't resolve
-                kept.append(entry)
+                kept.append(str(entry_path))
             kept.append(cwd)
 
-            merged = sorted(set(kept))
-            atomic_write_text(projects_file, "\n".join(merged) + "\n")
+            compressed = ProjectRegistry.compress(kept)
+            with contextlib.suppress(OSError):
+                registry = AGENT_LAUNCHES_DIR / "projects.txt"
+                atomic_write_text(registry, "\n".join(compressed) + "\n")
         except OSError:
             pass  # non-fatal
 

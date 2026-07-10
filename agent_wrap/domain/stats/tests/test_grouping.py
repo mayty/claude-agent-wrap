@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.constants import CENTRAL_LOGS_DIRNAME, MARKER_NAME
 from agent_wrap.domain.stats.service import StatsService
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 @pytest.fixture
 def stats_svc(mocker: pytest_mock.MockFixture) -> StatsService:
     """Return a StatsService with a spec-mocked pricing dependency."""
-    return StatsService(mocker.Mock(spec=PricingService))
+    return StatsService(mocker.Mock(spec=PricingService), mocker.Mock(spec=ConfigService))
 
 
 def _marker(directory: Path, contents: str = "") -> None:

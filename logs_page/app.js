@@ -5,12 +5,109 @@ const chatBody = () => document.querySelector("#chat .chat-body");
 const chatHead = () => document.querySelector("#chat .chat-head");
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
               poll: null, fp: null, gen: 0,
-              listPoll: null, projectsFp: null, sessionsFp: null };
+              listPoll: null, projectsFp: null, sessionsFp: null,
+              rawReqs: [], pendingHashes: null };
+
+function hasPendingHashes() {
+  return state.pendingHashes !== null && state.pendingHashes.size > 0;
+}
 
 async function getJSON(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+// Read an NDJSON response stream, returning {meta, records}.
+// When *onRecord* is provided it is called for each record as it arrives
+// (before the record is appended to the returned array), enabling
+// progressive rendering.  When *onMeta* is provided it is called as soon
+// as the session_meta line is parsed, so the caller can render the header
+// before any records arrive.
+async function readNDJSONStream(response, onRecord, onMeta) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let meta = null;
+  const records = [];
+
+  function consumeLine(raw) {
+    let item;
+    try { item = JSON.parse(raw); } catch (e) { return; }
+    if (item.__type__ === "session_meta") {
+      meta = item;
+      if (onMeta) onMeta(item);
+    } else {
+      records.push(item);
+      if (onRecord) onRecord(item);
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      if (buffer.trim()) consumeLine(buffer.trim());
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (line.trim()) consumeLine(line.trim());
+    }
+  }
+  return { meta, records };
+}
+
+// Parse raw strings.jsonl content into a {hash: original} lookup dict.
+// Each line is a JSON object {"hash": "...", "original": "..."}.
+// Malformed lines are silently skipped.
+function parseStrings(text) {
+  const strings = {};
+  if (!text) return strings;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.hash && entry.original !== undefined) {
+        strings[entry.hash] = entry.original;
+      }
+    } catch (e) { /* skip corrupt lines */ }
+  }
+  return strings;
+}
+
+// Recursively resolve hash:<sha256> references in a record's tree, using the
+// strings table from /api/strings.  Returns a new object tree (does not
+// mutate the input).  When *strings* is empty, returns the input unchanged.
+function resolveRecord(r, strings) {
+  if (!strings || Object.keys(strings).length === 0) return r;
+
+  function walk(v) {
+    if (typeof v === "string") {
+      const resolved = strings[v];
+      if (resolved !== undefined) return resolved;
+      // Detect unresolved hash references (format: "hash:" + 64 hex chars).
+      if (/^hash:[a-f0-9]{64}$/.test(v)) {
+        if (state.pendingHashes === null) state.pendingHashes = new Set();
+        state.pendingHashes.add(v);
+        return "➳ Loading…";
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) {
+        out[k] = walk(val);
+      }
+      return out;
+    }
+    return v;
+  }
+
+  return walk(r);
 }
 
 function fmtTs(ts) {
@@ -60,6 +157,48 @@ function fmtCost(c) {
   return "$" + c.toFixed(2);
 }
 
+// Positions (within `s`) of every separator matching [.\-:].
+function separatorOffsets(s) {
+  const offsets = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "." || s[i] === "-" || s[i] === ":") offsets.push(i);
+  }
+  return offsets;
+}
+
+// Render a session's model list, collapsing to at most 3 shared-prefix groups
+// (cut on [.\-:]) when there are more than 3 distinct models. Returns the
+// display string; callers should also set a title with the full list when
+// `models.length > 3` so the raw ids stay discoverable on hover.
+function collapseModels(models) {
+  if (models.length <= 3) return models.join(", ");
+
+  const offsets = models.map(separatorOffsets);
+  const maxDepth = Math.max(...offsets.map((o) => o.length));
+
+  let groups = null;
+  for (let depth = maxDepth; depth >= 0; depth--) {
+    const prefixes = models.map((m, i) => {
+      const o = offsets[i];
+      return depth < o.length ? m.slice(0, o[depth]) : m;
+    });
+    const order = [];
+    const counts = new Map();
+    for (const p of prefixes) {
+      if (!counts.has(p)) order.push(p);
+      counts.set(p, (counts.get(p) || 0) + 1);
+    }
+    if (order.length <= 3 || depth === 0) {
+      groups = order.map((p) => ({ prefix: p, count: counts.get(p) }));
+      break;
+    }
+  }
+
+  return groups
+    .map((g) => (g.count > 1 ? `${g.prefix}… (${g.count})` : g.prefix))
+    .join(", ");
+}
+
 function sessionStats(reqs) {
   let totalCost = 0;
   let cacheRead = 0;
@@ -91,12 +230,29 @@ function el(tag, cls, text) {
   return e;
 }
 
-function showError(containerId, message) {
-  const container = $(containerId);
-  const box = el("div", "err-box");
-  box.appendChild(Object.assign(el("pre"), { textContent: "Error: " + message }));
-  container.innerHTML = "";
-  container.appendChild(box);
+// Replace "➳ Loading…" text nodes in `container` with spinner elements.
+// Uses exact-match so JSON-stringified tool inputs (where the placeholder is
+// embedded in a larger string) are left alone.
+function replaceLoadingPlaceholders(container) {
+  const placeholder = "➳ Loading…";
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    null,
+    false
+  );
+  const textNodes = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.trim() === placeholder) {
+      textNodes.push(walker.currentNode);
+    }
+  }
+  for (const node of textNodes) {
+    const span = document.createElement("span");
+    span.className = "loading-hash";
+    span.innerHTML = '<span class="spinner-icon"></span> Loading…';
+    node.parentNode.replaceChild(span, node);
+  }
 }
 
 function renderProjectsList(projects) {
@@ -145,8 +301,10 @@ function renderSessionsList(sessions) {
       sessItem.appendChild(top);
     }
     const sub = s.alias ? `${s.session_id.slice(0, 8)} · ` : "";
-    sessItem.appendChild(el("div", "meta",
-      `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${s.models.join(", ")}` : "")));
+    const metaEl = el("div", "meta",
+      `${sub}${s.count} req · ${fmtTs(s.last_ts)}` + (s.models.length ? ` · ${collapseModels(s.models)}` : ""));
+    if (s.models.length > 3) metaEl.title = s.models.join("\n");
+    sessItem.appendChild(metaEl);
     sessItem.title = s.session_id;
     sessItem.onclick = () => selectSession(s, sessItem);
     if (state.session === s.session_id) sessItem.classList.add("active");
@@ -193,17 +351,59 @@ async function selectSession(s, item) {
   // session can detect it has been superseded and discard its late response.
   const gen = ++state.gen;
   state.session = s.session_id;
+  state.reqs = [];
+  state.rawReqs = [];
+  state.pendingHashes = null;
+  state.groups = null;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   chatHead().innerHTML = "";
   chatBody().innerHTML = '<div class="hint">Loading…</div>';
   try {
-    const data = await getJSON(`/api/session?${sessionQuery(s)}`);
-    if (gen !== state.gen) return; // another session was selected mid-fetch
-    const reqs = data.reqs;
-    const session_meta = data.session_meta || s;
-    renderChat(reqs, session_meta);
-    // Seed the fingerprint from the state at fetch time, then poll for changes.
+    // Step 1: fetch strings first (unchanged)
+    const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
+    const strings = parseStrings(stringsText);
+    if (gen !== state.gen) return;
+
+    // Step 2: stream session as NDJSON, rendering turns as they arrive
+    const response = await fetch(`/api/session?${sessionQuery(s)}`);
+    if (!response.ok) throw new Error(await response.text());
+
+    const body = chatBody();
+    body.innerHTML = "";
+    let displayIdx = 0;
+    const reqs = [];
+    const rawReqs = [];
+
+    const { meta } = await readNDJSONStream(response, (record) => {
+      if (gen !== state.gen) return;
+      rawReqs.push(record);
+      const resolved = resolveRecord(record, strings);
+      reqs.push(resolved);
+      state.rawReqs = rawReqs;
+      state.reqs = reqs;
+      body.appendChild(renderTurn(resolved, ++displayIdx));
+      renderChatHead();
+    }, (metaItem) => {
+      if (gen !== state.gen) return;
+      state.session_meta = metaItem;
+      renderChatHead();
+    });
+
+    if (gen !== state.gen) return;
+
+    // Step 3: finalize — tabs replace spinner, body stays intact
+    const session_meta = meta || s;
+    state.reqs = reqs;
+    state.rawReqs = rawReqs;
+    state.session_meta = session_meta;
+    state.groups = groupBySubagent(reqs, buildSubagentCallMap(reqs));
+    insertMarkers(state.groups);
+    applyTabFilter("main");
+    renderChatHead();
+    ensureScrollButton();
+
+    // Step 4: seed fingerprint and start polling
     try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
     catch (e) { state.fp = null; }
     if (gen !== state.gen) return;
@@ -247,7 +447,8 @@ function updateSessionListItem(meta) {
   const sub = meta.alias ? state.session.slice(0, 8) + ' · ' : '';
   metaEl.textContent =
     sub + meta.count + ' req · ' + fmtTs(meta.last_ts) +
-    (meta.models.length ? ' · ' + meta.models.join(', ') : '');
+    (meta.models.length ? ' · ' + collapseModels(meta.models) : '');
+  metaEl.title = meta.models.length > 3 ? meta.models.join('\n') : '';
 }
 
 // One poll: if the session the user opened is still open and its fingerprint
@@ -256,26 +457,101 @@ function updateSessionListItem(meta) {
 // transient failure doesn't kill the interval — the next tick retries.
 async function tick(s) {
   if (state.session !== s.session_id) return;
+  if (state.tickInFlight) return;
+  state.tickInFlight = true;
   try {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
-    if (fp === state.fp) return;
-    const data = await getJSON(`/api/session?${sessionQuery(s)}`);
+    if (fp === state.fp && !hasPendingHashes()) return;
+    const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
+    const fromIndex = state.reqs.length;
+    const response = await fetch(`/api/session?${sessionQuery(s)}&from=${fromIndex}`);
+    if (!response.ok) return;
+    const { meta, records } = await readNDJSONStream(response);
     if (state.session !== s.session_id) return; // user moved on during the fetch
-    state.reqs = data.reqs;
-    state.groups = groupBySubagent(data.reqs);
-    updateSessionListItem(data.session_meta);
-    state.fp = fp;
+    const strings = parseStrings(stringsText);
+
+    // fp unchanged + pending hashes: try to resolve without fetching session data.
+    if (fp === state.fp && hasPendingHashes()) {
+      let anyResolved = false;
+      for (const h of state.pendingHashes) {
+        if (strings[h] !== undefined) { anyResolved = true; break; }
+      }
+      if (anyResolved) {
+        state.pendingHashes = new Set();  // clear; resolveRecord repopulates
+        state.reqs = state.rawReqs.map(r => resolveRecord(r, strings));
+        if (!hasPendingHashes()) state.pendingHashes = null;
+        const scrollTop = chatBody().scrollTop;
+        renderStream();
+        requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+      }
+      state.fp = fp;
+      renderChatHead();
+      return;
+    }
+
+    for (const r of records) state.rawReqs.push(r);
+    const resolved = records.map(r => resolveRecord(r, strings));
+
+    // If no new records arrived, just refresh metadata and fingerprint.
+    if (resolved.length === 0) {
+      state.session_meta = meta || state.session_meta;
+      state.fp = fp;
+      updateSessionListItem(meta);
+      renderChatHead();
+      return;
+    }
+
+    // If the total count is less than what we already have, records were
+    // deleted or the session was rebuilt — do a full re-fetch and rebuild.
+    if (meta && meta.count < state.reqs.length) {
+      const scrollTop = chatBody().scrollTop;
+      const fullResp = await fetch(`/api/session?${sessionQuery(s)}`);
+      if (!fullResp.ok) return;
+      const full = await readNDJSONStream(fullResp);
+      if (state.session !== s.session_id) return;
+      const fullResolved = full.records.map(r => resolveRecord(r, strings));
+      state.rawReqs = full.records;
+      state.reqs = fullResolved;
+      state.pendingHashes = null;
+      state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
+      state.session_meta = full.meta || state.session_meta;
+      state.fp = fp;
+      updateSessionListItem(full.meta);
+      renderStream();
+      requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+      return;
+    }
+
+    // Normal append path: only new records were returned.
     const body = chatBody();
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    const prevTop = body.scrollTop;
-    renderStream();
+    // Insert before the sticky scroll-to-bottom wrapper (rather than
+    // appending after it) so it stays the last element in flow — position:
+    // sticky only tracks the viewport bottom while it has no later siblings.
+    const wrapBot = body.querySelector(".scroll-btn-wrap-bot");
+    for (const r of resolved) {
+      state.reqs.push(r);
+      const turnEl = renderTurn(r, state.reqs.length);
+      if (wrapBot) body.insertBefore(turnEl, wrapBot);
+      else body.appendChild(turnEl);
+    }
+
+    state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
+    state.session_meta = meta || state.session_meta;
+    updateSessionListItem(meta);
+    state.fp = fp;
+
+    // Rebuild markers and re-apply filter for the current tab.
+    removeMarkers();
+    insertMarkers(state.groups);
+    applyTabFilter(state.tab);
+    renderChatHead();
+
     if (atBottom) {
-      // Glide down to the new content rather than snapping to it.
-      body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
-    } else {
-      body.scrollTop = prevTop; // hold the user's place instantly (no visible shift)
+      scrollToBottom();
     }
   } catch (e) { /* transient; retry next tick */ }
+  finally { state.tickInFlight = false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -289,35 +565,113 @@ function startListPolling() {
 }
 
 async function listTick() {
+  if (state.listTickInFlight) return;
+  state.listTickInFlight = true;
   try {
-    const fp = fpKey(await getJSON("/api/projects-stat"));
-    if (state.projectsFp === null) {
-      state.projectsFp = fp; // seed on first tick, no re-fetch needed
-    } else if (fp !== state.projectsFp) {
-      state.projectsFp = fp;
-      const projects = await getJSON("/api/projects");
-      renderProjectsList(projects);
-    }
-  } catch (e) { /* transient */ }
+    try {
+      const fp = fpKey(await getJSON("/api/projects-stat"));
+      if (state.projectsFp === null) {
+        state.projectsFp = fp; // seed on first tick, no re-fetch needed
+      } else if (fp !== state.projectsFp) {
+        state.projectsFp = fp;
+        const projects = await getJSON("/api/projects");
+        renderProjectsList(projects);
+      }
+    } catch (e) { /* transient */ }
 
-  if (state.project == null) return;
+    if (state.project == null) return;
 
-  try {
-    const fp = fpKey(await getJSON(`/api/sessions-stat?project=${state.project}`));
-    if (state.sessionsFp === null) {
-      state.sessionsFp = fp; // seed on first tick for this project
-    } else if (fp !== state.sessionsFp) {
-      state.sessionsFp = fp;
-      const sessions = await getJSON(`/api/sessions?project=${state.project}`);
-      renderSessionsList(sessions);
-    }
-  } catch (e) { /* transient */ }
+    try {
+      const fp = fpKey(await getJSON(`/api/sessions-stat?project=${state.project}`));
+      if (state.sessionsFp === null) {
+        state.sessionsFp = fp; // seed on first tick for this project
+      } else if (fp !== state.sessionsFp) {
+        state.sessionsFp = fp;
+        const sessions = await getJSON(`/api/sessions?project=${state.project}`);
+        renderSessionsList(sessions);
+      }
+    } catch (e) { /* transient */ }
+  } finally { state.listTickInFlight = false; }
 }
 
 function asText(v) {
   if (v == null) return "";
   if (typeof v === "string") return v;
   return JSON.stringify(v, null, 2);
+}
+
+// Pretty-print a tool input value for display. If it's valid JSON that is NOT a
+// single-key-string-value object, pretty-print it with "description" sorted first.
+// Otherwise return the value as-is (compact single-line for simple shapes, or the
+// original text for unparseable strings).
+function prettyToolInput(v) {
+  let obj;
+  if (typeof v === "string") {
+    try { obj = JSON.parse(v); } catch (e) { return v; }
+  } else if (v != null && typeof v === "object" && !Array.isArray(v)) {
+    obj = v;
+  } else {
+    return asText(v);
+  }
+
+  const keys = Object.keys(obj);
+  // Single-key string-value objects stay compact (e.g. {"command": "ls -la"})
+  if (keys.length === 1 && typeof obj[keys[0]] === "string") {
+    return JSON.stringify(obj);
+  }
+
+  // Bring "description" to the top
+  if ("description" in obj) {
+    const reordered = { description: obj.description };
+    for (const [k, val] of Object.entries(obj)) {
+      if (k !== "description") reordered[k] = val;
+    }
+    return JSON.stringify(reordered, null, 2);
+  }
+
+  return JSON.stringify(obj, null, 2);
+}
+
+// Extract plain text from content (string or [{type:"text", text:"..."}, ...] array).
+function extractText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(function(b) { return b && b.type === "text"; })
+      .map(function(b) { return b.text || ""; })
+      .join("\n");
+  }
+  return "";
+}
+
+// Return the response's thinking blocks, preferring the top-level field but
+// falling back to LiteLLM's Bedrock-adapter location for signature-only
+// blocks (display: "omitted") that it sometimes drops from the top level.
+function getThinkingBlocks(resp) {
+  if (!resp) return null;
+  if (Array.isArray(resp.thinking_blocks) && resp.thinking_blocks.length) {
+    return resp.thinking_blocks;
+  }
+  const psf = resp.provider_specific_fields;
+  if (psf && Array.isArray(psf.thinking_blocks) && psf.thinking_blocks.length) {
+    return psf.thinking_blocks;
+  }
+  return null;
+}
+
+// Render one thinking block. Anthropic's display: "omitted" mode returns a
+// signature only (no visible reasoning text) for many turns — show that
+// thinking occurred instead of leaving a blank box.
+function appendThinkingBlock(tb, parent) {
+  const box = el("div", "block-thinking");
+  box.appendChild(el("div", "block-label", "thinking"));
+  if (tb && tb.thinking) {
+    box.appendChild(Object.assign(el("pre"), { textContent: asText(tb.thinking) }));
+  } else {
+    box.appendChild(el("div", "meta", "(thinking occurred; not shown by the model)"));
+  }
+  parent.appendChild(box);
+  replaceLoadingPlaceholders(box);
 }
 
 function renderContent(content, parent) {
@@ -354,13 +708,27 @@ function renderContent(content, parent) {
     } else if (type === "tool_use") {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_use · ${block.name || ""}`));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(block.input) }));
+      box.appendChild(Object.assign(el("pre"), { textContent: prettyToolInput(block.input) }));
       parent.appendChild(box);
     } else if (type === "tool_result") {
       const box = el("div", "block-tool_result");
       box.appendChild(el("div", "block-label", "tool_result"));
       box.appendChild(Object.assign(el("pre"), { textContent: asText(block.content) }));
       parent.appendChild(box);
+    } else if (type === "thinking") {
+      appendThinkingBlock(block, parent);
+    } else if (type === "image") {
+      const src = block.source;
+      if (src && src.data) {
+        const box = el("div", "block-image");
+        const img = el("img", "content-image");
+        img.src = "data:" + (src.media_type || "image/png") + ";base64," + src.data;
+        img.alt = "Image";
+        img.title = "Click to view full size";
+        img.onclick = function(e) { e.stopPropagation(); showImageOverlay(img.src); };
+        box.appendChild(img);
+        parent.appendChild(box);
+      }
     } else {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", type));
@@ -368,6 +736,7 @@ function renderContent(content, parent) {
       parent.appendChild(box);
     }
   }
+  replaceLoadingPlaceholders(parent);
 }
 
 // Copy `text` to the clipboard, flashing the button to confirm. Uses the async
@@ -409,14 +778,14 @@ function addCopyButton(host, pre) {
 // row) or a bare single-content `<pre>` (wrapped on the fly). Idempotent.
 function decorateSections(container) {
   container
-    .querySelectorAll(".block-text, .block-tool_use, .block-tool_result")
+    .querySelectorAll(".block-text, .block-tool_use, .block-tool_result, .block-thinking")
     .forEach((box) => {
       if (box.querySelector(":scope > .copy-btn")) return;
       const pre = box.querySelector("pre");
       if (pre) addCopyButton(box, pre);
     });
   container.querySelectorAll("pre").forEach((pre) => {
-    if (pre.closest(".block-text, .block-tool_use, .block-tool_result, .section")) return;
+    if (pre.closest(".block-text, .block-tool_use, .block-tool_result, .block-thinking, .section")) return;
     const wrap = el("div", "section");
     pre.replaceWith(wrap);
     wrap.appendChild(pre);
@@ -434,6 +803,12 @@ function msgEl(role, content) {
 function renderResponse(resp, parent) {
   const m = el("div", "msg role-assistant");
   m.appendChild(el("div", "role", "response"));
+  const thoughts = getThinkingBlocks(resp);
+  if (thoughts) {
+    for (const tb of thoughts) {
+      appendThinkingBlock(tb, m);
+    }
+  }
   if (resp && resp.content) renderContent(resp.content, m);
   const calls = resp && resp.tool_calls;
   if (Array.isArray(calls)) {
@@ -441,11 +816,11 @@ function renderResponse(resp, parent) {
       const fn = (c && c.function) || {};
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_call · ${fn.name || ""}`));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(fn.arguments) }));
+      box.appendChild(Object.assign(el("pre"), { textContent: prettyToolInput(fn.arguments) }));
       m.appendChild(box);
     }
   }
-  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length))) {
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !thoughts)) {
     m.appendChild(el("div", "meta", "(empty response)"));
   }
   parent.appendChild(m);
@@ -545,6 +920,7 @@ function renderFullDetail(r) {
     body.appendChild(msgEl(m.role || "user", m.content));
   }
   renderResponse(r.response, body);
+  replaceLoadingPlaceholders(body);
   return body;
 }
 
@@ -555,6 +931,9 @@ function captionEl(r, displayIdx) {
   cap.appendChild(el("span", null, (r.model || "").split("/").pop()));
   if (r.status && r.status !== "success") {
     cap.appendChild(el("span", "fail", `· ${r.status}`));
+  }
+  if (isClassifierRequest(r)) {
+    cap.appendChild(el("span", "auto-badge", "auto"));
   }
   cap.appendChild(el("span", "when", fmtTs(recStart(r))));
   return cap;
@@ -583,10 +962,72 @@ function applySectionHeights(bubble) {
   pres.forEach((p) => { p.style.maxHeight = `${Math.round(per)}px`; });
 }
 
+// Compact rendering for auto classifier requests — shows the evaluated
+// command and result instead of the usual user/assistant chat bubbles.
+// Clicking opens the full detail modal.
+function renderClassifierTurn(r, displayIdx) {
+  const turn = el("div", "turn");
+  turn.dataset.role = "main";
+
+  // Caption line with auto badge (captionEl adds the badge for classifiers)
+  turn.appendChild(captionEl(r, displayIdx));
+
+  const block = el("div", "classifier-block");
+
+  // Evaluated command
+  const cmd = extractEvaluatedCommand(r);
+  if (cmd) {
+    // Extract tool name from the first word (e.g. "Bash", "Read", "Write")
+    const firstSpace = cmd.indexOf(" ");
+    const tool = firstSpace !== -1 ? cmd.slice(0, firstSpace).trim() : "";
+    const body = firstSpace !== -1 ? cmd.slice(firstSpace + 1).trim() : cmd;
+
+    const cmdBox = el("div", "block-tool_use");
+    cmdBox.appendChild(el("div", "block-label", "eval · " + tool));
+    const pre = Object.assign(el("pre"), { textContent: body });
+    cmdBox.appendChild(pre);
+    addCopyButton(cmdBox, pre);
+    block.appendChild(cmdBox);
+  }
+
+  // Result
+  const parsed = parseClassifierResult(r);
+  const resultEl = el("div", "classifier-result");
+  if (parsed.unparseable) {
+    resultEl.textContent = "? Unparseable";
+    resultEl.className = "classifier-result blocked";
+  } else if (parsed.allowed) {
+    resultEl.textContent = "✓ Allowed";
+    resultEl.className = "classifier-result allowed";
+  } else {
+    resultEl.textContent = "✗ Blocked";
+    resultEl.className = "classifier-result blocked";
+  }
+  block.appendChild(resultEl);
+
+  if (parsed.reason) {
+    block.appendChild(el("div", "classifier-reason", parsed.reason));
+  }
+
+  turn.appendChild(block);
+  turn.onclick = () => openModal(r, displayIdx);
+  return turn;
+}
+
 // One turn: the latest user message as a right-aligned bubble and the response
 // (or error) as a left-aligned bubble below it. Clicking opens the full detail.
 function renderTurn(r, displayIdx) {
+  if (isClassifierRequest(r)) {
+    return renderClassifierTurn(r, displayIdx);
+  }
+
   const turn = el("div", "turn");
+  if (r.agent_id) {
+    turn.dataset.role = "sub";
+    turn.dataset.sub = r.agent_id;
+  } else {
+    turn.dataset.role = "main";
+  }
   turn.appendChild(captionEl(r, displayIdx));
 
   const userBubble = el("div", "bubble user");
@@ -619,12 +1060,19 @@ function renderTurn(r, displayIdx) {
   if (info) turn.appendChild(info);
 
   turn.onclick = () => openModal(r, displayIdx);
+  replaceLoadingPlaceholders(turn);
   return turn;
 }
 
 // Like renderResponse but appends content/tool_calls straight into `parent`
 // without wrapping in a `.msg` block (the bubble is the wrapper here).
 function renderResponseInto(resp, parent) {
+  const thoughts = getThinkingBlocks(resp);
+  if (thoughts) {
+    for (const tb of thoughts) {
+      appendThinkingBlock(tb, parent);
+    }
+  }
   if (resp && resp.content) renderContent(resp.content, parent);
   const calls = resp && resp.tool_calls;
   if (Array.isArray(calls)) {
@@ -632,11 +1080,11 @@ function renderResponseInto(resp, parent) {
       const fn = (c && c.function) || {};
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", `tool_call · ${fn.name || ""}`));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(fn.arguments) }));
+      box.appendChild(Object.assign(el("pre"), { textContent: prettyToolInput(fn.arguments) }));
       parent.appendChild(box);
     }
   }
-  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length))) {
+  if (!resp || (!resp.content && !(Array.isArray(calls) && calls.length) && !thoughts)) {
     parent.appendChild(el("div", "meta", "(empty response)"));
   }
 }
@@ -653,6 +1101,31 @@ function closeModal() {
 
 function onModalKey(e) {
   if (e.key === "Escape") closeModal();
+}
+
+function closeImageOverlay() {
+  const back = $("image-overlay");
+  if (back) back.remove();
+  document.removeEventListener("keydown", onImageOverlayKey);
+}
+
+function onImageOverlayKey(e) {
+  if (e.key === "Escape") closeImageOverlay();
+}
+
+function showImageOverlay(src) {
+  closeImageOverlay();
+  const back = el("div", "modal-backdrop");
+  back.id = "image-overlay";
+  back.onclick = function(e) { if (e.target === back) closeImageOverlay(); };
+
+  const img = el("img");
+  img.src = src;
+  img.style.cssText = "max-width:90vw;max-height:90vh;object-fit:contain;border-radius:6px;";
+  back.appendChild(img);
+
+  document.body.appendChild(back);
+  document.addEventListener("keydown", onImageOverlayKey);
 }
 
 function openModal(r, displayIdx) {
@@ -688,22 +1161,89 @@ function openModal(r, displayIdx) {
   document.addEventListener("keydown", onModalKey);
 }
 
+// Normalize prompt text for comparison: extract from content (string or content
+// array), strip <system-reminder> blocks, collapse whitespace, and trim.
+// Does NOT truncate — callers needing a short snippet should slice the result.
+function normalizePrompt(content) {
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .map(b => (typeof b === "string" ? b : (b && b.type === "text" ? b.text : "")))
+      .filter(t => typeof t === "string")
+      .join("\n");
+  }
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  text = text.replace(/\s+/g, " ");
+  return text;
+}
+
 // Plain text of a record's first user message, with leading <system-reminder>
 // blocks stripped, for use as a subagent's human-readable label.
 function firstPromptSnippet(r) {
   const msgs = r.messages || [];
   if (!msgs.length) return "";
-  const c = msgs[0].content;
-  let text = "";
-  if (typeof c === "string") {
-    text = c;
-  } else if (Array.isArray(c)) {
-    text = c.map(b => (typeof b === "string" ? b : (b && b.type === "text" ? b.text : "")))
-            .filter(t => typeof t === "string").join("\n");
+  return normalizePrompt(msgs[0].content).slice(0, 60);
+}
+
+// Extract tool calls that spawn subagents from a main-agent record's response.
+// Returns an array of { name, subagent_type, description, prompt } objects.
+// Handles both tool_use blocks (response.content) and tool_calls arrays.
+function extractSubagentToolCalls(r) {
+  const calls = [];
+  const resp = r.response || {};
+
+  // Check response.content for tool_use blocks with subagent_type
+  if (Array.isArray(resp.content)) {
+    for (const block of resp.content) {
+      if (block && block.type === "tool_use" && block.input && block.input.subagent_type) {
+        calls.push({
+          name: block.name,
+          subagent_type: block.input.subagent_type,
+          description: block.input.description,
+          prompt: block.input.prompt,
+        });
+      }
+    }
   }
-  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-  text = text.replace(/\s+/g, " ");
-  return text.slice(0, 60);
+
+  // Check response.tool_calls for function calls with subagent_type
+  if (Array.isArray(resp.tool_calls)) {
+    for (const tc of resp.tool_calls) {
+      const fn = tc && tc.function;
+      if (!fn || !fn.arguments) continue;
+      let args;
+      try { args = JSON.parse(fn.arguments); } catch (e) { continue; }
+      if (args && args.subagent_type) {
+        calls.push({
+          name: fn.name,
+          subagent_type: args.subagent_type,
+          description: args.description,
+          prompt: args.prompt,
+        });
+      }
+    }
+  }
+
+  return calls;
+}
+
+// Build a lookup map from normalized prompt text to { subagent_type, description }.
+// Scans all main-agent records for tool calls that spawn subagents.
+// First-match-wins when two tool calls normalize to the same prompt string.
+function buildSubagentCallMap(reqs) {
+  const map = {};
+  for (const r of reqs) {
+    if (r.agent_id) continue;
+    for (const call of extractSubagentToolCalls(r)) {
+      const key = normalizePrompt(call.prompt);
+      if (key && !map[key]) {
+        map[key] = { subagent_type: call.subagent_type, description: call.description };
+      }
+    }
+  }
+  return map;
 }
 
 // Does a record look like a subagent's final turn (a text answer, no tool call)?
@@ -714,9 +1254,93 @@ function looksTerminal(r) {
   return !!resp.content;
 }
 
+// Does a record look like an auto classifier request?
+function isClassifierRequest(r) {
+  // Check 1: system prompt defines block output rules
+  const sysText = extractText(r.system);
+  if (!sysText || sysText.indexOf("<block>no</block>") === -1 || sysText.indexOf("<block>yes</block>") === -1) {
+    return false;
+  }
+  // Check 2: user messages contain a <transcript>...</transcript> block group
+  const msgs = r.messages || [];
+  for (let i = 0; i < msgs.length; i++) {
+    const mt = extractText(msgs[i].content);
+    if (mt.indexOf("<transcript>") !== -1 && mt.indexOf("</transcript>") !== -1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Extract the evaluated command from a classifier request's transcript.
+// Walks the content blocks of the transcript message to find the </transcript>
+// block, then returns the previous block's text.
+function extractEvaluatedCommand(r) {
+  const msgs = r.messages || [];
+  for (let i = 0; i < msgs.length; i++) {
+    const content = msgs[i].content;
+    if (!Array.isArray(content)) continue;
+    for (let j = 0; j < content.length; j++) {
+      const block = content[j];
+      if (block && block.type === "text" && typeof block.text === "string" && block.text.indexOf("</transcript>") !== -1) {
+        if (j > 0) {
+          const prev = content[j - 1];
+          if (prev && prev.type === "text" && typeof prev.text === "string") {
+            return prev.text.trim();
+          }
+        }
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+// Parse the classifier result from a record's response, mirroring Claude
+// Code's FIo / oJa functions.  Combines thinking blocks and content text
+// because the <block> tag can appear in either (DeepSeek puts it inside
+// thinking, Anthropic puts it in content).
+function parseClassifierResult(r) {
+  const resp = r.response || {};
+  const parts = [];
+  const thoughts = getThinkingBlocks(resp);
+  if (thoughts) {
+    for (let i = 0; i < thoughts.length; i++) {
+      if (thoughts[i] && thoughts[i].thinking) {
+        parts.push(thoughts[i].thinking);
+      }
+    }
+  }
+  const contentText = extractText(resp.content);
+  if (contentText) parts.push(contentText);
+  const fullText = parts.join("\n");
+
+  // Mirror FIo: match <block>yes or <block>no
+  const blockRe = /<block>(yes|no)\b(<\/block>)?/gi;
+  const matches = [];
+  let m;
+  while ((m = blockRe.exec(fullText)) !== null) {
+    matches.push(m);
+  }
+  if (matches.length === 0) {
+    return { allowed: false, reason: null, unparseable: true };
+  }
+  const isYes = matches[0][1].toLowerCase() === "yes";
+  // Mirror oJa: extract reason (only for blocked)
+  let reason = null;
+  if (isYes) {
+    const reasonRe = /<reason>([\s\S]*?)<\/reason>/g;
+    const rm = reasonRe.exec(fullText);
+    if (rm) {
+      reason = rm[1].trim();
+    }
+  }
+  return { allowed: !isYes, reason: reason, unparseable: false };
+}
+
 // Partition the time-ordered records into the main stream and per-agent-id
 // subagent streams (ordered by first appearance).
-function groupBySubagent(reqs) {
+function groupBySubagent(reqs, subagentCallMap) {
   const main = [];
   const subById = new Map();
   reqs.forEach((r, i) => {
@@ -727,6 +1351,18 @@ function groupBySubagent(reqs) {
       g = { id, ordinal: subById.size + 1, short: id.slice(0, 7),
             snippet: firstPromptSnippet(r), firstIdx: i, lastIdx: i,
             lastTerminal: false, items: [] };
+      // Match subagent to its parent tool call
+      if (subagentCallMap) {
+        const msgs = r.messages || [];
+        if (msgs.length) {
+          const key = normalizePrompt(msgs[0].content);
+          const match = subagentCallMap[key];
+          if (match) {
+            g.subagent_type = match.subagent_type;
+            g.description = match.description;
+          }
+        }
+      }
       subById.set(id, g);
     }
     g.items.push({ r, i });
@@ -738,6 +1374,9 @@ function groupBySubagent(reqs) {
 
 function subLabel(g) {
   const cnt = `(${g.items.length})`;
+  if (g.subagent_type && g.description) {
+    return `${g.subagent_type}: ${g.description} ${cnt}`;
+  }
   return g.snippet ? `⌁ ${g.short} ${cnt} · "${g.snippet}…"` : `⌁ ${g.short} ${cnt}`;
 }
 
@@ -748,73 +1387,200 @@ function renderTabs(groups) {
     const t = el("div", "tab" + (state.tab === key ? " active" : ""));
     t.appendChild(el("span", null, label));
     if (n != null) t.appendChild(el("span", "n", `(${n})`));
-    t.onclick = () => { state.tab = key; renderStream(); };
+    t.onclick = () => { applyTabFilter(key); renderChatHead(); };
     return t;
   };
+
   bar.appendChild(tab("main", "Main agent", groups.main.length));
-  for (const g of groups.subs) {
-    bar.appendChild(tab("sub:" + g.id, subLabel(g)));
+
+  if (groups.subs.length === 0) {
+    return bar;
   }
+
+  if (groups.subs.length === 1) {
+    const g = groups.subs[0];
+    bar.appendChild(tab("all", "All", total));
+    bar.appendChild(tab("sub:" + g.id, subLabel(g)));
+    return bar;
+  }
+
+  // 2+ subagents: dropdown selector
   bar.appendChild(tab("all", "All", total));
+  bar.appendChild(renderSubagentDropdown(groups));
   return bar;
 }
 
-// Render the main stream with clickable "started"/"finished" markers spliced
-// into chronological position for each subagent.
-function renderMainStream(chat, groups) {
-  const markers = new Map(); // original record index -> [marker elements]
-  const pushMarker = (idx, m) => {
-    if (!markers.has(idx)) markers.set(idx, []);
-    markers.get(idx).push(m);
-  };
-  const marker = (g, kind, ts) => {
-    const done = kind !== "started";
-    const verb = kind === "started" ? "started"
-               : (g.lastTerminal ? "finished" : "last seen");
-    const m = el("div", "marker" + (done ? " done" : ""));
-    m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
-    m.appendChild(el("span", "when", fmtTs(ts)));
-    m.onclick = () => { state.tab = "sub:" + g.id; renderStream(); };
-    return m;
-  };
-  for (const g of groups.subs) {
-    pushMarker(g.firstIdx, marker(g, "started", recStart(state.reqs[g.firstIdx])));
-    pushMarker(g.lastIdx, marker(g, "finished", recStart(state.reqs[g.lastIdx])));
+function renderSubagentDropdown(groups) {
+  const wrap = el("div", "tab-dropdown");
+
+  // Trigger tab — same .tab class as other tabs
+  const activeSub = groups.subs.find(function(g) { return state.tab === "sub:" + g.id; });
+  const trigger = el("div", "tab");
+  trigger.textContent = activeSub ? subLabel(activeSub) : "Select subagent (" + groups.subs.length + ")";
+  trigger.appendChild(el("span", "tab-arrow", " ▾"));
+
+  // Menu
+  const menu = el("div", "tab-dropdown-menu");
+  for (let i = 0; i < groups.subs.length; i++) {
+    const g = groups.subs[i];
+    const item = el("div", "tab-dropdown-item");
+    item.textContent = subLabel(g);
+    if (state.tab === "sub:" + g.id) item.classList.add("active");
+    item.onclick = (function(id) {
+      return function(e) {
+        e.stopPropagation();
+        applyTabFilter("sub:" + id);
+        renderChatHead();
+        menu.style.display = "none";
+      };
+    })(g.id);
+    menu.appendChild(item);
   }
-  // Walk the global record order so markers land relative to main records.
-  let shown = 0;
-  state.reqs.forEach((r, i) => {
-    const ms = markers.get(i);
-    if (ms) for (const m of ms) chat.appendChild(m);
-    if (!r.agent_id) chat.appendChild(renderTurn(r, ++shown));
-  });
+
+  trigger.onclick = function(e) {
+    e.stopPropagation();
+    if (menu.style.display === "block") {
+      menu.style.display = "none";
+    } else {
+      menu.style.display = "block";
+      setTimeout(function() {
+        document.addEventListener("click", function close(e) {
+          if (!wrap.contains(e.target)) {
+            menu.style.display = "none";
+            document.removeEventListener("click", close);
+          }
+        });
+      }, 0);
+    }
+  };
+
+  wrap.appendChild(trigger);
+  wrap.appendChild(menu);
+  return wrap;
 }
 
-function renderStream() {
-  const head = document.querySelector("#chat .chat-head");
+// Render the main stream with clickable "started"/"finished" markers spliced
+// --- Marker management -----------------------------------------------------------
+
+function createMarker(g, kind, ts) {
+  const done = kind !== "started";
+  const verb = kind === "started" ? "started"
+             : (g.lastTerminal ? "finished" : "last seen");
+  const m = el("div", "marker" + (done ? " done" : ""));
+  m.dataset.role = "marker";
+  m.dataset.sub = g.id;
+  if (g.subagent_type && g.description) {
+    m.appendChild(el("span", null, `${g.subagent_type}: ${g.description} ${verb}`));
+  } else {
+    m.appendChild(el("span", null, `⌁ Subagent ${g.ordinal} (${g.short}) ${verb}`));
+  }
+  m.appendChild(el("span", "when", fmtTs(ts)));
+  m.onclick = () => { applyTabFilter("sub:" + g.id); renderChatHead(); };
+  return m;
+}
+
+function removeMarkers() {
+  chatBody().querySelectorAll(':scope > [data-role="marker"]').forEach(m => m.remove());
+}
+
+function insertMarkers(groups) {
+  if (!groups || !groups.subs.length) return;
   const body = chatBody();
+  const turns = body.querySelectorAll(':scope > .turn');
+  const placements = [];
+  for (const g of groups.subs) {
+    placements.push({ idx: g.firstIdx, marker: createMarker(g, "started", recStart(state.reqs[g.firstIdx])) });
+    placements.push({ idx: g.lastIdx, marker: createMarker(g, "finished", recStart(state.reqs[g.lastIdx])) });
+  }
+  // Insert descending so earlier insertBefore calls don't shift later reference positions.
+  placements.sort((a, b) => b.idx - a.idx);
+  for (const p of placements) {
+    const ref = turns[p.idx];
+    if (ref && ref.parentNode === body) body.insertBefore(p.marker, ref);
+    else body.appendChild(p.marker);
+  }
+}
+
+// --- Tab visibility filter -------------------------------------------------------
+
+function applyTabFilter(tab) {
+  // Capture whether user was at the bottom before changing the view.
+  const body = chatBody();
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+
+  // Remove previous sub-tab visibility classes (only matches elements that
+  // have it — typically few, from the previous sub-tab view).
+  body.querySelectorAll('.tab-visible').forEach(el => el.classList.remove('tab-visible'));
+
+  // Set data-tab on #chat — CSS handles everything for "all" and "main"
+  document.getElementById("chat").dataset.tab = tab;
+
+  // For sub tabs (few elements), mark matching elements as visible
+  if (tab.startsWith("sub:")) {
+    const id = tab.slice(4);
+    body.querySelectorAll(`:scope > [data-role="sub"][data-sub="${id}"]`).forEach(el => {
+      el.classList.add('tab-visible');
+    });
+  }
+
+  state.tab = tab;
+  ensureScrollButton();
+
+  // If user was at the bottom of the previous view, scroll to the new bottom.
+  if (atBottom) {
+    scrollToBottom();
+  }
+}
+
+function renderChatHead() {
+  const head = chatHead();
   head.innerHTML = "";
-  body.innerHTML = "";
   const s = state.session_meta;
-  const hash = s.session_id.slice(0, 8);
-  const stats = sessionStats(state.reqs);
+  if (!s) return;
+
+  const hash = (s.session_id || "").slice(0, 8);
 
   // Line 1: title — prefer the parsed title, fall back to alias or hash
   const title = s.title || s.alias || hash;
   head.appendChild(el("h2", "chat-title", title));
 
-  // Line 2: alias · hash · reqs · cache · cost
+  // Line 2: alias · hash · reqs · cache · cost (partial during streaming)
   {
     const parts = [];
     if (s.alias) parts.push(s.alias);
     parts.push(hash);
-    parts.push(state.reqs.length + " req");
-    if (stats.cacheRate != null) parts.push(stats.cacheRate + "% cached");
-    parts.push("Cost: " + fmtCost(stats.cost));
+    if (state.reqs.length) {
+      const stats = sessionStats(state.reqs);
+      parts.push(state.reqs.length + " req");
+      if (stats.cacheRate != null) parts.push(stats.cacheRate + "% cached");
+      parts.push("Cost: " + fmtCost(stats.cost));
+    } else if (s.count != null) {
+      parts.push(s.count + " req");
+    }
+    if (s.providers && s.providers.length) {
+      parts.push(s.providers.join(", "));
+    }
     const statsEl = el("div", "chat-stats");
     statsEl.textContent = parts.join(" · ");
     head.appendChild(statsEl);
   }
+
+  // Line 3: tabs (only once groups are known; spinner while streaming)
+  if (state.groups && state.reqs.length) {
+    head.appendChild(renderTabs(state.groups));
+  } else if (state.reqs.length > 0 || (s.count && s.count > 0)) {
+    const bar = el("div", "tabs");
+    const spinner = el("div", "tab loading");
+    spinner.textContent = "Loading…";
+    bar.appendChild(spinner);
+    head.appendChild(bar);
+  }
+}
+
+function renderStream() {
+  const body = chatBody();
+  body.innerHTML = "";
+  renderChatHead();
 
   if (!state.reqs.length) {
     body.appendChild(el("div", "hint", "No requests in this session."));
@@ -822,29 +1588,10 @@ function renderStream() {
     return;
   }
 
-  // Line 3: agents bar
-  const groups = state.groups;
-  head.appendChild(renderTabs(groups));
-
-  if (state.tab === "all") {
-    state.reqs.forEach((r, i) => body.appendChild(renderTurn(r, i + 1)));
-  } else if (state.tab.startsWith("sub:")) {
-    const id = state.tab.slice(4);
-    const g = groups.subs.find(x => x.id === id);
-    if (g) g.items.forEach((it, i) => body.appendChild(renderTurn(it.r, i + 1)));
-    else renderMainStream(body, groups); // stale tab → fall back to main
-  } else {
-    renderMainStream(body, groups);
-  }
+  state.reqs.forEach((r, i) => body.appendChild(renderTurn(r, i + 1)));
+  if (state.groups) insertMarkers(state.groups);
+  applyTabFilter(state.tab);
   ensureScrollButton();
-}
-
-function renderChat(reqs, s) {
-  state.reqs = reqs;
-  state.session_meta = s;
-  state.groups = groupBySubagent(reqs);
-  state.tab = "main";
-  renderStream();
 }
 
 // Home/End scroll the request pop-up when it is open, otherwise the session
@@ -856,7 +1603,8 @@ document.addEventListener("keydown", (e) => {
   const target = back ? back.querySelector(".modal-body") : chatBody();
   if (!target) return;
   e.preventDefault();
-  target.scrollTo({ top: e.key === "Home" ? 0 : target.scrollHeight, behavior: "smooth" });
+  if (e.key === "Home") target.scrollTo({ top: 0, behavior: "smooth" });
+  else scrollToBottom();
 });
 
 // ---------------------------------------------------------------------------
@@ -872,6 +1620,10 @@ function updateScrollButtons() {
   const toBot = body.querySelector(".scroll-to-bottom-btn");
   if (toTop) toTop.classList.toggle("visible", !atTop);
   if (toBot) toBot.classList.toggle("visible", !atBottom);
+}
+
+function scrollToBottom() {
+  chatBody().scrollTo({ top: chatBody().scrollHeight, behavior: "smooth" });
 }
 
 function ensureScrollButton() {
@@ -890,9 +1642,7 @@ function ensureScrollButton() {
   const wrapBot = el("div", "scroll-btn-wrap-bot");
   const btnBot = el("button", "scroll-btn scroll-to-bottom-btn");
   btnBot.title = "Scroll to bottom";
-  btnBot.onclick = () => {
-    body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
-  };
+  btnBot.onclick = () => { scrollToBottom(); };
   wrapBot.appendChild(btnBot);
   body.appendChild(wrapBot);
 

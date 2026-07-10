@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
@@ -11,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 import agent_wrap.domain.stats.scan as scan_mod
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
@@ -55,6 +57,12 @@ def pricing_service(mocker: pytest_mock.MockFixture, display_mock: Mock) -> Pric
     mock_ps = mocker.Mock(spec=ProviderService)
     mock_ps.get_provider.return_value = fake
     return PricingService(provider_service=mock_ps, display_service=display_mock)
+
+
+@pytest.fixture
+def stats_svc(pricing_service: PricingService) -> StatsService:
+    """Return a StatsService with the priced pricing_service."""
+    return StatsService(pricing_service, config_service=Mock(spec=ConfigService))
 
 
 def _day_epoch(day: str) -> float:
@@ -143,6 +151,51 @@ def test_plan_pool_handles_unknown_cpu_count(mocker: pytest_mock.MockFixture) ->
     assert workers == 1
 
 
+# --- file culling ---
+
+
+def test_file_culling_skips_old_mtime(
+    pricing_service: PricingService,
+    tmp_path: Path,
+) -> None:
+    logs = tmp_path / ".claude" / "litellm-logs"
+    sdir = logs / "litellm-bedrock" / "s1"
+    sdir.mkdir(parents=True)
+    msg = sdir / "messages.jsonl"
+    msg.write_text(json.dumps(_dated_rec("2026-06-15")) + "\n", encoding="utf-8")
+    old = _day_epoch("2026-01-01")
+    os.utime(msg, (old, old))
+    sessions, _last_ts, by_day, _by_source = scan_logs_dir(
+        logs,
+        pricing_service,
+        from_iso="2026-06-01",
+        until_iso="2026-06-30",
+    )
+    assert sessions == 0
+    assert by_day == {}
+
+
+def test_file_culling_keeps_recent_mtime_but_filters_records(
+    pricing_service: PricingService,
+    tmp_path: Path,
+) -> None:
+    logs = tmp_path / ".claude" / "litellm-logs"
+    sdir = logs / "litellm-bedrock" / "s1"
+    sdir.mkdir(parents=True)
+    msg = sdir / "messages.jsonl"
+    with msg.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(_dated_rec("2026-06-15")) + "\n")
+        f.write(json.dumps(_dated_rec("2026-07-15")) + "\n")
+    sessions, _last_ts, by_day, _by_source = scan_logs_dir(
+        logs,
+        pricing_service,
+        from_iso="2026-06-01",
+        until_iso="2026-06-30",
+    )
+    assert sessions == 1
+    assert set(by_day) == {"2026-06-15"}
+
+
 # ---------------------------------------------------------------------------
 # scan_log_dirs — serial / parallel equivalence (was scan_dirs)
 # ---------------------------------------------------------------------------
@@ -152,10 +205,11 @@ def test_scan_log_dirs_serial_matches_scan_logs_dir(
     pricing_service: PricingService,
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 3, records_per=2)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)  # force serial
-    cache = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    cache = stats_svc.scan_log_dirs(dirs, from_iso=None, until_iso=None)
     for d in dirs:
         expect = scan_logs_dir(d, pricing_service, from_iso=None, until_iso=None)
         got = cache[d]
@@ -166,15 +220,15 @@ def test_scan_log_dirs_serial_matches_scan_logs_dir(
 
 
 def test_scan_log_dirs_parallel_matches_serial(
-    pricing_service: PricingService,
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=2)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)
-    serial = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    serial = stats_svc.scan_log_dirs(dirs, from_iso=None, until_iso=None)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 1)
-    parallel = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    parallel = stats_svc.scan_log_dirs(dirs, from_iso=None, until_iso=None)
 
     def norm(cache: dict[Any, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -196,13 +250,13 @@ def test_scan_log_dirs_parallel_matches_serial(
 
 
 def test_scan_log_dirs_parallel_totals_match_records(
-    pricing_service: PricingService,
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 80, records_per=3)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 1)  # force parallel
-    cache = StatsService(pricing_service).scan_log_dirs(dirs, from_iso=None, until_iso=None)
+    cache = stats_svc.scan_log_dirs(dirs, from_iso=None, until_iso=None)
     total_msgs = sum(
         b.msgs for _, _, by_day, _ in cache.values() for v in by_day.values() for b in v.values()
     )

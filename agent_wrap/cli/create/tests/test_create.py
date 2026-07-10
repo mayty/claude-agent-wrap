@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agent_wrap.cli.create.complete import complete as create_complete
 from agent_wrap.cli.create.run import run as create_run
 from agent_wrap.containers import services
 
 if TYPE_CHECKING:
     import pytest
+
+
+def test_create_complete_no_completions() -> None:
+    assert create_complete(2, ["agent", "create", ""]) == []
 
 
 def test_create_delegates_to_service() -> None:

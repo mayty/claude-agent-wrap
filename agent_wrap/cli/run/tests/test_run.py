@@ -11,6 +11,7 @@ in ``agent_wrap/cli/conftest.py``.
 
 from __future__ import annotations
 
+from agent_wrap.cli.run.complete import complete as run_complete
 from agent_wrap.cli.run.run import run as agent_run
 from agent_wrap.containers import services
 
@@ -60,3 +61,20 @@ def test_run_claude_args_only() -> None:
     services.launch_service.launch.assert_called_once_with(  # type: ignore[missing-attribute]
         use_base=False, claude_args=["-p", "do a thing"]
     )
+
+
+def test_complete_bare_tab_shows_flags() -> None:
+    result = run_complete(2, ["agent", "run", ""])
+    assert "--base" in result
+
+
+def test_complete_flag_consumed() -> None:
+    result = run_complete(3, ["agent", "run", "--base", ""])
+    assert "--base" not in result
+    # all flags consumed → [] → bash file completion
+
+
+def test_complete_all_flags_exhausted() -> None:
+    """When all flags are used, returns [] for file passthrough."""
+    result = run_complete(4, ["agent", "run", "--base", "--help", ""])
+    assert result == []

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent_wrap.cli.rebuild.complete import complete as rebuild_complete
 from agent_wrap.cli.rebuild.run import build_parser
 from agent_wrap.cli.rebuild.run import run as rebuild_run
 
@@ -43,3 +44,20 @@ def test_run_help_returns_zero() -> None:
 def test_run_unknown_arg_returns_one(capsys: pytest.CaptureFixture[str]) -> None:
     assert rebuild_run(["--bogus"]) == 1
     assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_complete_bare_tab_shows_flags() -> None:
+    result = rebuild_complete(2, ["agent", "rebuild", ""])
+    assert "--full" in result
+    assert "-h" in result
+
+
+def test_complete_flag_partial() -> None:
+    result = rebuild_complete(2, ["agent", "rebuild", "--f"])
+    assert "--full" in result
+    # compgen filters, but we return all candidates
+
+
+def test_complete_flag_consumed() -> None:
+    result = rebuild_complete(3, ["agent", "rebuild", "--full", ""])
+    assert "--full" not in result

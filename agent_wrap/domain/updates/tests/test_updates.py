@@ -1,4 +1,5 @@
 # This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/commands/update.py."""
 
 from __future__ import annotations
@@ -14,8 +15,17 @@ if TYPE_CHECKING:
 
 from typing import Any
 
+import pytest
+
 from agent_wrap.domain.updates.models import MdPropagation, MdState
 from agent_wrap.domain.updates.service import UpdateService, _GitOps
+
+
+@pytest.fixture
+def update_svc(display_mock: Mock) -> UpdateService:
+    """Return an UpdateService with the shared display_mock."""
+    return UpdateService(display_service=display_mock)
+
 
 # --- _get_behind_count ---
 
@@ -164,41 +174,46 @@ def test_get_behind_no_commits(
 # --- check_updates ---
 
 
-def test_check_skip_env_set(monkeypatch: pytest.MonkeyPatch, display_mock: Mock) -> None:
+def test_check_skip_env_set(monkeypatch: pytest.MonkeyPatch, update_svc: UpdateService) -> None:
     monkeypatch.setenv("AGENT_SKIP_UPDATE_CHECK", "1")
-    assert UpdateService(display_service=display_mock).check_updates() is False
+    assert update_svc.check_updates() is False
 
 
-def test_check_no_behind(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
+def test_check_no_behind(mocker: pytest_mock.MockFixture, update_svc: UpdateService) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.get_behind_count", return_value=None)
-    assert UpdateService(display_service=display_mock).check_updates() is False
+    assert update_svc.check_updates() is False
 
 
-def test_check_user_says_no(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
+def test_check_user_says_no(
+    mocker: pytest_mock.MockFixture, display_mock: Mock, update_svc: UpdateService
+) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
     )
     display_mock.prompt_confirm.return_value = False
     mock_apply = mocker.patch.object(UpdateService, "apply")
-    assert UpdateService(display_service=display_mock).check_updates() is False
+    assert update_svc.check_updates() is False
     mock_apply.assert_not_called()
 
 
-def test_check_user_says_yes(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
+def test_check_user_says_yes(
+    mocker: pytest_mock.MockFixture, display_mock: Mock, update_svc: UpdateService
+) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
     )
     display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply")
-    assert UpdateService(display_service=display_mock).check_updates() is True
+    assert update_svc.check_updates() is True
     mock_apply.assert_called_once_with("origin/main")
 
 
 def test_check_master_announces_tag(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
+    update_svc: UpdateService,
 ) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
@@ -206,18 +221,20 @@ def test_check_master_announces_tag(
     )
     display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply")
-    assert UpdateService(display_service=display_mock).check_updates() is True
+    assert update_svc.check_updates() is True
     mock_apply.assert_called_once_with("v1.1")
     display_mock.warning.assert_any_call("a new agent-wrap release (v1.1) is available.")
 
 
-def test_check_eof_error(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
+def test_check_eof_error(
+    mocker: pytest_mock.MockFixture, display_mock: Mock, update_svc: UpdateService
+) -> None:
     mocker.patch(
         "agent_wrap.domain.updates.service._GitOps.get_behind_count",
         return_value=("main", 2, "origin/main"),
     )
     display_mock.prompt_confirm.return_value = False
-    assert UpdateService(display_service=display_mock).check_updates() is False
+    assert update_svc.check_updates() is False
 
 
 # --- _detect_claude_md_state ---
@@ -291,9 +308,10 @@ def test_propagation_customized_returns_conflict(
 def test_apply_cannot_determine_branch(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
+    update_svc: UpdateService,
 ) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", return_value=("", 1))
-    rc = UpdateService(display_service=display_mock).apply()
+    rc = update_svc.apply()
     assert rc == 1
     display_mock.error.assert_any_call("Update failed:")
     display_mock.error.assert_any_call("could not determine current branch")
@@ -302,13 +320,14 @@ def test_apply_cannot_determine_branch(
 def test_apply_cannot_get_head(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
+    update_svc: UpdateService,
 ) -> None:
     mock_git = mocker.patch("agent_wrap.domain.updates.service._GitOps.git")
     mock_git.side_effect = [
         ("main", 0),  # symbolic-ref ok
         ("", 1),  # rev-parse HEAD fails
     ]
-    rc = UpdateService(display_service=display_mock).apply("origin/main")
+    rc = update_svc.apply("origin/main")
     assert rc == 1
     display_mock.error.assert_any_call("Update failed:")
     display_mock.error.assert_any_call("could not get current HEAD")
@@ -317,6 +336,7 @@ def test_apply_cannot_get_head(
 def test_apply_merge_fails(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
+    update_svc: UpdateService,
 ) -> None:
     def fake_git(*args: Any, **_: Any):
         if args[0] == "symbolic-ref":
@@ -330,7 +350,7 @@ def test_apply_merge_fails(
         "agent_wrap.domain.updates.service._GitOps.git_full",
         return_value=("", 1, "fatal: not possible to fast-forward"),
     )
-    rc = UpdateService(display_service=display_mock).apply("origin/main")
+    rc = update_svc.apply("origin/main")
     assert rc == 1
     display_mock.error.assert_any_call("Update failed:")
     display_mock.error.assert_any_call("fatal: not possible to fast-forward")
@@ -338,7 +358,9 @@ def test_apply_merge_fails(
     assert mock_full.call_args.args == ("merge", "--ff-only", "origin/main")
 
 
-def test_apply_merges_to_tag_target(mocker: pytest_mock.MockFixture, display_mock: Mock) -> None:
+def test_apply_merges_to_tag_target(
+    mocker: pytest_mock.MockFixture, update_svc: UpdateService
+) -> None:
     def fake_git(*args: Any, **_: Any):
         if args[0] == "symbolic-ref":
             return ("master", 0)
@@ -351,7 +373,7 @@ def test_apply_merges_to_tag_target(mocker: pytest_mock.MockFixture, display_moc
         "agent_wrap.domain.updates.service._GitOps.git_full", return_value=("", 0, "")
     )
     mocker.patch("subprocess.run").return_value.returncode = 0
-    rc = UpdateService(display_service=display_mock).apply("v1.1")
+    rc = update_svc.apply("v1.1")
     assert rc == 0
     assert mock_full.call_args.args == ("merge", "--ff-only", "v1.1")
 
@@ -359,10 +381,11 @@ def test_apply_merges_to_tag_target(mocker: pytest_mock.MockFixture, display_moc
 def test_apply_recomputes_target_when_none(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
+    update_svc: UpdateService,
 ) -> None:
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", return_value=("master", 0))
     mocker.patch("agent_wrap.domain.updates.service._GitOps.get_behind_count", return_value=None)
-    rc = UpdateService(display_service=display_mock).apply()
+    rc = update_svc.apply()
     assert rc == 0
     display_mock.success.assert_any_call("Already up to date")
 
@@ -370,6 +393,7 @@ def test_apply_recomputes_target_when_none(
 def test_apply_already_up_to_date(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
+    update_svc: UpdateService,
 ) -> None:
     def fake_git(*args: Any, **_: Any):
         if args[0] == "symbolic-ref":
@@ -381,6 +405,6 @@ def test_apply_already_up_to_date(
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git", side_effect=fake_git)
     mocker.patch("agent_wrap.domain.updates.service._GitOps.git_full", return_value=("", 0, ""))
     mocker.patch("subprocess.run").return_value.returncode = 0
-    rc = UpdateService(display_service=display_mock).apply("origin/main")
+    rc = update_svc.apply("origin/main")
     assert rc == 0
     display_mock.success.assert_any_call("Already up to date")

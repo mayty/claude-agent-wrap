@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import sys
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from agent_wrap.__main__ import main
-from agent_wrap.cli.commands import command_meta
+from agent_wrap.__main__ import _complete, main
+from agent_wrap.cli.commands import COMMANDS, command_meta
 from agent_wrap.containers import services
 
 if TYPE_CHECKING:
+    import pytest
     from pytest_mock import MockerFixture
     from pytest_subtests import SubTests
 
@@ -50,3 +52,54 @@ def test_unknown_command_returns_error(
     services.display_service.error.assert_called_once_with(  # type: ignore[union-attr]
         "Unknown command: no-such-cmd"
     )
+
+
+def test_complete_verb_completion(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify cword=1 prints all COMMANDS keys (verb completion)."""
+    old_argv = sys.argv
+    try:
+        sys.argv = ["agent_wrap", "1", "agent", ""]
+        _complete()
+    finally:
+        sys.argv = old_argv
+
+    out = capsys.readouterr().out
+    for name in COMMANDS:
+        assert name in out
+
+
+def test_complete_unknown_verb_no_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify cword > 1 with unknown verb produces no output."""
+    old_argv = sys.argv
+    try:
+        sys.argv = ["agent_wrap", "2", "agent", "no-such-verb", ""]
+        _complete()
+    finally:
+        sys.argv = old_argv
+
+    assert capsys.readouterr().out == ""
+
+
+def test_complete_known_verb_delegates_to_complete(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify cword=2 with 'rebuild' delegates to rebuild's complete()."""
+    old_argv = sys.argv
+    try:
+        sys.argv = ["agent_wrap", "2", "agent", "rebuild", ""]
+        _complete()
+    finally:
+        sys.argv = old_argv
+
+    out = capsys.readouterr().out
+    assert "--full" in out
+
+
+def test_every_command_has_complete_function() -> None:
+    """Every registered verb maps to a callable complete()."""
+    for name, (_run_fn, complete_fn) in COMMANDS.items():
+        assert callable(complete_fn), f"{name} complete() is not callable"
+
+
+def test_commands_dict_matches_registered_verbs() -> None:
+    """COMMANDS keys match the set of known verbs."""
+    expected = {"create", "logs", "rebuild", "run", "secrets", "stats", "update"}
+    assert set(COMMANDS) == expected

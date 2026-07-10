@@ -25,7 +25,7 @@ from agent_wrap.domain.logs.normalize import (
     enrich_with_costs,
     extract_alias,
     extract_title,
-    normalize_record,
+    normalize_record_unresolved,
 )
 from agent_wrap.lib.atomic import atomic_write_json
 
@@ -145,7 +145,7 @@ def _aslogs_dirs(project: Path | list[Path]) -> list[Path]:
     return project if isinstance(project, list) else [logs_dir(project)]
 
 
-def list_groups(stats_service: StatsService) -> list[GroupInfo]:
+def list_groups(stats_service: StatsService, projects: list[Path]) -> list[GroupInfo]:
     """
     Group registered projects into transient projects by ``.agent_stats_leaf``.
 
@@ -164,11 +164,8 @@ def list_groups(stats_service: StatsService) -> list[GroupInfo]:
     behind by deleted projects / stale registry entries — its ``logs_dirs`` are the
     central ``<hash>`` dirs themselves and it has no member ``paths``.
     """
-    registry = AGENT_LAUNCHES_DIR / "projects.txt"
-    if not registry.is_file():
+    if not projects:
         return []
-
-    projects = stats_service.load_projects(registry)
     names: dict[Path, str] = {}
     members: dict[Path, list[Path]] = {}
     for path in projects:
@@ -205,10 +202,10 @@ def list_groups(stats_service: StatsService) -> list[GroupInfo]:
     return groups
 
 
-def list_projects(stats_service: StatsService) -> list[ProjectInfo]:
+def list_projects(groups: list[GroupInfo]) -> list[ProjectInfo]:
     """List transient projects (grouped) that have LiteLLM logs."""
     out: list[ProjectInfo] = []
-    for idx, group in enumerate(list_groups(stats_service)):
+    for idx, group in enumerate(groups):
         session_count = 0
         max_last_ts: float | None = None
         for logs_dir in group["logs_dirs"]:
@@ -229,20 +226,6 @@ def list_projects(stats_service: StatsService) -> list[ProjectInfo]:
         )
     out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)
     return out
-
-
-def group_by_id(group_id: int, stats_service: StatsService) -> list[Path] | None:
-    """
-    Return the logs dirs to scan for a group index, or None if unknown.
-
-    The session readers take logs dirs directly (see :func:`_aslogs_dirs`), so
-    this returns the group's ``logs_dirs`` — a project's ``.claude/litellm-logs``
-    for normal groups, or the central ``<hash>`` dirs for the ``<orphaned>`` group.
-    """
-    groups = list_groups(stats_service)
-    if 0 <= group_id < len(groups):
-        return groups[group_id]["logs_dirs"]
-    return None
 
 
 def _accumulate_session_meta(meta: SessionMeta, rec: LogRecord) -> None:
@@ -382,8 +365,9 @@ def scan_session_meta(session_dir: Path, provider: str) -> ProviderSessionMeta |
 
 def _merge_session_meta(existing: CombinedSessionMeta, meta: ProviderSessionMeta) -> None:
     """Merge *meta* (from one provider) into *existing* (the combined entry)."""
-    existing["providers"].append(meta["provider"])
-    existing["providers"].sort()
+    if meta["provider"] not in existing["providers"]:
+        existing["providers"].append(meta["provider"])
+        existing["providers"].sort()
     existing["count"] += meta["count"]
     if meta["first_ts"] and (not existing["first_ts"] or meta["first_ts"] < existing["first_ts"]):
         existing["first_ts"] = meta["first_ts"]
@@ -514,7 +498,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
     return {"mtime": best_mtime, "size": total_size}
 
 
-def projects_fingerprint(stats_service: StatsService) -> Fingerprint:
+def projects_fingerprint(projects: list[Path]) -> Fingerprint:
     """
     Return a change-marker for all registered projects that have logs.
 
@@ -536,7 +520,7 @@ def projects_fingerprint(stats_service: StatsService) -> Fingerprint:
     except OSError:
         return {"mtime": None, "size": None}
 
-    for project in stats_service.load_projects(registry):
+    for project in projects:
         fp = sessions_fingerprint(project)
         if fp["mtime"] is None:
             continue
@@ -552,21 +536,23 @@ def _read_provider_session(
     provider: str,
     session_id: str,
     pricing: PricingService,
-) -> tuple[list[NormalizedRecord], ProviderSessionMeta | None]:
+) -> tuple[list[NormalizedRecord], ProviderSessionMeta | None, dict[str, str]]:
     """
     Read and normalize records from one provider's session directory.
 
-    Returns ``(records, meta_entry)`` where *meta_entry* has the same shape as
-    :func:`scan_session_meta` (or ``None`` when the directory has no records).
+    Returns ``(records, meta_entry, strings)`` where *meta_entry* has the same
+    shape as :func:`scan_session_meta` (or ``None`` when the directory has no
+    records) and *strings* is the ``{hash: original}`` map loaded from the
+    session's ``strings.jsonl``.
     """
     messages_file = session_dir / "messages.jsonl"
     if not messages_file.is_file():
-        return [], None
+        return [], None, {}
 
     # Read every raw record first so we capture a consistent snapshot of
     # messages.jsonl.  Strings are loaded *afterwards* because the callback
     # writes hashes to strings.jsonl before appending the record — loading
-    # strings after records guarantees every hash we encounter is resolved.
+    # strings after records guarantees every hash we encounter is resolvable.
     meta = SessionMeta()
     raw_records: list[dict[str, Any]] = []
     try:
@@ -585,13 +571,13 @@ def _read_provider_session(
         pass
 
     if meta.count == 0:
-        return [], None
+        return [], None, {}
 
     strings = load_strings(session_dir)
     records: list[NormalizedRecord] = []
     for rec in raw_records:
         raw_response = rec.get("response")
-        normalized = normalize_record(rec, strings)  # type: ignore[arg-type]
+        normalized = normalize_record_unresolved(rec)  # type: ignore[arg-type]
         enriched = enrich_with_costs(
             normalized, raw_response, provider, pricing, rec.get("request")
         )
@@ -608,13 +594,46 @@ def _read_provider_session(
         "last_ts": meta.last_ts,
         "models": sorted(meta.models),
     }
-    return records, entry
+    return records, entry, strings
+
+
+def read_strings(
+    project: Path | list[Path],
+    session_id: str,
+) -> str:
+    """
+    Return the raw ``strings.jsonl`` content for *session_id* across all
+    providers, concatenated.
+
+    Each line is a JSON object ``{"hash": "<sha256>", "original": "..."}`` —
+    the same format the LiteLLM callback writes to disk.  Providers without a
+    ``strings.jsonl`` are silently skipped.
+
+    Returns an empty string when no ``strings.jsonl`` files exist.
+    """
+    parts: list[str] = []
+    for logs_dir in _aslogs_dirs(project):
+        if not logs_dir.is_dir():
+            continue
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
+                continue
+            sf = provider_dir / session_id / "strings.jsonl"
+            if not sf.is_file():
+                continue
+            try:
+                parts.append(sf.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    return "".join(parts)
 
 
 def read_session(
     project: Path | list[Path],
     session_id: str,
     pricing: PricingService,
+    *,
+    from_index: int = 0,
 ) -> ReadSessionResult:
     """
     Read and normalize every request in one session across all providers.
@@ -623,6 +642,10 @@ def read_session(
     or multiple member projects of a grouped transient project — records from every
     provider directory are loaded and merge-sorted by ``ts`` so the chat view shows
     a single chronological thread.
+
+    When *from_index* > 0, only records at that index and beyond are returned in
+    ``reqs`` — *session_meta* is still computed from all records so the header
+    always reflects the full session (count, timestamps, models).
 
     Returns ``{"reqs": [...], "session_meta": {...}}`` where *session_meta* has
     the same shape as one entry from :func:`list_sessions` (or ``None`` when no
@@ -637,7 +660,7 @@ def read_session(
         for provider_dir in logs_dir.iterdir():
             if not provider_dir.is_dir():
                 continue
-            records, entry = _read_provider_session(
+            records, entry, _strings = _read_provider_session(
                 provider_dir / session_id, provider_dir.name, session_id, pricing
             )
             all_records.extend(records)
@@ -657,4 +680,4 @@ def read_session(
                     _merge_session_meta(combined_meta, entry)
 
     all_records.sort(key=lambda r: (r["timing"] or {}).get("start") or 0)
-    return {"reqs": all_records, "session_meta": combined_meta}
+    return {"reqs": all_records[from_index:], "session_meta": combined_meta}

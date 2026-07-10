@@ -1,14 +1,23 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Constants for the logs domain subpackage."""
 
+import os
 import re
 from pathlib import Path
+
+from agent_wrap.lib.utils import is_truthy_env
+
+# Spinner label shown during cold start.
+LOGS_VIEWER_LABEL = "logs-viewer"
+
+# Verbose per-tick/per-step server logging, opt-in via AGENT_LOG_DEBUG=1.
+LOG_DEBUG = is_truthy_env(os.environ.get("AGENT_LOG_DEBUG", ""))
 
 # Background-viewer lifecycle constants.
 LOG_FILE_NAME = "logs-server.log"
 
 # Parent -> child handshake / stop-wait timing.
-SPAWN_TIMEOUT_SEC = 5.0
+SPAWN_TIMEOUT_SEC = 900.0
 STOP_TIMEOUT_SEC = 3.0
 POLL_INTERVAL_SEC = 0.05
 
@@ -21,6 +30,9 @@ LOGS_PAGE_DIR = Path(__file__).resolve().parents[3] / "logs_page"
 
 # Port scan limit when binding — try up to this many ports before giving up.
 PORT_SCAN_LIMIT = 50
+
+# Poll interval for the in-memory cache's background filesystem watcher (seconds).
+CACHE_POLL_INTERVAL_SEC = 2.0
 
 # Compiled regexes for extracting alias names and titles from log records.
 ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')

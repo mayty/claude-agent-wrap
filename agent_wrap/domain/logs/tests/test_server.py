@@ -1,3 +1,4 @@
+# This file has been edited with the assistance of an AI tool.
 from __future__ import annotations
 
 import json
@@ -10,14 +11,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.domain.logs.server import bind_port, resolve_static
+from agent_wrap.domain.logs.cache import LogsCache
+from agent_wrap.domain.logs.server import bind_port, get_handler, resolve_static
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-# --- resolve_static (path mapping + traversal safety) ---
 
 
 def test_resolve_static_maps_root_to_index(tmp_path: Path):
@@ -35,9 +34,6 @@ def test_resolve_static_rejects_traversal(tmp_path: Path):
     # Escaping the page dir must be refused, not resolved to a sibling file.
     assert resolve_static("/../logs.py", root=page) is None
     assert resolve_static("/../../etc/passwd", root=page) is None
-
-
-# --- HTTP handler helpers ----------------------------------------------------
 
 
 def _find_free_port() -> int:
@@ -61,7 +57,33 @@ def _get_json(port: int, path: str) -> tuple[int, Any]:
         return e.code, json.loads(e.read())
 
 
-def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
+def _get_text(port: int, path: str) -> tuple[int, str]:
+    """GET *path* and return (status_code, body as text)."""
+    req = urllib.request.Request(_url(port, path))  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+
+
+def _get_ndjson(port: int, path: str) -> tuple[int, list[dict[str, Any]]]:
+    """GET *path* and return (status_code, list of parsed NDJSON lines)."""
+    req = urllib.request.Request(_url(port, path))  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8")
+            lines: list[dict[str, Any]] = []
+            for raw_line in body.split("\n"):
+                stripped = raw_line.strip()
+                if stripped:
+                    lines.append(json.loads(stripped))
+            return resp.status, lines
+    except urllib.error.HTTPError as e:
+        return e.code, [json.loads(e.read())]
+
+
+def _start_server(port: int, cache: LogsCache) -> threading.Thread:
     """Start the logs HTTP server on *port* in a daemon thread and return the thread."""
     pricing = Mock(spec=PricingService)
     pricing.request_cache_ttl.return_value = None
@@ -71,7 +93,8 @@ def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
         "cache_read_input_tokens": 0,
     }
     pricing.compute_cost.return_value = 0.001
-    server = bind_port(port, pricing=pricing, stats_service=stats_service)
+    handler = get_handler(pricing, cache)
+    server = bind_port(port, handler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     # Give the server a moment to start accepting connections.
@@ -79,13 +102,10 @@ def _start_server(port: int, stats_service: StatsService) -> threading.Thread:
     return t
 
 
-# --- group / stats helpers ---------------------------------------------------
-
-
 def _write_session(project: Path, provider: str, session_id: str) -> Path:
     """Write a minimal messages.jsonl for *session_id* and return its dir."""
     sdir = project / ".claude" / "litellm-logs" / provider / session_id
-    sdir.mkdir(parents=True)
+    sdir.mkdir(parents=True, exist_ok=True)
     rec: dict[str, Any] = {
         "timing": {"start": 1000000.0, "completionStart": None, "end": 1000001.0},
         "model": "m/test",
@@ -93,106 +113,158 @@ def _write_session(project: Path, provider: str, session_id: str) -> Path:
     }
     with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
+    # Write meta.json so stream_session can pick it up from cache.
+    meta: dict[str, Any] = {
+        "count": 1,
+        "last_ts": 1000001.0,
+        "models": ["test"],
+    }
+    (sdir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return sdir
 
 
-# --- API endpoint tests ------------------------------------------------------
+@pytest.fixture
+def api_server(tmp_path: Path) -> tuple[int, Path]:
+    """Start the logs server against a fresh project; return (port, project_dir)."""
+    port = _find_free_port()
+    project = tmp_path / "testproj"
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    _write_session(project, "litellm-bedrock", sid)
+    cache = Mock(spec=LogsCache)
+    cache.get_logs_dirs.side_effect = lambda pid: (
+        [project / ".claude" / "litellm-logs"] if pid == 0 else None
+    )
+    cache.get_sessions.return_value = [
+        {
+            "session_id": sid,
+            "count": 1,
+            "first_ts": 1000000.0,
+            "last_ts": 1000001.0,
+            "models": ["test"],
+            "providers": ["litellm-bedrock"],
+            "alias": None,
+            "title": None,
+        }
+    ]
+    cache.get_sessions_fingerprint.return_value = {"mtime": 1, "size": 100}
+    cache.get_session_fingerprint.return_value = {"mtime": 1, "size": 100}
+    cache.get_hot_session.return_value = None
+    cache.get_groups.return_value = []  # type: ignore[implicit-any-empty-container]
+    cache.get_projects.return_value = []  # type: ignore[implicit-any-empty-container]
+    cache.get_projects_fingerprint.return_value = {"mtime": None, "size": None}  # type: ignore[implicit-any-empty-container]
+    _start_server(port, cache)
+    return port, project
 
 
-class TestAPIEndpoints:
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.port = _find_free_port()
-        self.project = tmp_path / "testproj"
-        _write_session(self.project, "litellm-bedrock", "abc12345-6789-abcd-ef01-234567890abc")
-        # list_groups needs the registry file to exist; its contents are
-        # served by the mocked StatsService.load_projects.
-        reg = tmp_path / ".agent-launches" / "projects.txt"
-        reg.parent.mkdir(parents=True, exist_ok=True)
-        reg.write_text("", encoding="utf-8")
-        stats = Mock(spec=StatsService)
-        stats.load_projects.return_value = [self.project]
-        stats.resolve_group.return_value = (self.project, self.project.name, False)
-        stats.orphaned_log_dirs.return_value = []  # type: ignore[implicit-any-empty-container]
-        _start_server(self.port, stats)
+def test_sessions_returns_list(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions?project=0")
+    assert status == 200
+    assert isinstance(body, list)
+    assert len(body) == 1
+    assert body[0]["session_id"] == "abc12345-6789-abcd-ef01-234567890abc"
+    assert body[0]["count"] == 1
 
-    # --- /api/sessions -------------------------------------------------------
 
-    def test_sessions_returns_list(self):
-        status, body = _get_json(self.port, "/api/sessions?project=0")
-        assert status == 200
-        assert isinstance(body, list)
-        assert len(body) == 1
-        assert body[0]["session_id"] == "abc12345-6789-abcd-ef01-234567890abc"
-        assert body[0]["count"] == 1
+def test_sessions_missing_project_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions")
+    assert status == 400
+    assert "missing project param" in body["error"]
 
-    def test_sessions_missing_project_returns_400(self):
-        status, body = _get_json(self.port, "/api/sessions")
-        assert status == 400
-        assert "missing project param" in body["error"]
 
-    def test_sessions_invalid_project_returns_400(self):
-        status, body = _get_json(self.port, "/api/sessions?project=notanumber")
-        assert status == 400
-        assert "invalid project id" in body["error"]
+def test_sessions_invalid_project_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions?project=notanumber")
+    assert status == 400
+    assert "invalid project id" in body["error"]
 
-    def test_sessions_unknown_project_returns_400(self):
-        status, body = _get_json(self.port, "/api/sessions?project=99")
-        assert status == 400
-        assert "unknown project id" in body["error"]
 
-    # --- /api/sessions-stat --------------------------------------------------
+def test_sessions_unknown_project_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions?project=99")
+    assert status == 400
+    assert "unknown project id" in body["error"]
 
-    def test_sessions_stat_returns_fingerprint(self):
-        status, body = _get_json(self.port, "/api/sessions-stat?project=0")
-        assert status == 200
-        assert isinstance(body, dict)
-        assert "mtime" in body
-        assert "size" in body
-        assert body["mtime"] is not None
-        assert body["size"] is not None
 
-    # --- /api/session --------------------------------------------------------
+def test_sessions_stat_returns_fingerprint(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/sessions-stat?project=0")
+    assert status == 200
+    assert isinstance(body, dict)
+    assert "mtime" in body
+    assert "size" in body
+    assert body["mtime"] is not None
+    assert body["size"] is not None
 
-    def test_session_returns_details(self):
-        sid = "abc12345-6789-abcd-ef01-234567890abc"
-        status, body = _get_json(self.port, f"/api/session?project=0&session={sid}")
-        assert status == 200
-        assert isinstance(body, dict)
-        assert "reqs" in body
-        assert "session_meta" in body
-        assert body["session_meta"]["session_id"] == sid
 
-    def test_session_missing_session_returns_400(self):
-        status, body = _get_json(self.port, "/api/session?project=0")
-        assert status == 400
-        assert "missing session param" in body["error"]
+def test_session_returns_details(api_server: tuple[int, Path]):
+    port, _project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    status, lines = _get_ndjson(port, f"/api/session?project=0&session={sid}")
+    assert status == 200
+    assert len(lines) >= 2
+    # First line is the meta header
+    assert lines[0]["__type__"] == "session_meta"
+    assert lines[0]["session_id"] == sid
+    # Subsequent lines are records (no __type__)
+    for line in lines[1:]:
+        assert "__type__" not in line
 
-    # --- /api/session-stat ---------------------------------------------------
 
-    def test_session_stat_returns_fingerprint(self):
-        sid = "abc12345-6789-abcd-ef01-234567890abc"
-        status, body = _get_json(self.port, f"/api/session-stat?project=0&session={sid}")
-        assert status == 200
-        assert isinstance(body, dict)
-        assert "mtime" in body
-        assert "size" in body
+def test_session_missing_session_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/session?project=0")
+    assert status == 400
+    assert "missing session param" in body["error"]
 
-    def test_session_stat_missing_session_returns_400(self):
-        status, body = _get_json(self.port, "/api/session-stat?project=0")
-        assert status == 400
-        assert "missing session param" in body["error"]
 
-    # --- /api/groups (unchanged by our fix, but verify not broken) -----------
+def test_strings_endpoint_returns_text(api_server: tuple[int, Path]):
+    port, project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    sdir = _write_session(project, "litellm-bedrock", sid)
+    (sdir / "strings.jsonl").write_text('{"hash": "hash:a", "original": "AAA"}\n', encoding="utf-8")
+    status, body = _get_text(port, f"/api/strings?project=0&session={sid}")
+    assert status == 200
+    assert "hash:a" in body
+    assert "AAA" in body
 
-    def test_groups_returns_list(self):
-        status, body = _get_json(self.port, "/api/groups")
-        assert status == 200
-        assert isinstance(body, list)
 
-    # --- /api/projects (unchanged, but verify not broken) -------------------
+def test_strings_endpoint_empty_when_no_file(api_server: tuple[int, Path]):
+    port, project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    _write_session(project, "litellm-bedrock", sid)
+    status, body = _get_text(port, f"/api/strings?project=0&session={sid}")
+    assert status == 200
+    assert body == ""
 
-    def test_projects_returns_list(self):
-        status, body = _get_json(self.port, "/api/projects")
-        assert status == 200
-        assert isinstance(body, list)
+
+def test_session_stat_returns_fingerprint(api_server: tuple[int, Path]):
+    port, _project = api_server
+    sid = "abc12345-6789-abcd-ef01-234567890abc"
+    status, body = _get_json(port, f"/api/session-stat?project=0&session={sid}")
+    assert status == 200
+    assert isinstance(body, dict)
+    assert "mtime" in body
+    assert "size" in body
+
+
+def test_session_stat_missing_session_returns_400(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/session-stat?project=0")
+    assert status == 400
+    assert "missing session param" in body["error"]
+
+
+def test_groups_returns_list(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/groups")
+    assert status == 200
+    assert isinstance(body, list)
+
+
+def test_projects_returns_list(api_server: tuple[int, Path]):
+    port, _project = api_server
+    status, body = _get_json(port, "/api/projects")
+    assert status == 200
+    assert isinstance(body, list)
