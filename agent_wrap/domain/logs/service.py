@@ -26,7 +26,7 @@ from agent_wrap.domain.logs.constants import (
     STOP_TIMEOUT_SEC,
 )
 from agent_wrap.domain.logs.daemon import (
-    log_event,
+    log_info,
     read_state,
     state_dir,
     state_file,
@@ -93,14 +93,14 @@ class LogsService:
             os.dup2(lf.fileno(), sys.stdout.fileno())
             os.dup2(lf.fileno(), sys.stderr.fileno())
 
-        log_event("Logs server", "starting")
+        log_info("Logs server", "starting")
         logs_cache = LogsCache(self._stats, self._config, self._pricing)
         logs_cache.start()
         handler = get_handler(self._pricing, logs_cache)
         server = bind_port(port, handler)
         actual_port = server.server_address[1]
         write_state(os.getpid(), actual_port)
-        log_event("Logs server", "started")
+        log_info("Logs server", "started")
 
         def _handle_signal(signum: int, frame: FrameType | None) -> None:  # noqa: ARG001
             # server.shutdown() blocks on __is_shut_down.wait() which deadlocks
@@ -117,6 +117,7 @@ class LogsService:
         finally:
             server.server_close()
             logs_cache.stop()
+            log_info("Logs server", "stopped")
         return 0
 
     def spawn_background(self, port: int) -> int:

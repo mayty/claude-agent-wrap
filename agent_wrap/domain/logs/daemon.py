@@ -13,9 +13,11 @@ from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     LOGS_TOOL_DIR_ENV,
 )
-from agent_wrap.domain.logs.constants import STATE_FILE_NAME
+from agent_wrap.domain.logs.constants import LOG_DEBUG, STATE_FILE_NAME
 
 if TYPE_CHECKING:
+    from datetime import timedelta
+
     from agent_wrap.domain.logs.models import DaemonState
 
 
@@ -56,11 +58,22 @@ def write_state(pid: int, port: int) -> None:
 
 
 class _LogSpan:
-    """Context manager returned by log_event; logs elapsed time on exit."""
+    """
+    Context manager returned by log_info/log_debug; logs elapsed time on exit.
 
-    def __init__(self, category: str, description: str) -> None:
+    *threshold* being not-None marks this as a debug span: the "completed in
+    Ns" line prints via ``_print_debug`` while elapsed time stays within
+    *threshold*, and escalates to ``_print_line`` (always visible) once it's
+    exceeded — so an unexpectedly slow debug span still surfaces without
+    ``AGENT_LOG_DEBUG``.
+    """
+
+    def __init__(
+        self, category: str, description: str, *, threshold: timedelta | None = None
+    ) -> None:
         self._category = category
         self._description = description
+        self._threshold = threshold
         self._start = time.monotonic()
 
     def __enter__(self) -> _LogSpan:  # noqa: PYI034 — `Self` needs py3.11+, target is py3.10
@@ -68,19 +81,35 @@ class _LogSpan:
 
     def __exit__(self, *exc_info: object) -> None:
         elapsed = time.monotonic() - self._start
-        _print_line(f"{self._category}: {self._description} completed in {elapsed:.2f}s")
+        line = f"{self._category}: {self._description} completed in {elapsed:.2f}s"
+        if self._threshold is not None and elapsed <= self._threshold.total_seconds():
+            _print_debug(line)
+        else:
+            _print_line(line)
 
 
-def log_event(category: str, description: str) -> _LogSpan:
+def log_info(category: str, description: str) -> _LogSpan:
     """
-    Print a timestamped ``"<category>: <description>"`` line.
+    Print a timestamped ``"<category>: <description>"`` line, always visible.
 
     The return value is a context manager: a bare call just prints the start
-    line (for one-off markers), while ``with log_event(...):`` additionally
+    line (for one-off markers), while ``with log_info(...):`` additionally
     prints a matching "completed in Ns" line with elapsed time on exit.
     """
     _print_line(f"{category}: {description}")
     return _LogSpan(category, description)
+
+
+def log_debug(category: str, description: str, threshold: timedelta) -> _LogSpan:
+    """
+    Print a timestamped ``"<category>: <description>"`` line, gated by ``AGENT_LOG_DEBUG``.
+
+    Like ``log_info``, the return value is a context manager for a matching
+    "completed in Ns" line on exit. If elapsed time exceeds *threshold*, that
+    completion line always prints (even without ``AGENT_LOG_DEBUG`` set).
+    """
+    _print_debug(f"{category}: {description}")
+    return _LogSpan(category, description, threshold=threshold)
 
 
 def _print_line(message: str) -> None:
@@ -88,3 +117,8 @@ def _print_line(message: str) -> None:
     # without an explicit flush a line can sit in the buffer and be lost if the
     # process is later killed (e.g. SIGKILL after a SIGTERM shutdown times out).
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+def _print_debug(message: str) -> None:
+    if LOG_DEBUG:
+        _print_line(message)

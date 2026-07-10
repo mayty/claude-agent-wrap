@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.domain.logs.constants import CACHE_POLL_INTERVAL_SEC
-from agent_wrap.domain.logs.daemon import log_event
+from agent_wrap.domain.logs.daemon import log_debug, log_info
 from agent_wrap.domain.logs.io import (
     list_groups,
     list_projects,
@@ -159,10 +160,10 @@ class LogsCache:
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        with log_event("Startup", "building initial session cache"):
+        with log_info("Startup", "building initial session cache"):
             self._rebuild_all()
         self._thread.start()
-        log_event("Startup", "background update thread started")
+        log_info("Startup", "background update thread started")
 
     def stop(self) -> None:
         thread = self._thread
@@ -178,24 +179,31 @@ class LogsCache:
 
     def _poll_loop(self) -> None:
         while not self._stop_event.wait(CACHE_POLL_INTERVAL_SEC):
-            with log_event("Update", "poll tick"), contextlib.suppress(Exception):
+            with (
+                log_debug("Update", "poll tick", threshold=timedelta(seconds=2)),
+                contextlib.suppress(Exception),
+            ):
                 self._poll_once()
 
     def _poll_once(self) -> None:
         # 1. Check projects.txt for added/removed paths.
         if self._projects_txt_changed():
-            with log_event("Update", "handling projects.txt change"):
+            with log_debug(
+                "Update", "handling projects.txt change", threshold=timedelta(seconds=2)
+            ):
                 self._handle_projects_txt_change()
 
         # 2. Walk known groups' logs_dirs, stat messages.jsonl files, diff.
-        with log_event("Update", "scanning session directories"):
+        with log_debug("Update", "scanning session directories", threshold=timedelta(seconds=2)):
             new_manifest, path_to_key = self._gather_directory_manifest()
 
-        with log_event("Update", "diffing manifest"):
+        with log_debug("Update", "diffing manifest", threshold=timedelta(milliseconds=500)):
             changed, deleted = self._diff_manifest(new_manifest, path_to_key)
 
         if changed or deleted:
-            with log_event("Update", "applying incremental updates"):
+            with log_debug(
+                "Update", "applying incremental updates", threshold=timedelta(seconds=1)
+            ):
                 self._apply_incremental_updates(changed, deleted, new_manifest)
         else:
             self._known_messages = new_manifest
@@ -262,20 +270,20 @@ class LogsCache:
         """Full rebuild from disk — called at startup and on projects.txt additions."""
         raw_projects = self._config.read_project_paths()
 
-        with log_event("Rebuild", "listing groups"):
+        with log_info("Rebuild", "listing groups"):
             groups = list_groups(self._stats_service, raw_projects)
 
-        with log_event("Rebuild", "listing projects"):
+        with log_info("Rebuild", "listing projects"):
             projects = list_projects(groups)
 
-        with log_event("Rebuild", "computing projects fingerprint"):
+        with log_info("Rebuild", "computing projects fingerprint"):
             fp = projects_fingerprint(raw_projects)
 
         sessions: dict[int, list[CombinedSessionMeta]] = {}
         sessions_fp: dict[int, Fingerprint] = {}
         session_fp: dict[tuple[int, str], Fingerprint] = {}
         known_messages: dict[Path, tuple[int, int]] = {}
-        with log_event("Rebuild", "scanning sessions per group"):
+        with log_info("Rebuild", "scanning sessions per group"):
             for idx, group in enumerate(groups):
                 sess = list_sessions(group["logs_dirs"])
                 sessions[idx] = sess

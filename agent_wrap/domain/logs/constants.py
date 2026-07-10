@@ -1,11 +1,17 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Constants for the logs domain subpackage."""
 
+import os
 import re
 from pathlib import Path
 
+from agent_wrap.lib.utils import is_truthy_env
+
 # Spinner label shown during cold start.
 LOGS_VIEWER_LABEL = "logs-viewer"
+
+# Verbose per-tick/per-step server logging, opt-in via AGENT_LOG_DEBUG=1.
+LOG_DEBUG = is_truthy_env(os.environ.get("AGENT_LOG_DEBUG", ""))
 
 # Background-viewer lifecycle constants.
 LOG_FILE_NAME = "logs-server.log"
