@@ -80,7 +80,7 @@ class LaunchService:
         """Full launch pipeline: update check, image resolve, sidecar setup, docker run, cleanup."""
         headless = self._is_headless(claude_args)
 
-        if self._updates.check_updates():
+        if not headless and self._updates.check_updates():
             return 0
 
         try:

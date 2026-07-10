@@ -21,5 +21,6 @@ STATE_MOUNTS = {
     "image-cache": "image-cache",
 }
 
-#: Claude Code flags under which the Telegram sidecar is never exercised.
+#: Claude Code flags marking a non-interactive invocation — the Telegram sidecar and the
+#: self-update prompt are both skipped under these.
 HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})

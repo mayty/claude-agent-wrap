@@ -143,6 +143,33 @@ def test_resolve_secrets_found_no_prompt(
     launch_svc._secrets.read.assert_called_once_with("test:Key1", "desc", prompt_on_missing=False)
 
 
+# --- launch ---
+
+
+def test_launch_headless_skips_update_check(launch_svc: LaunchService) -> None:
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # type: ignore[union-attr]
+    rc = launch_svc.launch(use_base=False, claude_args=["-p", "hi"])
+    assert rc == 1
+    launch_svc._updates.check_updates.assert_not_called()  # type: ignore[union-attr]
+
+
+def test_launch_non_headless_runs_update_check_and_short_circuits(
+    launch_svc: LaunchService,
+) -> None:
+    launch_svc._updates.check_updates.return_value = True  # type: ignore[union-attr]
+    rc = launch_svc.launch(use_base=False, claude_args=["--model", "x"])
+    assert rc == 0
+    launch_svc._build_service.resolve_image.assert_not_called()  # type: ignore[union-attr]
+
+
+def test_launch_non_headless_update_check_false_continues(launch_svc: LaunchService) -> None:
+    launch_svc._updates.check_updates.return_value = False  # type: ignore[union-attr]
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # type: ignore[union-attr]
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+    assert rc == 1
+    launch_svc._updates.check_updates.assert_called_once()  # type: ignore[union-attr]
+
+
 # --- is_headless ---
 
 
