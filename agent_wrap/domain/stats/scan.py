@@ -392,7 +392,7 @@ def scan_logs_dir(
     :func:`file_predates_range`).
 
     *by_source* mirrors the model breakdown but is additionally keyed by usage
-    source (see :func:`_usage_source`), feeding the verbose breakdown.
+    source (see :func:`usage_source`), feeding the verbose breakdown.
 
     Works on both a project's ``.claude/litellm-logs`` symlink and a central
     orphaned ``<hash>`` dir, since they share the same internal layout. This is the

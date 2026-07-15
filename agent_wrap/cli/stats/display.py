@@ -112,7 +112,7 @@ def render_source_breakdown(
     Render the verbose "usage source breakdown" table for the selected window.
 
     One row per usage source (native / standard_logging_object / unrecoverable,
-    see :func:`_usage_source`) showing how much of the reported totals came
+    see :func:`usage_source`) showing how much of the reported totals came
     straight from responses vs. were recovered from LiteLLM's standard logging
     object fallback vs. were lost — so a reader can judge how far the headline
     cost depends on the recovery path. The source dict is already restricted to

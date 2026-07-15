@@ -169,7 +169,7 @@ def _slo_rec(model: str = "claude-opus-4-8") -> dict[str, Any]:
         "model": model,
         "timing": {"start": 1_700_000_000.0},
         "response": {
-            "usage_source": "standard_logging_object",
+            "_usage_source": "standard_logging_object",
             "usage": {"prompt_tokens": 800, "completion_tokens": 200},
         },
     }
@@ -181,7 +181,7 @@ def _unrecoverable_rec(model: str = "claude-opus-4-8") -> dict[str, Any]:
         "status": "success",
         "model": model,
         "timing": {"start": 1_700_000_000.0},
-        "response": {"usage_source": "unrecoverable", "_raw_response": "<Response [200 OK]>"},
+        "response": {"_usage_source": "unrecoverable", "_raw_response": "<Response [200 OK]>"},
     }
 
 
