@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from functools import partial
+from functools import cache, partial
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import SCAN_PARALLEL_MIN_FILES, TOOL_DIR
@@ -190,6 +190,7 @@ class StatsService:
             cache[logs_dir] = DirResult(sessions, last_ts, by_day, by_source)
         return cache
 
+    @cache  # noqa: B019 — StatsService is a process-lifetime singleton
     def resolve_group(self, path: Path) -> GroupResult:
         """
         Resolve the transient-project group a project path belongs to.

@@ -8,16 +8,21 @@ from typing import TYPE_CHECKING
 from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.containers import services
+from agent_wrap.domain.stats.constants import ORPHANED_LABEL
 from agent_wrap.domain.stats.usage_args import parse_usage_args
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import UsageArgs
 
-USAGE = "[-v|--verbose] [-f|--from D] [-u|--until D] [-d|--days N]"
+USAGE = "[-v|--verbose] [-p|--pattern P] [-f|--from D] [-u|--until D] [-d|--days N]"
 SUMMARY = "Show token usage stats (reads from .claude/litellm-logs/)"
 
 _USAGE_TEXT = (
-    "Usage: agent stats [-v|--verbose] [-f|--from D] [-u|--until D] [-d|--days N] <projects.txt>\n\n"
+    "Usage: agent stats [-v|--verbose] [-p|--pattern P] [-f|--from D] [-u|--until D] "
+    "[-d|--days N] <projects.txt>\n\n"
     "Reads a list of project paths (one per line) and prints aggregated\n"
     "usage stats from each project's .claude/litellm-logs/ directories.\n\n"
     "Output is a per-project table plus a per-model and per-day breakdown,\n"
@@ -30,6 +35,9 @@ _USAGE_TEXT = (
     "Defaults: no flags → last 28 days; --from alone → [from, now];\n"
     "--days N alone → last N days [now-(N-1), now]; --until alone → 28 days\n"
     "ending at until; --days 0 alone → all time [open, now].\n\n"
+    "Project filtering:\n"
+    "  -p, --pattern P  regex pattern to filter projects by display name\n"
+    '                    (e.g. "api", "^(proj-a|proj-b)$", "my-proj")\n\n'
     "-v/--verbose adds a usage-source breakdown table over the same window,\n"
     "splitting totals by how each record's usage was obtained\n"
     "(native response vs. standard_logging_object recovery vs. unrecoverable).\n\n"
@@ -39,7 +47,8 @@ _USAGE_TEXT = (
 )
 
 _USAGE_LINE = (
-    "Usage: agent stats [-v|--verbose] [-f|--from D] [-u|--until D] [-d|--days N] <projects.txt>"
+    "Usage: agent stats [-v|--verbose] [-p|--pattern P] "
+    "[-f|--from D] [-u|--until D] [-d|--days N] <projects.txt>"
 )
 
 
@@ -50,6 +59,25 @@ def _parse_usage_args(args: list[str]) -> UsageArgs | None:
         usage_text=_USAGE_TEXT,
         display=services.display_service,
     )
+
+
+def _show_orphaned(parsed: UsageArgs) -> bool:
+    """Return True when the orphaned row should be included for *parsed* pattern."""
+    return parsed.pattern is None or parsed.pattern.search(ORPHANED_LABEL) is not None
+
+
+def _filter_projects(
+    projects: list[Path],
+    parsed: UsageArgs,
+    dsp: DisplayService,
+) -> list[Path] | None:
+    """Return *projects* filtered by *parsed.pattern*, or None if none match."""
+    if parsed.pattern is not None:
+        projects = [p for p in projects if parsed.pattern.search(str(p))]
+        if not projects:
+            dsp.error(f"No projects match pattern '{parsed.pattern.pattern}'.")
+            return None
+    return projects
 
 
 def run(args: list[str]) -> int:
@@ -69,8 +97,17 @@ def run(args: list[str]) -> int:
 
     stats = services.stats_service
 
-    # Scan every logs dir — projects and orphaned alike — in one pass up front.
-    orphaned_dirs = stats.orphaned_log_dirs(projects)
+    # Keep the full list for orphaned-dir detection; filtered list for display.
+    all_projects = projects
+    projects = _filter_projects(projects, parsed, dsp)
+    if projects is None:
+        return 0
+
+    # Only scan and aggregate orphaned spend when the pattern allows it.
+    orphaned_dirs: list[Path] = []
+    if _show_orphaned(parsed):
+        orphaned_dirs = stats.orphaned_log_dirs(all_projects)
+
     project_log_dirs = [p / ".claude" / "litellm-logs" for p in projects]
     scan_cache = stats.scan_log_dirs(
         [*project_log_dirs, *orphaned_dirs],
@@ -89,15 +126,17 @@ def run(args: list[str]) -> int:
     rows = [r for r in rows if r["sessions"] > 0]
 
     # Logs left behind by deleted projects / stale registry entries.
-    orphaned = stats.aggregate_orphaned(
-        projects,
-        totals_by_model,
-        totals_by_day_by_model,
-        totals_by_source,
-        from_iso=parsed.from_iso,
-        until_iso=parsed.until_iso,
-        scan_cache=scan_cache,
-    )
+    orphaned = None
+    if _show_orphaned(parsed):
+        orphaned = stats.aggregate_orphaned(
+            projects,
+            totals_by_model,
+            totals_by_day_by_model,
+            totals_by_source,
+            from_iso=parsed.from_iso,
+            until_iso=parsed.until_iso,
+            scan_cache=scan_cache,
+        )
 
     if not rows and orphaned is None:
         dsp.error("usage: no LiteLLM logs found for any registered project.")

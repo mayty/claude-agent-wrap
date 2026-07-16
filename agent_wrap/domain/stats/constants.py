@@ -37,6 +37,10 @@ VALUE_FLAGS = ("-f", "--from", "-u", "--until")
 # "leaf" project in stats and logs viewer output.
 MARKER_NAME = ".agent_stats_leaf"
 
+# Display label for orphaned sessions — logs from deleted or unregistered
+# projects that no longer have an entry in the project registry.
+ORPHANED_LABEL = "<orphaned>"
+
 # The shared sidecar writes every project's logs under
 # ``<tool_dir>/litellm-logs/<project_hash>/<provider>/<session>/``.
 CENTRAL_LOGS_DIRNAME = "litellm-logs"

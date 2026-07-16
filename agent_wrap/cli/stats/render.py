@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
 from agent_wrap.domain.display.models import Ansi, RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.stats.constants import ORPHANED_LABEL
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -126,7 +127,7 @@ def _build_total_body(
         body.append(
             RowItem(
                 cells=[
-                    "<orphaned>",
+                    ORPHANED_LABEL,
                     str(orphaned["sessions"]),
                     display.format_timestamp(orphaned["last_ts"]),
                     display.format_count(b.msgs),

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 if TYPE_CHECKING:
+    import re
     from collections.abc import Callable
     from datetime import datetime
     from pathlib import Path
@@ -20,6 +21,7 @@ class UsageArgs:
     from_iso: str | None = None
     until_iso: str | None = None
     verbose: bool = False
+    pattern: re.Pattern[str] | None = None
 
 
 class Group:

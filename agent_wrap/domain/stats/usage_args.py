@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -185,6 +186,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-f", "--from", dest="from_date", type=_parse_date_spec, metavar="D")
     parser.add_argument("-u", "--until", dest="until_date", type=_parse_date_spec, metavar="D")
     parser.add_argument("-d", "--days", dest="days", type=_parse_days, metavar="N")
+    parser.add_argument(
+        "-p",
+        "--pattern",
+        dest="pattern",
+        metavar="P",
+        help="only show projects whose display name matches regex P",
+    )
     parser.add_argument("registry")
     return parser
 
@@ -227,9 +235,18 @@ def parse_usage_args(
         return None
     from_iso, until_iso = resolved
 
+    compiled_pattern: re.Pattern[str] | None = None
+    if ns.pattern is not None:
+        try:
+            compiled_pattern = re.compile(ns.pattern)
+        except re.error as exc:
+            display.error(f"usage: invalid regex pattern: {exc}")
+            return None
+
     return UsageArgs(
         registry_path=reg,
         from_iso=from_iso,
         until_iso=until_iso,
         verbose=ns.verbose,
+        pattern=compiled_pattern,
     )

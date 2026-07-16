@@ -233,6 +233,35 @@ def test_missing_registry_rejected(mocker: MockerFixture, display_mock: Mock):
     display_mock.error.assert_not_called()
 
 
+# --- pattern ----------------------------------------------------------------
+
+
+def test_pattern_long_flag(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--pattern", "api")
+    assert parsed is not None
+    assert parsed.pattern is not None
+    assert parsed.pattern.pattern == "api"
+
+
+def test_pattern_short_flag(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "-p", "^(proj-a|proj-b)$")
+    assert parsed is not None
+    assert parsed.pattern is not None
+    assert parsed.pattern.pattern == "^(proj-a|proj-b)$"
+
+
+def test_pattern_defaults_none(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path))
+    assert parsed is not None
+    assert parsed.pattern is None
+
+
+def test_pattern_invalid_regex_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--pattern", "***invalid")
+    assert parsed is None
+    display_mock.error.assert_called_once()
+
+
 # --- day_in_range ------------------------------------------------------------
 
 
