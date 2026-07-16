@@ -9,8 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import DAY_START_HOURS
 from agent_wrap.domain.stats.constants import (
-    DAY_START_HOURS,
     DEFAULT_DAYS,
     RELATIVE_DATE_RE,
     VALUE_FLAGS,

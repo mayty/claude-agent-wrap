@@ -23,6 +23,7 @@ from agent_wrap.domain.logs.io import (
     session_fingerprint,
     sessions_fingerprint,
 )
+from agent_wrap.domain.logs.usage_tracker import UsageTracker
 
 if TYPE_CHECKING:
     from agent_wrap.domain.config.service import ConfigService
@@ -80,6 +81,10 @@ class LogsCache:
         self._projects_txt_size: int | None = None
         self._known_messages: dict[Path, tuple[int, int]] = {}  # path -> (mtime_ns, size)
         self._known_project_paths: set[str] = set()
+
+        # --- daily usage tracking ---
+        self._usage_tracker = UsageTracker(pricing_service, stats_service)
+        self._usage_tracker_initialized = False
 
         self._thread: threading.Thread | None = None
 
@@ -197,6 +202,9 @@ class LogsCache:
         with log_debug("Update", "scanning session directories", threshold=timedelta(seconds=2)):
             new_manifest, path_to_key = self._gather_directory_manifest()
 
+        # Snapshot before incremental updates overwrite _known_messages.
+        old_manifest = dict(self._known_messages)
+
         with log_debug("Update", "diffing manifest", threshold=timedelta(milliseconds=500)):
             changed, deleted = self._diff_manifest(new_manifest, path_to_key)
 
@@ -207,6 +215,55 @@ class LogsCache:
                 self._apply_incremental_updates(changed, deleted, new_manifest)
         else:
             self._known_messages = new_manifest
+
+        # 3. Update daily usage.json.
+        self._update_usage_tracker(new_manifest, old_manifest)
+
+    def _update_usage_tracker(
+        self,
+        new_manifest: dict[Path, tuple[int, int]],
+        old_manifest: dict[Path, tuple[int, int]],
+    ) -> None:
+        """
+        Incrementally update ``UsageTracker`` based on manifest diff.
+
+        On first run (startup), after a ``projects.txt`` rebuild, or after a day
+        rollover, all known files are re-scanned for today's records.  Otherwise
+        only the files whose mtime/size changed are updated.
+        """
+        tracker = self._usage_tracker
+
+        # First tick or post-rebuild: seed from all known files.
+        if not self._usage_tracker_initialized:
+            tracker.reset()
+            for path in new_manifest:
+                tracker.update_file(path)
+            self._usage_tracker_initialized = True
+            tracker.flush()
+            return
+
+        # Day rollover: reset and re-scan all files for the new day.
+        if tracker.detect_rollover():
+            tracker.reset()
+            for path in new_manifest:
+                tracker.update_file(path)
+            tracker.flush()
+            return
+
+        # Normal incremental tick: process changed and deleted files.
+        updated = False
+
+        for path, stat_info in new_manifest.items():
+            if old_manifest.get(path) != stat_info:
+                tracker.update_file(path)
+                updated = True
+
+        for path in set(old_manifest) - set(new_manifest):
+            tracker.remove_file(path)
+            updated = True
+
+        if updated:
+            tracker.flush()
 
     def _gather_directory_manifest(
         self,
@@ -467,6 +524,7 @@ class LogsCache:
 
         if added:
             self._rebuild_all()
+            self._usage_tracker_initialized = False
         else:
             self._prune_removed_paths(removed)
             self._known_project_paths = new_paths

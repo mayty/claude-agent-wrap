@@ -1,6 +1,9 @@
 # This file has been edited with the assistance of an AI tool.
+import os
 from enum import Enum, auto
 from pathlib import Path
+
+from agent_wrap.lib.daytime import local_utc_offset_hours
 
 TOOL_DIR = Path(__file__).parent.parent.resolve()
 GLOBAL_CONFIG_DIR = TOOL_DIR / ".claude_config"
@@ -41,6 +44,26 @@ LOGS_CONTENT_TYPES = {
 }
 
 # ── stats ────────────────────────────────────────────────────────────────────
+
+# Hours in a day -- AGENT_DAY_START_UTC must fall strictly within (-HOURS_PER_DAY, HOURS_PER_DAY).
+HOURS_PER_DAY = 24
+
+
+def _parsed_day_start_hours() -> int:
+    raw = os.environ.get("AGENT_DAY_START_UTC")
+    if not raw:
+        return -local_utc_offset_hours()
+    value = int(raw)  # raises ValueError on malformed input -- let it propagate
+    if abs(value) >= HOURS_PER_DAY:
+        msg = f"AGENT_DAY_START_UTC must satisfy -24 < value < 24, got {value!r}"
+        raise ValueError(msg)
+    return value
+
+
+# Hours past UTC midnight at which a stats "day" begins (may be negative, but
+# must satisfy -24 < value < 24). Defaults to the host's local midnight;
+# override with AGENT_DAY_START_UTC.
+DAY_START_HOURS = _parsed_day_start_hours()
 
 # Recognised usage-source tags stamped onto records by the callback.
 USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")

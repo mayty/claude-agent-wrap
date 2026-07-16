@@ -16,6 +16,7 @@ import agent_wrap.domain.stats.service as stats_mod
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.cache import LogsCache
+from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
 
@@ -55,6 +56,8 @@ def write_session() -> Callable[[Path, str, str, list[dict[str, Any]]], Path]:
 @pytest.fixture
 def pricing() -> PricingService:
     mock = Mock(spec=PricingService)
+    mock.new_bucket.side_effect = Bucket
+    mock.normalize_model.side_effect = lambda m: m
     mock.request_cache_ttl.return_value = None
     mock.extract_usage.return_value = {
         "input_tokens": 100,
@@ -436,3 +439,86 @@ def test_resolve_deleted_project(
         mf_path = tmp_path / "elsewhere" / "sess-1" / "messages.jsonl"
 
     assert started_cache._resolve_deleted_project(mf_path) == expected_pid
+
+
+# ---------------------------------------------------------------------------
+# UsageTracker integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_poll_once_writes_usage_json(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """After _poll_once, usage.json exists with totals from today's records."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        cache._poll_once()
+
+        usage_path = tmp_path / ".claude" / "usage.json"
+        assert usage_path.is_file(), f"usage.json not found at {usage_path}"
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+        assert "in" in data
+        assert "out" in data
+        assert "cache" in data
+        assert "cost" in data
+        assert "requests" in data
+        assert "updated_at" in data
+    finally:
+        cache.stop()
+
+
+def test_usage_tracker_responds_to_file_changes(
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """Adding records to a session file increases usage totals on the next poll."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    today_record = {
+        "status": "success",
+        "model": "m",
+        "timing": {"start": time.time()},
+        "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
+    }
+    sdir = write_session(project, "litellm-bedrock", "sess-1", [today_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        # First poll — seed the tracker.
+        cache._poll_once()
+        usage_path = tmp_path / ".claude" / "usage.json"
+        initial = json.loads(usage_path.read_text(encoding="utf-8"))
+        assert initial["requests"] == 1
+
+        # Append a second record and force a rescan.
+        with (sdir / "messages.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(today_record) + "\n")
+        (sdir / "meta.json").unlink(missing_ok=True)
+
+        cache._poll_once()
+        updated = json.loads(usage_path.read_text(encoding="utf-8"))
+        assert updated["requests"] > initial["requests"]
+    finally:
+        cache.stop()

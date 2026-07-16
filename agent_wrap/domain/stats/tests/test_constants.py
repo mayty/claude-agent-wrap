@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.domain.stats.constants import _parsed_day_start_hours
+from agent_wrap.constants import _parsed_day_start_hours
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 def test_unset_env_var_defaults_to_negated_local_offset(mocker: MockerFixture) -> None:
     mocker.patch.dict("os.environ", {}, clear=True)
-    mocker.patch("agent_wrap.domain.stats.constants.local_utc_offset_hours", return_value=3)
+    mocker.patch("agent_wrap.constants.local_utc_offset_hours", return_value=3)
     assert _parsed_day_start_hours() == -3
 
 
