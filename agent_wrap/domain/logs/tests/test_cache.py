@@ -521,3 +521,270 @@ def test_usage_tracker_responds_to_file_changes(
         assert updated["requests"] > initial["requests"]
     finally:
         cache.stop()
+
+
+# ---------------------------------------------------------------------------
+# Incremental merge tests (_merge_added_paths / _handle_projects_txt_change)
+# ---------------------------------------------------------------------------
+
+
+def test_added_project_merged_incrementally(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """Adding a new project path does not disturb existing cached sessions."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    proj_a = tmp_path / "proj-a"
+    proj_b = tmp_path / "proj-b"
+    write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
+    write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a])
+    cache._projects_txt_path = launches / "projects.txt"
+    (launches / "projects.txt").write_text(f"{proj_a}\n", encoding="utf-8")
+    cache.start()
+
+    sessions_a = cache.get_sessions(0)
+    assert sessions_a is not None
+    assert len(sessions_a) == 1
+    assert sessions_a[0]["session_id"] == "sess-a"
+    fp_before = cache.get_sessions_fingerprint(0)
+
+    # Add project B and merge incrementally.
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
+    cache._merge_added_paths({str(proj_b)})
+
+    # Project A sessions unchanged.
+    sessions_a = cache.get_sessions(0)
+    assert sessions_a is not None
+    assert sessions_a[0]["session_id"] == "sess-a"
+    assert cache.get_sessions_fingerprint(0) == fp_before
+
+    # Project B sessions present.  "proj-b" > "proj-a", so pid 1.
+    sessions_b = cache.get_sessions(1)
+    assert sessions_b is not None
+    assert sessions_b[0]["session_id"] == "sess-b"
+
+    cache.stop()
+
+
+def test_added_path_merges_into_existing_group(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """Two raw paths sharing a .agent_stats_leaf marker merge into one group."""
+    stats_mod.TOOL_DIR = tmp_path
+
+    parent = tmp_path / "group"
+    parent.mkdir()
+    (parent / ".agent_stats_leaf").write_text("my-group", encoding="utf-8")
+
+    proj_a = parent / "sub-a"
+    proj_b = parent / "sub-b"
+    write_session(proj_a, "litellm-bedrock", "shared-sess", [valid_record])
+    # Same session id under proj_b, different record.
+    second = dict(valid_record)
+    second["timing"] = {"start": 2.0, "completionStart": None, "end": 2.0}
+    write_session(proj_b, "litellm-bedrock", "shared-sess", [second])
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a])
+    cache.start()
+    groups = cache.get_groups()
+    assert len(groups) == 1
+    assert groups[0]["paths"] == [proj_a]
+
+    # Add proj_b — same group root, should merge.
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
+    cache._merge_added_paths({str(proj_b)})
+
+    # Single group, now with both paths.
+    groups = cache.get_groups()
+    assert len(groups) == 1
+    assert groups[0]["paths"] == [proj_a, proj_b]
+    assert len(groups[0]["logs_dirs"]) == 2
+
+    # Sessions merged: shared-sess count is 2.
+    sessions = cache.get_sessions(0)
+    assert sessions is not None
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "shared-sess"
+    assert sessions[0]["count"] == 2
+    assert sessions[0]["providers"] == ["litellm-bedrock"]
+
+    cache.stop()
+
+
+def test_added_group_inserted_mid_list(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """New group root sorting between existing roots triggers pid re-indexing."""
+    stats_mod.TOOL_DIR = tmp_path
+
+    proj_a = tmp_path / "aaa-proj"
+    proj_b = tmp_path / "bbb-proj"
+    proj_c = tmp_path / "ccc-proj"
+    write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
+    write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
+    write_session(proj_c, "litellm-bedrock", "sess-c", [valid_record])
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_c])
+    cache.start()
+    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # type: ignore[index]
+    assert cache.get_sessions(1)[0]["session_id"] == "sess-c"  # type: ignore[index]
+
+    # Insert proj-b which sorts between aaa and ccc.
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b, proj_c])
+    cache._merge_added_paths({str(proj_b)})
+
+    # Verify pid re-indexing: aaa at 0, bbb at 1, ccc shifted to 2.
+    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # type: ignore[index]
+    assert cache.get_sessions(1)[0]["session_id"] == "sess-b"  # type: ignore[index]
+    assert cache.get_sessions(2)[0]["session_id"] == "sess-c"  # type: ignore[index]
+    assert cache.get_sessions_fingerprint(2) is not None
+
+    cache.stop()
+
+
+def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """Both additions and removals in the same projects.txt change are handled."""
+    stats_mod.TOOL_DIR = tmp_path
+
+    proj_a = tmp_path / "proj-a"
+    proj_b = tmp_path / "proj-b"
+    proj_c = tmp_path / "proj-c"
+    write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
+    write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
+    write_session(proj_c, "litellm-bedrock", "sess-c", [valid_record])
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
+    cache.start()
+    assert len(cache.get_groups()) == 2
+
+    # Replace proj_a with proj_c.
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_b, proj_c])
+    cache._known_project_paths = {str(proj_a), str(proj_b)}
+    # Simulate _handle_projects_txt_change: prune + merge.
+    cache._prune_removed_paths({str(proj_a)})
+    cache._merge_added_paths({str(proj_c)})
+
+    # Only proj-b and proj-c remain.
+    assert len(cache.get_groups()) == 2
+    sessions_0 = cache.get_sessions(0)
+    assert sessions_0 is not None
+    assert sessions_0[0]["session_id"] == "sess-b"
+    sessions_1 = cache.get_sessions(1)
+    assert sessions_1 is not None
+    assert sessions_1[0]["session_id"] == "sess-c"
+
+    cache.stop()
+
+
+def test_merge_added_paths_no_full_rebuild(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """_rebuild_all is not called when a path is added via _poll_once."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    proj_a = tmp_path / "proj-a"
+    proj_b = tmp_path / "proj-b"
+    write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
+    write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
+    (launches / "projects.txt").write_text(f"{proj_a}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a])
+    cache._projects_txt_path = launches / "projects.txt"
+    cache.start()
+
+    rebuild_spy = mocker.spy(cache, "_rebuild_all")
+
+    # Simulate project B being added and a poll tick detecting it.
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
+    (launches / "projects.txt").write_text(f"{proj_a}\n{proj_b}\n", encoding="utf-8")
+    cache._poll_once()
+
+    rebuild_spy.assert_not_called()
+
+    # But the new project was picked up.
+    sessions_b = cache.get_sessions(1)
+    assert sessions_b is not None
+    assert sessions_b[0]["session_id"] == "sess-b"
+
+    cache.stop()
+
+
+def test_merge_added_paths_preserves_hot_cache_pid(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """Hot session cache key is remapped when the project's pid shifts."""
+    stats_mod.TOOL_DIR = tmp_path
+
+    proj_a = tmp_path / "aaa-proj"
+    proj_c = tmp_path / "ccc-proj"
+    write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
+    write_session(proj_c, "litellm-bedrock", "sess-c", [valid_record])
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_c])
+    cache.start()
+
+    # Set hot cache for ccc at pid 0.
+    cache.set_hot_session(0, "sess-c", [{"k": "v"}], "strings")
+    assert cache.get_hot_session(0, "sess-c") is not None
+
+    # Insert proj-a which sorts before proj-c, shifting ccc to pid 1.
+    mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_c])
+    cache._merge_added_paths({str(proj_a)})
+
+    # Hot cache should have moved from pid 0 to pid 1.
+    assert cache.get_hot_session(0, "sess-c") is None
+    hot = cache.get_hot_session(1, "sess-c")
+    assert hot is not None
+    assert hot[1] == "strings"
+
+    cache.stop()

@@ -101,9 +101,7 @@ def test_stop_daemon_sends_sigkill_after_timeout(mocker: MockerFixture, logs_svc
     logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # type: ignore[union-attr]
 
 
-def test_stop_daemon_permission_error_propagates(
-    mocker: MockerFixture, logs_svc: LogsService
-):
+def test_stop_daemon_permission_error_propagates(mocker: MockerFixture, logs_svc: LogsService):
     """PermissionError from os.kill must propagate, not be silently swallowed."""
     write_state(pid=4242, port=9001)
     mocker.patch.object(logs_svc, "running_server", return_value={"pid": 4242, "port": 9001})
