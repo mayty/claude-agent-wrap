@@ -476,7 +476,6 @@ def test_poll_once_writes_usage_json(  # noqa: PLR0913
         assert "cache" in data
         assert "cost" in data
         assert "requests" in data
-        assert "updated_at" in data
     finally:
         cache.stop()
 

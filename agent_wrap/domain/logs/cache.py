@@ -84,7 +84,6 @@ class LogsCache:
 
         # --- daily usage tracking ---
         self._usage_tracker = UsageTracker(pricing_service, stats_service)
-        self._usage_tracker_initialized = False
 
         self._thread: threading.Thread | None = None
 
@@ -225,45 +224,27 @@ class LogsCache:
         old_manifest: dict[Path, tuple[int, int]],
     ) -> None:
         """
-        Incrementally update ``UsageTracker`` based on manifest diff.
+        Update ``UsageTracker`` from the current manifest.
 
-        On first run (startup), after a ``projects.txt`` rebuild, or after a day
-        rollover, all known files are re-scanned for today's records.  Otherwise
-        only the files whose mtime/size changed are updated.
+        Fingerprint comparison is owned by ``UsageTracker.update_file`` — every
+        file in *new_manifest* is offered and the tracker decides whether to
+        re-scan.  Deletions are detected via set difference on the manifest keys.
         """
         tracker = self._usage_tracker
 
-        # First tick or post-rebuild: seed from all known files.
-        if not self._usage_tracker_initialized:
-            tracker.reset()
-            for path in new_manifest:
-                tracker.update_file(path)
-            self._usage_tracker_initialized = True
-            tracker.flush()
-            return
-
-        # Day rollover: reset and re-scan all files for the new day.
         if tracker.detect_rollover():
             tracker.reset()
-            for path in new_manifest:
-                tracker.update_file(path)
-            tracker.flush()
-            return
 
-        # Normal incremental tick: process changed and deleted files.
-        updated = False
+        content_changed = False
 
         for path, stat_info in new_manifest.items():
-            if old_manifest.get(path) != stat_info:
-                tracker.update_file(path)
-                updated = True
+            content_changed |= tracker.update_file(path, stat_info)
 
         for path in set(old_manifest) - set(new_manifest):
             tracker.remove_file(path)
-            updated = True
+            content_changed = True
 
-        if updated:
-            tracker.flush()
+        tracker.flush(content_changed=content_changed)
 
     def _gather_directory_manifest(
         self,
@@ -524,7 +505,6 @@ class LogsCache:
 
         if added:
             self._rebuild_all()
-            self._usage_tracker_initialized = False
         else:
             self._prune_removed_paths(removed)
             self._known_project_paths = new_paths

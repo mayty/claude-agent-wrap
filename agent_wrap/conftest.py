@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Redirect path constants to tmp_path for test isolation."""
     for mod in (
+        # --- constants ---
+        "agent_wrap.constants",
         # --- lib ---
         "agent_wrap.lib.utils",
         # --- domain ---
@@ -38,6 +40,7 @@ def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         "agent_wrap.domain.logs.daemon",
         "agent_wrap.domain.logs.server",
         "agent_wrap.domain.logs.normalize",
+        "agent_wrap.domain.logs.usage_tracker",
         "agent_wrap.domain.stats.scan",
         "agent_wrap.domain.launch.service",
         "agent_wrap.domain.build.service",
