@@ -127,7 +127,7 @@ class UsageTracker:
             "requests": total.msgs,
         }
 
-        if content_changed:
+        if content_changed or not self._output_path.exists():
             atomic_write_json(self._output_path, output)
         else:
             with contextlib.suppress(OSError):

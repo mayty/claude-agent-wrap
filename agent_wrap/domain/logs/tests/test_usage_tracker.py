@@ -487,10 +487,12 @@ def test_flush_touch_when_content_unchanged(tracker: UsageTracker, tmp_path: Pat
 
 
 def test_touch_creates_file_if_missing(tracker: UsageTracker, tmp_path: Path) -> None:
-    """Touch on a missing file creates an empty one."""
+    """Flush on a missing file does a full write so the file is valid JSON."""
     output = tmp_path / "usage.json"
 
     assert not output.is_file()
     tracker.flush(content_changed=False)
     assert output.is_file()
-    assert output.stat().st_size == 0
+    assert output.stat().st_size > 0  # not an empty file — valid JSON
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["in"] == 0
