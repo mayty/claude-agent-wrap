@@ -45,8 +45,9 @@ RED = "\033[31m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
-CONTEXT_RED_THRESHOLD = 20
-CONTEXT_YELLOW_THRESHOLD = 10
+CONTEXT_RED_THRESHOLD = 25
+CONTEXT_YELLOW_THRESHOLD = 15
+TOKEN_UNIT_SCALE = 1000
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
@@ -137,12 +138,12 @@ def model_segment(data: dict[str, Any]) -> str:
 def _format_tokens(n: float) -> str:
     units = ("K", "M")
 
-    if n < 1000:
+    if n < TOKEN_UNIT_SCALE:
         return str(n)
 
     for unit in units:
-        n /= 1000
-        if n < 1000:
+        n /= TOKEN_UNIT_SCALE
+        if n < TOKEN_UNIT_SCALE:
             return f"{n:.1f}{unit}"
 
     return f"{n:.1f}G"
