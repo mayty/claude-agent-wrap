@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.domain.build.models import DockerfileAgentInfo
+from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
@@ -19,7 +19,7 @@ from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.base import Sidecar
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.updates.service import UpdateService
-from agent_wrap.exceptions import SecretNotFoundError
+from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 if TYPE_CHECKING:
     import pytest_mock
@@ -168,6 +168,27 @@ def test_launch_non_headless_update_check_false_continues(launch_svc: LaunchServ
     rc = launch_svc.launch(use_base=False, claude_args=[])
     assert rc == 1
     launch_svc._updates.check_updates.assert_called_once()  # type: ignore[union-attr]
+
+
+def test_launch_unknown_provider_reports_clean_error(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # type: ignore[union-attr]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # type: ignore[union-attr]
+        image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
+    )
+    mocker.patch("agent_wrap.domain.launch.service.docker_utils.image_exists", return_value=True)
+    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # type: ignore[union-attr]
+        "Unknown provider: bogus\nAvailable: litellm-bedrock"
+    )
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    launch_svc._display.error.assert_called_once_with(  # type: ignore[union-attr]
+        "Unknown provider: bogus\nAvailable: litellm-bedrock"
+    )
 
 
 # --- is_headless ---

@@ -16,6 +16,7 @@ agent_wrap/
 │   ├── build/       #   Image build orchestration
 │   ├── config/      #   Configuration reading
 │   ├── create/      #   New agent bootstrap
+│   ├── display/     #   Centralized display/output formatting
 │   ├── launch/      #   Container launch and lifecycle
 │   ├── logs/        #   Log viewing and serving
 │   ├── pricing/     #   Token pricing data

@@ -21,6 +21,10 @@ The active provider injects additional vars via its `get_agent_env()`, plus the 
 - [litellm-dashscope](../agent_wrap/domain/providers/litellm_dashscope/README.md)
 - [litellm-deepseek](../agent_wrap/domain/providers/litellm_deepseek/README.md)
 
+Separately from `get_agent_env()`, the LiteLLM sidecar layer itself (`agent_wrap/domain/sidecars/litellm.py`) appends `ANTHROPIC_CUSTOM_HEADERS` (carrying the `x-agent-wrap-log-prefix` header used for per-project log routing) to the agent container's env, and sets `AGENT_WRAP_PROVIDER` on the **sidecar** container (not the agent) for per-sidecar provider routing in the shared request/response log. Neither var is declared by a provider's own `get_agent_env()` — they're injected by the shared sidecar wiring that every LiteLLM-based provider goes through.
+
+When the optional Telegram sidecar is active, it similarly injects `TELEGRAM_SIDECAR_URL` (and `TELEGRAM_SIDECAR_TOKEN`, when available) into the agent container. See [Telegram Notifications](telegram-notifications.md).
+
 ## Host-forwarded (conditional)
 
 | Var | When forwarded | Effect |
@@ -38,4 +42,4 @@ ENABLE_PROMPT_CACHING_1H=1 agent run
 
 ## WSLg (conditional)
 
-On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. See [Clipboard / WSLg](wslg-clipboard.md).
+On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. The same `/mnt/wslg`-directory check that gates these vars also gates the `wl-paste-shim` mount described in [Volume Mounts](volume-mounts.md) — both fire together. See [Clipboard / WSLg](wslg-clipboard.md).

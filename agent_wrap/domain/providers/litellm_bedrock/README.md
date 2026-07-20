@@ -18,13 +18,7 @@ Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_commo
 
 ## Credentials
 
-Reads `~/claude_keys.json`:
-
-```json
-{
-  "BedrockBearerToken": "your-aws-bearer-token"
-}
-```
+The primary flow is the interactive prompt on the first `agent run` — this secret is required, so a TTY triggers a prompt when it's missing, and the value is stored encrypted in the secrets storage. Use `agent secrets set litellm-bedrock` / `check` / `clear` to manages it explicitly.
 
 The Bedrock key goes **only** to the sidecar. Inside the agent, `AWS_BEARER_TOKEN_BEDROCK` is the proxy's auto-generated master key.
 
@@ -45,3 +39,7 @@ Sidecar container (injected by `get_sidecar_env`):
 ## Config
 
 See [`config.yaml`](config.yaml) for the LiteLLM proxy config — a Bedrock wildcard passthrough (`bedrock/*`) with master-key authentication. It also enables the shared request/response JSONL logging callback (`callback.file_logger_instance`).
+
+## Pricing
+
+Pricing used by `agent stats` is **live-scraped** from AWS's public Bedrock pricing page, cached for 7 days. If the scrape fails (page unreachable, or AWS changes the page's markup), it silently falls back to the stale cache, or to unknown/`$0` cost if no cache exists yet.

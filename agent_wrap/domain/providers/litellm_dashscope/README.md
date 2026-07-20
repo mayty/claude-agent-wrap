@@ -18,13 +18,7 @@ Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_commo
 
 ## Credentials
 
-Reads `~/claude_keys.json`:
-
-```json
-{
-  "DashScopeAPIKey": "your-dashscope-api-key"
-}
-```
+The primary flow is the interactive prompt on the first `agent run` — this secret is required, so a TTY triggers a prompt when it's missing, and the value is stored encrypted in the secrets storage. Use `agent secrets set litellm-dashscope` / `check` / `clear` to manages it explicitly.
 
 ## Env vars
 
@@ -37,7 +31,7 @@ Agent container (injected by `get_agent_env`):
 - `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `qwen3.6-flash`
 - `CLAUDE_CODE_SUBAGENT_MODEL` — `qwen3.6-flash`
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
-- `DISABLE_PROMPT_CACHING` — `1`
+- `DISABLE_PROMPT_CACHING` — `1` — DashScope's explicit [context-cache mechanism](https://www.alibabacloud.com/help/en/model-studio/context-cache) doesn't work well with Claude Code's prompt-caching workflow
 
 Sidecar container (injected by `get_sidecar_env`):
 
@@ -46,3 +40,7 @@ Sidecar container (injected by `get_sidecar_env`):
 ## Config
 
 See [`config.yaml`](config.yaml) for the LiteLLM proxy config — model-pattern routes with DashScope API base and key.
+
+## Pricing
+
+Unlike Bedrock and DeepSeek, DashScope pricing used by `agent stats` is a **hardcoded, static tiered table** in `provider.py` (`_get_tiered_pricing`) — there is no scraper or automatic refresh. If Alibaba changes DashScope pricing or tier breakpoints, this table needs manual updating.

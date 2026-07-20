@@ -7,16 +7,13 @@ Claude Code can send you a Telegram message when it asks for permission to run a
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and note the bot token.
 2. Get your chat ID by messaging [@userinfobot](https://t.me/userinfobot) — it replies with your numeric ID.
-3. Add both to `~/claude_keys.json`:
-   ```json
-   {
-     ...
-     "TelegramBotToken": "11111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-     "TelegramChatId": "22222222"
-   }
+3. Set both secrets explicitly:
+   ```bash
+   agent secrets set telegram
    ```
+   This prompts for `TelegramBotToken` and `TelegramChatId` and stores them encrypted. Telegram secrets are optional, so — unlike provider credentials — `agent run` never prompts for them interactively; they must be set this way before they'll be picked up.
 
-Once both `TelegramBotToken` and `TelegramChatId` are present in `~/claude_keys.json`, the next `agent run` launch idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and starts a shared Telegram sidecar container. The sidecar manages the Bot API connection; the agent container receives opaque connectivity vars (`TELEGRAM_SIDECAR_URL`, `TELEGRAM_SIDECAR_TOKEN`) rather than the raw bot credentials. No `agent rebuild` needed — the [telegram-notify.sh](../ops/telegram-notify.sh) script is bind-mounted live and proxies events to the sidecar.
+Once both secrets are set, the next `agent run` launch idempotently injects three hook entries into `<wrap-dir>/.claude_config/.claude/settings.json` and starts a shared Telegram sidecar container. The sidecar manages the Bot API connection; the agent container receives opaque connectivity vars (`TELEGRAM_SIDECAR_URL`, `TELEGRAM_SIDECAR_TOKEN`) rather than the raw bot credentials. No `agent rebuild` needed — the [telegram-notify.sh](../ops/telegram-notify.sh) script is bind-mounted live and proxies events to the sidecar.
 
 **Headless launches skip the sidecar.** When `agent run` is invoked with a flag that won't exercise the sidecar — `-p`/`--print` (non-interactive), or `--bare`/`--safe-mode` (hooks disabled) — the sidecar container is not started. It is still declared internally so that a headless run which happens to be the last agent out still tears down a sidecar a concurrent interactive run started.
 

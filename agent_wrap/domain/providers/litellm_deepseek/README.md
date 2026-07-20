@@ -18,13 +18,7 @@ Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_commo
 
 ## Credentials
 
-Reads `~/claude_keys.json`:
-
-```json
-{
-  "DeepSeekAPIKey": "your-deepseek-api-key"
-}
-```
+The primary flow is the interactive prompt on the first `agent run` — this secret is required, so a TTY triggers a prompt when it's missing, and the value is stored encrypted in the secrets storage. Use `agent secrets set litellm-deepseek` / `check` / `clear` to manages it explicitly.
 
 ## Env vars
 
@@ -44,3 +38,7 @@ Sidecar container (injected by `get_sidecar_env`):
 ## Config
 
 See [`config.yaml`](config.yaml) for the LiteLLM proxy config — model-pattern passthrough with DeepSeek API base and key.
+
+## Pricing
+
+Pricing used by `agent stats` is **live-scraped** from DeepSeek's public pricing page, cached for 7 days. If the scrape fails (page unreachable, or DeepSeek changes the page's markup), it silently falls back to the stale cache, or to unknown/`$0` cost if no cache exists yet.

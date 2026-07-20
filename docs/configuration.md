@@ -68,3 +68,11 @@ AGENT_DAY_START_UTC=4 agent stats
 ```
 
 Unlike `AGENT_EXPECTED_QUEUE_DEPTH`, a malformed value here is a hard error rather than a silent fallback — an unnoticed typo would otherwise corrupt every day bucket. It must parse as an integer and satisfy `-24 < value < 24`; anything else raises at startup.
+
+## `AGENT_LOG_DEBUG` (verbose logs-viewer daemon logging)
+
+Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`) enables verbose per-tick/per-step logging in the `agent logs` background viewer daemon. Unset, only always-visible lines print (including a "completed in Ns" line that always prints once an operation's elapsed time exceeds its threshold, even without this flag).
+
+```sh
+AGENT_LOG_DEBUG=1 agent logs
+```
