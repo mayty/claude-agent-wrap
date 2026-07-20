@@ -35,7 +35,9 @@ When the optional Telegram sidecar is active, it similarly injects `TELEGRAM_SID
 ```sh
 # Allow auto mode (LLM permission classifier) on Bedrock
 CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
+```
 
+```sh
 # Opt into 1-hour prompt caching
 ENABLE_PROMPT_CACHING_1H=1 agent run
 ```

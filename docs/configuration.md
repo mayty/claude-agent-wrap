@@ -10,11 +10,12 @@ Selects which provider plugin to use. Each provider lives in `agent_wrap/domain/
 ```sh
 # Use the default LiteLLM-Bedrock provider (no var needed)
 agent run
+```
 
+```sh
 # Or pick a different one — the launcher fails fast and lists available
 # providers if the directory doesn't exist.
-AGENT_PROVIDER=my-direct-anthropic source agent-wrap.bashrc
-agent run
+AGENT_PROVIDER=my-direct-anthropic agent run
 ```
 
 Providers are auto-discovered by scanning `agent_wrap/domain/providers/*/provider.py` for concrete `Provider` subclasses (`inspect.getmembers()` + `inspect.isabstract()`) — drop in a directory and it shows up in the error message above without any registry edits.

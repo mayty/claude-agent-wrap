@@ -23,4 +23,4 @@ Once both secrets are set, the next `agent run` launch idempotently injects thre
 - **`Stop` hook** — fires when Claude finishes its response. Sends the last assistant text (non-thinking content only).
 - **`StopFailure` hook** — fires when the turn ends on an API error.
 
-The hooks always run but only send a notification if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both non-empty in the container environment. The script returns `{}` and exits 0 on every path, so it never blocks Claude — even if the Telegram API is unreachable.
+The hooks always run but only send a notification if `TELEGRAM_SIDECAR_URL` and `TELEGRAM_SIDECAR_TOKEN` are both non-empty in the container environment. The script returns `{}` and exits 0 on every path, so it never blocks Claude — even if the Telegram API is unreachable.
