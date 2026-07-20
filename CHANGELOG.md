@@ -12,7 +12,10 @@ through the CLI instead of hand-editing plaintext files. Secrets are now stored
 encrypted. `agent run` prompts interactively when a secret is missing, so no
 separate setup step is needed. Existing plaintext files are migrated automatically.
 Tab completion is now powered by Python so it stays in sync with flags automatically.
-Also improves the `agent logs` viewer.
+`agent stats` gains a `-p`/`--pattern` project filter and a configurable
+`AGENT_DAY_START_UTC` day boundary, and the `agent logs` viewer now tracks daily
+usage into `~/.claude/usage.json`, which the bundled statusline displays. Also
+improves the `agent logs` viewer more broadly.
 
 ## [0.7.1](releases/0.7.1.md) — 2026-06-30
 
