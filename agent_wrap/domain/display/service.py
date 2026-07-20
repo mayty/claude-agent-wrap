@@ -252,7 +252,7 @@ class DisplayService:
 
     def prompt_secret(self, description: str) -> str:
         """Prompt the user for a secret value, echoing input hidden."""
-        self.error(f"Secret: {description}", end="")
+        self.error(f"Enter {description}: ", end="", flush=True)
         try:
             return getpass("")
         except EOFError as exc:
