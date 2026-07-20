@@ -18,6 +18,7 @@ from agent_wrap.domain.logs.models import (
     NormalizedRecord,
     ProjectInfo,
     ProviderSessionMeta,
+    ProviderSessionRead,
     ReadSessionResult,
     SessionMeta,
 )
@@ -536,18 +537,18 @@ def _read_provider_session(
     provider: str,
     session_id: str,
     pricing: PricingService,
-) -> tuple[list[NormalizedRecord], ProviderSessionMeta | None, dict[str, str]]:
+) -> ProviderSessionRead:
     """
     Read and normalize records from one provider's session directory.
 
-    Returns ``(records, meta_entry, strings)`` where *meta_entry* has the same
+    Returns ``(records, meta, strings)`` where *meta* has the same
     shape as :func:`scan_session_meta` (or ``None`` when the directory has no
     records) and *strings* is the ``{hash: original}`` map loaded from the
     session's ``strings.jsonl``.
     """
     messages_file = session_dir / "messages.jsonl"
     if not messages_file.is_file():
-        return [], None, {}
+        return ProviderSessionRead([], None, {})
 
     # Read every raw record first so we capture a consistent snapshot of
     # messages.jsonl.  Strings are loaded *afterwards* because the callback
@@ -571,7 +572,7 @@ def _read_provider_session(
         pass
 
     if meta.count == 0:
-        return [], None, {}
+        return ProviderSessionRead([], None, {})
 
     strings = load_strings(session_dir)
     records: list[NormalizedRecord] = []
@@ -594,7 +595,7 @@ def _read_provider_session(
         "last_ts": meta.last_ts,
         "models": sorted(meta.models),
     }
-    return records, entry, strings
+    return ProviderSessionRead(records, entry, strings)
 
 
 def read_strings(

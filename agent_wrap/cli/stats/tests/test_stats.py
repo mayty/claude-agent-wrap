@@ -11,10 +11,10 @@ import pytest
 
 from agent_wrap.cli.stats.complete import complete as stats_complete
 from agent_wrap.cli.stats.display import render, render_source_breakdown
+from agent_wrap.cli.stats.usage_args import parse_usage_args
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.stats.constants import ORPHANED_LABEL
-from agent_wrap.domain.stats.usage_args import parse_usage_args
 
 if TYPE_CHECKING:
     from pathlib import Path

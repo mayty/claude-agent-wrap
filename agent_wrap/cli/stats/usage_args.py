@@ -9,12 +9,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.constants import DAY_START_HOURS
-from agent_wrap.domain.stats.constants import (
+from agent_wrap.cli.stats.constants import (
     DEFAULT_DAYS,
     RELATIVE_DATE_RE,
     VALUE_FLAGS,
 )
+from agent_wrap.constants import DAY_START_HOURS
 from agent_wrap.domain.stats.models import UsageArgs
 from agent_wrap.lib.daytime import get_day
 

@@ -6,10 +6,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.stats.display import render, render_source_breakdown
+from agent_wrap.cli.stats.usage_args import parse_usage_args
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.containers import services
 from agent_wrap.domain.stats.constants import ORPHANED_LABEL
-from agent_wrap.domain.stats.usage_args import parse_usage_args
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -7,27 +7,10 @@ Used by ``ConfigService`` — not part of the public domain API.
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-# Matches a {N}/ prefix at the start of a line (N = non-zero digits).
-_PREFIX_RE = re.compile(r"^\{(\d+)\}/(.*)$")
-
-# Matches a terminal /{...} sibling group containing at least one comma.
-_SIBLING_RE = re.compile(r"/\{([^}]+)\}$")
-
-# Minimum run length to trigger sibling grouping.
-_MIN_SIBLING_RUN = 2
-
-
-@dataclass
-class _Entry:
-    """Intermediate representation used during compression."""
-
-    compressed: str
-    first_original: str
-    last_original: str
+from agent_wrap.domain.config.constants import MIN_SIBLING_RUN, PREFIX_RE, SIBLING_RE
+from agent_wrap.domain.config.models import Entry
 
 
 class ProjectRegistry:
@@ -46,7 +29,7 @@ class ProjectRegistry:
         paths = sorted(set(paths))
 
         # -- Pass 1: sibling grouping ---------------------------------
-        entries: list[_Entry] = []
+        entries: list[Entry] = []
         i = 0
         while i < len(paths):
             parent = PurePosixPath(paths[i]).parent
@@ -54,14 +37,14 @@ class ProjectRegistry:
             while j < len(paths) and PurePosixPath(paths[j]).parent == parent:
                 j += 1
             run = paths[i:j]
-            if len(run) >= _MIN_SIBLING_RUN:
+            if len(run) >= MIN_SIBLING_RUN:
                 leaves = [PurePosixPath(p).name for p in run]
                 sep = "" if str(parent) == "/" else "/"
                 compressed = f"{parent}{sep}{{{','.join(leaves)}}}"
             else:
                 compressed = run[0]
             entries.append(
-                _Entry(
+                Entry(
                     compressed=compressed,
                     first_original=run[0],
                     last_original=run[-1],
@@ -101,7 +84,7 @@ class ProjectRegistry:
                 continue
 
             # Resolve {N}/ prefix (Rule 1).
-            m = _PREFIX_RE.match(line)
+            m = PREFIX_RE.match(line)
             if m:
                 if last_path is None:
                     continue  # malformed — no previous path to borrow
@@ -143,7 +126,7 @@ class ProjectRegistry:
     @staticmethod
     def _try_expand_siblings(path: str) -> list[str] | None:
         """Expand a terminal ``/{leaf,...}`` group, or return *None*."""
-        m = _SIBLING_RE.search(path)
+        m = SIBLING_RE.search(path)
         if m and "," in m.group(1):
             parent = path[: m.start()]
             leaves = m.group(1).split(",")
