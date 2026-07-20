@@ -29,13 +29,7 @@ When the optional Telegram sidecar is active, it similarly injects `TELEGRAM_SID
 
 | Var | When forwarded | Effect |
 | --- | --- | --- |
-| `CLAUDE_CODE_ENABLE_AUTO_MODE` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Allows the use of Claude Code's [auto mode](https://code.claude.com/docs/en/auto-mode-config), an LLM-based permission classifier that auto-approves commands instead of prompting. This only matters on backends that **don't** speak the Anthropic protocol — i.e. the default `litellm-bedrock` provider, where auto mode is unavailable unless this var is set. The `litellm-dashscope` and `litellm-deepseek` providers use the Anthropic interface, which makes auto mode available by default, so the var is a no-op there. |
 | `ENABLE_PROMPT_CACHING_1H` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Opts Claude Code into 1-hour prompt cache TTLs instead of the default 5-minute window, which can lower cost on long-running sessions. |
-
-```sh
-# Allow auto mode (LLM permission classifier) on Bedrock
-CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
-```
 
 ```sh
 # Opt into 1-hour prompt caching

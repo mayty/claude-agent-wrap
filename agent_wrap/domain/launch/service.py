@@ -244,7 +244,7 @@ class LaunchService:
             "-e",
             f"HOME={claude_home}",
         ]
-        for flag in ("CLAUDE_CODE_ENABLE_AUTO_MODE", "ENABLE_PROMPT_CACHING_1H"):
+        for flag in ("ENABLE_PROMPT_CACHING_1H",):
             flag_value = os.environ.get(flag, None)
             if flag_value is None:
                 continue
