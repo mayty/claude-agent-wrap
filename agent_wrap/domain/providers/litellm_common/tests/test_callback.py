@@ -481,9 +481,6 @@ def test_extract_session_alias_none_for_freeform_and_empty() -> None:
     assert extract_session_alias(None) is None
 
 
-# --- extract_session_title ---
-
-
 def testextract_session_title_from_title_payload() -> None:
     resp = _name_response('{"title": "Build a web viewer for logs"}')
     assert extract_session_title(resp) == "Build a web viewer for logs"
@@ -534,9 +531,6 @@ def test_get_session_id_fallback_when_missing() -> None:
     assert _get_session_id(kwargs) == "unknown-session"
 
 
-# --- _get_project_hash ---
-
-
 def _hash_kwargs(value: str) -> dict[str, Any]:
     return {
         "litellm_params": {"proxy_server_request": {"headers": {"x-agent-wrap-log-prefix": value}}}  # type: ignore[implicit-any-empty-container]
@@ -563,9 +557,6 @@ def test_get_project_hash_rejects_non_hex_and_traversal(bad: str) -> None:
     assert _get_project_hash(_hash_kwargs(bad)) == "unknown-project"
 
 
-# --- _get_provider ---
-
-
 def test_get_provider_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_WRAP_PROVIDER", "litellm-bedrock")
     assert _get_provider() == "litellm-bedrock"
@@ -580,9 +571,6 @@ def test_get_provider_fallback_when_unset(monkeypatch: pytest.MonkeyPatch) -> No
 def test_get_provider_rejects_illegal_chars(monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
     monkeypatch.setenv("AGENT_WRAP_PROVIDER", bad)
     assert _get_provider() == "unknown-provider"
-
-
-# --- _get_log_dir ---
 
 
 def test_get_log_dir_composes_hash_provider_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -709,9 +697,6 @@ def test_string_hasher_loads_seen_hashes_to_prevent_duplicates() -> None:
         assert new_hash in lines[1]
 
     _SESSION_HASHERS.clear()
-
-
-# --- _resolve_thinking_reasoning_conflict ---
 
 
 def test_resolve_conflict_strips_effort_from_output_config() -> None:

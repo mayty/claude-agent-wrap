@@ -125,3 +125,11 @@ class ExtractedFields(NamedTuple):
     agent_id: str | None
     reply: dict[str, Any]
     usage: dict[str, Any]
+
+
+class ProviderSessionRead(NamedTuple):
+    """Return type for :func:`_read_provider_session`."""
+
+    records: list[NormalizedRecord]
+    meta: ProviderSessionMeta | None
+    strings: dict[str, str]

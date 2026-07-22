@@ -49,8 +49,12 @@ class _SecretsActions:
 
         results = srv.check_secrets(sidecar_name)
         all_ok = True
+        max_secret_length = max(map(len, results.keys()))
         for namespaced, present in results.items():
-            dsp.info(f"  {namespaced:45s}  {'OK' if present else 'MISSING'}")
+            if present:
+                dsp.success(f"{namespaced:{max_secret_length}s}  OK")
+            else:
+                dsp.error(f"{namespaced:{max_secret_length}s}  MISSING")
             all_ok = all_ok and present
         return 0 if all_ok else 1
 

@@ -20,9 +20,6 @@ if TYPE_CHECKING:
     import pytest
 
 
-# --- background server: state file + liveness ------------------------------
-
-
 def test_state_file_path(tmp_path: Path):
     assert state_file() == tmp_path / ".agent-launches" / "logs-server.json"
 

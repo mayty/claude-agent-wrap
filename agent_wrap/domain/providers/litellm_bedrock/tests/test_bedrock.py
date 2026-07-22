@@ -56,9 +56,6 @@ def test_bedrock_declares_litellm_sidecar(bedrock_spec: LiteLLMProvider):
     assert len(sidecars) == 1
 
 
-# --- Provider method implementations ---
-
-
 def test_bedrock_get_sidecar_env(bedrock: LiteLLMProvider):
     p = bedrock
     env = p.get_sidecar_env({"_secret_key": "my-aws-key"})
@@ -86,9 +83,6 @@ def test_bedrock_get_sidecar_cmd_args(bedrock: LiteLLMProvider):
     args = p.get_sidecar_cmd_args()
     assert isinstance(args, list)
     # Bedrock doesn't need extra cmd args
-
-
-# --- Pricing scraper (family-agnostic) ---
 
 
 def _row(name: str, keys: list[str]) -> str:

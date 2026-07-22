@@ -21,8 +21,6 @@ from agent_wrap.lib.docker_utils import (
 if TYPE_CHECKING:
     import pytest_mock
 
-# --- docker_run ---
-
 
 def test_docker_run_returns_tuple(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
@@ -52,9 +50,6 @@ def test_docker_run_check_true_raises(mocker: pytest_mock.MockFixture) -> None:
     mock_run.return_value.stderr = "error"
     with pytest.raises(RuntimeError, match="docker info failed"):
         docker_run("info", check=True)
-
-
-# --- is_rootless ---
 
 
 def test_rootless_true(mocker: pytest_mock.MockFixture) -> None:
@@ -89,9 +84,6 @@ def test_rootless_subprocess_error(mocker: pytest_mock.MockFixture) -> None:
     assert is_rootless() is False
 
 
-# --- image_exists ---
-
-
 def test_image_exists_true(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.return_value.returncode = 0
@@ -116,26 +108,20 @@ def test_image_exists_file_not_found(mocker: pytest_mock.MockFixture) -> None:
     assert image_exists("missing") is False
 
 
-# --- get_user_args ---
-
-
 def test_user_args_root_when_rootless(mocker: pytest_mock.MockFixture) -> None:
     # Rootless maps container-root to the host user, so pin to 0:0: this writes
     # bind mounts as the host user AND overrides any non-root USER baked into an
     # image (e.g. the Telegram sidecar) that would otherwise map to an
     # unprivileged subuid unable to write host-owned mounts.
-    mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=True, autospec=True)
     assert get_user_args() == ["--user", "0:0"]
 
 
 def test_user_args_returns_uid_gid_when_not_rootless(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=False)
+    mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=False, autospec=True)
     mocker.patch("os.getuid", return_value=1000)
     mocker.patch("os.getgid", return_value=1000)
     assert get_user_args() == ["--user", "1000:1000"]
-
-
-# --- get_tty_args ---
 
 
 def test_tty_args_interactive_when_stdin_is_tty(mocker: pytest_mock.MockFixture) -> None:
@@ -146,9 +132,6 @@ def test_tty_args_interactive_when_stdin_is_tty(mocker: pytest_mock.MockFixture)
 def test_tty_args_no_tty_when_stdin_not_terminal(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("agent_wrap.lib.docker_utils.sys.stdin.isatty", return_value=False)
     assert get_tty_args() == ["-i"]
-
-
-# --- is_wsl ---
 
 
 def test_is_wsl_true(mocker: pytest_mock.MockFixture) -> None:
@@ -169,13 +152,10 @@ def test_is_wsl_os_error(mocker: pytest_mock.MockFixture) -> None:
     assert is_wsl() is False
 
 
-# --- host_network_build_args ---
-
-
 def test_host_network_build_args_on_wsl_with_env(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True, autospec=True)
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
     assert host_network_build_args() == ["--network", "host"]
 
@@ -183,7 +163,7 @@ def test_host_network_build_args_on_wsl_with_env(
 def test_host_network_build_args_not_wsl(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False, autospec=True)
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
     assert host_network_build_args() == []
 
@@ -191,7 +171,7 @@ def test_host_network_build_args_not_wsl(
 def test_host_network_build_args_env_unset(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True, autospec=True)
     monkeypatch.delenv("AGENT_USE_HOST_NETWORK", raising=False)
     assert host_network_build_args() == []
 
@@ -199,6 +179,6 @@ def test_host_network_build_args_env_unset(
 def test_host_network_build_args_env_falsey(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture
 ) -> None:
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True, autospec=True)
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "0")
     assert host_network_build_args() == []

@@ -18,7 +18,7 @@ LOG_FILE_NAME = "logs-server.log"
 
 # Parent -> child handshake / stop-wait timing.
 SPAWN_TIMEOUT_SEC = 900.0
-STOP_TIMEOUT_SEC = 3.0
+STOP_TIMEOUT_SEC = 8.0
 POLL_INTERVAL_SEC = 0.05
 
 # Global, gitignored runtime state for the background viewer.

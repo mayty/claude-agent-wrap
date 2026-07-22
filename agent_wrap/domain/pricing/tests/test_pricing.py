@@ -9,15 +9,11 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.pricing.service import PricingService
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import TokenUsage
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -30,11 +26,6 @@ def svc(display_mock: Mock, provider_mock: Mock) -> PricingService:
     return PricingService(provider_service=provider_mock, display_service=display_mock)
 
 
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-
 def _zero_usage() -> TokenUsage:
     return {
         "input_tokens": 0,
@@ -43,11 +34,6 @@ def _zero_usage() -> TokenUsage:
         "cache_read_input_tokens": 0,
         "cache_creation": {},
     }
-
-
-# ---------------------------------------------------------------------------
-# Bucket
-# ---------------------------------------------------------------------------
 
 
 def test_new_bucket_is_zero(svc: PricingService) -> None:
@@ -167,11 +153,6 @@ def test_bucket_cw_property(svc: PricingService) -> None:
     assert b.cw == 30
 
 
-# ---------------------------------------------------------------------------
-# normalize_model
-# ---------------------------------------------------------------------------
-
-
 def test_normalize_canonical_claude(svc: PricingService) -> None:
     assert svc.normalize_model("claude-opus-4-7") == "claude-opus-4-7"
     assert svc.normalize_model("claude-sonnet-4-5") == "claude-sonnet-4-5"
@@ -212,11 +193,6 @@ def test_normalize_empty_or_non_claude(svc: PricingService) -> None:
 def test_normalize_model_with_slash(svc: PricingService) -> None:
     """Model ids with provider prefix (handled by compute_cost, not normalize)."""
     assert svc.normalize_model("bedrock/claude-opus-4-7") == "claude-opus-4-7"
-
-
-# ---------------------------------------------------------------------------
-# request_cache_ttl
-# ---------------------------------------------------------------------------
 
 
 def test_request_cache_ttl_no_body(svc: PricingService) -> None:
@@ -276,11 +252,6 @@ def test_request_cache_ttl_body_not_dict(svc: PricingService) -> None:
     assert svc.request_cache_ttl(req) is None
 
 
-# ---------------------------------------------------------------------------
-# response_cache_split
-# ---------------------------------------------------------------------------
-
-
 def test_response_cache_split_no_usage(svc: PricingService) -> None:
     assert svc.response_cache_split({}) == {}
 
@@ -323,11 +294,6 @@ def test_response_cache_split_top_level_keys_override(svc: PricingService) -> No
     assert svc.response_cache_split(usage) == {
         "ephemeral_5m_input_tokens": 999,
     }
-
-
-# ---------------------------------------------------------------------------
-# extract_usage
-# ---------------------------------------------------------------------------
 
 
 def test_extract_usage_none_response(svc: PricingService) -> None:
@@ -406,11 +372,6 @@ def test_extract_usage_mixed_ttl_warns_once(svc: PricingService, display_mock: M
     assert display_mock.warning.call_count == 1
 
 
-# ---------------------------------------------------------------------------
-# compute_cost
-# ---------------------------------------------------------------------------
-
-
 def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
     usage: TokenUsage = {
         "input_tokens": 100,
@@ -419,7 +380,7 @@ def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
         "cache_read_input_tokens": 0,
         "cache_creation": {},
     }
-    fake_provider = Mock()
+    fake_provider = Mock(spec=Provider)
     fake_provider.compute_cost.return_value = 0.005
     svc._provider_service.get_provider.return_value = fake_provider
 
@@ -430,7 +391,7 @@ def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
 
 def test_compute_cost_display_name_is_normalized(svc: PricingService) -> None:
     usage = _zero_usage()
-    fake_provider = Mock()
+    fake_provider = Mock(spec=Provider)
     fake_provider.compute_cost.return_value = 0.0
     svc._provider_service.get_provider.return_value = fake_provider
 
@@ -448,7 +409,7 @@ def test_compute_cost_unknown_provider_returns_none(
 def test_compute_cost_slash_prefixed_model(svc: PricingService) -> None:
     """Model like 'bedrock/claude-opus-4-7' → strip prefix before normalize."""
     usage = _zero_usage()
-    fake_provider = Mock()
+    fake_provider = Mock(spec=Provider)
     fake_provider.compute_cost.return_value = 0.0
     svc._provider_service.get_provider.return_value = fake_provider
 

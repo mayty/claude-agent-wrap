@@ -10,11 +10,12 @@ Selects which provider plugin to use. Each provider lives in `agent_wrap/domain/
 ```sh
 # Use the default LiteLLM-Bedrock provider (no var needed)
 agent run
+```
 
+```sh
 # Or pick a different one — the launcher fails fast and lists available
 # providers if the directory doesn't exist.
-AGENT_PROVIDER=my-direct-anthropic source agent-wrap.bashrc
-agent run
+AGENT_PROVIDER=my-direct-anthropic agent run
 ```
 
 Providers are auto-discovered by scanning `agent_wrap/domain/providers/*/provider.py` for concrete `Provider` subclasses (`inspect.getmembers()` + `inspect.isabstract()`) — drop in a directory and it shows up in the error message above without any registry edits.
@@ -57,3 +58,22 @@ AGENT_EXPECTED_QUEUE_DEPTH=512 agent run
 ```
 
 Set it to a positive integer; a non-numeric or non-positive value is ignored and the default applies.
+
+## `AGENT_DAY_START_UTC` (stats day-boundary offset)
+
+`agent stats` buckets usage into calendar days. `AGENT_DAY_START_UTC` sets how many hours past UTC midnight a "day" begins — negative values start a day before UTC midnight. Unset, it defaults to `-<host's local UTC offset in hours>`, so days align with host-local midnight, matching prior behavior.
+
+```sh
+# Days start at 04:00 UTC instead of local midnight.
+AGENT_DAY_START_UTC=4 agent stats
+```
+
+Unlike `AGENT_EXPECTED_QUEUE_DEPTH`, a malformed value here is a hard error rather than a silent fallback — an unnoticed typo would otherwise corrupt every day bucket. It must parse as an integer and satisfy `-24 < value < 24`; anything else raises at startup.
+
+## `AGENT_LOG_DEBUG` (verbose logs-viewer daemon logging)
+
+Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`) enables verbose per-tick/per-step logging in the `agent logs` background viewer daemon. Unset, only always-visible lines print (including a "completed in Ns" line that always prints once an operation's elapsed time exceeds its threshold, even without this flag).
+
+```sh
+AGENT_LOG_DEBUG=1 agent logs
+```

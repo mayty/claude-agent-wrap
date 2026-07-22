@@ -38,7 +38,9 @@ def test_from_claude_agent_image_exists(
         dockerfile=dockerfile,
         context=tmp_path,
     )
-    mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=True)
+    mocker.patch(
+        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
+    )
     assert build_svc._check_from_line(resolved) is True
 
 
@@ -54,7 +56,9 @@ def test_from_claude_agent_image_missing(
         dockerfile=dockerfile,
         context=tmp_path,
     )
-    mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=False)
+    mocker.patch(
+        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=False
+    )
     assert build_svc._check_from_line(resolved) is False
     build_svc._display.error.assert_any_call(  # type: ignore[union-attr]
         f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built."
@@ -96,7 +100,9 @@ def test_multistage_dockerfile_last_from_wins(
     build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockerFixture
 ) -> None:
     """Multi-stage Dockerfile: _check_from_line uses the last FROM line."""
-    mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=True)
+    mocker.patch(
+        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
+    )
     dockerfile = tmp_path / "Dockerfile.agent"
     # First FROM is a builder, second is the real base
     dockerfile.write_text(
@@ -127,9 +133,6 @@ def test_multistage_dockerfile_last_custom_base(build_svc: BuildService, tmp_pat
     )
 
 
-# --- _do_rebuild ---
-
-
 def test_do_rebuild_resolve_image_exit(
     mocker: pytest_mock.MockFixture,
     build_svc: BuildService,
@@ -137,6 +140,7 @@ def test_do_rebuild_resolve_image_exit(
     mocker.patch.object(
         BuildService,
         "resolve_image",
+        autospec=True,
         side_effect=SystemExit("no Dockerfile.agent"),
     )
     rc = build_svc._do_rebuild(full=False)
@@ -147,7 +151,7 @@ def test_do_rebuild_resolve_image_exit(
 def test_do_rebuild_full_build_fails(
     tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
 ) -> None:
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image")
+    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=tmp_path / "Dockerfile.agent",
@@ -165,7 +169,7 @@ def test_do_rebuild_project_build_fails(
 ) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image")
+    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=dockerfile,
@@ -181,7 +185,7 @@ def test_do_rebuild_project_build_fails(
 def test_do_rebuild_check_from_line_fails(
     tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
 ) -> None:
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image")
+    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=tmp_path / "Dockerfile.agent",
@@ -189,17 +193,13 @@ def test_do_rebuild_check_from_line_fails(
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
-    mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=False)
+    mocker.patch(
+        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=False
+    )
     (tmp_path / "Dockerfile.agent").write_text("# agent-name: t\nFROM claude-agent\n")
     rc = build_svc._do_rebuild(full=False)
     assert rc == 1
     mock_run.assert_not_called()  # reason: guard clause returns early before docker build
-
-
-# --- run() ---
-
-
-# --- _docker_build ---
 
 
 def test_docker_build_returns_exit_code(
@@ -228,6 +228,7 @@ def test_docker_build_splices_host_network(
     mock_run.return_value.returncode = 0
     mocker.patch(
         f"{'agent_wrap.domain.build.service'}.host_network_build_args",
+        autospec=True,
         return_value=["--network", "host"],
     )
     build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
@@ -241,12 +242,13 @@ def test_docker_build_no_host_network_by_default(
 ) -> None:
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
-    mocker.patch(f"{'agent_wrap.domain.build.service'}.host_network_build_args", return_value=[])
+    mocker.patch(
+        f"{'agent_wrap.domain.build.service'}.host_network_build_args",
+        autospec=True,
+        return_value=[],
+    )
     build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
     assert "--network" not in mock_run.call_args[0][0]
-
-
-# --- _do_rebuild success path ---
 
 
 def test_do_rebuild_project_success(
@@ -254,7 +256,7 @@ def test_do_rebuild_project_success(
 ) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image")
+    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
         dockerfile=dockerfile,
@@ -271,7 +273,7 @@ def test_do_rebuild_full_base_then_project(
 ) -> None:
     dockerfile = tmp_path / "Dockerfile.agent"
     dockerfile.write_text("# agent-name: t\nFROM claude-agent\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image")
+    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-t",
         dockerfile=dockerfile,
@@ -279,7 +281,9 @@ def test_do_rebuild_full_base_then_project(
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
-    mocker.patch(f"{'agent_wrap.domain.build.service'}.image_exists", return_value=True)
+    mocker.patch(
+        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
+    )
     rc = build_svc._do_rebuild(full=True)
     assert rc == 0
     # Base build + project build + docker images ls (only at end, not after base)
@@ -288,9 +292,6 @@ def test_do_rebuild_full_base_then_project(
     call_args_list = [c[0][0] for c in mock_run.call_args_list if c[0]]
     docker_builds = [a for a in call_args_list if isinstance(a, list) and "build" in a]
     assert len(docker_builds) == 2  # base + project
-
-
-# --- parse_dockerfile_agent ---
 
 
 def test_agent_user(write_dockerfile: Callable[[str], Path], build_svc: BuildService) -> None:
@@ -346,9 +347,6 @@ def test_empty_dockerfile_agent(
 def test_parse_nonexistent_file(build_svc: BuildService) -> None:
     with pytest.raises(FileNotFoundError):
         build_svc.parse_dockerfile_agent(Path("/nonexistent/Dockerfile.agent"))
-
-
-# --- resolve_image ---
 
 
 def test_resolve_base_image(

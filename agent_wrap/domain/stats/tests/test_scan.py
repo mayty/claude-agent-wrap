@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -25,10 +25,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest_mock
-
-# ---------------------------------------------------------------------------
-# fixtures / helpers
-# ---------------------------------------------------------------------------
+    from pytest_subtests import SubTests
 
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
@@ -100,11 +97,6 @@ def _seed_many_dirs(tool_dir: Path, n: int, records_per: int) -> list[Path]:
     return dirs
 
 
-# ---------------------------------------------------------------------------
-# plan_pool
-# ---------------------------------------------------------------------------
-
-
 def test_plan_pool_caps_workers_at_eight(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch.object(scan_mod.os, "cpu_count", return_value=64)
     workers, _chunksize = plan_pool(10_000)
@@ -151,9 +143,6 @@ def test_plan_pool_handles_unknown_cpu_count(mocker: pytest_mock.MockFixture) ->
     assert workers == 1
 
 
-# --- file culling ---
-
-
 def test_file_culling_skips_old_mtime(
     pricing_service: PricingService,
     tmp_path: Path,
@@ -196,9 +185,33 @@ def test_file_culling_keeps_recent_mtime_but_filters_records(
     assert set(by_day) == {"2026-06-15"}
 
 
-# ---------------------------------------------------------------------------
-# scan_log_dirs — serial / parallel equivalence (was scan_dirs)
-# ---------------------------------------------------------------------------
+def test_day_start_hours_shifts_record_bucket(
+    pricing_service: PricingService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    # A record timestamped just after UTC midnight falls on the next UTC day
+    # once the day-start offset is pushed forward past that instant.
+    mocker.patch.object(scan_mod, "DAY_START_HOURS", 0)
+    ts = datetime(2026, 6, 15, 1, 0, 0, tzinfo=timezone.utc).timestamp()
+    logs = tmp_path / ".claude" / "litellm-logs"
+    sdir = logs / "litellm-bedrock" / "s1"
+    sdir.mkdir(parents=True)
+    msg = sdir / "messages.jsonl"
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": ts},
+        "response": {"usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
+    }
+    msg.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    _sessions, _last_ts, by_day_0, _by_source = scan_logs_dir(logs, pricing_service)
+    assert set(by_day_0) == {"2026-06-15"}
+
+    mocker.patch.object(scan_mod, "DAY_START_HOURS", 2)
+    _sessions, _last_ts, by_day_2, _by_source = scan_logs_dir(logs, pricing_service)
+    assert set(by_day_2) == {"2026-06-14"}
 
 
 def test_scan_log_dirs_serial_matches_scan_logs_dir(
@@ -206,17 +219,19 @@ def test_scan_log_dirs_serial_matches_scan_logs_dir(
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     stats_svc: StatsService,
+    subtests: SubTests,
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 3, records_per=2)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)  # force serial
     cache = stats_svc.scan_log_dirs(dirs, from_iso=None, until_iso=None)
     for d in dirs:
-        expect = scan_logs_dir(d, pricing_service, from_iso=None, until_iso=None)
-        got = cache[d]
-        assert got[0] == expect[0]  # sessions
-        assert {m: b.msgs for v in got[2].values() for m, b in v.items()} == {
-            m: b.msgs for v in expect[2].values() for m, b in v.items()
-        }
+        with subtests.test(msg=str(d)):  # type: ignore[bad-context-manager]
+            expect = scan_logs_dir(d, pricing_service, from_iso=None, until_iso=None)
+            got = cache[d]
+            assert got[0] == expect[0]  # sessions
+            assert {m: b.msgs for v in got[2].values() for m, b in v.items()} == {
+                m: b.msgs for v in expect[2].values() for m, b in v.items()
+            }
 
 
 def test_scan_log_dirs_parallel_matches_serial(

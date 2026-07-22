@@ -21,21 +21,21 @@ The active provider injects additional vars via its `get_agent_env()`, plus the 
 - [litellm-dashscope](../agent_wrap/domain/providers/litellm_dashscope/README.md)
 - [litellm-deepseek](../agent_wrap/domain/providers/litellm_deepseek/README.md)
 
+Separately from `get_agent_env()`, the LiteLLM sidecar layer itself (`agent_wrap/domain/sidecars/litellm.py`) appends `ANTHROPIC_CUSTOM_HEADERS` (carrying the `x-agent-wrap-log-prefix` header used for per-project log routing) to the agent container's env, and sets `AGENT_WRAP_PROVIDER` on the **sidecar** container (not the agent) for per-sidecar provider routing in the shared request/response log. Neither var is declared by a provider's own `get_agent_env()` — they're injected by the shared sidecar wiring that every LiteLLM-based provider goes through.
+
+When the optional Telegram sidecar is active, it similarly injects `TELEGRAM_SIDECAR_URL` (and `TELEGRAM_SIDECAR_TOKEN`, when available) into the agent container. See [Telegram Notifications](telegram-notifications.md).
+
 ## Host-forwarded (conditional)
 
 | Var | When forwarded | Effect |
 | --- | --- | --- |
-| `CLAUDE_CODE_ENABLE_AUTO_MODE` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Allows the use of Claude Code's [auto mode](https://code.claude.com/docs/en/auto-mode-config), an LLM-based permission classifier that auto-approves commands instead of prompting. This only matters on backends that **don't** speak the Anthropic protocol — i.e. the default `litellm-bedrock` provider, where auto mode is unavailable unless this var is set. The `litellm-dashscope` and `litellm-deepseek` providers use the Anthropic interface, which makes auto mode available by default, so the var is a no-op there. |
 | `ENABLE_PROMPT_CACHING_1H` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Opts Claude Code into 1-hour prompt cache TTLs instead of the default 5-minute window, which can lower cost on long-running sessions. |
 
 ```sh
-# Allow auto mode (LLM permission classifier) on Bedrock
-CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
-
 # Opt into 1-hour prompt caching
 ENABLE_PROMPT_CACHING_1H=1 agent run
 ```
 
 ## WSLg (conditional)
 
-On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. See [Clipboard / WSLg](wslg-clipboard.md).
+On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. The same `/mnt/wslg`-directory check that gates these vars also gates the `wl-paste-shim` mount described in [Volume Mounts](volume-mounts.md) — both fire together. See [Clipboard / WSLg](wslg-clipboard.md).

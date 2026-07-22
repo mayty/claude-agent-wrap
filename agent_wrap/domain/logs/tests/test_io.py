@@ -73,11 +73,6 @@ def pricing_svc(mocker: MockerFixture) -> PricingService:
     return PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
 
 
-# ---------------------------------------------------------------------------
-# Helpers (data factories)
-# ---------------------------------------------------------------------------
-
-
 def _epoch(iso: str) -> float:
     """ISO-8601 string -> Unix epoch seconds."""
     return datetime.fromisoformat(iso).timestamp()
@@ -91,8 +86,6 @@ def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
 
 if TYPE_CHECKING:
     from agent_wrap.domain.providers.litellm_common.models import LogRecord
-
-# --- filesystem helpers ---
 
 
 def _write_session(project: Path, provider: str, session_id: str, records: list[Any]) -> Path:
@@ -493,9 +486,6 @@ def test_list_projects_empty_without_registry(
     assert list_projects(groups) == []
 
 
-# --- .agent_stats_leaf grouping --------------------------------------------
-
-
 def test_list_projects_aggregates_marked_group(
     tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
 ) -> None:
@@ -551,9 +541,6 @@ def test_unmarked_projects_stay_separate(
     groups = list_groups(isolated_stats, raw_projects)
     result = list_projects(groups)
     assert {p["name"] for p in result} == {"proj-a", "proj-b"}
-
-
-# --- <orphaned> synthetic group --------------------------------------------
 
 
 def _write_central(tool_dir: Path, hash_name: str, session_id: str, records: list[Any]) -> Path:
@@ -625,9 +612,6 @@ def test_no_orphaned_group_when_all_reachable(
     assert all(g["name"] != "<orphaned>" for g in list_groups(isolated_stats, raw_projects))
 
 
-# --- read_last_record_ts ---
-
-
 def test_read_last_record_ts_returns_last_ts(tmp_path: Path):
     f = tmp_path / "messages.jsonl"
     f.write_text(
@@ -690,9 +674,6 @@ def test_read_last_record_ts_handles_non_json_lines(tmp_path: Path):
         encoding="utf-8",
     )
     assert read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
-
-
-# --- lightweight_project_summary ---
 
 
 def test_lightweight_project_summary_empty_project(tmp_path: Path):
@@ -829,9 +810,6 @@ def test_projects_fingerprint_null_when_no_registry(
     """No registry file → null fingerprint."""
     raw_projects = config_svc.read_project_paths()
     assert projects_fingerprint(raw_projects) == {"mtime": None, "size": None}
-
-
-# --- meta.json caching (read_meta_json / write_meta_json / scan_session_meta) ---
 
 
 def _write_meta_file(session_dir: Path, meta: dict[str, Any]) -> Path:
@@ -999,9 +977,6 @@ def test_write_andread_meta_json_round_trip(tmp_path: Path):
     assert cached["models"] == ["x", "y"]
     assert cached["alias"] == "test-alias"
     assert cached["title"] == "Test Title"
-
-
-# --- helpers shared with normalize tests ---
 
 
 def _raw_record() -> Any:

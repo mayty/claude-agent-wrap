@@ -3,15 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-import pytest
-
-import agent_wrap.domain.stats.usage_args as ua
-from agent_wrap.domain.stats.constants import DEFAULT_DAYS
-from agent_wrap.domain.stats.format_utils import day_in_range
-from agent_wrap.domain.stats.usage_args import parse_usage_args
+import agent_wrap.cli.stats.usage_args as ua
+from agent_wrap.cli.stats.constants import DEFAULT_DAYS
+from agent_wrap.cli.stats.usage_args import parse_usage_args
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -24,10 +21,12 @@ _TODAY = date(2026, 6, 29)
 
 
 def _freeze_today(mocker: MockerFixture):
-    # _today() returns an aware datetime whose local date is _TODAY; a noon naive
-    # datetime made aware via astimezone keeps the calendar day in any local tz.
-    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0).astimezone()
-    mocker.patch.object(ua, "_today", return_value=frozen)
+    # _today() returns a UTC-aware datetime; pin DAY_START_HOURS to 0 too, so
+    # get_day() reduces to plain UTC-date extraction regardless of the CI host's
+    # real local offset, matching the noon-UTC frozen instant below.
+    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
+    mocker.patch.object(ua, "_today", return_value=frozen, autospec=True)
+    mocker.patch.object(ua, "DAY_START_HOURS", 0)
 
 
 def _parse(mocker: MockerFixture, display_mock: Mock, reg: Path, *flags: str):
@@ -45,9 +44,6 @@ def _reg(tmp_path: Path) -> Path:
 
 def _iso(d: date) -> str:
     return d.isoformat()
-
-
-# --- resolution table --------------------------------------------------------
 
 
 def test_no_flags_defaults_to_last_28_days(
@@ -127,9 +123,6 @@ def test_until_and_days_zero_open_lower(mocker: MockerFixture, tmp_path: Path, d
     assert parsed.until_iso == "2026-06-20"
 
 
-# --- short flag forms --------------------------------------------------------
-
-
 def test_short_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     parsed = _parse(mocker, display_mock, _reg(tmp_path), "-d", "7")
     assert parsed is not None
@@ -158,9 +151,6 @@ def test_short_from_and_until(mocker: MockerFixture, tmp_path: Path, display_moc
     assert parsed.until_iso == "2026-06-10"
 
 
-# --- relative date specs -----------------------------------------------------
-
-
 def test_relative_from(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "-14d")
     assert parsed is not None
@@ -173,9 +163,6 @@ def test_relative_until_and_days(mocker: MockerFixture, tmp_path: Path, display_
     assert parsed is not None
     assert parsed.until_iso == _iso(_TODAY - timedelta(days=7))
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=9))
-
-
-# --- errors ------------------------------------------------------------------
 
 
 def test_all_three_flags_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
@@ -231,55 +218,27 @@ def test_missing_registry_rejected(mocker: MockerFixture, display_mock: Mock):
     display_mock.error.assert_not_called()
 
 
-# --- day_in_range ------------------------------------------------------------
+def test_pattern_long_flag(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--pattern", "api")
+    assert parsed is not None
+    assert parsed.pattern is not None
+    assert parsed.pattern.pattern == "api"
 
 
-@pytest.mark.parametrize(
-    ("date_str", "from_date", "until_date"),
-    [
-        ("2026-06-01", "2026-06-01", "2026-06-10"),
-        ("2026-06-10", "2026-06-01", "2026-06-10"),
-    ],
-)
-def test_day_in_range_inclusive_bounds(date_str: str, from_date: str, until_date: str) -> None:
-    assert day_in_range(date_str, from_date, until_date) is True
+def test_pattern_short_flag(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "-p", "^(proj-a|proj-b)$")
+    assert parsed is not None
+    assert parsed.pattern is not None
+    assert parsed.pattern.pattern == "^(proj-a|proj-b)$"
 
 
-@pytest.mark.parametrize(
-    ("date_str", "from_date", "until_date"),
-    [
-        ("2026-05-31", "2026-06-01", "2026-06-10"),
-        ("2026-06-11", "2026-06-01", "2026-06-10"),
-    ],
-)
-def test_day_in_range_out_of_bounds(date_str: str, from_date: str, until_date: str) -> None:
-    assert day_in_range(date_str, from_date, until_date) is False
+def test_pattern_defaults_none(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path))
+    assert parsed is not None
+    assert parsed.pattern is None
 
 
-def test_day_in_range_open_lower_bound() -> None:
-    assert day_in_range("2000-01-01", None, "2026-06-10") is True
-
-
-def test_day_in_range_open_upper_bound() -> None:
-    assert day_in_range("2030-01-01", "2026-06-01", None) is True
-
-
-def test_day_in_range_fully_unbounded() -> None:
-    assert day_in_range("2026-06-05", None, None) is True
-
-
-@pytest.mark.parametrize(
-    ("date_str", "from_date", "until_date", "expected"),
-    [
-        ("?", None, None, True),
-        ("?", "2026-06-01", None, False),
-        ("?", None, "2026-06-10", False),
-    ],
-)
-def test_day_in_range_question_mark_sentinel(
-    date_str: str,
-    from_date: str | None,
-    until_date: str | None,
-    expected: bool,  # noqa: FBT001
-) -> None:
-    assert day_in_range(date_str, from_date, until_date) is expected
+def test_pattern_invalid_regex_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, _reg(tmp_path), "--pattern", "***invalid")
+    assert parsed is None
+    display_mock.error.assert_called_once()

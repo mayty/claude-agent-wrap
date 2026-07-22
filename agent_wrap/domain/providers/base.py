@@ -7,7 +7,10 @@ from abc import ABC, abstractmethod
 from functools import cache
 from typing import TYPE_CHECKING
 
-from agent_wrap.domain.providers.constants import MODEL_CONTEXT_SUFFIX_RE
+from agent_wrap.domain.providers.constants import (
+    MODEL_CONTEXT_SUFFIX_RE,
+    UNKNOWN_MODEL_COST_THRESHOLD_USD,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -90,6 +93,24 @@ class _CostComputer:
             + cr_tokens * tier["cr"] / 1_000_000
         )
         return cost, convention_warn
+
+    @staticmethod
+    def worst_case_cost(table: dict[str, list[Tier]], usage: TokenUsage) -> float:
+        """
+        Return the highest cost *usage* could incur under any tier this provider knows.
+
+        Used when a model has no pricing-table match, to tell a genuinely
+        negligible cost (rounds to $0 even at the priciest known rate) apart
+        from a genuinely unknown one.
+        """
+        return max(
+            (
+                _CostComputer.cost_for_tiers([tier], usage)[0]
+                for tiers in table.values()
+                for tier in tiers
+            ),
+            default=0.0,
+        )
 
 
 class Provider(ABC):
@@ -231,6 +252,11 @@ class Provider(ABC):
         multipliers).  *model* arrives already-normalized by ``PricingService``
         (Claude display names → canonical keys), but the default implementation
         still tolerates raw model names as a fallback.
+
+        When *model* has no pricing-table match, this returns a known ``0.0``
+        instead of ``None`` if the usage's cost would round down to $0 even
+        under the most expensive tier this provider knows — see
+        ``_CostComputer.worst_case_cost``.
         """
         table = self._build_pricing_table()
         if not table:
@@ -252,5 +278,6 @@ class Provider(ABC):
                 break
 
         if tiers is None:
-            return None
+            worst = _CostComputer.worst_case_cost(table, usage)
+            return 0.0 if worst < UNKNOWN_MODEL_COST_THRESHOLD_USD else None
         return self._cost_for_tiers(tiers, usage)

@@ -17,8 +17,6 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-# --- atomic_write_text ---
-
 
 def test_write_text_creates_file(tmp_path: Path) -> None:
     target = tmp_path / "out.txt"
@@ -45,9 +43,6 @@ def test_write_text_leaves_no_tmp_file(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == [target]
 
 
-# --- atomic_write_json ---
-
-
 def test_write_json_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "out.json"
     data = {"a": 1, "b": ["x", "y"]}
@@ -59,9 +54,6 @@ def test_write_json_trailing_newline(tmp_path: Path) -> None:
     target = tmp_path / "out.json"
     atomic_write_json(target, {"k": "v"})
     assert target.read_text().endswith("}\n")
-
-
-# --- concurrency / failure handling ---
 
 
 def test_concurrent_writers_do_not_crash(tmp_path: Path) -> None:

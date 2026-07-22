@@ -55,9 +55,6 @@ def test_dashscope_declares_litellm_sidecar(dashscope_spec: DashscopeProvider):
     assert len(sidecars) == 1
 
 
-# --- Provider method implementations ---
-
-
 def test_dashscope_get_sidecar_env(dashscope: DashscopeProvider):
     env = dashscope.get_sidecar_env({"_secret_key": "my-dashscope-key"})
     assert env["DASHSCOPE_API_KEY"] == "my-dashscope-key"
@@ -80,9 +77,6 @@ def test_dashscope_get_sidecar_cmd_args(dashscope: DashscopeProvider):
     assert len(args) == 0
 
 
-# --- API key approval ---
-
-
 def test_api_key_approval_id():
     assert _api_key_approval_id("sk-ds-12345678901234567890") == "12345678901234567890"
     assert _api_key_approval_id("short") == "short"
@@ -100,6 +94,7 @@ def test_approve_master_key_adds_entry(
     # Patch the path resolution
     mocker.patch(
         "agent_wrap.domain.providers.key_approval._claude_json_path",
+        autospec=True,
         return_value=claude_json,
     )
 
@@ -116,6 +111,7 @@ def test_approve_master_key_idempotent(
     claude_json.write_text("{}")
     mocker.patch(
         "agent_wrap.domain.providers.key_approval._claude_json_path",
+        autospec=True,
         return_value=claude_json,
     )
     dashscope._approve_master_key("sk-ds-abcdefghijklmnopqrst")
@@ -132,6 +128,7 @@ def test_approve_master_key_skips_malformed_json(
     claude_json.write_text("{bad json")
     mocker.patch(
         "agent_wrap.domain.providers.key_approval._claude_json_path",
+        autospec=True,
         return_value=claude_json,
     )
     dashscope._approve_master_key("sk-ds-abcdefghijklmnopqrst")
@@ -147,6 +144,7 @@ def test_unapprove_master_key_removes_entry(
     claude_json.write_text(json.dumps(data))
     mocker.patch(
         "agent_wrap.domain.providers.key_approval._claude_json_path",
+        autospec=True,
         return_value=claude_json,
     )
     dashscope._unapprove_master_key("sk-ds-abcdefghijklmnopqrst")
@@ -163,6 +161,7 @@ def test_unapprove_nonexistent_key_noop(
     claude_json.write_text("{}")
     mocker.patch(
         "agent_wrap.domain.providers.key_approval._claude_json_path",
+        autospec=True,
         return_value=claude_json,
     )
     dashscope._unapprove_master_key("sk-ds-abcdefghijklmnopqrst")  # should not raise
@@ -175,6 +174,7 @@ def test_load_claude_json_missing_file(
     # Don't create it
     mocker.patch(
         "agent_wrap.domain.providers.key_approval._claude_json_path",
+        autospec=True,
         return_value=claude_json,
     )
     result = dashscope._load_claude_json()

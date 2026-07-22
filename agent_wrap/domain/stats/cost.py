@@ -12,7 +12,7 @@ def usage_source(rec: dict[str, Any]) -> str:
 
     Mirrors the three outcomes the callback's ``_usable_response`` stamps onto a
     record's ``response`` (see ``providers/litellm_common/callback.py``):
-      * ``"native"`` — a parsed response dict with no ``usage_source`` key (usage
+      * ``"native"`` — a parsed response dict with no ``_usage_source`` key (usage
         came straight from the response);
       * ``"standard_logging_object"`` — dict tagged with that source (usage was
         recovered from LiteLLM's standard logging object fallback);
@@ -23,7 +23,7 @@ def usage_source(rec: dict[str, Any]) -> str:
     if isinstance(response, str):
         return "unrecoverable"
     if isinstance(response, dict):
-        src = response.get("usage_source")
+        src = response.get("_usage_source")
         if src in ("standard_logging_object", "unrecoverable"):
             return src
         return "native"

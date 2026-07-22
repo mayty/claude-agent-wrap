@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from functools import partial
+from functools import cache, partial
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import SCAN_PARALLEL_MIN_FILES, TOOL_DIR
@@ -46,6 +46,35 @@ class StatsService:
     def __init__(self, pricing_service: PricingService, config_service: ConfigService) -> None:
         self._pricing = pricing_service
         self._config = config_service
+
+    # ------------------------------------------------------------------
+    # Per-file scan (used by the logs viewer's UsageTracker)
+    # ------------------------------------------------------------------
+
+    def scan_day_file(self, provider_name: str, messages_file: Path, day_key: str) -> Bucket:
+        """
+        Scan *messages_file* for records falling on *day_key* and return a priced Bucket.
+
+        Used by ``UsageTracker`` in the logs domain to incrementally update
+        today's usage totals without importing the stats scan internals.
+        """
+        _had_record, _last_ts, records = scan_session_file(
+            provider_name,
+            messages_file,
+            from_iso=day_key,
+            until_iso=day_key,
+        )
+        by_day, _by_source = fold_raw_to_buckets(records, self._pricing)
+        price_buckets(by_day, self._pricing)
+
+        combined = self._pricing.new_bucket()
+        for bucket in by_day.get(day_key, {}).values():
+            combined.merge(bucket)
+        return combined
+
+    # ------------------------------------------------------------------
+    # Project aggregation
+    # ------------------------------------------------------------------
 
     def aggregate_projects(
         self,
@@ -190,6 +219,7 @@ class StatsService:
             cache[logs_dir] = DirResult(sessions, last_ts, by_day, by_source)
         return cache
 
+    @cache  # noqa: B019 — StatsService is a process-lifetime singleton
     def resolve_group(self, path: Path) -> GroupResult:
         """
         Resolve the transient-project group a project path belongs to.

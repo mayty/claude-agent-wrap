@@ -1,7 +1,7 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # Shell Commands
 
-`agent` is an executable (`bin/agent`) whose first argument is a verb that selects the operation. All verbs forward to `python3 -m agent_wrap` and run on the host. Sourcing `agent-wrap.bashrc` adds `bin/` to your `PATH` (so `agent` resolves) and, under bash only, registers tab-completion for the verbs and their flags. Completion reads its data from the git-tracked `agent-wrap-completion.bash`, which is compiled from each command module's `USAGE` by `scripts/gen-bash-completion.py` (run `make gen-completion` after changing a command's flags). Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required.
+`agent` is an executable (`bin/agent`) whose first argument is a verb that selects the operation. All verbs forward to `python3 -m agent_wrap` and run on the host. Sourcing `agent-wrap.bashrc` adds `bin/` to your `PATH` (so `agent` resolves) and, under bash only, registers tab-completion for the verbs and their flags. Completion is live, not generated: `complete -F _agent_complete agent` (in `agent-wrap.bashrc`) calls `AGENT_COMPLETE=1 agent <cword> <words...>`, which routes to `_complete()` in `agent_wrap/__main__.py` and calls each command module's own `complete()` function directly — there is no generated completion file and no `make` step to keep it in sync. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required.
 
 | Verb | Purpose |
 | --- | --- |
@@ -11,6 +11,7 @@
 | `stats` | Aggregate token usage and cost |
 | `logs` | Browse LiteLLM request logs in a local web viewer |
 | `update` | Pull latest wrapper source |
+| `secrets` | Manage encrypted sidecar/provider secrets |
 
 ## `agent run`
 
@@ -53,12 +54,12 @@ Rebuilds the resolved image with `--no-cache`, passing `HOST_UID`/`HOST_GID` bui
 agent create
 ```
 
-Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory.
+Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory, pre-populated with a `# agent-name: <sanitized-dirname>` comment line — the same directive [docs/docker-sandboxing.md](docker-sandboxing.md#recognized-directives) documents as required.
 
 ## `agent stats`
 
 ```
-agent stats [--verbose] [--from D] [--until D] [--days N]
+agent stats [--verbose] [--from D] [--until D] [--days N] [--pattern P]
 ```
 
 Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` and walks each project's `.claude/litellm-logs/` directory (organized by provider and session). Pricing is fetched dynamically per provider as logs are scanned. Both the per-project table and the per-day breakdown cover the same usage window.
@@ -71,7 +72,11 @@ Selection range — at most two of the three flags may be combined:
 
 The **`-v`/`--verbose`** flag is independent of the range: it adds a usage-source breakdown table over the same window, splitting the totals by how each request's usage was obtained (read straight from the response, recovered from the request log, or uncountable).
 
+The **`-p`/`--pattern P`** flag filters projects by a regex matched against each project's display name, independent of the range.
+
 With no flags the window is the last 28 days. `--from` alone runs to now; `--days N` alone is the last N days; `--until` alone spans the 28 days ending at that date; `--days 0` alone shows all time (open lower bound, up to now).
+
+Day buckets default to host-local midnight-to-midnight; see [`AGENT_DAY_START_UTC`](configuration.md#agent_day_start_utc-stats-day-boundary-offset) to change the boundary.
 
 Create an `.agent_stats_leaf` file in a directory to aggregate every registered project at or beneath it into a single **transient project** row, instead of one row per project — handy when a script launches many agents in per-run subdirectories. The first non-empty line of the file is the project's display name (falling back to the marker directory's name when the file is empty), and the aggregated row is accented in color (alongside the `<orphaned>` row) to set it apart. The lookup walks the path literally (symlinks are not resolved), so a directory that holds an `.agent_stats_leaf` plus symlinks to several unrelated projects groups them all together.
 
@@ -94,10 +99,26 @@ The viewer applies the same grouping as `agent stats`: projects under an `.agent
 - **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one. Ignored when a viewer is already running.
 - **`--stop`** — stops the background viewer (no-op with a friendly message if none is running).
 
+## `agent secrets`
+
+```
+agent secrets check|set|clear <sidecar>
+agent secrets cleanup
+```
+
+Manages secrets in the encrypted store, namespaced per sidecar/provider (e.g. `litellm-bedrock:api_key`, `telegram:TelegramBotToken`).
+
+- **`check <sidecar>`** — reports whether each secret required by `<sidecar>` is present, without revealing values.
+- **`set <sidecar>`** — prompts for and persists each secret required by `<sidecar>`.
+- **`clear <sidecar>`** — deletes all secrets stored for `<sidecar>`.
+- **`cleanup`** — removes any stored keys that don't belong to a known sidecar/provider.
+
+Provider secrets are also resolved interactively on the first `agent run` when stdin is a TTY (they're required, so a missing one triggers a prompt); `agent secrets set <provider>` is the explicit, non-interactive alternative. Telegram secrets are optional and are never prompted for interactively — `agent secrets set telegram` is the only way to set them.
+
 ## `agent update`
 
 ```
 agent update
 ```
 
-Pulls the latest wrapper source. On `master`, it only updates when a newer tag has been published and fast-forwards to that tag's commit; on any other branch it fast-forwards to the branch tip on any upstream commit. If `default-CLAUDE.md` changed, replaces the user's copy when unmodified or prompts when customized.
+Pulls the latest wrapper source. On `master`, it only updates when a newer tag has been published and fast-forwards to that tag's commit; on any other branch it fast-forwards to the branch tip on any upstream commit. If `default-CLAUDE.md` changed, replaces the user's copy when unmodified; when customized, it leaves the copy untouched and prints instructions for merging or deleting it manually.

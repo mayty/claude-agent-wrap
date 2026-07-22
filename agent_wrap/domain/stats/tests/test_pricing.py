@@ -28,11 +28,6 @@ if TYPE_CHECKING:
     import pytest_mock
 
 
-# ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
-
-
 class FakeProvider(Provider):
     def __init__(self, flat: dict[str, Any] | None = None, tiered: dict[str, Any] | None = None):
         super().__init__(
@@ -169,7 +164,7 @@ def _slo_rec(model: str = "claude-opus-4-8") -> dict[str, Any]:
         "model": model,
         "timing": {"start": 1_700_000_000.0},
         "response": {
-            "usage_source": "standard_logging_object",
+            "_usage_source": "standard_logging_object",
             "usage": {"prompt_tokens": 800, "completion_tokens": 200},
         },
     }
@@ -181,13 +176,8 @@ def _unrecoverable_rec(model: str = "claude-opus-4-8") -> dict[str, Any]:
         "status": "success",
         "model": model,
         "timing": {"start": 1_700_000_000.0},
-        "response": {"usage_source": "unrecoverable", "_raw_response": "<Response [200 OK]>"},
+        "response": {"_usage_source": "unrecoverable", "_raw_response": "<Response [200 OK]>"},
     }
-
-
-# ---------------------------------------------------------------------------
-# PricingService round-trip pricing lookup
-# ---------------------------------------------------------------------------
 
 
 def test_date_stamped_request_resolves_to_base_tier(
@@ -227,11 +217,6 @@ def test_unknown_model_returns_none(
         "cache_creation": {},
     }
     assert pricing.compute_cost("bedrock", "claude-opus-4-5", usage=usage) is None
-
-
-# ---------------------------------------------------------------------------
-# aggregate_projects
-# ---------------------------------------------------------------------------
 
 
 def test_aggregate_projects_merges_marked_group(
@@ -294,11 +279,6 @@ def test_aggregate_projects_keeps_unmarked_separate(
     assert all(r["transient"] is False for r in rows)
 
 
-# ---------------------------------------------------------------------------
-# windowing
-# ---------------------------------------------------------------------------
-
-
 def test_aggregate_projects_windows_sessions_and_totals(
     tmp_path: Path,
     stats_svc: StatsService,
@@ -315,11 +295,6 @@ def test_aggregate_projects_windows_sessions_and_totals(
     assert rows[0]["sessions"] == 1
     assert rows[0]["total"].msgs == 1
     assert set(by_day) == {"2026-06-15"}
-
-
-# ---------------------------------------------------------------------------
-# collect_orphaned
-# ---------------------------------------------------------------------------
 
 
 def test_aggregate_orphaned_folds_into_totals(
@@ -358,11 +333,6 @@ def test_aggregate_orphaned_none_when_all_reachable(
     assert orphaned is None
 
 
-# ---------------------------------------------------------------------------
-# usage_source
-# ---------------------------------------------------------------------------
-
-
 def test_usage_source_native(success_rec: dict[str, Any]) -> None:
     assert usage_source(success_rec) == "native"
 
@@ -399,21 +369,11 @@ def test_aggregate_projects_returns_per_source_totals(
     assert merged["unrecoverable"].unrecorded == 1
 
 
-# ---------------------------------------------------------------------------
-# request_cache_ttl / extract_usage
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def ps(mocker: pytest_mock.MockerFixture, display_mock: Mock) -> PricingService:
     return PricingService(
         provider_service=mocker.Mock(spec=ProviderService), display_service=display_mock
     )
-
-
-# ---------------------------------------------------------------------------
-# request_cache_ttl
-# ---------------------------------------------------------------------------
 
 
 def test_request_cache_ttl_default_is_5m(ps: PricingService) -> None:
@@ -432,11 +392,6 @@ def test_request_cache_ttl_none_without_markers(ps: PricingService) -> None:
     assert ps.request_cache_ttl({"body": {"data": {"system": []}}}) is None
     assert ps.request_cache_ttl(None) is None
     assert ps.request_cache_ttl({}) is None
-
-
-# ---------------------------------------------------------------------------
-# extract_usage
-# ---------------------------------------------------------------------------
 
 
 def test_extract_usage_attributes_flat_total_to_5m(ps: PricingService) -> None:

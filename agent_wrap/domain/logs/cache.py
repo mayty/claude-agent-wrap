@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import threading
 from datetime import timedelta
@@ -23,6 +24,7 @@ from agent_wrap.domain.logs.io import (
     session_fingerprint,
     sessions_fingerprint,
 )
+from agent_wrap.domain.logs.usage_tracker import UsageTracker
 
 if TYPE_CHECKING:
     from agent_wrap.domain.config.service import ConfigService
@@ -80,6 +82,9 @@ class LogsCache:
         self._projects_txt_size: int | None = None
         self._known_messages: dict[Path, tuple[int, int]] = {}  # path -> (mtime_ns, size)
         self._known_project_paths: set[str] = set()
+
+        # --- daily usage tracking ---
+        self._usage_tracker = UsageTracker(pricing_service, stats_service)
 
         self._thread: threading.Thread | None = None
 
@@ -197,6 +202,9 @@ class LogsCache:
         with log_debug("Update", "scanning session directories", threshold=timedelta(seconds=2)):
             new_manifest, path_to_key = self._gather_directory_manifest()
 
+        # Snapshot before incremental updates overwrite _known_messages.
+        old_manifest = dict(self._known_messages)
+
         with log_debug("Update", "diffing manifest", threshold=timedelta(milliseconds=500)):
             changed, deleted = self._diff_manifest(new_manifest, path_to_key)
 
@@ -207,6 +215,37 @@ class LogsCache:
                 self._apply_incremental_updates(changed, deleted, new_manifest)
         else:
             self._known_messages = new_manifest
+
+        # 3. Update daily usage.json.
+        self._update_usage_tracker(new_manifest, old_manifest)
+
+    def _update_usage_tracker(
+        self,
+        new_manifest: dict[Path, tuple[int, int]],
+        old_manifest: dict[Path, tuple[int, int]],
+    ) -> None:
+        """
+        Update ``UsageTracker`` from the current manifest.
+
+        Fingerprint comparison is owned by ``UsageTracker.update_file`` — every
+        file in *new_manifest* is offered and the tracker decides whether to
+        re-scan.  Deletions are detected via set difference on the manifest keys.
+        """
+        tracker = self._usage_tracker
+
+        if tracker.detect_rollover():
+            tracker.reset()
+
+        content_changed = False
+
+        for path, stat_info in new_manifest.items():
+            content_changed |= tracker.update_file(path, stat_info)
+
+        for path in set(old_manifest) - set(new_manifest):
+            tracker.remove_file(path)
+            content_changed = True
+
+        tracker.flush(content_changed=content_changed)
 
     def _gather_directory_manifest(
         self,
@@ -465,12 +504,15 @@ class LogsCache:
             self._update_projects_txt_tracking()
             return
 
-        if added:
-            self._rebuild_all()
-        else:
+        # Process removals first (already incremental), then additions.
+        if removed:
             self._prune_removed_paths(removed)
-            self._known_project_paths = new_paths
-            self._update_projects_txt_tracking()
+
+        if added:
+            self._merge_added_paths(added)
+
+        self._known_project_paths = new_paths
+        self._update_projects_txt_tracking()
 
     def _update_projects_txt_tracking(self) -> None:
         try:
@@ -479,6 +521,201 @@ class LogsCache:
             self._projects_txt_size = st.st_size
         except OSError:
             pass
+
+    def _merge_added_paths(self, added: set[str]) -> None:
+        """
+        Incrementally merge newly added project paths into the cache.
+
+        Processes *only* the added paths — does not iterate over all existing
+        projects, so a transient project with thousands of sub-projects is not
+        touched unless one of its paths appears in *added*.
+        """
+        old_root_to_pid: dict[Path, int] = {g["root"]: pid for pid, g in enumerate(self._groups)}
+
+        pending_groups, merged_pids = self._classify_added_paths(added, old_root_to_pid)
+        if not pending_groups and not merged_pids:
+            return
+
+        new_entries = sorted(pending_groups.values(), key=lambda g: g["root"])
+        self._insert_new_groups(new_entries)
+
+        # Re-index pid-keyed dicts BEFORE scanning new groups (so old data is
+        # safely shifted before new data fills the vacated slots).
+        new_root_to_pid: dict[Path, int] = {g["root"]: pid for pid, g in enumerate(self._groups)}
+        pid_remap: dict[int, int] = {}
+        for root, old_pid in old_root_to_pid.items():
+            new_pid = new_root_to_pid.get(root)
+            if new_pid is not None and new_pid != old_pid:
+                pid_remap[old_pid] = new_pid
+        if pid_remap:
+            self._apply_pid_remap(pid_remap)
+
+        # Scan sessions for new groups (now at their final pids).
+        for entry in new_entries:
+            pid = new_root_to_pid[entry["root"]]
+            sessions = list_sessions(entry["logs_dirs"])
+            self._sessions[pid] = sessions
+            self._sessions_fp[pid] = sessions_fingerprint(entry["logs_dirs"])
+            for sm in sessions:
+                key = (pid, sm["session_id"])
+                self._session_fp[key] = session_fingerprint(entry["logs_dirs"], sm["session_id"])
+                self._record_known_messages(
+                    entry["logs_dirs"], sm["session_id"], self._known_messages
+                )
+
+        # Refresh fingerprints for groups that had sessions merged in.
+        for pid in merged_pids:
+            group = self._groups[pid]
+            self._sessions_fp[pid] = sessions_fingerprint(group["logs_dirs"])
+
+        self._projects = self._recompute_projects_from_cache()
+        self._projects_fp = self._recompute_projects_fp_from_cache()
+
+    def _classify_added_paths(
+        self, added: set[str], old_root_to_pid: dict[Path, int]
+    ) -> tuple[dict[Path, GroupInfo], set[int]]:
+        """
+        Classify each added path: merge into existing group, or stage as new.
+
+        Returns ``(pending_groups, merged_pids)`` where *pending_groups* maps
+        group-root → GroupInfo for brand-new groups, and *merged_pids* is the
+        set of existing group pids that had sessions merged in.
+        """
+        pending_groups: dict[Path, GroupInfo] = {}
+        merged_pids: set[int] = set()
+
+        for raw_path_str in added:
+            try:
+                path = Path(raw_path_str)
+            except (TypeError, ValueError):
+                continue
+
+            logs_d = self._logs_dir_for(path)
+            if not logs_d.is_dir():
+                continue
+
+            group_root, display_name, _is_transient = self._stats_service.resolve_group(path)
+            existing_pid = old_root_to_pid.get(group_root)
+
+            if existing_pid is not None:
+                group = self._groups[existing_pid]
+                if path not in group["paths"]:
+                    group["paths"].append(path)
+                if logs_d not in group["logs_dirs"]:
+                    group["logs_dirs"].append(logs_d)
+                self._merge_sessions_from_logs_dir(existing_pid, logs_d)
+                merged_pids.add(existing_pid)
+            elif group_root in pending_groups:
+                pg = pending_groups[group_root]
+                if path not in pg["paths"]:
+                    pg["paths"].append(path)
+                if logs_d not in pg["logs_dirs"]:
+                    pg["logs_dirs"].append(logs_d)
+            else:
+                pending_groups[group_root] = cast(
+                    "GroupInfo",
+                    {
+                        "root": group_root,
+                        "name": display_name,
+                        "paths": [path],
+                        "logs_dirs": [logs_d],
+                    },
+                )
+
+        return pending_groups, merged_pids
+
+    def _insert_new_groups(self, new_entries: list[GroupInfo]) -> None:
+        """
+        Insert *new_entries* into ``_groups`` at their sorted positions.
+
+        Saves and re-appends the ``<orphaned>`` group (if present) so it stays
+        at the end regardless of insertion position.
+        """
+        orphaned_group: GroupInfo | None = None
+        if self._groups and self._groups[-1]["name"] == "<orphaned>":
+            orphaned_group = self._groups.pop()
+
+        roots = [g["root"] for g in self._groups]
+        for entry in new_entries:
+            idx = bisect.bisect_left(roots, entry["root"])
+            self._groups.insert(idx, entry)
+            roots.insert(idx, entry["root"])
+
+        if orphaned_group is not None:
+            self._groups.append(orphaned_group)
+
+    def _apply_pid_remap(self, pid_remap: dict[int, int]) -> None:
+        """Re-key all pid-indexed caches according to *pid_remap*."""
+        self._sessions = {
+            pid_remap.get(old_pid, old_pid): sessions
+            for old_pid, sessions in self._sessions.items()
+        }
+        self._sessions_fp = {
+            pid_remap.get(old_pid, old_pid): fp for old_pid, fp in self._sessions_fp.items()
+        }
+        self._session_fp = {
+            (pid_remap.get(old_pid, old_pid), sid): fp
+            for (old_pid, sid), fp in self._session_fp.items()
+        }
+        with self._hot_lock:
+            if self._hot_session_key is not None:
+                hot_pid, hot_sid = self._hot_session_key
+                self._hot_session_key = (
+                    pid_remap.get(hot_pid, hot_pid),
+                    hot_sid,
+                )
+
+    def _merge_sessions_from_logs_dir(self, pid: int, logs_dir: Path) -> None:
+        """Scan sessions from *logs_dir* and merge into ``_sessions[pid]``."""
+        if not logs_dir.is_dir():
+            return
+
+        sessions = self._sessions.get(pid, [])
+        session_index: dict[str, int] = {s["session_id"]: i for i, s in enumerate(sessions)}
+        group_logs_dirs = self._groups[pid]["logs_dirs"]
+
+        for provider_dir in logs_dir.iterdir():
+            if not provider_dir.is_dir():
+                continue
+            provider = provider_dir.name
+            for session_dir in provider_dir.iterdir():
+                if not session_dir.is_dir():
+                    continue
+                meta = scan_session_meta(session_dir, provider)
+                if meta is None:
+                    continue
+                sid = meta["session_id"]
+                if sid in session_index:
+                    self._merge_combined(sessions[session_index[sid]], meta)
+                else:
+                    combined: CombinedSessionMeta = cast(
+                        "CombinedSessionMeta",
+                        {
+                            "session_id": meta["session_id"],
+                            "alias": meta["alias"],
+                            "title": meta["title"],
+                            "count": meta["count"],
+                            "first_ts": meta["first_ts"],
+                            "last_ts": meta["last_ts"],
+                            "models": meta["models"],
+                            "providers": [meta["provider"]],
+                        },
+                    )
+                    sessions.append(combined)
+                    session_index[sid] = len(sessions) - 1
+
+                # Update session fingerprint and record known messages.
+                self._session_fp[(pid, sid)] = session_fingerprint(group_logs_dirs, sid)
+                mf = session_dir / "messages.jsonl"
+                try:
+                    st = mf.stat()
+                    self._known_messages[mf] = (st.st_mtime_ns, st.st_size)
+                except OSError:
+                    pass
+
+        # Re-sort by last_ts descending.
+        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
+        self._sessions[pid] = sessions
 
     @staticmethod
     def _resolve_path_safe(raw: str) -> Path:

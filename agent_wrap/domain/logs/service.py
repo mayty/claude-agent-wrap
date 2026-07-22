@@ -170,7 +170,7 @@ class LogsService:
         if state is None:
             self._display.info("no viewer is running")
             return 0
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(ProcessLookupError):
             os.kill(state["pid"], signal.SIGTERM)
         deadline = time.monotonic() + STOP_TIMEOUT_SEC
         while time.monotonic() < deadline:
@@ -181,7 +181,7 @@ class LogsService:
                 return 0
             time.sleep(POLL_INTERVAL_SEC)
         # SIGTERM didn't work — try SIGKILL as a last resort.
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(ProcessLookupError):
             os.kill(state["pid"], signal.SIGKILL)
         deadline = time.monotonic() + STOP_TIMEOUT_SEC
         while time.monotonic() < deadline:

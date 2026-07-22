@@ -11,9 +11,10 @@ import pytest
 
 from agent_wrap.cli.stats.complete import complete as stats_complete
 from agent_wrap.cli.stats.display import render, render_source_breakdown
+from agent_wrap.cli.stats.usage_args import parse_usage_args
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
-from agent_wrap.domain.stats.usage_args import parse_usage_args
+from agent_wrap.domain.stats.constants import ORPHANED_LABEL
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,11 +40,6 @@ def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
             0.0,
         )
     return b
-
-
-# ---------------------------------------------------------------------------
-# render — orphaned row
-# ---------------------------------------------------------------------------
 
 
 def test_render_includes_orphaned_row(display_service: Mock) -> None:
@@ -72,19 +68,14 @@ def test_render_includes_orphaned_row(display_service: Mock) -> None:
     last_ts = datetime(2026, 6, 29, tzinfo=timezone.utc)
     orphaned = {"sessions": 1, "last_ts": last_ts, "total": b}
     out = render([], {}, None, None, orphaned=orphaned, display=display_service)
-    assert "<orphaned>" in out
-    assert "<orphaned> *" not in out
+    assert ORPHANED_LABEL in out
+    assert f"{ORPHANED_LABEL} *" not in out
 
 
 def test_render_without_orphaned_has_no_row(display_service: Mock) -> None:
     """When orphaned is None, no <orphaned> row appears."""
     out = render([], {}, None, None, orphaned=None, display=display_service)
-    assert "<orphaned>" not in out
-
-
-# ---------------------------------------------------------------------------
-# Render source breakdown
-# ---------------------------------------------------------------------------
+    assert ORPHANED_LABEL not in out
 
 
 def test_render_source_breakdown_lists_active_sources(display_service: Mock) -> None:
@@ -123,11 +114,6 @@ def test_render_source_breakdown_merges_across_models(display_service: Mock) -> 
     assert "native" in out
 
 
-# ---------------------------------------------------------------------------
-# parse_usage_args
-# ---------------------------------------------------------------------------
-
-
 def test_parse_usage_args_verbose_short_flag(tmp_path: Path, display_service: Mock) -> None:
     reg = tmp_path / "projects.txt"
     reg.write_text("/x\n", encoding="utf-8")
@@ -162,6 +148,8 @@ def test_complete_bare_tab_shows_all_flags() -> None:
     assert "--verbose" in result
     assert "-f" in result
     assert "--from" in result
+    assert "-p" in result
+    assert "--pattern" in result
 
 
 def test_complete_verbose_consumed() -> None:
@@ -185,3 +173,8 @@ def test_complete_value_flag_prev_returns_empty() -> None:
 def test_complete_after_date_value() -> None:
     result = stats_complete(4, ["agent", "stats", "-d", "14", ""])
     assert "-v" in result
+
+
+def test_complete_pattern_value_prev_returns_empty() -> None:
+    result = stats_complete(3, ["agent", "stats", "-p", ""])
+    assert result == []

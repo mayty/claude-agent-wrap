@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.domain.build.models import DockerfileAgentInfo
+from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
@@ -19,7 +19,7 @@ from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.base import Sidecar
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.updates.service import UpdateService
-from agent_wrap.exceptions import SecretNotFoundError
+from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 if TYPE_CHECKING:
     import pytest_mock
@@ -41,9 +41,6 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
         build_service=build_svc,
         display_service=mocker.Mock(spec=DisplayService),
     )
-
-
-# --- resolve_agent_name ---
 
 
 def test_resolve_agent_name_use_base(tmp_path: Path, launch_svc: LaunchService) -> None:
@@ -86,9 +83,6 @@ def test_resolve_agent_name_empty_value_after_colon(
     dockerfile.write_text("# agent-name: \nFROM claude-agent\n")
     result = launch_svc._resolve_agent_name(use_base=False, cwd=tmp_path)
     assert result == tmp_path.name.lower()
-
-
-# --- resolve_sidecar_secrets ---
 
 
 def test_resolve_secrets_optional_missing_skips(
@@ -143,9 +137,6 @@ def test_resolve_secrets_found_no_prompt(
     launch_svc._secrets.read.assert_called_once_with("test:Key1", "desc", prompt_on_missing=False)
 
 
-# --- launch ---
-
-
 def test_launch_headless_skips_update_check(launch_svc: LaunchService) -> None:
     launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # type: ignore[union-attr]
     rc = launch_svc.launch(use_base=False, claude_args=["-p", "hi"])
@@ -170,7 +161,29 @@ def test_launch_non_headless_update_check_false_continues(launch_svc: LaunchServ
     launch_svc._updates.check_updates.assert_called_once()  # type: ignore[union-attr]
 
 
-# --- is_headless ---
+def test_launch_unknown_provider_reports_clean_error(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # type: ignore[union-attr]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # type: ignore[union-attr]
+        image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # type: ignore[union-attr]
+        "Unknown provider: bogus\nAvailable: litellm-bedrock"
+    )
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    launch_svc._display.error.assert_called_once_with(  # type: ignore[union-attr]
+        "Unknown provider: bogus\nAvailable: litellm-bedrock"
+    )
 
 
 @pytest.mark.parametrize(
@@ -190,9 +203,6 @@ def test_is_headless(
     launch_svc: LaunchService,
 ) -> None:
     assert launch_svc._is_headless(claude_args) is expected
-
-
-# --- build_wslg_args ---
 
 
 def test_build_wslg_args_not_present(
@@ -226,9 +236,6 @@ def test_build_wslg_args_present(
     assert "DISPLAY" in result
     assert "WAYLAND_DISPLAY" in result
     assert "XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir" in result
-
-
-# --- build_env_args ---
 
 
 def test_build_env_args_basic(launch_svc: LaunchService) -> None:
@@ -276,9 +283,6 @@ def test_build_env_args_prompt_caching_set(
     assert "ENABLE_PROMPT_CACHING_1H=1" in result
 
 
-# --- build_volume_mounts ---
-
-
 def test_build_volume_mounts_basic(tmp_path: Path, launch_svc: LaunchService) -> None:
     global_config = tmp_path / "config"
     global_config.mkdir()
@@ -292,9 +296,6 @@ def test_build_volume_mounts_basic(tmp_path: Path, launch_svc: LaunchService) ->
     assert any(":/workspace" in v for v in result)
     assert any(":/home/ubuntu/.claude/projects/-workspace" in v for v in result)
     assert any(":/opt/agent-wrap:ro" in v for v in result)
-
-
-# --- parse_dockerfile_directives ---
 
 
 def test_parse_directives_no_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:
@@ -324,9 +325,6 @@ def test_parse_directives_with_dockerfile(tmp_path: Path, launch_svc: LaunchServ
     assert extras == ["--cap-add", "SYS_ADMIN"]
 
 
-# --- resolve_host_network ---
-
-
 def test_host_network_env_not_set(launch_svc: LaunchService) -> None:
     use, args, ports = launch_svc._resolve_host_network(None, [])
     assert use is False
@@ -340,7 +338,7 @@ def test_host_network_not_wsl(
     launch_svc: LaunchService,
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False, autospec=True)
     use, _, _ = launch_svc._resolve_host_network(None, ["-p", "8080:8080"])
     assert use is False
     launch_svc._display.warning.assert_any_call(  # type: ignore[union-attr]
@@ -352,7 +350,7 @@ def test_host_network_wsl_no_agent_network(
     monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True, autospec=True)
     use, args, ports = launch_svc._resolve_host_network(None, ["-p", "8080:8080"])
     assert use is True
     assert args == ["--network", "host"]
@@ -365,7 +363,7 @@ def test_host_network_wsl_agent_network_specified(
     launch_svc: LaunchService,
 ) -> None:
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
-    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True)
+    mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True, autospec=True)
     use, _, ports = launch_svc._resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
     launch_svc._display.warning.assert_any_call(  # type: ignore[union-attr]
@@ -373,9 +371,6 @@ def test_host_network_wsl_agent_network_specified(
         "specifies --network via agent-run-args."
     )
     assert ports == ["-p", "8080:8080"]
-
-
-# --- collect_sidecars ---
 
 
 def test_collect_sidecars_returns_provider_sidecars(
@@ -386,9 +381,6 @@ def test_collect_sidecars_returns_provider_sidecars(
     provider = mocker.Mock(spec=Provider)
     provider.sidecars.return_value = sentinel
     assert launch_svc._collect_sidecars(provider) == sentinel
-
-
-# --- build_agent_labels ---
 
 
 def test_build_agent_labels_empty_instance(launch_svc: LaunchService) -> None:
@@ -404,9 +396,6 @@ def test_build_agent_labels_role_id_name_only(launch_svc: LaunchService) -> None
     assert "claude-agent-inst-1" in result
 
 
-# --- sidecar_lock_timeout ---
-
-
 def test_sidecar_lock_timeout_sums_over_sidecars(
     mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
@@ -420,9 +409,6 @@ def test_sidecar_lock_timeout_zero_queue(
 ) -> None:
     a = mocker.Mock(spec=Sidecar, cold_start_time=120.0, short_circuit_time=2.0)
     assert launch_svc._sidecar_lock_timeout([a], 0) == 120.0
-
-
-# --- extract_network ---
 
 
 def test_extract_network_no_network(launch_svc: LaunchService) -> None:

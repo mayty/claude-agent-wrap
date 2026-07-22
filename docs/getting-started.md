@@ -4,8 +4,8 @@
 ## Requirements
 
 - Docker
-- API credentials for your chosen provider, stored in `~/claude_keys.json`. See [Providers](providers.md).
-- (Optional) Telegram credentials for permission-request and stop notifications, added to the same `~/claude_keys.json`. See [Telegram notifications](telegram-notifications.md).
+- API credentials for your chosen provider. The primary flow is the interactive prompt on the first `agent run` — the secret is required, so a TTY triggers a prompt when it's missing. `agent secrets set <provider>` sets it explicitly ahead of time. See [Providers](providers.md).
+- (Optional) Telegram credentials for permission-request and stop notifications. Unlike provider credentials, Telegram secrets are optional and never trigger an interactive prompt — set them manually via `agent secrets set telegram` before they'll be picked up. See [Telegram notifications](telegram-notifications.md).
 
 ## Setup
 

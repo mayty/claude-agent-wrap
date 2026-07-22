@@ -33,6 +33,7 @@ from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
+from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.domain.updates.service import UpdateService
 
@@ -48,6 +49,7 @@ def _mock_all_services(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch.object(services, "logs_service", mocker.Mock(spec=LogsService))
     mocker.patch.object(services, "pricing_service", mocker.Mock(spec=PricingService))
     mocker.patch.object(services, "secrets_service", mocker.Mock(spec=SecretsService))
+    mocker.patch.object(services, "sidecar_service", mocker.Mock(spec=SidecarService))
     mocker.patch.object(services, "stats_service", mocker.Mock(spec=StatsService))
     mocker.patch.object(services, "update_service", mocker.Mock(spec=UpdateService))
     mocker.patch.object(services, "provider_service", mocker.Mock(spec=ProviderService))

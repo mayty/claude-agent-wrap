@@ -30,7 +30,7 @@ from agent_wrap.domain.launch.models import (
     HostNetworkResult,
     SidecarAssembly,
 )
-from agent_wrap.exceptions import SecretNotFoundError
+from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 from agent_wrap.lib import docker_utils
 from agent_wrap.lib.priority_lock import Priority, priority_lock
 from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
@@ -106,9 +106,13 @@ class LaunchService:
 
         instance_id = f"{agent_name}-{generate_uuid()}"
 
-        sidecars, per_sidecar_secrets, telegram_available = self._assemble_sidecars(
-            agent_name, instance_id, headless=headless
-        )
+        try:
+            sidecars, per_sidecar_secrets, telegram_available = self._assemble_sidecars(
+                agent_name, instance_id, headless=headless
+            )
+        except ProviderNotFoundError as e:
+            self._display.error(str(e))
+            return 1
 
         tracker = self._sidecar_service.create_tracker(TOOL_DIR)
 
@@ -240,7 +244,7 @@ class LaunchService:
             "-e",
             f"HOME={claude_home}",
         ]
-        for flag in ("CLAUDE_CODE_ENABLE_AUTO_MODE", "ENABLE_PROMPT_CACHING_1H"):
+        for flag in ("ENABLE_PROMPT_CACHING_1H",):
             flag_value = os.environ.get(flag, None)
             if flag_value is None:
                 continue

@@ -14,8 +14,6 @@ from agent_wrap.lib.flock import file_lock, try_file_lock
 if TYPE_CHECKING:
     from pathlib import Path
 
-# --- file_lock ---
-
 
 def test_file_lock_runs_body(tmp_path: Path) -> None:
     lock = tmp_path / "lock"
@@ -66,9 +64,6 @@ def test_file_lock_timeout_when_held(tmp_path: Path) -> None:
     finally:
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
         holder.close()
-
-
-# --- try_file_lock ---
 
 
 def test_try_file_lock_acquires_when_free(tmp_path: Path) -> None:

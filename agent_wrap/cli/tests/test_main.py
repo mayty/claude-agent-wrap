@@ -54,7 +54,7 @@ def test_unknown_command_returns_error(
     )
 
 
-def test_complete_verb_completion(capsys: pytest.CaptureFixture[str]) -> None:
+def test_complete_verb_completion(capsys: pytest.CaptureFixture[str], subtests: SubTests) -> None:
     """Verify cword=1 prints all COMMANDS keys (verb completion)."""
     old_argv = sys.argv
     try:
@@ -65,7 +65,8 @@ def test_complete_verb_completion(capsys: pytest.CaptureFixture[str]) -> None:
 
     out = capsys.readouterr().out
     for name in COMMANDS:
-        assert name in out
+        with subtests.test(msg=name):  # type: ignore[bad-context-manager]
+            assert name in out
 
 
 def test_complete_unknown_verb_no_output(capsys: pytest.CaptureFixture[str]) -> None:
@@ -93,10 +94,11 @@ def test_complete_known_verb_delegates_to_complete(capsys: pytest.CaptureFixture
     assert "--full" in out
 
 
-def test_every_command_has_complete_function() -> None:
+def test_every_command_has_complete_function(subtests: SubTests) -> None:
     """Every registered verb maps to a callable complete()."""
     for name, (_run_fn, complete_fn) in COMMANDS.items():
-        assert callable(complete_fn), f"{name} complete() is not callable"
+        with subtests.test(msg=name):  # type: ignore[bad-context-manager]
+            assert callable(complete_fn), f"{name} complete() is not callable"
 
 
 def test_commands_dict_matches_registered_verbs() -> None:

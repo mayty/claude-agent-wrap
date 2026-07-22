@@ -27,6 +27,7 @@ Each of these paths is overlaid on top of the global `.claude` mount so its cont
 | Host | Container |
 | --- | --- |
 | `$(pwd)/.claude/sessions` | `/home/<user>/.claude/projects/-workspace` |
+| `$(pwd)/.claude/memory` | `/home/<user>/.claude/projects/-workspace/memory` |
 | `$(pwd)/.claude/session-state` | `/home/<user>/.claude/sessions` |
 
 The following subdirectories and files are mapped to the same path on both sides (e.g., `$(pwd)/.claude/daemon` → `/home/<user>/.claude/daemon`):
@@ -46,11 +47,11 @@ The wrapper's own source files are mounted at `/opt/agent-wrap/` so the in-conta
 
 ## WSLg (conditional)
 
-On WSL2 hosts with WSLg (detected when `/mnt/wslg` is a directory), three additional mounts enable clipboard passthrough:
+On WSL2 hosts with WSLg (detected when `/mnt/wslg` is a directory), three additional mounts enable clipboard passthrough. Only these two `/mnt/wslg` sub-paths are mounted — never the whole `/mnt/wslg` tree:
 
 | Host | Container |
 | --- | --- |
-| `/mnt/wslg` | `/mnt/wslg` |
+| `/mnt/wslg/runtime-dir` | `/mnt/wslg/runtime-dir` |
 | `/mnt/wslg/.X11-unix` | `/tmp/.X11-unix` |
 | `<wrap-dir>/ops/wl-paste-shim` | `/usr/local/bin/wl-paste` (read-only) |
 
@@ -58,5 +59,5 @@ See [WSLg Clipboard](wslg-clipboard.md) for details.
 
 ## Notes
 
-- The container runs as your host user (`$(id -u):$(id -g)`) with `HOME` pointing at `/home/<user>` (default `/home/ubuntu`).
+- The container runs as your host user (`$(id -u):$(id -g)`) with `HOME` pointing at `/home/<user>` (default `/home/ubuntu`). Under rootless Docker this is `--user 0:0` instead — the daemon maps container-root to the host user, so bind-mounted files are still written as the host user. See [Docker Sandboxing](docker-sandboxing.md#build-args).
 - A `.claude/` directory is auto-created in each project and git-ignored.

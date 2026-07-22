@@ -18,16 +18,10 @@ def tracker(tmp_path: Path) -> SidecarTracker:
     return SidecarTracker(tmp_path)
 
 
-# --- paths ---
-
-
 def test_paths_under_agent_launches(tracker: SidecarTracker, tmp_path: Path) -> None:
     assert tracker.lock_path == tmp_path / ".agent-launches" / "sidecars.lock"
     assert tracker.start_waiters_dir == tmp_path / ".agent-launches" / "start-waiters"
     assert tracker.running_dir == tmp_path / ".agent-launches" / "running"
-
-
-# --- register / clear runners ---
 
 
 def test_register_running_creates_held_file(tracker: SidecarTracker) -> None:
@@ -51,9 +45,6 @@ def test_clear_running_removes_file(tracker: SidecarTracker) -> None:
     tracker.clear_running(handle, "inst-1")
     assert not (tracker.running_dir / "inst-1").exists()
     assert tracker.has_live_runners(exclude_id="other") is False
-
-
-# --- liveness by lockability, immune to PID recycling ---
 
 
 def test_probe_reaps_stale_file_when_owner_gone(tracker: SidecarTracker) -> None:
