@@ -37,10 +37,6 @@ get_response_content_str = _helpers.get_response_content_str
 json_safe = _helpers.json_safe
 StringHasher = _string_hasher.StringHasher
 
-# ---------------------------------------------------------------------------
-# json_safe
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     ("value", "expected"),
@@ -233,11 +229,6 @@ def test_json_safe_empty_containers() -> None:
     assert json_safe([]) == []
     assert json_safe(()) == []
     assert json_safe(set()) == []
-
-
-# ---------------------------------------------------------------------------
-# get_response_content_str
-# ---------------------------------------------------------------------------
 
 
 def test_get_response_content_str_message_content() -> None:

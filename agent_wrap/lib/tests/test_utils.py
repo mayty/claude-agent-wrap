@@ -60,9 +60,6 @@ def test_unique():
     assert generate_uuid() != generate_uuid()
 
 
-# --- project_path_hash ---
-
-
 def test_project_path_hash_is_16_hex(tmp_path: Path) -> None:
     result = project_path_hash(tmp_path)
     assert len(result) == 16
@@ -88,9 +85,6 @@ def test_project_path_hash_differs_by_path(tmp_path: Path) -> None:
     a.mkdir()
     b.mkdir()
     assert project_path_hash(a) != project_path_hash(b)
-
-
-# --- is_truthy_env ---
 
 
 @pytest.mark.parametrize("value", ["", "0", "false", "no", "FALSE", "NO", "False"])

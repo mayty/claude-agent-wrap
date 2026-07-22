@@ -18,6 +18,8 @@ from agent_wrap.domain.pricing.service import PricingService
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from pytest_subtests import SubTests
+
 
 def test_resolve_static_maps_root_to_index(tmp_path: Path):
     assert resolve_static("/", root=tmp_path) == (tmp_path / "index.html").resolve()
@@ -198,7 +200,7 @@ def test_sessions_stat_returns_fingerprint(api_server: tuple[int, Path]):
     assert body["size"] is not None
 
 
-def test_session_returns_details(api_server: tuple[int, Path]):
+def test_session_returns_details(api_server: tuple[int, Path], subtests: SubTests):
     port, _project = api_server
     sid = "abc12345-6789-abcd-ef01-234567890abc"
     status, lines = _get_ndjson(port, f"/api/session?project=0&session={sid}")
@@ -208,8 +210,9 @@ def test_session_returns_details(api_server: tuple[int, Path]):
     assert lines[0]["__type__"] == "session_meta"
     assert lines[0]["session_id"] == sid
     # Subsequent lines are records (no __type__)
-    for line in lines[1:]:
-        assert "__type__" not in line
+    for i, line in enumerate(lines[1:]):
+        with subtests.test(msg=str(i)):  # type: ignore[bad-context-manager]
+            assert "__type__" not in line
 
 
 def test_session_missing_session_returns_400(api_server: tuple[int, Path]):

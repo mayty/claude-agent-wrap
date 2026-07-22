@@ -122,9 +122,6 @@ def test_symlinked_projects_group_by_literal_path(tmp_path: Path, stats_svc: Sta
     assert real_a.resolve() != real_b.resolve()
 
 
-# --- orphaned_log_dirs -----------------------------------------------------
-
-
 def _central(tool_dir: Path, name: str) -> Path:
     """Create a central <hash> log dir under <tool_dir>/litellm-logs/."""
     d = tool_dir / CENTRAL_LOGS_DIRNAME / name

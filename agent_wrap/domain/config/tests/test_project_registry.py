@@ -7,10 +7,6 @@ import pytest
 
 from agent_wrap.domain.config.project_registry import ProjectRegistry
 
-# ------------------------------------------------------------------
-# compress
-# ------------------------------------------------------------------
-
 
 def test_compress_empty() -> None:
     assert ProjectRegistry.compress([]) == []
@@ -97,11 +93,6 @@ def test_compress_mixed_siblings_and_singletons() -> None:
     ]
 
 
-# ------------------------------------------------------------------
-# decompress
-# ------------------------------------------------------------------
-
-
 def test_decompress_empty() -> None:
     assert ProjectRegistry.decompress([]) == []
 
@@ -156,10 +147,6 @@ def test_decompress_skips_empty_lines() -> None:
 def test_decompress_first_line_prefix_is_skipped() -> None:
     assert ProjectRegistry.decompress(["{3}/foo"]) == []
 
-
-# ------------------------------------------------------------------
-# roundtrip
-# ------------------------------------------------------------------
 
 _ROUNDTRIP_CASES: list[list[str]] = [
     [],

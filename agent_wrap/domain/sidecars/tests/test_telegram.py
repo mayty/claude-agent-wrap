@@ -19,8 +19,6 @@ from agent_wrap.domain.sidecars.telegram import TelegramSidecar
 if TYPE_CHECKING:
     import pytest_mock
 
-# --- test fixtures ---
-
 _TEST_LOG_DIR = Path(tempfile.gettempdir(), "test-tg-logs")
 
 
@@ -57,9 +55,6 @@ _IMAGE_EXISTS = "agent_wrap.domain.sidecars.telegram.image_exists"
 _URLOPEN = "urllib.request.urlopen"
 
 
-# --- config / timing ---
-
-
 def test_config_fields() -> None:
     cfg = _config()
     assert cfg.image == (
@@ -83,37 +78,31 @@ def test_timing() -> None:
     assert sc.short_circuit_time == 2.0
 
 
-# --- prepare ---
-
-
 def test_prepare_image_exists(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_IMAGE_EXISTS, return_value=True)
-    mock_docker = mocker.patch(_DOCKER)
+    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True)
+    mock_docker = mocker.patch(_DOCKER, autospec=True)
     _sidecar().prepare()
     mock_docker.assert_not_called()
 
 
 def test_prepare_pulls_missing_image(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_IMAGE_EXISTS, return_value=False)
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     _sidecar().prepare()
     assert any("pull" in str(c) for c in mock_docker.call_args_list)
 
 
 def test_prepare_pull_failure_raises(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_IMAGE_EXISTS, return_value=False)
-    mocker.patch(_DOCKER, return_value=("", 1))
+    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
     with pytest.raises(SystemExit):
         _sidecar().prepare()
 
 
-# --- headless: prepare/ensure are no-ops, release still reaps ---
-
-
 def test_prepare_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
     """A headless run never pulls the image — prepare() touches nothing."""
-    mock_exists = mocker.patch(_IMAGE_EXISTS)
-    mock_docker = mocker.patch(_DOCKER)
+    mock_exists = mocker.patch(_IMAGE_EXISTS, autospec=True)
+    mock_docker = mocker.patch(_DOCKER, autospec=True)
     _sidecar(headless=True).prepare()
     mock_exists.assert_not_called()
     mock_docker.assert_not_called()
@@ -121,11 +110,11 @@ def test_prepare_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
 
 def test_ensure_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
     """A headless run never starts/registers — ensure() returns no agent flags."""
-    mock_docker = mocker.patch(_DOCKER)
+    mock_docker = mocker.patch(_DOCKER, autospec=True)
     sc = _sidecar(headless=True)
-    mock_net = mocker.patch.object(sc, "_ensure_network")
-    mock_start = mocker.patch.object(sc, "_start")
-    mock_reg = mocker.patch.object(sc, "_register")
+    mock_net = mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mock_start = mocker.patch.object(sc, "_start", autospec=True)
+    mock_reg = mocker.patch.object(sc, "_register", autospec=True)
 
     result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
@@ -145,7 +134,7 @@ def test_release_still_stops_running_container_when_headless(
     Regression guard: release() is not gated on headless.
     """
     sc = _sidecar(headless=True)
-    mocker.patch.object(sc, "_is_running", return_value=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mock_spin = mocker.patch.object(sc._display, "spin_while")
 
     sc.release()
@@ -153,103 +142,96 @@ def test_release_still_stops_running_container_when_headless(
     mock_spin.assert_called_once()
 
 
-# --- docker helpers ---
-
-
 def test_is_running_true(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, return_value=("true", 0))
+    mocker.patch(_DOCKER, autospec=True, return_value=("true", 0))
     assert _sidecar()._is_running() is True
 
 
 def test_is_running_false(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, return_value=("false", 0))
+    mocker.patch(_DOCKER, autospec=True, return_value=("false", 0))
     assert _sidecar()._is_running() is False
 
 
 def test_is_running_error(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, return_value=("", 1))
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
     assert _sidecar()._is_running() is False
 
 
 def test_is_on_network_true(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, return_value=("agent-wrap-net\ncustom-net\n", 0))
+    mocker.patch(_DOCKER, autospec=True, return_value=("agent-wrap-net\ncustom-net\n", 0))
     sc = _sidecar()
     assert sc._is_on_network("custom-net") is True
 
 
 def test_is_on_network_false(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, return_value=("agent-wrap-net\n", 0))
+    mocker.patch(_DOCKER, autospec=True, return_value=("agent-wrap-net\n", 0))
     sc = _sidecar()
     assert sc._is_on_network("custom-net") is False
 
 
 def test_is_on_network_error(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, return_value=("", 1))
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
     sc = _sidecar()
     assert sc._is_on_network("agent-wrap-net") is False
 
 
 def test_ensure_network_exists(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     _sidecar()._ensure_network()
     calls = [c.args for c in mock_docker.call_args_list]
     assert any("inspect" in c for c in calls)
 
 
 def test_ensure_network_creates(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, side_effect=[("", 1), ("", 0)])
+    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
     _sidecar()._ensure_network()
 
 
 def test_ensure_network_create_fails(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, side_effect=[("", 1), ("", 1)])
+    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 1)])
     with pytest.raises(SystemExit):
         _sidecar()._ensure_network()
 
 
-# --- attach_to_network ---
-
-
 def test_attach_to_network_missing_raises(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, side_effect=[("", 1)])  # network inspect fails
+    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1)])  # network inspect fails
     with pytest.raises(SystemExit):
         _sidecar()._attach_to_network("missing-net")
 
 
 def test_attach_to_network_already_connected(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     # First call: network inspect (exists)
     # Second: is_on_network (already connected)
     sc = _sidecar()
-    mocker.patch.object(sc, "_is_on_network", return_value=True)
+    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=True)
     sc._attach_to_network("custom-net")
     # Only network inspect was called; connect was skipped
     assert not any("connect" in str(c) for c in mock_docker.call_args_list)
 
 
 def test_attach_to_network_connects(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc = _sidecar()
-    mocker.patch.object(sc, "_is_on_network", return_value=False)
+    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
     sc._attach_to_network("custom-net")
     assert any("connect" in str(c) for c in mock_docker.call_args_list)
 
 
 def test_attach_to_network_connect_fails(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
-    mocker.patch.object(sc, "_is_on_network", return_value=False)
+    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
     # First: network inspect ok, then connect fails
-    mocker.patch(_DOCKER, side_effect=[("", 0), ("", 1)])
+    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 0), ("", 1)])
     with pytest.raises(SystemExit):
         sc._attach_to_network("custom-net")
 
 
-# --- start ---
-
-
 def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
-    mocker.patch("agent_wrap.domain.sidecars.telegram.get_user_args", return_value=[])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
+    mocker.patch(
+        "agent_wrap.domain.sidecars.telegram.get_user_args", autospec=True, return_value=[]
+    )
     sc = _sidecar()
     sc._bot_token = "test-bot-token"
     sc._chat_id = "test-chat-id"
@@ -276,8 +258,10 @@ def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
 
 
 def test_start_reaps_existing_container(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
-    mocker.patch("agent_wrap.domain.sidecars.telegram.get_user_args", return_value=[])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
+    mocker.patch(
+        "agent_wrap.domain.sidecars.telegram.get_user_args", autospec=True, return_value=[]
+    )
     sc = _sidecar()
     sc._bot_token = "x"
     sc._chat_id = "x"
@@ -288,8 +272,10 @@ def test_start_reaps_existing_container(mocker: pytest_mock.MockFixture) -> None
 
 def test_start_failure_raises(mocker: pytest_mock.MockFixture) -> None:
     # First inspect fails (no existing container), then run fails
-    mocker.patch(_DOCKER, side_effect=[("", 1), ("", 1)])
-    mocker.patch("agent_wrap.domain.sidecars.telegram.get_user_args", return_value=[])
+    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 1)])
+    mocker.patch(
+        "agent_wrap.domain.sidecars.telegram.get_user_args", autospec=True, return_value=[]
+    )
     with pytest.raises(SystemExit):
         _sidecar()._start()
 
@@ -297,14 +283,13 @@ def test_start_failure_raises(mocker: pytest_mock.MockFixture) -> None:
 def test_start_creates_log_dir(mocker: pytest_mock.MockFixture, tmp_path: Path) -> None:
     log_dir = tmp_path / "tg-logs"
     assert not log_dir.exists()
-    mocker.patch(_DOCKER, return_value=("", 0))
-    mocker.patch("agent_wrap.domain.sidecars.telegram.get_user_args", return_value=[])
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
+    mocker.patch(
+        "agent_wrap.domain.sidecars.telegram.get_user_args", autospec=True, return_value=[]
+    )
     _sidecar(log_dir=log_dir)._start()
     assert log_dir.exists()
     assert log_dir.is_dir()
-
-
-# --- health pollution ---
 
 
 def test_health_poll_healthy(mocker: pytest_mock.MockFixture) -> None:
@@ -321,9 +306,6 @@ def test_health_poll_unhealthy(mocker: pytest_mock.MockFixture) -> None:
     result = sc._health_poll()
     assert result is False
     mock_spin.assert_called_once()
-
-
-# --- HTTP register / unregister ---
 
 
 def test_register_success(mocker: pytest_mock.MockFixture) -> None:
@@ -395,9 +377,6 @@ def test_unregister_swallows_errors(mocker: pytest_mock.MockFixture) -> None:
     sc._unregister()  # Should not raise
 
 
-# --- connectivity args ---
-
-
 def test_connectivity_args_basic() -> None:
     sc = _sidecar()
     sc._auth_token = ""
@@ -420,24 +399,23 @@ def test_connectivity_args_with_token() -> None:
 def test_connectivity_args_host_netns(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
     sc._auth_token = "tok-456"
-    mocker.patch.object(sc, "_sidecar_ip_on_network", return_value="172.20.0.3")
+    mocker.patch.object(sc, "_sidecar_ip_on_network", autospec=True, return_value="172.20.0.3")
     args = sc._build_connectivity_args(agent_in_host_netns=True)
     assert "--add-host" in args
     assert "agent-wrap-telegram:172.20.0.3" in args
 
 
-# --- ensure full flow ---
-
-
 def test_ensure_full_flow(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
-    mock_net = mocker.patch.object(sc, "_ensure_network")
-    mocker.patch.object(sc, "_is_running", return_value=False)
-    mock_start = mocker.patch.object(sc, "_start")
-    mock_health = mocker.patch.object(sc, "_health_poll", return_value=True)
-    mock_reg = mocker.patch.object(sc, "_register", return_value="tok-full")
-    mock_attach = mocker.patch.object(sc, "_attach_to_network")
-    mocker.patch.object(sc, "_build_connectivity_args", return_value=["-e", "FOO=bar"])
+    mock_net = mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=False)
+    mock_start = mocker.patch.object(sc, "_start", autospec=True)
+    mock_health = mocker.patch.object(sc, "_health_poll", autospec=True, return_value=True)
+    mock_reg = mocker.patch.object(sc, "_register", autospec=True, return_value="tok-full")
+    mock_attach = mocker.patch.object(sc, "_attach_to_network", autospec=True)
+    mocker.patch.object(
+        sc, "_build_connectivity_args", autospec=True, return_value=["-e", "FOO=bar"]
+    )
 
     result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
@@ -452,13 +430,13 @@ def test_ensure_full_flow(mocker: pytest_mock.MockFixture) -> None:
 
 def test_ensure_already_running(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
-    mocker.patch.object(sc, "_ensure_network")
-    mocker.patch.object(sc, "_is_running", return_value=True)
-    mock_start = mocker.patch.object(sc, "_start")
-    mock_health = mocker.patch.object(sc, "_health_poll")
-    mock_reg = mocker.patch.object(sc, "_register", return_value="tok-hot")
-    mocker.patch.object(sc, "_attach_to_network")
-    mocker.patch.object(sc, "_build_connectivity_args", return_value=["-e", "X=1"])
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
+    mock_start = mocker.patch.object(sc, "_start", autospec=True)
+    mock_health = mocker.patch.object(sc, "_health_poll", autospec=True)
+    mock_reg = mocker.patch.object(sc, "_register", autospec=True, return_value="tok-hot")
+    mocker.patch.object(sc, "_attach_to_network", autospec=True)
+    mocker.patch.object(sc, "_build_connectivity_args", autospec=True, return_value=["-e", "X=1"])
 
     result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
 
@@ -471,11 +449,11 @@ def test_ensure_already_running(mocker: pytest_mock.MockFixture) -> None:
 
 def test_ensure_health_fail_raises(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
-    mocker.patch.object(sc, "_ensure_network")
-    mocker.patch.object(sc, "_is_running", return_value=False)
-    mocker.patch.object(sc, "_start")
-    mocker.patch.object(sc, "_health_poll", return_value=False)
-    mock_docker = mocker.patch(_DOCKER)  # for logs + rm calls
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=False)
+    mocker.patch.object(sc, "_start", autospec=True)
+    mocker.patch.object(sc, "_health_poll", autospec=True, return_value=False)
+    mock_docker = mocker.patch(_DOCKER, autospec=True)  # for logs + rm calls
 
     with pytest.raises(SystemExit):
         sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
@@ -499,10 +477,10 @@ def test_ensure_health_fail_reaps_even_if_log_stream_raises(
     mocker: pytest_mock.MockFixture,
 ) -> None:
     sc = _sidecar()
-    mocker.patch.object(sc, "_ensure_network")
-    mocker.patch.object(sc, "_is_running", return_value=False)
-    mocker.patch.object(sc, "_start")
-    mocker.patch.object(sc, "_health_poll", return_value=False)
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=False)
+    mocker.patch.object(sc, "_start", autospec=True)
+    mocker.patch.object(sc, "_health_poll", autospec=True, return_value=False)
 
     # Streaming the logs writes to a closed stderr/pipe and raises. Teardown must
     # still run (it's in a `finally`); the launch aborts with the raised error
@@ -512,7 +490,7 @@ def test_ensure_health_fail_reaps_even_if_log_stream_raises(
             raise BrokenPipeError
         return "", 0
 
-    mock_docker = mocker.patch(_DOCKER, side_effect=docker_side_effect)
+    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=docker_side_effect)
 
     with pytest.raises(BrokenPipeError):
         sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
@@ -526,11 +504,11 @@ def test_ensure_health_fail_reaps_even_if_log_stream_raises(
 
 def test_ensure_with_custom_agent_network(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
-    mocker.patch.object(sc, "_ensure_network")
-    mocker.patch.object(sc, "_is_running", return_value=True)
-    mocker.patch.object(sc, "_register", return_value="tok-custom")
-    mock_attach = mocker.patch.object(sc, "_attach_to_network")
-    mocker.patch.object(sc, "_build_connectivity_args", return_value=["-e", "Z=1"])
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
+    mocker.patch.object(sc, "_register", autospec=True, return_value="tok-custom")
+    mock_attach = mocker.patch.object(sc, "_attach_to_network", autospec=True)
+    mocker.patch.object(sc, "_build_connectivity_args", autospec=True, return_value=["-e", "Z=1"])
 
     sc.ensure(use_host_net=False, agent_network="custom-bridge", secrets=_SECRETS)
 
@@ -539,24 +517,21 @@ def test_ensure_with_custom_agent_network(mocker: pytest_mock.MockFixture) -> No
 
 def test_ensure_skips_attach_for_agent_wrap_net(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
-    mocker.patch.object(sc, "_ensure_network")
-    mocker.patch.object(sc, "_is_running", return_value=True)
-    mocker.patch.object(sc, "_register", return_value="tok")
-    mock_attach = mocker.patch.object(sc, "_attach_to_network")
-    mocker.patch.object(sc, "_build_connectivity_args", return_value=[])
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
+    mocker.patch.object(sc, "_register", autospec=True, return_value="tok")
+    mock_attach = mocker.patch.object(sc, "_attach_to_network", autospec=True)
+    mocker.patch.object(sc, "_build_connectivity_args", autospec=True, return_value=[])
 
     sc.ensure(use_host_net=False, agent_network="agent-wrap-net", secrets=_SECRETS)
     mock_attach.assert_not_called()
 
 
-# --- release ---
-
-
 def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
     sc._auth_token = "tok-rel"
-    mocker.patch.object(sc, "_is_running", return_value=True)
-    mock_unreg = mocker.patch.object(sc, "_unregister")
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
+    mock_unreg = mocker.patch.object(sc, "_unregister", autospec=True)
     # Run the work lambda inline so we observe the actual docker call: teardown
     # must `rm -f` (the container has no --rm), not merely `stop`.
     mock_spin = mocker.patch.object(
@@ -564,7 +539,7 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
         "spin_while",
         side_effect=lambda *, work, **_: work(),
     )
-    mock_docker = mocker.patch(_DOCKER, return_value=("", 0))
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
 
     sc.release()
 
@@ -580,8 +555,8 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
 def test_release_skips_when_not_running(mocker: pytest_mock.MockFixture) -> None:
     sc = _sidecar()
     sc._auth_token = "tok-rel"
-    mocker.patch.object(sc, "_is_running", return_value=False)
-    mock_unreg = mocker.patch.object(sc, "_unregister")
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=False)
+    mock_unreg = mocker.patch.object(sc, "_unregister", autospec=True)
     mock_spin = mocker.patch.object(sc._display, "spin_while")
 
     sc.release()
@@ -596,7 +571,7 @@ def test_on_exit_unregister_called_even_without_token(
     """Unregister is always called via on_exit; it's a no-op internally when token is empty."""
     sc = _sidecar()
     sc._auth_token = ""
-    mock_unreg = mocker.patch.object(sc, "_unregister")
+    mock_unreg = mocker.patch.object(sc, "_unregister", autospec=True)
 
     sc.on_exit()
 
@@ -607,7 +582,7 @@ def test_on_exit_calls_unregister(mocker: pytest_mock.MockFixture) -> None:
     """on_exit delegates to _unregister to tear down the per-agent session."""
     sc = _sidecar()
     sc._auth_token = "tok-exit"
-    mock_unreg = mocker.patch.object(sc, "_unregister")
+    mock_unreg = mocker.patch.object(sc, "_unregister", autospec=True)
 
     sc.on_exit()
 

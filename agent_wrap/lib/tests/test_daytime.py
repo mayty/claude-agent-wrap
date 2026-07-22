@@ -13,8 +13,6 @@ from agent_wrap.lib.daytime import get_day, local_utc_offset_hours
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
-# --- get_day ---
-
 
 def test_get_day_zero_offset_matches_utc_date() -> None:
     dt = datetime(2026, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
@@ -46,8 +44,6 @@ def test_get_day_boundary_crossing(hour: int, day_start_hours: int, expected: da
     assert get_day(dt, day_start_hours) == expected
 
 
-# --- local_utc_offset_hours ---
-#
 # The host's local timezone (what bare `.astimezone()` resolves to) isn't
 # controllable from here, so `datetime.now` is mocked to return a stand-in
 # whose `.astimezone()` result is fully scripted.

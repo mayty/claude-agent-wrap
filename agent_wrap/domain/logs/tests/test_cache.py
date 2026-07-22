@@ -441,11 +441,6 @@ def test_resolve_deleted_project(
     assert started_cache._resolve_deleted_project(mf_path) == expected_pid
 
 
-# ---------------------------------------------------------------------------
-# UsageTracker integration tests
-# ---------------------------------------------------------------------------
-
-
 def test_poll_once_writes_usage_json(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
@@ -521,11 +516,6 @@ def test_usage_tracker_responds_to_file_changes(
         assert updated["requests"] > initial["requests"]
     finally:
         cache.stop()
-
-
-# ---------------------------------------------------------------------------
-# Incremental merge tests (_merge_added_paths / _handle_projects_txt_change)
-# ---------------------------------------------------------------------------
 
 
 def test_added_project_merged_incrementally(  # noqa: PLR0913

@@ -78,11 +78,6 @@ def test_empty_keys() -> None:
     assert _ModelKeyMatcher.best_prefix_key("claude-opus-4-8", []) is None
 
 
-# ---------------------------------------------------------------------------
-# _CostComputer.worst_case_cost
-# ---------------------------------------------------------------------------
-
-
 def test_worst_case_cost_empty_table_is_zero() -> None:
     assert _CostComputer.worst_case_cost({}, _usage(1000, 500)) == 0.0
 
@@ -125,11 +120,6 @@ def test_worst_case_cost_picks_max_across_models_and_tiers() -> None:
     usage = _usage(1000, 0)
     # Highest per-tier rate is the tiered model's second tier (50.0/1M in).
     assert _CostComputer.worst_case_cost(table, usage) == 1000 * 50.0 / 1_000_000
-
-
-# ---------------------------------------------------------------------------
-# Provider.compute_cost — unknown-model fallback
-# ---------------------------------------------------------------------------
 
 
 def test_compute_cost_unknown_model_negligible_usage_returns_zero(display_mock: Mock) -> None:

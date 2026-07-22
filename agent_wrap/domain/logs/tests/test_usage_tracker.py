@@ -22,11 +22,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def pricing() -> Mock:
     """Return a PricingService mock wired for fold_raw_to_buckets / price_buckets."""
@@ -97,11 +92,6 @@ def write_messages_file() -> Callable[[Path, list[dict[str, Any]]], None]:
     return _write
 
 
-# ---------------------------------------------------------------------------
-# empty tracker
-# ---------------------------------------------------------------------------
-
-
 def test_flush_writes_all_zero_usage_json(tracker: UsageTracker, tmp_path: Path) -> None:
     """Flush on an empty tracker writes a zeroed-out usage.json."""
     tracker.flush()
@@ -114,11 +104,6 @@ def test_flush_writes_all_zero_usage_json(tracker: UsageTracker, tmp_path: Path)
     assert data["cost"] == "$0.00"
     assert data["requests"] == 0
     assert "updated_at" not in data
-
-
-# ---------------------------------------------------------------------------
-# single file
-# ---------------------------------------------------------------------------
 
 
 def test_todays_records_are_counted(
@@ -203,11 +188,6 @@ def test_empty_file_does_not_crash(tracker: UsageTracker, tmp_path: Path) -> Non
     assert data["requests"] == 0
 
 
-# ---------------------------------------------------------------------------
-# fingerprint / mtime
-# ---------------------------------------------------------------------------
-
-
 def test_unchanged_file_is_skipped(
     tracker: UsageTracker,
     tmp_path: Path,
@@ -264,11 +244,6 @@ def test_file_touched_today_is_scanned(
     assert data["in"] == 100
 
 
-# ---------------------------------------------------------------------------
-# multiple files
-# ---------------------------------------------------------------------------
-
-
 def test_multiple_files_are_aggregated(
     tracker: UsageTracker,
     tmp_path: Path,
@@ -291,11 +266,6 @@ def test_multiple_files_are_aggregated(
     assert data["in"] == 200
     assert data["out"] == 100
     assert data["requests"] == 2
-
-
-# ---------------------------------------------------------------------------
-# removal
-# ---------------------------------------------------------------------------
 
 
 def test_removed_file_contribution_is_dropped(
@@ -321,11 +291,6 @@ def test_removed_file_contribution_is_dropped(
     data = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
     assert data["in"] == 0
     assert data["requests"] == 0
-
-
-# ---------------------------------------------------------------------------
-# rollover
-# ---------------------------------------------------------------------------
 
 
 def test_detect_rollover_after_manual_day_shift(tracker: UsageTracker) -> None:
@@ -362,11 +327,6 @@ def test_flush_resets_on_rollover(
     assert data["requests"] == 0
 
 
-# ---------------------------------------------------------------------------
-# reset
-# ---------------------------------------------------------------------------
-
-
 def test_reset_clears_state(
     tracker: UsageTracker,
     tmp_path: Path,
@@ -394,11 +354,6 @@ def test_reset_clears_state(
 
     # Fingerprints cleared, so same stat triggers a re-scan.
     assert tracker.update_file(mf, info) is True
-
-
-# ---------------------------------------------------------------------------
-# cache creation
-# ---------------------------------------------------------------------------
 
 
 def test_cache_creation_tokens_are_tracked(
@@ -431,11 +386,6 @@ def test_cache_creation_tokens_are_tracked(
     assert data["cache_creation"] == 40
 
 
-# ---------------------------------------------------------------------------
-# update replaces
-# ---------------------------------------------------------------------------
-
-
 def test_updating_same_file_replaces_old_contribution(
     tracker: UsageTracker,
     tmp_path: Path,
@@ -463,11 +413,6 @@ def test_updating_same_file_replaces_old_contribution(
     data = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
     assert data["in"] == 101
     assert data["requests"] == 2
-
-
-# ---------------------------------------------------------------------------
-# touch
-# ---------------------------------------------------------------------------
 
 
 def test_flush_touch_when_content_unchanged(tracker: UsageTracker, tmp_path: Path) -> None:

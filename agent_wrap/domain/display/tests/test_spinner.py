@@ -21,9 +21,6 @@ def ds() -> DisplayService:
     return DisplayService()
 
 
-# --- spin_while (public API) ---
-
-
 def test_spin_while_runs_work_non_tty(
     mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
 ) -> None:
@@ -80,9 +77,6 @@ def test_spin_while_done_message_none(
     err = capsys.readouterr().err
     assert err.endswith("\n")
     assert "done" not in err
-
-
-# --- poll_until (public API) ---
 
 
 def _frozen_clock(mocker: pytest_mock.MockFixture) -> None:

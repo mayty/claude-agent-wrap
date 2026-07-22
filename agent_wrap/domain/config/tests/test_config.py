@@ -75,9 +75,6 @@ def test_skips_malformed_json(svc: ConfigService, tmp_path: Path):
     assert settings.read_text() == "{bad json"
 
 
-# --- telegram hooks ---
-
-
 def test_injects_all_three_hooks(svc: ConfigService, tmp_path: Path):
     settings = tmp_path / "settings.json"
     settings.write_text("{}")
@@ -137,9 +134,6 @@ def test_telegram_hooks_skips_malformed_json(svc: ConfigService, tmp_path: Path)
     assert settings.read_text() == "{bad json"
 
 
-# --- ensure_claude_md ---
-
-
 def test_ensure_claude_md_copies_when_missing(svc: ConfigService, tmp_path: Path) -> None:
     (tmp_path / ".claude").mkdir()
     (tmp_path / "ops").mkdir()
@@ -165,9 +159,6 @@ def test_ensure_claude_md_skips_when_no_template(svc: ConfigService, tmp_path: P
     (tmp_path / ".claude").mkdir()
     svc._ensure_claude_md()
     assert not (tmp_path / ".claude" / "CLAUDE.md").exists()
-
-
-# --- prepare_global_config ---
 
 
 def test_prepare_global_config_creates_structure(svc: ConfigService, tmp_path: Path) -> None:
@@ -215,9 +206,6 @@ def test_prepare_global_config_without_telegram(svc: ConfigService, tmp_path: Pa
     svc.prepare_global_config(telegram_available=False)
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert "hooks" not in settings
-
-
-# --- prepare_project_dirs ---
 
 
 _STATE_DIRS = ("sessions", "session-state", "daemon", "jobs", "plans", "todos", "tasks")
@@ -329,9 +317,6 @@ def test_prepare_project_dirs_migration_idempotent(svc: ConfigService, tmp_path:
     assert list(old_memory_dir.iterdir()) == []
 
 
-# --- record_project ---
-
-
 def test_record_project_appends_cwd(
     svc: ConfigService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -409,9 +394,6 @@ def test_record_project_keeps_file_sorted(
     paths = svc.read_project_paths()
     assert paths == sorted(paths)
     assert extra in paths
-
-
-# --- link_litellm_logs ---
 
 
 def test_link_litellm_logs_creates_symlink(svc: ConfigService, tmp_path: Path) -> None:

@@ -51,9 +51,6 @@ class ConcreteTestProvider(LiteLLMProvider):
         return []
 
 
-# --- sidecars() factory ---
-
-
 def test_sidecars_returns_one_litellm_sidecar(
     tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
@@ -88,8 +85,8 @@ def test_sidecar_config_wires_lifecycle_hooks(
 ) -> None:
     """on_started/on_stopping on the config call through to the provider hooks."""
     p = ConcreteTestProvider(state_dir=tmp_path)
-    started = mocker.patch.object(p, "on_started")
-    stopping = mocker.patch.object(p, "on_stopping")
+    started = mocker.patch.object(p, "on_started", autospec=True)
+    stopping = mocker.patch.object(p, "on_stopping", autospec=True)
     config = p._sidecar_config()
     config["on_started"]("sk-test-k")  # type: ignore[not-callable]
     config["on_stopping"]("sk-test-k")  # type: ignore[not-callable]
@@ -97,17 +94,11 @@ def test_sidecar_config_wires_lifecycle_hooks(
     stopping.assert_called_once_with("sk-test-k")
 
 
-# --- default lifecycle hooks are no-ops ---
-
-
 def test_default_hooks_are_noops(tmp_path: Path) -> None:
     p = ConcreteTestProvider(state_dir=tmp_path)
     # Should not raise.
     p.on_started("sk-test-k")
     p.on_stopping("sk-test-k")
-
-
-# --- path resolvers ---
 
 
 def test_log_dir_is_project_independent() -> None:

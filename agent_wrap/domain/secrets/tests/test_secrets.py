@@ -27,20 +27,11 @@ from agent_wrap.domain.secrets.store import (
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.exceptions import SecretNotFoundError
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 _FIXED_KEY = b"0" * 32  # stable key for reproducible tests
 _PATCH_KEYFILE_PATH = "agent_wrap.domain.secrets.store.SECRETS_KEYFILE_PATH"
 _PATCH_ENCRYPTED_FILE_PATH = "agent_wrap.domain.secrets.store.SECRETS_ENCRYPTED_FILE_PATH"
 _PATCH_OLD_SECRETS_PATH = "agent_wrap.domain.secrets.store.OLD_SECRETS_PATH"
 _PATCH_DERIVE_KEY = "agent_wrap.domain.secrets.store.KeyDerivation.derive_key"
-
-
-# ---------------------------------------------------------------------------
-# SecretNotFoundError
-# ---------------------------------------------------------------------------
 
 
 def test_secret_not_found_error_repr() -> None:
@@ -49,14 +40,6 @@ def test_secret_not_found_error_repr() -> None:
     assert err.description == "some description"
     assert "ns:key" in str(err)
     assert "some description" in str(err)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -76,7 +59,7 @@ def secrets_paths(tmp_path: Path, mocker: pytest_mock.MockerFixture) -> tuple[Pa
 def fixed_key(secrets_paths: tuple[Any, ...], mocker: pytest_mock.MockerFixture) -> None:  # noqa: ARG001
     """Make _derive_key always return _FIXED_KEY."""
     KeyDerivation.derive_key.cache_clear()
-    mocker.patch(_PATCH_DERIVE_KEY, return_value=_FIXED_KEY)
+    mocker.patch(_PATCH_DERIVE_KEY, autospec=True, return_value=_FIXED_KEY)
 
 
 @pytest.fixture
@@ -92,10 +75,6 @@ def svc(
         sidecar_service=mocker.Mock(spec=SidecarService),
         display_service=display_mock,
     )
-
-
-# _derive_key
-# ---------------------------------------------------------------------------
 
 
 def test_derive_key_stable(
@@ -172,11 +151,6 @@ def test_derive_key_empty_machine_id(
     assert "empty" in display_mock.warning.call_args[0][0].lower()
 
 
-# ---------------------------------------------------------------------------
-# _encrypt / _decrypt
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "plaintext",
     [
@@ -230,11 +204,6 @@ def test_decrypt_too_short() -> None:
     assert EncryptionPrimitives.decrypt(b"short", b"k" * 32) is None
 
 
-# ---------------------------------------------------------------------------
-# _read_all / _write_all
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.usefixtures("secrets_paths", "fixed_key")
 def test_read_all_empty_when_no_file(
     display_mock: Mock,
@@ -265,15 +234,14 @@ def test_read_all_corrupt_file(
 
 @pytest.mark.usefixtures("secrets_paths", "fixed_key")
 def test_read_all_wrong_key_returns_empty(
-    mocker: pytest_mock.MockerFixture,
     display_mock: Mock,
 ) -> None:
     """When the encryption key changes, _read_all warns and returns {}."""
     EncryptedFileStore.write_all({"key": "val"}, display=display_mock)
 
-    # Change the key
-    KeyDerivation.derive_key.cache_clear()
-    mocker.patch(_PATCH_DERIVE_KEY, return_value=b"x" * 32)
+    # Change the key — derive_key is already patched (autospec) by the
+    # fixed_key fixture, so update its return value rather than re-patching.
+    KeyDerivation.derive_key.return_value = b"x" * 32  # type: ignore[missing-attribute]
 
     result = EncryptedFileStore.read_all(display=display_mock)
     assert result == {}
@@ -322,11 +290,6 @@ def test_write_all_atomic_no_partial_read(
     assert EncryptedFileStore.read_all(display=display_mock) == {"good": "data"}
 
 
-# ---------------------------------------------------------------------------
-# read() API
-# ---------------------------------------------------------------------------
-
-
 def test_read_found(svc: SecretsService, display_mock: Mock) -> None:
     EncryptedFileStore.write_all({"ns:key": "stored-value"}, display=display_mock)
     assert svc.read("ns:key", "desc") == "stored-value"
@@ -357,11 +320,6 @@ def test_read_prompt_eof_error(svc: SecretsService, display_mock: Mock) -> None:
         svc.read("ns:key", "desc", prompt_on_missing=True)
 
 
-# ---------------------------------------------------------------------------
-# write() API
-# ---------------------------------------------------------------------------
-
-
 def test_write_stores(svc: SecretsService, display_mock: Mock) -> None:
     display_mock.prompt_secret.return_value = "typed"
 
@@ -380,11 +338,6 @@ def test_write_preserves_other_keys(
     data = EncryptedFileStore.read_all(display=display_mock)
     assert data["existing"] == "keep-me"
     assert data["ns:new"] == "new-val"
-
-
-# ---------------------------------------------------------------------------
-# delete() / svc._list_keys() API
-# ---------------------------------------------------------------------------
 
 
 def test_delete_removes_key(
@@ -414,11 +367,6 @@ def test_list_keys_empty_store(svc: SecretsService) -> None:
     assert svc._list_keys() == []
 
 
-# ---------------------------------------------------------------------------
-# Non-string value filtering
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.usefixtures("secrets_paths", "fixed_key")
 def test_read_all_filters_non_strings(
     tmp_path: Path,
@@ -434,11 +382,6 @@ def test_read_all_filters_non_strings(
     assert data == {"keep": "val"}
     assert "drop_int" not in data
     assert "drop_none" not in data
-
-
-# ---------------------------------------------------------------------------
-# Migration from old ~/claude_keys.json (pre-encryption era)
-# ---------------------------------------------------------------------------
 
 
 def _write_old_file(tmp_path: Path, data: dict[str, Any]) -> Path:

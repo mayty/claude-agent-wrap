@@ -9,8 +9,6 @@ from agent_wrap.domain.logs.hash_resolver import load_strings, resolve_hashes
 if TYPE_CHECKING:
     from pathlib import Path
 
-# --- resolve_hashes ---
-
 
 def test_resolve_hashes_replaces_known_hashes():
     obj = {"msg": "hash:abc123", "nested": ["hash:def456"]}
@@ -31,9 +29,6 @@ def test_resolve_hashes_leaves_primitives_unchanged():
     assert resolve_hashes(42, {}) == 42
     assert resolve_hashes(True, {}) is True  # noqa: FBT003
     assert resolve_hashes("plain string", {}) == "plain string"
-
-
-# --- load_strings ---
 
 
 def test_load_strings_round_trip(tmp_path: Path):

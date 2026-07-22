@@ -42,11 +42,6 @@ def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
     return b
 
 
-# ---------------------------------------------------------------------------
-# render — orphaned row
-# ---------------------------------------------------------------------------
-
-
 def test_render_includes_orphaned_row(display_service: Mock) -> None:
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     b = Bucket()
@@ -83,11 +78,6 @@ def test_render_without_orphaned_has_no_row(display_service: Mock) -> None:
     assert ORPHANED_LABEL not in out
 
 
-# ---------------------------------------------------------------------------
-# Render source breakdown
-# ---------------------------------------------------------------------------
-
-
 def test_render_source_breakdown_lists_active_sources(display_service: Mock) -> None:
     by_source = {
         "native": {"bedrock/claude-opus-4-8": _source_bucket(3, in_=1000)},
@@ -122,11 +112,6 @@ def test_render_source_breakdown_merges_across_models(display_service: Mock) -> 
     assert "Usage source breakdown (2026-06-01 … 2026-06-29):" in out
     assert "unrecoverable" in out
     assert "native" in out
-
-
-# ---------------------------------------------------------------------------
-# parse_usage_args
-# ---------------------------------------------------------------------------
 
 
 def test_parse_usage_args_verbose_short_flag(tmp_path: Path, display_service: Mock) -> None:

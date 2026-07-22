@@ -18,9 +18,6 @@ def _epoch(iso: str) -> float:
     return datetime.fromisoformat(iso).timestamp()
 
 
-# --- normalize_record ---
-
-
 def _raw_record() -> LogRecord:
     return cast(
         "LogRecord",
@@ -148,9 +145,6 @@ def test_normalize_agent_id_none_without_header():
     assert out["agent_id"] is None
 
 
-# --- normalize_record_unresolved ---
-
-
 def test_normalize_record_unresolved_keeps_hashes():
     """normalize_record_unresolved preserves hash: references without resolving."""
     rec = {
@@ -173,9 +167,6 @@ def test_normalize_record_unresolved_keeps_hashes():
     assert out["messages"] == [{"role": "user", "content": "hash:abc123"}]
     assert out["system"] == "hash:abc123"
     assert out["response"]["content"] == "hash:abc123"
-
-
-# --- normalize_record hash resolution ---
 
 
 def test_normalize_record_resolves_hashes():
@@ -201,9 +192,6 @@ def test_normalize_record_resolves_hashes():
     assert out["messages"] == [{"role": "user", "content": "resolved content"}]
     assert out["system"] == "resolved content"
     assert out["response"]["content"] == "resolved content"
-
-
-# --- extract_alias ---
 
 
 def _naming_record(content: str) -> LogRecord:

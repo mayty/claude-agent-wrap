@@ -25,7 +25,7 @@ def _freeze_today(mocker: MockerFixture):
     # get_day() reduces to plain UTC-date extraction regardless of the CI host's
     # real local offset, matching the noon-UTC frozen instant below.
     frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
-    mocker.patch.object(ua, "_today", return_value=frozen)
+    mocker.patch.object(ua, "_today", return_value=frozen, autospec=True)
     mocker.patch.object(ua, "DAY_START_HOURS", 0)
 
 
@@ -44,9 +44,6 @@ def _reg(tmp_path: Path) -> Path:
 
 def _iso(d: date) -> str:
     return d.isoformat()
-
-
-# --- resolution table --------------------------------------------------------
 
 
 def test_no_flags_defaults_to_last_28_days(
@@ -126,9 +123,6 @@ def test_until_and_days_zero_open_lower(mocker: MockerFixture, tmp_path: Path, d
     assert parsed.until_iso == "2026-06-20"
 
 
-# --- short flag forms --------------------------------------------------------
-
-
 def test_short_days(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     parsed = _parse(mocker, display_mock, _reg(tmp_path), "-d", "7")
     assert parsed is not None
@@ -157,9 +151,6 @@ def test_short_from_and_until(mocker: MockerFixture, tmp_path: Path, display_moc
     assert parsed.until_iso == "2026-06-10"
 
 
-# --- relative date specs -----------------------------------------------------
-
-
 def test_relative_from(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
     parsed = _parse(mocker, display_mock, _reg(tmp_path), "--from", "-14d")
     assert parsed is not None
@@ -172,9 +163,6 @@ def test_relative_until_and_days(mocker: MockerFixture, tmp_path: Path, display_
     assert parsed is not None
     assert parsed.until_iso == _iso(_TODAY - timedelta(days=7))
     assert parsed.from_iso == _iso(_TODAY - timedelta(days=9))
-
-
-# --- errors ------------------------------------------------------------------
 
 
 def test_all_three_flags_rejected(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
@@ -228,9 +216,6 @@ def test_missing_registry_rejected(mocker: MockerFixture, display_mock: Mock):
     parsed = parse_usage_args([], usage_line="u", usage_text="u", display=display_mock)
     assert parsed is None
     display_mock.error.assert_not_called()
-
-
-# --- pattern ----------------------------------------------------------------
 
 
 def test_pattern_long_flag(mocker: MockerFixture, tmp_path: Path, display_mock: Mock):
