@@ -19,7 +19,7 @@
 agent run [--base] [claude-code-args...]
 ```
 
-Launches Claude Code in a Docker container against the resolved image for the current directory. Records the project path in `<wrap-dir>/.agent-launches/projects.txt` for use by `agent stats`.
+Launches Claude Code in a Docker container against the resolved image for the current directory. Records the project path in `<wrap-dir>/.agent-launches/projects.txt` for use by `agent stats`. Paths are stored in a compressed, grouped form (e.g. sibling directories collapse to `/a/{x,y,z}`, shared prefixes collapse to `{N}/rest`) rather than one plain path per line — read it with `agent stats`/`agent logs`, not by grepping the file directly.
 
 > This command and `agent rebuild` check for wrapper updates on every invocation, except headless `agent run` invocations (`-p`/`--print`/`--bare`/`--safe-mode`). See [`AGENT_SKIP_UPDATE_CHECK`](configuration.md#agent_skip_update_check-auto-update-opt-out).
 
@@ -62,7 +62,7 @@ Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current dire
 agent stats [--verbose] [--from D] [--until D] [--days N] [--pattern P]
 ```
 
-Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` and walks each project's `.claude/litellm-logs/` directory (organized by provider and session). Pricing is fetched dynamically per provider as logs are scanned. Both the per-project table and the per-day breakdown cover the same usage window.
+Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` (see [`agent run`](#agent-run) for its on-disk format) and walks each project's `.claude/litellm-logs/` directory (organized by provider and session). Pricing is fetched dynamically per provider as logs are scanned. Both the per-project table and the per-day breakdown cover the same usage window.
 
 Selection range — at most two of the three flags may be combined:
 
@@ -72,13 +72,13 @@ Selection range — at most two of the three flags may be combined:
 
 The **`-v`/`--verbose`** flag is independent of the range: it adds a usage-source breakdown table over the same window, splitting the totals by how each request's usage was obtained (read straight from the response, recovered from the request log, or uncountable).
 
-The **`-p`/`--pattern P`** flag filters projects by a regex matched against each project's display name, independent of the range.
+The **`-p`/`--pattern P`** flag filters projects by a regex matched against each project's recorded registry path, independent of the range.
 
 With no flags the window is the last 28 days. `--from` alone runs to now; `--days N` alone is the last N days; `--until` alone spans the 28 days ending at that date; `--days 0` alone shows all time (open lower bound, up to now).
 
 Day buckets default to host-local midnight-to-midnight; see [`AGENT_DAY_START_UTC`](configuration.md#agent_day_start_utc-stats-day-boundary-offset) to change the boundary.
 
-Create an `.agent_stats_leaf` file in a directory to aggregate every registered project at or beneath it into a single **transient project** row, instead of one row per project — handy when a script launches many agents in per-run subdirectories. The first non-empty line of the file is the project's display name (falling back to the marker directory's name when the file is empty), and the aggregated row is accented in color (alongside the `<orphaned>` row) to set it apart. The lookup walks the path literally (symlinks are not resolved), so a directory that holds an `.agent_stats_leaf` plus symlinks to several unrelated projects groups them all together.
+Create an `.agent_stats_leaf` file in a directory to aggregate every registered project at or beneath it into a single **transient project** row, instead of one row per project — handy when a script launches many agents in per-run subdirectories. The group is always named after the marker directory itself; the file's content is irrelevant — only its presence matters. The aggregated row is accented in color (alongside the `<orphaned>` row) to set it apart. The lookup walks the path literally (symlinks are not resolved), so a directory that holds an `.agent_stats_leaf` plus symlinks to several unrelated projects groups them all together.
 
 Logs left behind by a deleted or unregistered project — request logs that survive under `<wrap-dir>/litellm-logs/` after their project is gone from the registry — are gathered into a synthetic `<orphaned>` row so their usage is not silently lost. It appears as its own line (not under the project tree), and its tokens and cost are still included in the per-model and per-day totals.
 
@@ -88,7 +88,7 @@ Logs left behind by a deleted or unregistered project — request logs that surv
 agent logs [--port N] [--stop]
 ```
 
-Starts a local, read-only web viewer for the LiteLLM request logs written under each project's `.claude/litellm-logs/` directory. (That path is now a symlink into the shared per-project log store at `<wrap-dir>/litellm-logs/<project_hash>/`, since a single sidecar serves every project; the viewer follows it transparently.) Reads the same project registry as `agent stats` (`<wrap-dir>/.agent-launches/projects.txt`), then lets you pick a project, pick a session, and read every logged request chat-style: the system prompt, the message thread (including `tool_use`/`tool_result` blocks), the tool definitions, the response, and per-request token usage. Hashed strings (`hash:<sha256>`) are resolved from each session's `strings.jsonl` for display.
+Starts a local, read-only web viewer for the LiteLLM request logs written under each project's `.claude/litellm-logs/` directory. (That path is now a symlink into the shared per-project log store at `<wrap-dir>/litellm-logs/<project_hash>/`, since a single sidecar serves every project; the viewer follows it transparently.) Reads the same project registry as `agent stats` (`<wrap-dir>/.agent-launches/projects.txt`, see [`agent run`](#agent-run) for its on-disk format), then lets you pick a project, pick a session, and read every logged request chat-style: the system prompt, the message thread (including `tool_use`/`tool_result` blocks), the tool definitions, the response, and per-request token usage. Hashed strings (`hash:<sha256>`) are resolved from each session's `strings.jsonl` for display.
 
 Sessions are labelled with their Claude Code alias (the short kebab-case name, e.g. `agent-logs-web-viewer`) when available. The alias is detected from Claude Code's own session-naming call as it passes through the sidecar and persisted to an `alias` file beside the logs; for older logs it is derived on the fly from the same call, falling back to the session UUID when no name exists yet.
 

@@ -235,7 +235,7 @@ def test_aggregate_projects_merges_marked_group(
     assert len(rows) == 1
     row = rows[0]
     assert row["path"] == runs
-    assert row["name"] == "batch-feb"
+    assert row["name"] == "runs"
     assert row["transient"] is True
     assert row["sessions"] == 2
     assert row["total"].msgs == 2

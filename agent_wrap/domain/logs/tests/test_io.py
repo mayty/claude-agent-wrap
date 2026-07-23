@@ -507,7 +507,7 @@ def test_list_projects_aggregates_marked_group(
     result = list_projects(groups)
     assert len(result) == 1
     p = result[0]
-    assert p["name"] == "batch-feb"
+    assert p["name"] == "runs"
     assert p["path"] == str(runs)
     assert p["sessions"] == 2
     assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")

@@ -204,18 +204,12 @@ def flatten_tree(root: Node, *, display: DisplayService) -> list[DisplayRow]:
             prefix = "".join("│" if cont else " " for cont in ancestors_continue) + connector
             prefix_len = len(prefix)
 
-            # A grouped transient project (`.agent_stats_leaf`) overrides the
-            # final path segment with its group name; such rows are accented in
-            # color by the renderer via the DisplayRow.transient flag. The
-            # override is a no-op when the name is just the directory name
-            # (empty marker), but the row is still flagged transient.
-            seg = child.name
+            # A grouped transient project's (`.agent_stats_leaf`) row is
+            # accented in color by the renderer via the DisplayRow.transient
+            # flag; the row's own path-segment name already equals its
+            # group's display name (both derive from the marker directory).
             transient = bool(child.row is not None and child.row.get("transient"))
-            if child.row is not None and transient:
-                head, _, _ = seg.rpartition("/")
-                group_name = child.row["name"]
-                seg = f"{head}/{group_name}" if head else group_name
-            label = prefix + seg
+            label = prefix + child.name
             if child.children:
                 label += "/"
             if child.row is not None and not child.row["exists"]:

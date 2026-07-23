@@ -38,22 +38,12 @@ def test_no_marker_keeps_project_standalone(tmp_path: Path, stats_svc: StatsServ
     assert transient is False
 
 
-def test_marker_with_content_uses_first_nonempty_line(tmp_path: Path, stats_svc: StatsService):
+@pytest.mark.parametrize("contents", ["", "   \n\n", "\n  batch-feb \nignored second line\n"])
+def test_marker_content_is_ignored(tmp_path: Path, stats_svc: StatsService, contents: str):
+    # The marker's content, if any, is never read — the group is always named
+    # after the marker directory itself; `transient` reflects marker presence.
     runs = tmp_path / "runs"
-    _marker(runs, "\n  batch-feb \nignored second line\n")
-    child = runs / "agent-xyz"
-    child.mkdir()
-    root, name, transient = stats_svc.resolve_group(child)
-    assert root == runs
-    assert name == "batch-feb"
-    assert transient is True
-
-
-def test_empty_marker_falls_back_to_dir_name(tmp_path: Path, stats_svc: StatsService):
-    # An empty marker still forms a transient group (named after its directory);
-    # `transient` reflects marker presence, not name customization.
-    runs = tmp_path / "runs"
-    _marker(runs, "   \n\n")
+    _marker(runs, contents)
     child = runs / "agent-xyz"
     child.mkdir()
     root, name, transient = stats_svc.resolve_group(child)
@@ -67,7 +57,7 @@ def test_marker_on_project_itself_is_found(tmp_path: Path, stats_svc: StatsServi
     _marker(proj, "self-named")
     root, name, transient = stats_svc.resolve_group(proj)
     assert root == proj
-    assert name == "self-named"
+    assert name == "proj"
     assert transient is True
 
 
@@ -80,7 +70,7 @@ def test_nearest_marker_wins_when_nested(tmp_path: Path, stats_svc: StatsService
     leaf.mkdir()
     root, name, transient = stats_svc.resolve_group(leaf)
     assert root == inner
-    assert name == "inner-group"
+    assert name == "inner"
     assert transient is True
 
 
@@ -94,7 +84,7 @@ def test_two_projects_under_one_marker_share_a_group(tmp_path: Path, stats_svc: 
     root_a, name_a, _ = stats_svc.resolve_group(a)
     root_b, name_b, _ = stats_svc.resolve_group(b)
     assert root_a == root_b == runs
-    assert name_a == name_b == "batch"
+    assert name_a == name_b == "runs"
 
 
 def test_symlinked_projects_group_by_literal_path(tmp_path: Path, stats_svc: StatsService):
@@ -111,13 +101,13 @@ def test_symlinked_projects_group_by_literal_path(tmp_path: Path, stats_svc: Sta
     (common / "alpha").symlink_to(real_a, target_is_directory=True)
     (common / "beta").symlink_to(real_b, target_is_directory=True)
 
-    root_a, name_a, custom_a = stats_svc.resolve_group(common / "alpha")
-    root_b, name_b, custom_b = stats_svc.resolve_group(common / "beta")
+    root_a, name_a, transient_a = stats_svc.resolve_group(common / "alpha")
+    root_b, name_b, transient_b = stats_svc.resolve_group(common / "beta")
 
     # Both literal paths resolve to the same common group root and name...
     assert root_a == root_b == common
-    assert name_a == name_b == "fleet"
-    assert custom_a is custom_b is True
+    assert name_a == name_b == "common"
+    assert transient_a is transient_b is True
     # ...even though their physical (resolved) paths are distinct.
     assert real_a.resolve() != real_b.resolve()
 

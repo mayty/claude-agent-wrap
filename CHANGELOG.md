@@ -13,9 +13,11 @@ encrypted. `agent run` prompts interactively when a secret is missing, so no
 separate setup step is needed. Existing plaintext files are migrated automatically.
 Tab completion is now powered by Python so it stays in sync with flags automatically.
 `agent stats` gains a `-p`/`--pattern` project filter and a configurable
-`AGENT_DAY_START_UTC` day boundary, and the `agent logs` viewer now tracks daily
-usage into `~/.claude/usage.json`, which the bundled statusline displays. Also
-improves the `agent logs` viewer more broadly.
+`AGENT_DAY_START_UTC` day boundary; `.agent_stats_leaf` transient groups are now
+always named after their marker directory (custom names from the file's content
+are no longer supported). The `agent logs` viewer now tracks daily usage into
+`~/.claude/usage.json`, which the bundled statusline displays. Also improves the
+`agent logs` viewer more broadly.
 
 ## [0.7.1](releases/0.7.1.md) — 2026-06-30
 

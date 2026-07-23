@@ -155,7 +155,7 @@ def list_groups(stats_service: StatsService, projects: list[Path]) -> list[Group
 
     * ``root`` — the group root :class:`~pathlib.Path` (marker dir, or the
       project itself when unmarked),
-    * ``name`` — the custom marker name or the root's directory name,
+    * ``name`` — the group root's directory name,
     * ``paths`` — every member project :class:`~pathlib.Path` in the group,
     * ``logs_dirs`` — the LiteLLM logs dirs to scan for the group.
 

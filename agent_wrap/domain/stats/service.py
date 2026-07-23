@@ -225,28 +225,14 @@ class StatsService:
         Resolve the transient-project group a project path belongs to.
 
         Walks up from ``path`` (inclusive) along its **literal** components looking
-        for the nearest ``.agent_stats_leaf``.
+        for the nearest ``.agent_stats_leaf``. The group is always named after the
+        marker's own directory — the marker file's content, if any, is not read.
         """
-
-        # Inline of _read_marker_name to avoid importing a _-prefixed name.
-        def _read_marker_name(marker: Path) -> str | None:
-            try:
-                text = marker.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                return None
-            for raw_line in text.splitlines():
-                line = raw_line.strip()
-                if line:
-                    return line
-            return None
-
         for candidate in (path, *path.parents):
             marker = candidate / MARKER_NAME
             if marker.is_file():
-                name = _read_marker_name(marker)
-                display_name = name if name is not None else candidate.name
                 return GroupResult(
-                    group_root=candidate, display_name=display_name, is_transient=True
+                    group_root=candidate, display_name=candidate.name, is_transient=True
                 )
         return GroupResult(group_root=path, display_name=path.name, is_transient=False)
 
