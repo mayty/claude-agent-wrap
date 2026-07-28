@@ -14,10 +14,9 @@ from agent_wrap.containers import services
 if TYPE_CHECKING:
     import pytest
     from pytest_mock import MockerFixture
-    from pytest_subtests import SubTests
 
 
-def test_every_command_module_exposes_run_and_metadata(subtests: SubTests) -> None:
+def test_every_command_module_exposes_run_and_metadata(subtests: pytest.Subtests) -> None:
     meta = command_meta()
     assert meta, "expected at least one command to be registered"
     for c in meta.values():
@@ -29,7 +28,9 @@ def test_every_command_module_exposes_run_and_metadata(subtests: SubTests) -> No
             assert c.summary, f"{c.name} SUMMARY must be non-empty"
 
 
-def test_help_lists_every_discovered_command(mocker: MockerFixture, subtests: SubTests) -> None:
+def test_help_lists_every_discovered_command(
+    mocker: MockerFixture, subtests: pytest.Subtests
+) -> None:
     mocker.patch("sys.argv", ["agent_wrap"])
     rc = main()
     assert rc == 1
@@ -54,7 +55,9 @@ def test_unknown_command_returns_error(
     )
 
 
-def test_complete_verb_completion(capsys: pytest.CaptureFixture[str], subtests: SubTests) -> None:
+def test_complete_verb_completion(
+    capsys: pytest.CaptureFixture[str], subtests: pytest.Subtests
+) -> None:
     """Verify cword=1 prints all COMMANDS keys (verb completion)."""
     old_argv = sys.argv
     try:
@@ -94,7 +97,7 @@ def test_complete_known_verb_delegates_to_complete(capsys: pytest.CaptureFixture
     assert "--full" in out
 
 
-def test_every_command_has_complete_function(subtests: SubTests) -> None:
+def test_every_command_has_complete_function(subtests: pytest.Subtests) -> None:
     """Every registered verb maps to a callable complete()."""
     for name, (_run_fn, complete_fn) in COMMANDS.items():
         with subtests.test(msg=name):  # type: ignore[bad-context-manager]

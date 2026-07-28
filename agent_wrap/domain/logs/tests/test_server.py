@@ -18,8 +18,6 @@ from agent_wrap.domain.pricing.service import PricingService
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from pytest_subtests import SubTests
-
 
 def test_resolve_static_maps_root_to_index(tmp_path: Path):
     assert resolve_static("/", root=tmp_path) == (tmp_path / "index.html").resolve()
@@ -200,7 +198,7 @@ def test_sessions_stat_returns_fingerprint(api_server: tuple[int, Path]):
     assert body["size"] is not None
 
 
-def test_session_returns_details(api_server: tuple[int, Path], subtests: SubTests):
+def test_session_returns_details(api_server: tuple[int, Path], subtests: pytest.Subtests):
     port, _project = api_server
     sid = "abc12345-6789-abcd-ef01-234567890abc"
     status, lines = _get_ndjson(port, f"/api/session?project=0&session={sid}")

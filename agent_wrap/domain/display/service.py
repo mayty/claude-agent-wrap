@@ -180,7 +180,7 @@ class DisplayService:
     # Table rendering
     # ------------------------------------------------------------------
 
-    def render_table(  # noqa: PLR0913
+    def render_table(  # noqa: PLR0913, PLR0917
         self,
         title: str,
         headers: list[str],

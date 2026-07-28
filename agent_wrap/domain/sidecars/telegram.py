@@ -302,7 +302,7 @@ class TelegramSidecar(Sidecar):
         body = json.dumps(
             {"agent_id": self.config.instance_id, "agent_name": self.config.agent_name}
         ).encode()
-        req = urllib.request.Request(  # noqa: S310
+        req = urllib.request.Request(
             url,
             data=body,
             headers={"Content-Type": "application/json"},
@@ -331,7 +331,7 @@ class TelegramSidecar(Sidecar):
         if not self._auth_token:
             return
         url = f"http://127.0.0.1:{self.config.internal_port}/unregister"
-        req = urllib.request.Request(  # noqa: S310
+        req = urllib.request.Request(
             url,
             data=b"",
             headers={

@@ -52,6 +52,7 @@ graph TD
 ```python
 # The singleton instance — the ONLY way external code reaches domain logic:
 from agent_wrap.containers import services
+
 services.launch_service.launch(...)
 ```
 
@@ -163,7 +164,8 @@ These patterns circumvent the domain-layer boundaries and must never be used.
 # FORBIDDEN:
 _sentinel: Callable = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("not injected"))
 
-def inject_deps(fn):          # mutates module-level globals at startup
+
+def inject_deps(fn):  # mutates module-level globals at startup
     global _sentinel
     _sentinel = fn
 ```
@@ -183,6 +185,7 @@ accesses it through ``self``.
 ```python
 # FORBIDDEN:
 from somewhere import SomeType
+
 
 class SomeService:
     SomeType = SomeType  # aliasing an imported type as a class attribute

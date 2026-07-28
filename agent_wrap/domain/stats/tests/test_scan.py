@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest_mock
-    from pytest_subtests import SubTests
 
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
@@ -299,7 +298,7 @@ def test_scan_log_dirs_serial_matches_scan_logs_dir(
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
     stats_svc: StatsService,
-    subtests: SubTests,
+    subtests: pytest.Subtests,
 ) -> None:
     dirs = _seed_many_dirs(tmp_path / "tool", 3, records_per=2)
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)  # force serial

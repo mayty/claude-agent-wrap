@@ -420,8 +420,10 @@ def _check_rule_c(
                     rel_file,
                     node.lineno,
                     "EC001",
-                    f"runtime agent_wrap import forbidden in litellm_runtime: "
-                    f"from '{node.module}' import ...",
+                    (
+                        f"runtime agent_wrap import forbidden in litellm_runtime: "
+                        f"from '{node.module}' import ..."
+                    ),
                 )
             )
 

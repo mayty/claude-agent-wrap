@@ -443,7 +443,7 @@ def test_aggregate_archived_rebuckets_day_at_read_time(
         ("2026-07-20", "2026-07-20", True),
     ],
 )
-def test_aggregate_archived_respects_window(  # noqa: PLR0913, PLR0917
+def test_aggregate_archived_respects_window(  # noqa: PLR0913
     stats_svc: StatsService,
     tmp_path: Path,
     mocker: pytest_mock.MockerFixture,
