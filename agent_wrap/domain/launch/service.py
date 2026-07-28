@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 class LaunchService:
     """Prepares and launches a Claude Code Docker container."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         config_service: ConfigService,
         secrets_service: SecretsService,

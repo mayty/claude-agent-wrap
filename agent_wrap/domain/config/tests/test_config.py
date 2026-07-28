@@ -396,6 +396,113 @@ def test_record_project_keeps_file_sorted(
     assert extra in paths
 
 
+def _register_projects(tmp_path: Path, *projects: Path) -> Path:
+    """Write *projects* into the registry file and return its path."""
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(exist_ok=True)
+    projects_file = launches / "projects.txt"
+    projects_file.write_text("\n".join(str(p) for p in projects) + "\n")
+    return projects_file
+
+
+def _make_live_project(root: Path, name: str) -> Path:
+    """Create a project whose ``.claude/litellm-logs`` directory exists."""
+    project = root / name
+    (project / ".claude" / "litellm-logs").mkdir(parents=True)
+    return project
+
+
+def test_stale_project_paths_finds_projects_without_logs_dir(
+    svc: ConfigService, tmp_path: Path
+) -> None:
+    live = _make_live_project(tmp_path, "live")
+    gone = tmp_path / "gone"
+    no_logs = tmp_path / "no_logs"
+    (no_logs / ".claude").mkdir(parents=True)
+    _register_projects(tmp_path, live, gone, no_logs)
+
+    assert svc.stale_project_paths() == [gone, no_logs]
+
+
+def test_stale_project_paths_accepts_symlinked_logs_dir(svc: ConfigService, tmp_path: Path) -> None:
+    """The real layout is a symlink into the central store — it must count as live."""
+    central = tmp_path / "central" / "hashA"
+    central.mkdir(parents=True)
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "litellm-logs").symlink_to(central, target_is_directory=True)
+    _register_projects(tmp_path, project)
+
+    assert svc.stale_project_paths() == []
+
+
+def test_stale_project_paths_flags_broken_symlink(svc: ConfigService, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "litellm-logs").symlink_to(tmp_path / "missing")
+    _register_projects(tmp_path, project)
+
+    assert svc.stale_project_paths() == [project]
+
+
+def test_stale_project_paths_empty_when_no_registry(svc: ConfigService) -> None:
+    assert svc.stale_project_paths() == []
+
+
+def test_prune_stale_projects_removes_only_given_paths(svc: ConfigService, tmp_path: Path) -> None:
+    live = _make_live_project(tmp_path, "live")
+    other = _make_live_project(tmp_path, "other")
+    gone = tmp_path / "gone"
+    _register_projects(tmp_path, live, other, gone)
+
+    removed = svc.prune_stale_projects([gone])
+
+    assert removed == [gone]
+    remaining = svc.read_project_paths()
+    assert gone not in remaining
+    assert set(remaining) == {live, other}
+
+
+def test_prune_stale_projects_keeps_file_sorted(svc: ConfigService, tmp_path: Path) -> None:
+    kept_z = _make_live_project(tmp_path, "z_project")
+    kept_a = _make_live_project(tmp_path, "a_project")
+    gone = tmp_path / "gone"
+    _register_projects(tmp_path, kept_z, gone, kept_a)
+
+    svc.prune_stale_projects([gone])
+
+    paths = svc.read_project_paths()
+    assert paths == sorted(paths)
+
+
+def test_prune_stale_projects_empty_list_is_noop(svc: ConfigService, tmp_path: Path) -> None:
+    live = _make_live_project(tmp_path, "live")
+    _register_projects(tmp_path, live)
+
+    assert svc.prune_stale_projects([]) == []
+    assert svc.read_project_paths() == [live]
+
+
+def test_prune_stale_projects_can_empty_the_registry(svc: ConfigService, tmp_path: Path) -> None:
+    gone = tmp_path / "gone"
+    _register_projects(tmp_path, gone)
+
+    svc.prune_stale_projects([gone])
+
+    assert svc.read_project_paths() == []
+
+
+def test_prune_then_stale_paths_is_clean(svc: ConfigService, tmp_path: Path) -> None:
+    """Pruning what stale_project_paths() reported leaves nothing stale behind."""
+    live = _make_live_project(tmp_path, "live")
+    _register_projects(tmp_path, live, tmp_path / "gone1", tmp_path / "gone2")
+
+    svc.prune_stale_projects(svc.stale_project_paths())
+
+    assert svc.stale_project_paths() == []
+    assert svc.read_project_paths() == [live]
+
+
 def test_link_litellm_logs_creates_symlink(svc: ConfigService, tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / ".claude").mkdir(parents=True)

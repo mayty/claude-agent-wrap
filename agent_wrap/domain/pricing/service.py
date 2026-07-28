@@ -36,6 +36,22 @@ class PricingService:
         """Return a fresh, empty :class:`Bucket` for token-count accumulation."""
         return Bucket()
 
+    def bucket_from_usage(self, usage: TokenUsage, *, msgs: int, unrecorded: int = 0) -> Bucket:
+        """
+        Return a Bucket holding an already-aggregated *msgs* requests' worth of *usage*.
+
+        For callers that hold pre-summed token totals rather than per-request
+        usage (e.g. the stats usage archive). Token math still goes through
+        ``Bucket.add`` so its 5m/1h cache-write tier attribution stays the single
+        source of truth; only the two counters that cannot be derived from token
+        counts are then set explicitly, since ``add`` counts exactly one message.
+        """
+        bucket = Bucket()
+        bucket.add(usage, 0.0)
+        bucket.msgs = msgs
+        bucket.unrecorded = unrecorded
+        return bucket
+
     def __init__(self, provider_service: ProviderService, display_service: DisplayService) -> None:
         self._provider_service = provider_service
         self._display = display_service

@@ -3,15 +3,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from agent_wrap.lib.path_hash import project_path_hash
-from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
+from agent_wrap.lib.utils import directory_size, generate_uuid, is_truthy_env, sanitize_name
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from pytest_mock import MockerFixture
 
 
 def test_lowercase():
@@ -95,3 +96,61 @@ def test_is_truthy_env_false(value: str) -> None:
 @pytest.mark.parametrize("value", ["1", "yes", "YES", "true", "TRUE", "anything"])
 def test_is_truthy_env_true(value: str) -> None:
     assert is_truthy_env(value) is True
+
+
+_VANISHED = "vanished"
+
+
+def test_directory_size_sums_nested_files(tmp_path: Path) -> None:
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    (tmp_path / "top").write_bytes(b"x" * 10)
+    (tmp_path / "a" / "mid").write_bytes(b"x" * 20)
+    (tmp_path / "a" / "b" / "deep").write_bytes(b"x" * 30)
+    assert directory_size(tmp_path) == 60
+
+
+def test_directory_size_empty_dir_is_zero(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert directory_size(empty) == 0
+
+
+def test_directory_size_missing_dir_is_zero(tmp_path: Path) -> None:
+    assert directory_size(tmp_path / "nope") == 0
+
+
+def test_directory_size_ignores_directory_entries(tmp_path: Path) -> None:
+    """Only regular files count — directory inodes have a nonzero st_size."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "f").write_bytes(b"x" * 5)
+    assert directory_size(tmp_path) == 5
+
+
+def test_directory_size_does_not_follow_symlinks(tmp_path: Path) -> None:
+    """A symlink counts as itself, so a link out of the tree cannot inflate the sum."""
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"x" * 10_000)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "link").symlink_to(outside)
+    assert directory_size(tree) < 10_000
+
+
+def test_directory_size_tolerates_vanishing_file(tmp_path: Path, mocker: MockerFixture) -> None:
+    """A file disappearing mid-walk shortens the total instead of aborting it."""
+    (tmp_path / "keep").write_bytes(b"x" * 10)
+    (tmp_path / "gone").write_bytes(b"x" * 999)
+    real_stat = Path.stat
+
+    def flaky(self: Path, *args: object, **kwargs: object):
+        if self.name == "gone":
+            raise OSError(_VANISHED)
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    mocker.patch.object(Path, "stat", flaky)
+    assert directory_size(tmp_path) == 10
+
+
+def test_directory_size_returns_zero_when_walk_fails(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch.object(Path, "rglob", side_effect=OSError("permission denied"))
+    assert directory_size(tmp_path) == 0

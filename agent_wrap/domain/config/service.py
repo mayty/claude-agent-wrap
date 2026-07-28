@@ -283,6 +283,40 @@ class ConfigService:
         except OSError:
             pass  # non-fatal
 
+    def stale_project_paths(self) -> list[Path]:
+        """
+        Find registered project paths whose logs directory no longer exists.
+
+        These are projects deleted or renamed after being registered — the ones
+        ``agent stats`` already flags as ``(missing)``. An entry that cannot be
+        stat'd counts as stale too: it is no more useful than a missing one.
+        """
+        return [path for path in self.read_project_paths() if not self._has_logs_dir(path)]
+
+    def _has_logs_dir(self, path: Path) -> bool:
+        """Report whether *path* still has a usable ``.claude/litellm-logs`` directory."""
+        try:
+            return (path / ".claude" / "litellm-logs").is_dir()
+        except OSError:
+            return False
+
+    def prune_stale_projects(self, stale: list[Path]) -> list[Path]:
+        """
+        Remove *stale* from the project registry and return what was removed.
+
+        Takes the exact list :meth:`stale_project_paths` returned rather than
+        recomputing it, so the caller reports on and acts upon the same entries.
+        Failures are non-fatal, matching :meth:`record_project` — the registry is
+        a convenience index, not a source of truth.
+        """
+        drop = {str(path) for path in stale}
+        kept = [str(path) for path in self.read_project_paths() if str(path) not in drop]
+        compressed = ProjectRegistry.compress(kept)
+        with contextlib.suppress(OSError):
+            registry = AGENT_LAUNCHES_DIR / "projects.txt"
+            atomic_write_text(registry, "\n".join(compressed) + "\n")
+        return stale
+
     def _current_project_path(self) -> str:
         """
         Return the project path as the user sees it.

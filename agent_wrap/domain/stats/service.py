@@ -3,15 +3,36 @@
 
 from __future__ import annotations
 
+import copy
+import shutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timezone
 from functools import cache, partial
 from typing import TYPE_CHECKING
 
-from agent_wrap.constants import SCAN_PARALLEL_MIN_FILES, TOOL_DIR
-from agent_wrap.domain.stats.constants import CENTRAL_LOGS_DIRNAME, MARKER_NAME
+from agent_wrap.constants import (
+    AGENT_LAUNCHES_DIR,
+    DAY_START_HOURS,
+    SCAN_PARALLEL_MIN_FILES,
+    TOOL_DIR,
+)
+from agent_wrap.domain.stats.archive import (
+    fold_records_into_archive,
+    merge_archives,
+    read_archive,
+    write_archive,
+)
+from agent_wrap.domain.stats.constants import (
+    CENTRAL_LOGS_DIRNAME,
+    MARKER_NAME,
+    ORPHANED_ARCHIVE_FILENAME,
+)
+from agent_wrap.domain.stats.format_utils import day_in_range
 from agent_wrap.domain.stats.models import (
     AggregateResult,
+    ArchivedBuckets,
+    CleanupResult,
     DirResult,
     Group,
     GroupResult,
@@ -29,15 +50,21 @@ from agent_wrap.domain.stats.scan import (
     scan_project,
     scan_session_file,
 )
+from agent_wrap.lib.daytime import get_day
+from agent_wrap.lib.utils import directory_size
 
 if TYPE_CHECKING:
-    from datetime import datetime
     from pathlib import Path
 
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.pricing.models import Bucket
     from agent_wrap.domain.pricing.service import PricingService
-    from agent_wrap.domain.stats.models import RawFileResult, RawRecord, ScanCache
+    from agent_wrap.domain.stats.models import (
+        ArchiveLeaf,
+        RawFileResult,
+        RawRecord,
+        ScanCache,
+    )
 
 
 class StatsService:
@@ -225,28 +252,14 @@ class StatsService:
         Resolve the transient-project group a project path belongs to.
 
         Walks up from ``path`` (inclusive) along its **literal** components looking
-        for the nearest ``.agent_stats_leaf``.
+        for the nearest ``.agent_stats_leaf``. The group is always named after the
+        marker's own directory — the marker file's content, if any, is not read.
         """
-
-        # Inline of _read_marker_name to avoid importing a _-prefixed name.
-        def _read_marker_name(marker: Path) -> str | None:
-            try:
-                text = marker.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                return None
-            for raw_line in text.splitlines():
-                line = raw_line.strip()
-                if line:
-                    return line
-            return None
-
         for candidate in (path, *path.parents):
             marker = candidate / MARKER_NAME
             if marker.is_file():
-                name = _read_marker_name(marker)
-                display_name = name if name is not None else candidate.name
                 return GroupResult(
-                    group_root=candidate, display_name=display_name, is_transient=True
+                    group_root=candidate, display_name=candidate.name, is_transient=True
                 )
         return GroupResult(group_root=path, display_name=path.name, is_transient=False)
 
@@ -342,3 +355,244 @@ class StatsService:
         if sessions == 0:
             return None
         return {"sessions": sessions, "last_ts": last_ts, "total": total}
+
+    # ------------------------------------------------------------------
+    # Cleanup — archiving and deleting orphaned log dirs
+    # ------------------------------------------------------------------
+
+    def orphaned_disk_usage(self, orphaned_dirs: list[Path]) -> int:
+        """
+        Total bytes occupied by *orphaned_dirs*.
+
+        Takes the dir list rather than recomputing it, so the caller can report a
+        size for exactly the same dirs it is about to delete.
+        """
+        return sum(directory_size(logs_dir) for logs_dir in orphaned_dirs)
+
+    def archive_and_delete_orphaned(self, orphaned_dirs: list[Path]) -> CleanupResult:
+        """
+        Archive each orphaned dir's usage, then delete it.
+
+        Takes *orphaned_dirs* from a prior :meth:`orphaned_log_dirs` call so the
+        caller can show counts before confirming and act on that exact list after
+        — no re-walk, no TOCTOU gap.
+
+        Each dir is committed independently in two phases: its merged stats are
+        written to a staging file *before* anything is deleted, and the staging
+        file is promoted over the real archive only once the delete succeeded. A
+        failed ``rmtree`` therefore leaves that dir purely live — it reappears in
+        the next ``orphaned_log_dirs()`` and is never counted twice.
+
+        Scanning is unwindowed (``from_iso=None``), which also disables the
+        mtime culling in ``enumerate_session_files``, so all history is archived
+        including records a normal stats window would skip.
+
+        A failed promotion stops the run: that dir's logs are already gone while
+        its stats live only in the staging file, so the caller must be told to
+        move it into place by hand before more dirs are touched.
+        """
+        archive_path = AGENT_LAUNCHES_DIR / ORPHANED_ARCHIVE_FILENAME
+        staging_path = archive_path.with_suffix(".new.json")
+        combined = read_archive(archive_path)
+        removed = 0
+        freed = 0
+
+        for logs_dir in orphaned_dirs:
+            records: list[RawRecord] = []
+            for provider_name, messages_file in enumerate_session_files(logs_dir, None):
+                records.extend(
+                    scan_session_file(
+                        provider_name, messages_file, from_iso=None, until_iso=None
+                    ).records
+                )
+
+            candidate = copy.deepcopy(combined)
+            merge_archives(candidate, fold_records_into_archive(records, self._pricing))
+            write_archive(staging_path, candidate)
+
+            # Measured before removal — this is the figure reported as freed.
+            size = directory_size(logs_dir)
+            try:
+                shutil.rmtree(logs_dir)
+            except OSError:
+                # Staging is never promoted, so this dir stays unarchived and
+                # keeps being discovered live. Try the remaining dirs.
+                continue
+            try:
+                staging_path.replace(archive_path)
+            except OSError:
+                return CleanupResult(
+                    removed=removed,
+                    freed_bytes=freed,
+                    archive_path=archive_path,
+                    staging_path=staging_path,
+                    finalized=False,
+                )
+            combined = candidate
+            freed += size
+            removed += 1
+
+        staging_path.unlink(missing_ok=True)
+        return CleanupResult(
+            removed=removed,
+            freed_bytes=freed,
+            archive_path=archive_path,
+            staging_path=staging_path,
+            finalized=True,
+        )
+
+    def aggregate_archived_orphaned(
+        self,
+        totals_by_model: dict[str, Bucket],
+        totals_by_day_by_model: dict[str, dict[str, Bucket]],
+        totals_by_source: dict[str, dict[str, Bucket]] | None = None,
+        *,
+        from_iso: str | None = None,
+        until_iso: str | None = None,
+    ) -> OrphanedResult | None:
+        """
+        Aggregate usage ``agent cleanup`` archived from dirs it already deleted.
+
+        The read-side sibling of :meth:`aggregate_orphaned` — same merge shape,
+        but sourced from the archive file instead of a filesystem walk. Folds into
+        the caller's totals in place, exactly like ``aggregate_orphaned``, so the
+        per-day and per-source tables account for archived spend too.
+
+        Both day bucketing and pricing happen *here*, at read time: the archive
+        stores raw UTC hours and no cost, so a later change to
+        ``AGENT_DAY_START_UTC`` or to a provider's pricing table is reflected on
+        the next run. Buckets are priced while still local and merged into the
+        shared totals only afterwards — ``price_buckets`` adds to
+        ``Bucket.cost``, so pricing anything already-priced would double-count.
+
+        Returns None when nothing in the archive falls in range. The condition is
+        message count, not session count: archived data has no session concept, so
+        ``sessions`` is always 0 and testing it would always return None.
+        """
+        local_by_day, local_by_source, last_ts = self._read_archived_buckets(
+            from_iso=from_iso, until_iso=until_iso
+        )
+
+        # Price while local, then merge — never the other way round.
+        price_buckets(local_by_day, self._pricing)
+        price_buckets(local_by_source, self._pricing)
+
+        total = self._pricing.new_bucket()
+        for day, by_model in local_by_day.items():
+            for model, b in by_model.items():
+                total.merge(b)
+                totals_by_model.setdefault(model, self._pricing.new_bucket()).merge(b)
+                totals_by_day_by_model.setdefault(day, {}).setdefault(
+                    model, self._pricing.new_bucket()
+                ).merge(b)
+        if totals_by_source is not None:
+            for source, by_model in local_by_source.items():
+                for model, b in by_model.items():
+                    totals_by_source.setdefault(source, {}).setdefault(
+                        model, self._pricing.new_bucket()
+                    ).merge(b)
+
+        if total.msgs == 0:
+            return None
+        return {"sessions": 0, "last_ts": last_ts, "total": total}
+
+    def _read_archived_buckets(
+        self, *, from_iso: str | None, until_iso: str | None
+    ) -> ArchivedBuckets:
+        """
+        Read the archive and materialize its in-window cells into unpriced buckets.
+
+        Each ``(date, hour)`` cell is re-bucketed to a stats day here, using
+        whatever ``DAY_START_HOURS`` is in force now rather than whatever was in
+        force when the cell was archived — the reason the archive stores raw UTC
+        hours. Returned buckets carry no cost; the caller prices them.
+        """
+        archive = read_archive(AGENT_LAUNCHES_DIR / ORPHANED_ARCHIVE_FILENAME)
+        by_day: dict[str, dict[str, Bucket]] = {}
+        by_source_totals: dict[str, dict[str, Bucket]] = {}
+        last_ts: datetime | None = None
+
+        for date_key, by_hour in archive.items():
+            for hour_key, by_model in by_hour.items():
+                dt = self._archived_hour_dt(date_key, hour_key)
+                day_key = get_day(dt, DAY_START_HOURS).isoformat() if dt else "?"
+                if not day_in_range(day_key, from_iso, until_iso):
+                    continue
+                if dt is not None and (last_ts is None or dt > last_ts):
+                    last_ts = dt
+                for model, by_source in by_model.items():
+                    for source, leaf in by_source.items():
+                        bucket = self._bucket_from_leaf(leaf)
+                        by_day.setdefault(day_key, {}).setdefault(
+                            model, self._pricing.new_bucket()
+                        ).merge(bucket)
+                        by_source_totals.setdefault(source, {}).setdefault(
+                            model, self._pricing.new_bucket()
+                        ).merge(bucket)
+
+        return ArchivedBuckets(by_day, by_source_totals, last_ts)
+
+    def _bucket_from_leaf(self, leaf: ArchiveLeaf) -> Bucket:
+        """
+        Build an unpriced Bucket from one archived leaf's raw counts.
+
+        The explicit 5m/1h split is passed through so ``Bucket.add``'s
+        flat-total fallback is never re-entered on this path — the tier split was
+        already resolved when the record was archived.
+        """
+        cw_5m = leaf.get("cache_write_5m", 0)
+        cw_1h = leaf.get("cache_write_1h", 0)
+        return self._pricing.bucket_from_usage(
+            {
+                "input_tokens": leaf.get("input_tokens", 0),
+                "output_tokens": leaf.get("output_tokens", 0),
+                "cache_creation_input_tokens": cw_5m + cw_1h,
+                "cache_read_input_tokens": leaf.get("cache_read", 0),
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": cw_5m,
+                    "ephemeral_1h_input_tokens": cw_1h,
+                },
+            },
+            msgs=leaf.get("msgs", 0),
+            unrecorded=leaf.get("unrecorded", 0),
+        )
+
+    def _archived_hour_dt(self, date_key: str, hour_key: str) -> datetime | None:
+        """
+        Rebuild the UTC datetime an archived ``(date, hour)`` pair stands for.
+
+        Returns None for the synthetic ``"?"`` keys, and for malformed keys — a
+        hand-edited archive must not break stats.
+        """
+        try:
+            year, month, day = (int(part) for part in date_key.split("-"))
+            return datetime(year, month, day, int(hour_key), tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    def merge_orphaned_results(
+        self, live: OrphanedResult | None, archived: OrphanedResult | None
+    ) -> OrphanedResult | None:
+        """
+        Combine live-scanned and archived orphaned usage into one row's worth.
+
+        Both sources render under the same synthetic ``<orphaned>`` label, so the
+        display layer needs a single result. Passes through whichever side is
+        present when the other is None; otherwise sums sessions, takes the newer
+        timestamp, and merges both totals into a fresh bucket so neither input is
+        mutated.
+        """
+        if live is None:
+            return archived
+        if archived is None:
+            return live
+
+        total = self._pricing.new_bucket()
+        total.merge(live["total"])
+        total.merge(archived["total"])
+        timestamps = [ts for ts in (live["last_ts"], archived["last_ts"]) if ts is not None]
+        return {
+            "sessions": live["sessions"] + archived["sessions"],
+            "last_ts": max(timestamps) if timestamps else None,
+            "total": total,
+        }

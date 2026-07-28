@@ -88,6 +88,69 @@ def test_bucket_add_unrecorded(svc: PricingService) -> None:
     assert b.unrecorded == 1
 
 
+def test_bucket_from_usage_sets_aggregate_counters(svc: PricingService) -> None:
+    """Pre-summed callers set msgs explicitly — add() would only ever count one."""
+    usage: TokenUsage = {
+        "input_tokens": 300,
+        "output_tokens": 150,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40,
+        "cache_creation": {},
+    }
+    b = svc.bucket_from_usage(usage, msgs=7, unrecorded=2)
+    assert b.msgs == 7
+    assert b.unrecorded == 2
+    assert b.in_ == 300
+    assert b.out == 150
+    assert b.cr == 40
+    assert b.cost == 0.0
+    assert b.cost_unknown is False
+
+
+def test_bucket_from_usage_defaults_unrecorded_to_zero(svc: PricingService) -> None:
+    b = svc.bucket_from_usage(_zero_usage(), msgs=3)
+    assert b.unrecorded == 0
+
+
+def test_bucket_from_usage_preserves_explicit_cache_tiers(svc: PricingService) -> None:
+    """An explicit split must pass through untouched, not hit add()'s flat fallback."""
+    usage: TokenUsage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 300,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 100,
+            "ephemeral_1h_input_tokens": 200,
+        },
+    }
+    b = svc.bucket_from_usage(usage, msgs=1)
+    assert b.cw_5m == 100
+    assert b.cw_1h == 200
+
+
+def test_bucket_from_usage_applies_flat_cache_fallback(svc: PricingService) -> None:
+    """Without a split, the flat total still lands on the 5m tier via Bucket.add."""
+    usage: TokenUsage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 500,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {},
+    }
+    b = svc.bucket_from_usage(usage, msgs=1)
+    assert b.cw_5m == 500
+    assert b.cw_1h == 0
+
+
+def test_bucket_from_usage_returns_independent_buckets(svc: PricingService) -> None:
+    first = svc.bucket_from_usage(_zero_usage(), msgs=1)
+    second = svc.bucket_from_usage(_zero_usage(), msgs=1)
+    first.merge(second)
+    assert first.msgs == 2
+    assert second.msgs == 1
+
+
 def test_bucket_add_falls_back_to_5m_when_no_ephemeral_split(svc: PricingService) -> None:
     """When cache_creation has no ephemeral keys, cw_5m gets the flat total."""
     b = svc.new_bucket()

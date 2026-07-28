@@ -194,7 +194,7 @@ def _epoch(primary: Any, fallback: Any) -> float | None:
     return None
 
 
-def build_record(  # noqa: PLR0913
+def build_record(  # noqa: PLR0913, PLR0917
     kwargs: dict[str, Any],
     response_obj: Any,
     status: str,

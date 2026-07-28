@@ -81,12 +81,18 @@ ScanCache = dict["Path", DirResult]
 # A raw record returned by scan workers. Workers produce these without any
 # pricing-domain knowledge; the master normalizes model names and folds into
 # Buckets.
+#
+# *ts* is the record's raw UTC timestamp, kept alongside *day_key* because the
+# latter has already had ``DAY_START_HOURS`` applied — the usage archive needs
+# the un-offset instant so ``agent stats`` can re-bucket it at read time with
+# whatever ``AGENT_DAY_START_UTC`` is in force then.
 class RawRecord(NamedTuple):
     day_key: str
     display_model: str
     usage: TokenUsage
     source: str
     unrecorded: bool
+    ts: datetime | None
 
 
 # A raw file result from a pool worker.
@@ -146,6 +152,57 @@ class OrphanedResult(TypedDict):
     sessions: int
     last_ts: datetime | None
     total: Bucket
+
+
+class ArchiveLeaf(TypedDict):
+    """
+    One archived ``(date, hour, model, source)`` cell's token counts.
+
+    Field names are descriptive rather than mirroring ``Bucket``'s internal
+    ``in_``/``cw_5m`` slots — this is a persisted on-disk format, not an
+    in-memory struct. Cost is deliberately absent: pricing is applied fresh on
+    every read so archived spend tracks later pricing-table changes.
+    """
+
+    msgs: int
+    input_tokens: int
+    output_tokens: int
+    cache_write_5m: int
+    cache_write_1h: int
+    cache_read: int
+    unrecorded: int
+
+
+# The usage archive: date -> hour -> "provider/model" -> source -> leaf.
+#
+# Dates are raw UTC calendar days (``YYYY-MM-DD``) and hours are zero-padded UTC
+# hours (``"00"``-``"23"``), NOT stats-bucketed days — re-bucketing via
+# ``get_day``/``DAY_START_HOURS`` happens at read time. Records with no
+# timestamp use ``"?"`` for both, matching ``day_in_range``'s synthetic key.
+# Hours are a dict rather than a list because most hours in a day are empty.
+ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
+
+
+# Archived usage materialized into priceable buckets, before it is merged into
+# the shared stats totals. *last_ts* is the newest in-window archived hour.
+class ArchivedBuckets(NamedTuple):
+    by_day: dict[str, dict[str, Bucket]]
+    by_source: dict[str, dict[str, Bucket]]
+    last_ts: datetime | None
+
+
+# Return type for archive_and_delete_orphaned.
+#
+# *removed*/*freed_bytes* count only dirs actually deleted, so they may fall
+# short of the pre-confirmation estimate when a ``rmtree`` failed.
+# *finalized* is False when promoting the staging file over the real archive
+# failed, meaning the caller must tell the user to move it by hand.
+class CleanupResult(NamedTuple):
+    removed: int
+    freed_bytes: int
+    archive_path: Path
+    staging_path: Path
+    finalized: bool
 
 
 # Return type for aggregate_projects: the four render inputs rolled up across all projects.

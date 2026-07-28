@@ -125,10 +125,17 @@ def run(args: list[str]) -> int:
     # Filter out projects with no logs
     rows = [r for r in rows if r["sessions"] > 0]
 
-    # Logs left behind by deleted projects / stale registry entries.
+    # Logs left behind by deleted projects / stale registry entries, plus usage
+    # `agent cleanup` archived from log dirs it has already deleted. Both belong to
+    # the same synthetic <orphaned> row, so they are merged into one result — and
+    # the merge must land here, before the early return below, or an
+    # everything-cleaned-up state would report "no logs found" and never render.
+    # Both calls fold into the shared totals, so they share the pattern gate:
+    # folding in spend whose row is suppressed would break the agreement between
+    # the projects table and the by-day totals.
     orphaned = None
     if _show_orphaned(parsed):
-        orphaned = stats.aggregate_orphaned(
+        live = stats.aggregate_orphaned(
             projects,
             totals_by_model,
             totals_by_day_by_model,
@@ -137,6 +144,14 @@ def run(args: list[str]) -> int:
             until_iso=parsed.until_iso,
             scan_cache=scan_cache,
         )
+        archived = stats.aggregate_archived_orphaned(
+            totals_by_model,
+            totals_by_day_by_model,
+            totals_by_source,
+            from_iso=parsed.from_iso,
+            until_iso=parsed.until_iso,
+        )
+        orphaned = stats.merge_orphaned_results(live, archived)
 
     if not rows and orphaned is None:
         dsp.error("usage: no LiteLLM logs found for any registered project.")
