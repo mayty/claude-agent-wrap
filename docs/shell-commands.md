@@ -10,6 +10,7 @@
 | `create` | Scaffold a `Dockerfile.agent` |
 | `stats` | Aggregate token usage and cost |
 | `logs` | Browse LiteLLM request logs in a local web viewer |
+| `cleanup` | Delete leftover logs and registry entries from removed projects |
 | `update` | Pull latest wrapper source |
 | `secrets` | Manage encrypted sidecar/provider secrets |
 
@@ -80,7 +81,7 @@ Day buckets default to host-local midnight-to-midnight; see [`AGENT_DAY_START_UT
 
 Create an `.agent_stats_leaf` file in a directory to aggregate every registered project at or beneath it into a single **transient project** row, instead of one row per project — handy when a script launches many agents in per-run subdirectories. The group is always named after the marker directory itself; the file's content is irrelevant — only its presence matters. The aggregated row is accented in color (alongside the `<orphaned>` row) to set it apart. The lookup walks the path literally (symlinks are not resolved), so a directory that holds an `.agent_stats_leaf` plus symlinks to several unrelated projects groups them all together.
 
-Logs left behind by a deleted or unregistered project — request logs that survive under `<wrap-dir>/litellm-logs/` after their project is gone from the registry — are gathered into a synthetic `<orphaned>` row so their usage is not silently lost. It appears as its own line (not under the project tree), and its tokens and cost are still included in the per-model and per-day totals.
+Logs left behind by a deleted or unregistered project — request logs that survive under `<wrap-dir>/litellm-logs/` after their project is gone from the registry — are gathered into a synthetic `<orphaned>` row so their usage is not silently lost. It appears as its own line (not under the project tree), and its tokens and cost are still included in the per-model and per-day totals. Usage that [`agent cleanup`](#agent-cleanup) archived before deleting such logs folds into the same row, so cleaned-up spend keeps appearing here; because the archive keeps no session identity, it contributes to the token and cost columns but not to `SESSIONS`.
 
 ## `agent logs`
 
@@ -98,6 +99,25 @@ The viewer applies the same grouping as `agent stats`: projects under an `.agent
 
 - **`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one. Ignored when a viewer is already running.
 - **`--stop`** — stops the background viewer (no-op with a friendly message if none is running).
+
+## `agent cleanup`
+
+```
+agent cleanup [--dry-run]
+```
+
+Removes the two kinds of leftover state that accumulate when a registered project is deleted or renamed, both of which [`agent stats`](#agent-stats) already reports but never cleans up:
+
+- **Orphaned log dirs** — `<wrap-dir>/litellm-logs/<hash>/` directories no longer reachable from any registered project's `.claude/litellm-logs` symlink. These hold the raw per-request JSONL and are what actually consumes disk.
+- **Stale registry entries** — lines in `<wrap-dir>/.agent-launches/projects.txt` whose project directory no longer has a logs directory (shown as `(missing)` in the stats tree).
+
+Prints how many log dirs it would delete and roughly how much space that frees, then asks for confirmation — it proceeds only on `y`, and cancels on anything else (including a non-interactive stdin). On success it prints a one-line summary with the space actually reclaimed, never the stats table.
+
+Usage is preserved before deletion, so cleaning up does not make historical spend disappear from `agent stats`. Each dir's token counts are merged into an archive at `<wrap-dir>/.agent-launches/orphaned-usage-archive.json`, keyed by UTC date → hour → model → usage source. Deletion is a per-directory two-phase commit: the merged counts are written to a `*.new.json` staging file, the directory is removed, and only then is the staging file promoted over the real archive. A directory that cannot be deleted is therefore never archived — it simply shows up again next run rather than being counted twice. If the final promotion fails, the command stops and tells you the `mv` to run by hand.
+
+The archive deliberately stores raw UTC hours and no cost. Day bucketing (see [`AGENT_DAY_START_UTC`](configuration.md#agent_day_start_utc-stats-day-boundary-offset)) and pricing are re-derived on every `agent stats` run, so changing your day boundary or a provider's prices afterwards still reports archived spend correctly.
+
+- **`--dry-run`** — prints the same counts and size estimate, then exits. Never prompts and never deletes or rewrites anything.
 
 ## `agent secrets`
 

@@ -12,3 +12,9 @@ ORPHANED_LABEL = "<orphaned>"
 # The shared sidecar writes every project's logs under
 # ``<tool_dir>/litellm-logs/<project_hash>/<provider>/<session>/``.
 CENTRAL_LOGS_DIRNAME = "litellm-logs"
+
+# ``agent cleanup`` archives the usage of orphaned log dirs here before deleting
+# them, so their spend keeps showing up in ``agent stats``. Lives beside
+# ``projects.txt`` in ``AGENT_LAUNCHES_DIR`` — host-wide bookkeeping that must
+# outlive the log dirs it describes.
+ORPHANED_ARCHIVE_FILENAME = "orphaned-usage-archive.json"

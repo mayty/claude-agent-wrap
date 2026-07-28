@@ -226,7 +226,7 @@ def scan_session_file(
                     assert day_key is not None
                     assert display_model is not None
                     assert usage is not None
-                    records.append(RawRecord(day_key, display_model, usage, source, unrecorded))
+                    records.append(RawRecord(day_key, display_model, usage, source, unrecorded, ts))
                 if ts is not None and (last_ts is None or ts > last_ts):
                     last_ts = ts
     except OSError:
@@ -250,12 +250,12 @@ def fold_raw_to_buckets(
     """
     by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
     by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
-    for day_key, display_model, usage, source, unrecorded in records:
-        provider, _, model = display_model.partition("/")
+    for rec in records:
+        provider, _, model = rec.display_model.partition("/")
         norm_model = pricing.normalize_model(model) or model
         norm_display = f"{provider}/{norm_model}"
-        by_day[day_key][norm_display].add(usage, 0.0, unrecorded=unrecorded)
-        by_source[source][norm_display].add(usage, 0.0, unrecorded=unrecorded)
+        by_day[rec.day_key][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
+        by_source[rec.source][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
     return (
         {d: dict(m) for d, m in by_day.items()},
         {s: dict(m) for s, m in by_source.items()},

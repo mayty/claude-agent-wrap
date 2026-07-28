@@ -4,6 +4,10 @@
 # Formatting
 THOUSAND = 1_000
 
+# Byte-size abbreviation step. Binary, unlike THOUSAND's decimal step, because
+# byte counts come from the filesystem.
+KIBIBYTE = 1024
+
 # Spinner glyph sets
 SPINNERS: dict[str, tuple[tuple[str, ...], float | None]] = {
     "default": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), None),

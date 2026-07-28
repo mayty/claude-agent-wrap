@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import stat
 import uuid
 from pathlib import Path
 
@@ -39,3 +40,27 @@ def generate_uuid() -> str:
 def is_truthy_env(value: str) -> bool:
     """Check if an env var value is truthy (not empty/0/false/no)."""
     return value.lower() not in ("", "0", "false", "no")
+
+
+def directory_size(path: Path) -> int:
+    """
+    Sum the apparent size of every regular file under *path*, recursively.
+
+    Best-effort: per-entry ``OSError`` is swallowed so a file disappearing
+    mid-walk (or an unreadable subtree) yields a smaller total rather than
+    aborting. Symlinks are not followed — only their own size counts.
+    Returns 0 for a missing or empty directory.
+    """
+    total = 0
+    try:
+        entries = list(path.rglob("*"))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            st = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode):
+            total += st.st_size
+    return total

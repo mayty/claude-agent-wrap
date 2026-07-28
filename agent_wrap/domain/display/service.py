@@ -7,7 +7,7 @@ import sys
 from getpass import getpass
 from typing import TYPE_CHECKING, TextIO
 
-from agent_wrap.domain.display.constants import THOUSAND
+from agent_wrap.domain.display.constants import KIBIBYTE, THOUSAND
 from agent_wrap.domain.display.models import Ansi
 from agent_wrap.domain.display.spinner import Spinner
 
@@ -131,6 +131,27 @@ class DisplayService:
         for unit in units:
             value /= THOUSAND
             if value < THOUSAND:
+                return f"{value:.1f}{unit}"
+
+        return f"{value:.1f}{units[-1]}"
+
+    def format_bytes(self, n: int) -> str:
+        """
+        Abbreviate a byte count with binary units: ``2048`` → ``"2.0KB"``.
+
+        The binary-stepped sibling of :meth:`format_count`. Sub-kilobyte values
+        render exactly (``0`` → ``"0B"``), which is a legitimate result when the
+        directories being measured are empty rather than an error.
+        """
+        units = "KB", "MB", "GB"
+
+        if n < KIBIBYTE:
+            return f"{n}B"
+
+        value = float(n)
+        for unit in units:
+            value /= KIBIBYTE
+            if value < KIBIBYTE:
                 return f"{value:.1f}{unit}"
 
         return f"{value:.1f}{units[-1]}"

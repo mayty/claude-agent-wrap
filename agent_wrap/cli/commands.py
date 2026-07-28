@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 
+from agent_wrap.cli.cleanup.complete import complete as cleanup_complete
+from agent_wrap.cli.cleanup.run import run as cleanup_run
 from agent_wrap.cli.create.complete import complete as create_complete
 from agent_wrap.cli.create.run import run as create_run
 from agent_wrap.cli.logs.complete import complete as logs_complete
@@ -26,6 +28,7 @@ RunFunc = Callable[[list[str]], int]
 CompleteFunc = Callable[[int, list[str]], list[str]]
 
 COMMANDS: dict[str, tuple[RunFunc, CompleteFunc]] = {
+    "cleanup": (cleanup_run, cleanup_complete),
     "create": (create_run, create_complete),
     "logs": (logs_run, logs_complete),
     "rebuild": (rebuild_run, rebuild_complete),

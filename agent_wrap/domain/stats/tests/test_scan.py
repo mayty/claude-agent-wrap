@@ -18,7 +18,12 @@ from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import SidecarService
-from agent_wrap.domain.stats.scan import plan_pool, scan_logs_dir
+from agent_wrap.domain.stats.scan import (
+    accumulate_record,
+    plan_pool,
+    scan_logs_dir,
+    scan_session_file,
+)
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
@@ -212,6 +217,81 @@ def test_day_start_hours_shifts_record_bucket(
     mocker.patch.object(scan_mod, "DAY_START_HOURS", 2)
     _sessions, _last_ts, by_day_2, _by_source = scan_logs_dir(logs, pricing_service)
     assert set(by_day_2) == {"2026-06-14"}
+
+
+def test_accumulate_record_carries_raw_timestamp() -> None:
+    """The archive re-buckets by UTC hour, so the un-offset instant must survive."""
+    ts = datetime(2026, 6, 15, 14, 37, 12, tzinfo=timezone.utc)
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "timing": {"start": ts.timestamp()},
+        "response": {"usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+    }
+    result = accumulate_record(rec, "litellm-bedrock", from_iso=None, until_iso=None)
+    assert result.accumulated is True
+    assert result.ts == ts
+
+
+def test_accumulate_record_accumulates_timestampless_record_when_range_open() -> None:
+    """An unwindowed scan keeps records the archive must file under the "?" key."""
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "response": {"usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+    }
+    result = accumulate_record(rec, "litellm-bedrock", from_iso=None, until_iso=None)
+    assert result.accumulated is True
+    assert result.ts is None
+    assert result.day_key == "?"
+
+
+@pytest.mark.parametrize(
+    ("from_iso", "until_iso"),
+    [("2026-06-01", None), (None, "2026-06-30"), ("2026-06-01", "2026-06-30")],
+)
+def test_accumulate_record_drops_timestampless_record_when_windowed(
+    from_iso: str | None,
+    until_iso: str | None,
+) -> None:
+    """A record with no timestamp cannot be range-checked, so any bound excludes it."""
+    rec = {
+        "status": "success",
+        "model": "claude-opus-4-8",
+        "response": {"usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+    }
+    result = accumulate_record(rec, "litellm-bedrock", from_iso=from_iso, until_iso=until_iso)
+    assert result.accumulated is False
+
+
+def test_scan_session_file_records_carry_timestamps(tmp_path: Path) -> None:
+    """scan_session_file threads each record's ts through to its RawRecord."""
+    ts = datetime(2026, 6, 15, 9, 0, 0, tzinfo=timezone.utc)
+    msg = tmp_path / "messages.jsonl"
+    with msg.open("w", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "status": "success",
+                    "model": "claude-opus-4-8",
+                    "timing": {"start": ts.timestamp()},
+                    "response": {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+                }
+            )
+            + "\n"
+        )
+        f.write(
+            json.dumps(
+                {
+                    "status": "success",
+                    "model": "claude-opus-4-8",
+                    "response": {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+                }
+            )
+            + "\n"
+        )
+    result = scan_session_file("litellm-bedrock", msg, from_iso=None, until_iso=None)
+    assert [r.ts for r in result.records] == [ts, None]
 
 
 def test_scan_log_dirs_serial_matches_scan_logs_dir(

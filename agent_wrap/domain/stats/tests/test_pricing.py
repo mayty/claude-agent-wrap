@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -19,6 +19,7 @@ from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import SidecarService
+from agent_wrap.domain.stats.constants import ORPHANED_ARCHIVE_FILENAME
 from agent_wrap.domain.stats.cost import usage_source
 from agent_wrap.domain.stats.service import StatsService
 
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest_mock
+
+    from agent_wrap.domain.stats.models import ArchiveDoc, ArchiveLeaf
 
 
 class FakeProvider(Provider):
@@ -331,6 +334,340 @@ def test_aggregate_orphaned_none_when_all_reachable(
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
     orphaned = stats_svc.aggregate_orphaned([project], {}, {}, {})
     assert orphaned is None
+
+
+def _archived_leaf(  # noqa: PLR0913
+    *,
+    msgs: int = 1,
+    in_tokens: int = 1000,
+    out_tokens: int = 500,
+    cw_5m: int = 0,
+    cw_1h: int = 0,
+    cr: int = 0,
+    unrecorded: int = 0,
+) -> ArchiveLeaf:
+    return {
+        "msgs": msgs,
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "cache_write_5m": cw_5m,
+        "cache_write_1h": cw_1h,
+        "cache_read": cr,
+        "unrecorded": unrecorded,
+    }
+
+
+def _write_archive(tmp_path: Path, doc: ArchiveDoc) -> Path:
+    """Write the usage archive where StatsService will look for it."""
+    path = tmp_path / ".agent-launches" / ORPHANED_ARCHIVE_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def test_aggregate_archived_folds_into_totals(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    _write_archive(
+        tmp_path,
+        {"2026-07-20": {"14": {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}}},
+    )
+    totals_by_model: dict[str, Bucket] = {}
+    totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
+    totals_by_source: dict[str, dict[str, Bucket]] = {}
+
+    result = stats_svc.aggregate_archived_orphaned(
+        totals_by_model, totals_by_day_by_model, totals_by_source
+    )
+
+    assert result is not None
+    assert result["sessions"] == 0
+    assert result["total"].msgs == 1
+    assert result["total"].in_ == 1000
+    assert result["total"].cost > 0
+    assert totals_by_model["litellm-bedrock/claude-opus-4-8"].msgs == 1
+    assert totals_by_day_by_model["2026-07-20"]["litellm-bedrock/claude-opus-4-8"].msgs == 1
+    assert totals_by_source["native"]["litellm-bedrock/claude-opus-4-8"].msgs == 1
+
+
+def test_aggregate_archived_reconstructs_last_ts(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """The newest in-window hour becomes last_ts, so LAST LAUNCH stays informative."""
+    leaf = {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}
+    _write_archive(
+        tmp_path,
+        {"2026-07-20": {"09": leaf, "17": leaf}, "2026-07-19": {"23": leaf}},
+    )
+    result = stats_svc.aggregate_archived_orphaned({}, {})
+    assert result is not None
+    assert result["last_ts"] == datetime(2026, 7, 20, 17, tzinfo=timezone.utc)
+
+
+def test_aggregate_archived_rebuckets_day_at_read_time(
+    stats_svc: StatsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """
+    Re-bucket the same archived hour under two different DAY_START_HOURS values.
+
+    This is the whole reason the archive stores raw UTC hours instead of days: the
+    user can change AGENT_DAY_START_UTC after a cleanup ran.
+    """
+    _write_archive(
+        tmp_path,
+        {"2026-07-20": {"01": {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}}},
+    )
+
+    mocker.patch("agent_wrap.domain.stats.service.DAY_START_HOURS", 0)
+    by_day_zero: dict[str, dict[str, Bucket]] = {}
+    stats_svc.aggregate_archived_orphaned({}, by_day_zero)
+    assert set(by_day_zero) == {"2026-07-20"}
+
+    mocker.patch("agent_wrap.domain.stats.service.DAY_START_HOURS", 2)
+    by_day_two: dict[str, dict[str, Bucket]] = {}
+    stats_svc.aggregate_archived_orphaned({}, by_day_two)
+    assert set(by_day_two) == {"2026-07-19"}
+
+
+@pytest.mark.parametrize(
+    ("from_iso", "until_iso", "expected"),
+    [
+        (None, None, True),
+        ("2026-07-01", "2026-07-31", True),
+        ("2026-07-21", None, False),
+        (None, "2026-07-19", False),
+        ("2026-07-20", "2026-07-20", True),
+    ],
+)
+def test_aggregate_archived_respects_window(  # noqa: PLR0913, PLR0917
+    stats_svc: StatsService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockerFixture,
+    from_iso: str | None,
+    until_iso: str | None,
+    expected: bool,  # noqa: FBT001
+) -> None:
+    mocker.patch("agent_wrap.domain.stats.service.DAY_START_HOURS", 0)
+    _write_archive(
+        tmp_path,
+        {"2026-07-20": {"12": {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}}},
+    )
+    result = stats_svc.aggregate_archived_orphaned({}, {}, from_iso=from_iso, until_iso=until_iso)
+    assert (result is not None) is expected
+
+
+def test_aggregate_archived_timestampless_only_in_all_time_view(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """The "?" cell cannot be range-checked, so any bound excludes it."""
+    _write_archive(
+        tmp_path,
+        {"?": {"?": {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}}},
+    )
+    assert stats_svc.aggregate_archived_orphaned({}, {}) is not None
+    assert stats_svc.aggregate_archived_orphaned({}, {}, from_iso="2026-01-01") is None
+
+
+def test_aggregate_archived_none_when_absent(stats_svc: StatsService) -> None:
+    assert stats_svc.aggregate_archived_orphaned({}, {}) is None
+
+
+def test_aggregate_archived_none_leaves_totals_untouched(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """An out-of-window archive must not inject spend it reports no row for."""
+    _write_archive(
+        tmp_path,
+        {"2026-07-20": {"12": {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}}},
+    )
+    totals_by_model: dict[str, Bucket] = {}
+    totals_by_day_by_model: dict[str, dict[str, Bucket]] = {}
+
+    result = stats_svc.aggregate_archived_orphaned(
+        totals_by_model, totals_by_day_by_model, from_iso="2027-01-01"
+    )
+
+    assert result is None
+    assert totals_by_model == {}
+    assert totals_by_day_by_model == {}
+
+
+def test_aggregate_archived_does_not_double_price_live_buckets(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """Merging must not re-price an already-priced live bucket for the same model."""
+    model = "litellm-bedrock/claude-opus-4-8"
+    _write_archive(tmp_path, {"2026-07-20": {"14": {model: {"native": _archived_leaf()}}}})
+
+    # Establish the archived-only cost, then repeat with a live bucket present.
+    solo = stats_svc.aggregate_archived_orphaned({}, {})
+    assert solo is not None
+    archived_cost = solo["total"].cost
+
+    live = stats_svc._pricing.new_bucket()
+    live.add(
+        {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        },
+        7.5,
+    )
+    totals_by_model = {model: live}
+    stats_svc.aggregate_archived_orphaned(totals_by_model, {})
+
+    assert totals_by_model[model].cost == pytest.approx(7.5 + archived_cost)
+
+
+def test_aggregate_archived_prices_cache_tiers_separately(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """The stored 5m/1h split survives the round trip, so tiers price distinctly."""
+    model = "litellm-bedrock/claude-opus-4-8"
+    _write_archive(
+        tmp_path,
+        {
+            "2026-07-20": {
+                "14": {
+                    model: {"native": _archived_leaf(in_tokens=0, out_tokens=0, cw_5m=1_000_000)}
+                }
+            }
+        },
+    )
+    five_min = stats_svc.aggregate_archived_orphaned({}, {})
+
+    _write_archive(
+        tmp_path,
+        {
+            "2026-07-20": {
+                "14": {
+                    model: {"native": _archived_leaf(in_tokens=0, out_tokens=0, cw_1h=1_000_000)}
+                }
+            }
+        },
+    )
+    one_hour = stats_svc.aggregate_archived_orphaned({}, {})
+
+    assert five_min is not None
+    assert one_hour is not None
+    assert five_min["total"].cw_5m == 1_000_000
+    assert one_hour["total"].cw_1h == 1_000_000
+    # 1h cache writes are the pricier tier (_RATES: cw_1h 11.0 vs cw_5m 6.875).
+    assert one_hour["total"].cost > five_min["total"].cost
+
+
+def test_aggregate_archived_carries_unrecorded_count(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """Unrecorded requests must reach the totals so the stats footnote counts them."""
+    _write_archive(
+        tmp_path,
+        {
+            "2026-07-20": {
+                "14": {
+                    "litellm-bedrock/claude-opus-4-8": {
+                        "unrecoverable": _archived_leaf(
+                            msgs=3, in_tokens=0, out_tokens=0, unrecorded=3
+                        )
+                    }
+                }
+            }
+        },
+    )
+    totals_by_model: dict[str, Bucket] = {}
+    result = stats_svc.aggregate_archived_orphaned(totals_by_model, {})
+
+    assert result is not None
+    assert result["total"].unrecorded == 3
+    assert sum(b.unrecorded for b in totals_by_model.values()) == 3
+
+
+def test_aggregate_archived_tolerates_malformed_keys(
+    stats_svc: StatsService,
+    tmp_path: Path,
+) -> None:
+    """A hand-edited archive with a bad date key must not break stats."""
+    _write_archive(
+        tmp_path,
+        {"not-a-date": {"99": {"litellm-bedrock/claude-opus-4-8": {"native": _archived_leaf()}}}},
+    )
+    result = stats_svc.aggregate_archived_orphaned({}, {})
+    # Falls back to the "?" day bucket rather than raising.
+    assert result is not None
+    assert result["total"].msgs == 1
+
+
+def test_merge_orphaned_results_combines_both(stats_svc: StatsService) -> None:
+    live_total = stats_svc._pricing.new_bucket()
+    live_total.add(
+        {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        },
+        1.0,
+    )
+    archived_total = stats_svc._pricing.new_bucket()
+    archived_total.add(
+        {
+            "input_tokens": 20,
+            "output_tokens": 7,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        },
+        2.0,
+    )
+    live_ts = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    archived_ts = datetime(2026, 7, 20, tzinfo=timezone.utc)
+
+    merged = stats_svc.merge_orphaned_results(
+        {"sessions": 2, "last_ts": live_ts, "total": live_total},
+        {"sessions": 0, "last_ts": archived_ts, "total": archived_total},
+    )
+
+    assert merged is not None
+    assert merged["sessions"] == 2
+    assert merged["last_ts"] == archived_ts
+    assert merged["total"].msgs == 2
+    assert merged["total"].in_ == 30
+    assert merged["total"].cost == pytest.approx(3.0)
+    # Neither input is mutated.
+    assert live_total.in_ == 10
+    assert archived_total.in_ == 20
+
+
+def test_merge_orphaned_results_passes_through_single_side(stats_svc: StatsService) -> None:
+    only = {
+        "sessions": 1,
+        "last_ts": datetime(2026, 7, 1, tzinfo=timezone.utc),
+        "total": stats_svc._pricing.new_bucket(),
+    }
+    assert stats_svc.merge_orphaned_results(only, None) is only  # type: ignore[arg-type]
+    assert stats_svc.merge_orphaned_results(None, only) is only  # type: ignore[arg-type]
+    assert stats_svc.merge_orphaned_results(None, None) is None
+
+
+def test_merge_orphaned_results_handles_missing_timestamps(stats_svc: StatsService) -> None:
+    merged = stats_svc.merge_orphaned_results(
+        {"sessions": 1, "last_ts": None, "total": stats_svc._pricing.new_bucket()},
+        {"sessions": 0, "last_ts": None, "total": stats_svc._pricing.new_bucket()},
+    )
+    assert merged is not None
+    assert merged["last_ts"] is None
 
 
 def test_usage_source_native(success_rec: dict[str, Any]) -> None:
