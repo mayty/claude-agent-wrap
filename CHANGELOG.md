@@ -7,17 +7,13 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.8.0](releases/0.8.0.md) — 2026-07-10
 
-Adds `agent secrets` (set, check, clear, cleanup) for managing sidecar credentials
-through the CLI instead of hand-editing plaintext files. Secrets are now stored
-encrypted. `agent run` prompts interactively when a secret is missing, so no
-separate setup step is needed. Existing plaintext files are migrated automatically.
-Tab completion is now powered by Python so it stays in sync with flags automatically.
-`agent stats` gains a `-p`/`--pattern` project filter and a configurable
-`AGENT_DAY_START_UTC` day boundary; `.agent_stats_leaf` transient groups are now
-always named after their marker directory (custom names from the file's content
-are no longer supported). The `agent logs` viewer now tracks daily usage into
-`~/.claude/usage.json`, which the bundled statusline displays. Also improves the
-`agent logs` viewer more broadly.
+Adds `agent secrets` (set, check, clear, cleanup) for managing encrypted sidecar
+credentials via the CLI; `agent run` now prompts for missing secrets interactively,
+and existing plaintext files migrate automatically. A new `agent cleanup` command
+removes orphaned logs and stale registry entries left behind by deleted projects.
+`agent stats` gains a `-p`/`--pattern` filter and a configurable `AGENT_DAY_START_UTC`
+day boundary. The `agent logs` viewer tracks daily usage for the bundled statusline
+and gets broader improvements, and tab completion is now Python-powered.
 
 ## [0.7.1](releases/0.7.1.md) — 2026-06-30
 
