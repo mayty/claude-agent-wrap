@@ -18,11 +18,10 @@ dev = [
 # pytest
 # ---------------------------------------------------------------------------
 [tool.pytest]
-testpaths = ["agent_wrap"]
+testpaths = ["agent_wrap", "scripts"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = [
-    "-v",
     "--tb=short",
     "--strict-markers",
 ]
@@ -122,7 +121,7 @@ ignore = [
 "ops/statusline.py" = [
     "BLE001", # broad except Exception -- statusline must never crash
 ]
-"agent_wrap/domain/providers/litellm_common/litellm_runtime/**" = [
+"agent_wrap/domain/providers/litellm_runtime/**" = [
     "INP001",  # not a package — plain dir of files mounted into the sidecar container
     "TC001",   # imports from the parent package are runtime dependencies in sidecar context
     "TC002",   # same — sidecar-deployed files import at runtime, not just type-checking
@@ -178,14 +177,10 @@ project_includes = [
     "ops/statusline.py",
     "scripts",
 ]
-project_excludes = [
-    # litellm_runtime/ is not a Python package — it's a directory of files
-    # mounted into the sidecar container. Imports within it use sys.path
-    # manipulation rather than package-relative imports.
-    "agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py",
-    "agent_wrap/domain/providers/litellm_common/litellm_runtime/helpers.py",
-    "agent_wrap/domain/providers/litellm_common/litellm_runtime/string_hasher.py",
-]
+# No project_excludes for litellm_runtime/: `make typecheck` runs `pyrefly check .`,
+# and an explicit path argument makes pyrefly ignore project_excludes entirely, so
+# those entries never took effect. The directory's flat sys.path imports are covered
+# by inline `# type: ignore` comments in the files themselves instead.
 python_version = "3.10"
 
 [tool.pyrefly.errors]

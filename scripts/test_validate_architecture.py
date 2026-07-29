@@ -46,8 +46,8 @@ def test_source_subpackage_key_test_file_inherits_parent() -> None:
 
 
 def test_source_subpackage_key_nested_test_file_inherits_nested() -> None:
-    p = DOMAIN_DIR / "providers" / "litellm_common" / "tests" / "test_provider.py"
-    assert source_subpackage_key(p) == "providers.litellm_common"
+    p = DOMAIN_DIR / "providers" / "litellm_bedrock" / "tests" / "test_bedrock.py"
+    assert source_subpackage_key(p) == "providers.litellm_bedrock"
 
 
 def test_source_subpackage_key_outside_domain_returns_none() -> None:
@@ -205,11 +205,12 @@ def test_rule_a_type_checking_guard_allowed_runtime_import_same_subpackage_still
     assert _violation_codes(check_file(fp)) == set()
 
 
-def test_rule_a_provider_nesting_provider_import_from_common_is_cross(make: _Maker) -> None:
+def test_rule_a_provider_nesting_provider_import_from_sibling_is_cross(make: _Maker) -> None:
+    """One nested provider reaching into another is a cross-subpackage import."""
     make.write(
         "agent_wrap/domain/providers/litellm_bedrock/provider.py",
         """\
-        from agent_wrap.domain.providers.litellm_common.provider import LiteLLMProvider
+        from agent_wrap.domain.providers.litellm_dashscope.provider import DashscopeProvider
         """,
     )
     fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_bedrock" / "provider.py"
@@ -217,18 +218,23 @@ def test_rule_a_provider_nesting_provider_import_from_common_is_cross(make: _Mak
     assert "EA001" in _violation_codes(violations)
 
 
-def test_rule_a_provider_nesting_provider_import_from_parent_providers_is_cross(
+def test_rule_a_provider_nesting_provider_import_from_parent_providers_is_allowed(
     make: _Maker,
 ) -> None:
+    """
+    A nested provider importing from its parent ``providers`` package is allowed.
+
+    This is a child -> ancestor import, which ``_check_prefix_module_for_cross_domain``
+    exempts explicitly — every provider subclasses ``providers.base.Provider``.
+    """
     make.write(
-        "agent_wrap/domain/providers/litellm_common/provider.py",
+        "agent_wrap/domain/providers/litellm_bedrock/provider.py",
         """\
-        from agent_wrap.domain.providers.base import BaseProvider
+        from agent_wrap.domain.providers.base import Provider
         """,
     )
-    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_common" / "provider.py"
-    violations = check_file(fp)
-    assert "EA001" in _violation_codes(violations)
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_bedrock" / "provider.py"
+    assert "EA001" not in _violation_codes(check_file(fp))
 
 
 def test_rule_b_private_name_import_violation_from_import_private(make: _Maker) -> None:
@@ -273,20 +279,12 @@ def test_rule_b_test_files_allowed_private_import_in_test_dir(make: _Maker) -> N
 def test_rule_c_litellm_runtime_runtime_agent_wrap_import_flagged(make: _Maker) -> None:
     """Files under litellm_runtime/ must not import from agent_wrap at runtime."""
     make.write(
-        "agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py",
+        "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
         from agent_wrap.domain.pricing.models import Bucket
         """,
     )
-    fp = (
-        make.root
-        / "agent_wrap"
-        / "domain"
-        / "providers"
-        / "litellm_common"
-        / "litellm_runtime"
-        / "callback.py"
-    )
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_runtime" / "callback.py"
     violations = check_file(fp)
     assert "EC001" in _violation_codes(violations)
 
@@ -296,20 +294,12 @@ def test_rule_c_litellm_runtime_runtime_import_agent_wrap_statement_flagged(
 ) -> None:
     """Plain ``import agent_wrap.foo`` in litellm_runtime is also flagged."""
     make.write(
-        "agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py",
+        "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
         import agent_wrap.domain.foo
         """,
     )
-    fp = (
-        make.root
-        / "agent_wrap"
-        / "domain"
-        / "providers"
-        / "litellm_common"
-        / "litellm_runtime"
-        / "callback.py"
-    )
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_runtime" / "callback.py"
     violations = check_file(fp)
     assert "EC001" in _violation_codes(violations)
 
@@ -317,22 +307,14 @@ def test_rule_c_litellm_runtime_runtime_import_agent_wrap_statement_flagged(
 def test_rule_c_litellm_runtime_type_checking_guard_allowed(make: _Maker) -> None:
     """TYPE_CHECKING-guarded agent_wrap imports are allowed in litellm_runtime."""
     make.write(
-        "agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py",
+        "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
         from typing import TYPE_CHECKING
         if TYPE_CHECKING:
             from agent_wrap.domain.pricing.models import Bucket
         """,
     )
-    fp = (
-        make.root
-        / "agent_wrap"
-        / "domain"
-        / "providers"
-        / "litellm_common"
-        / "litellm_runtime"
-        / "callback.py"
-    )
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_runtime" / "callback.py"
     violations = check_file(fp)
     assert "EC001" not in _violation_codes(violations)
 
@@ -340,21 +322,13 @@ def test_rule_c_litellm_runtime_type_checking_guard_allowed(make: _Maker) -> Non
 def test_rule_c_litellm_runtime_non_agent_wrap_import_allowed(make: _Maker) -> None:
     """Non-agent_wrap imports in litellm_runtime are fine."""
     make.write(
-        "agent_wrap/domain/providers/litellm_common/litellm_runtime/callback.py",
+        "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
         import os
         from typing import Any
         """,
     )
-    fp = (
-        make.root
-        / "agent_wrap"
-        / "domain"
-        / "providers"
-        / "litellm_common"
-        / "litellm_runtime"
-        / "callback.py"
-    )
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_runtime" / "callback.py"
     violations = check_file(fp)
     assert "EC001" not in _violation_codes(violations)
 

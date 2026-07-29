@@ -146,9 +146,8 @@ class LiteLLMSidecar(Sidecar):
             self._master_key = self._recover_master_key()
         else:
             sidecar_mode = "host" if use_host_net else "bridge"
-            secret_key = secrets["api_key"]
             self._master_key = self._generate_master_key()
-            self._start(secret_key, self._master_key, sidecar_mode)
+            self._start(secrets, self._master_key, sidecar_mode)
             self.config.on_started(self._master_key)
             if not self._health_poll():
                 # Leave the unhealthy container in place and raise: release() (which
@@ -315,7 +314,7 @@ class LiteLLMSidecar(Sidecar):
             msg = f"{LITELLM_SIDECAR_LABEL}: failed to pull image {self.image}"
             raise SystemExit(msg)
 
-    def _start(self, secret_key: str, master_key: str, sidecar_mode: str) -> None:
+    def _start(self, secrets: dict[str, str], master_key: str, sidecar_mode: str) -> None:
         config_path = self._config_path()
         callback_dir = self._callback_dir()
         log_dir = self._log_dir()
@@ -335,7 +334,9 @@ class LiteLLMSidecar(Sidecar):
             f'timeout=2).read()"'
         )
 
-        sidecar_env = self.config.get_sidecar_env({"_secret_key": secret_key})
+        # Passed through keyed by the names the provider declared in required_secrets(),
+        # so a provider may declare none (local model) or several (multi-upstream).
+        sidecar_env = self.config.get_sidecar_env(secrets)
         env_flags: list[str] = []
         for key, value in sidecar_env.items():
             env_flags.extend(["-e", f"{key}={value}"])
@@ -384,7 +385,6 @@ class LiteLLMSidecar(Sidecar):
             "/etc/litellm/config.yaml",
             "--port",
             str(self.internal_port),
-            *self.config.get_sidecar_cmd_args(),
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:

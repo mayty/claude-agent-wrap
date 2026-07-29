@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 if TYPE_CHECKING:
     from pathlib import Path
 
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_bedrock.constants import (
     DEFAULT_REGION_LABEL,
     MODEL_KEY_RE,
@@ -26,7 +27,6 @@ from agent_wrap.domain.providers.litellm_bedrock.constants import (
     ROW_RE,
     SECTION_RE,
 )
-from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 
 
 class _BedrockPricing:
@@ -162,14 +162,13 @@ class _BedrockPricing:
         return prices
 
 
-class BedrockProvider(LiteLLMProvider):
+class BedrockProvider(Provider):
     name = "litellm-bedrock"
-    master_key_prefix: ClassVar[str] = "sk-aw-"
     secret_description: ClassVar[str] = "AWS Bedrock Bearer Token"  # noqa: S105
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
-            "AWS_BEARER_TOKEN_BEDROCK": secrets.get("_secret_key", ""),
+            "AWS_BEARER_TOKEN_BEDROCK": secrets.get("api_key", ""),
             "AWS_REGION_NAME": "us-east-1",
         }
 
@@ -180,9 +179,6 @@ class BedrockProvider(LiteLLMProvider):
             "CLAUDE_CODE_USE_BEDROCK": "1",
             "AWS_REGION": "us-east-1",
         }
-
-    def get_sidecar_cmd_args(self) -> list[str]:
-        return []
 
     def _get_pricing(self) -> dict[str, dict[str, float]]:
         """Return the cached AWS Bedrock pricing table for this provider."""

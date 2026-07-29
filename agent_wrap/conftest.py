@@ -8,18 +8,22 @@ under ``agent_wrap/**/tests/``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
+from unittest.mock import Mock
 
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.providers.base import Provider
+from agent_wrap.domain.sidecars.service import SidecarService
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-    from unittest.mock import Mock
 
     from pytest_mock import MockerFixture
+
+    from agent_wrap.domain.providers.models import Tier
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +51,7 @@ def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         "agent_wrap.cli.stats.run",
         "agent_wrap.cli.run.run",
         "agent_wrap.domain.providers.key_approval",
-        "agent_wrap.domain.providers.litellm_provider",
+        "agent_wrap.domain.providers.base",
     ):
         monkeypatch.setattr(f"{mod}.TOOL_DIR", tmp_path, raising=False)
         monkeypatch.setattr(f"{mod}.GLOBAL_CONFIG_DIR", tmp_path, raising=False)
@@ -71,6 +75,59 @@ def tool_dir(tmp_path: Path) -> Path:
 def display_mock(mocker: MockerFixture) -> Mock:
     """Return a spec-mocked DisplayService for use in any test."""
     return mocker.Mock(spec=DisplayService)
+
+
+class FakeProvider(Provider):
+    """
+    A concrete ``Provider`` for tests that only care about pricing.
+
+    Built via the ``make_fake_provider`` factory fixture. The sidecar hooks are
+    stubs — nothing that uses this drives a real sidecar.
+    """
+
+    name = "fake-provider"
+    secret_description: ClassVar[str] = "Fake API Key"  # noqa: S105
+
+    def __init__(
+        self,
+        display_service: DisplayService | Mock | None = None,
+        flat: dict[str, dict[str, float]] | None = None,
+        tiered: dict[str, list[Tier]] | None = None,
+    ) -> None:
+        super().__init__(
+            sidecar_service=Mock(spec=SidecarService),
+            display_service=display_service or Mock(spec=DisplayService),
+        )
+        self._flat = flat or {}
+        self._tiered = tiered
+
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
+        return {"UPSTREAM_KEY": secrets.get("api_key", "")}
+
+    def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
+        return {"API_KEY": master_key, "BASE_URL": base_url}
+
+    def _get_pricing(self) -> dict[str, dict[str, float]]:
+        return self._flat
+
+    def _get_tiered_pricing(self) -> dict[str, list[Tier]]:
+        if self._tiered is None:
+            raise NotImplementedError
+        return self._tiered
+
+
+@pytest.fixture
+def make_fake_provider() -> Callable[..., FakeProvider]:
+    """Return a factory building a ``FakeProvider`` with a flat or tiered price table."""
+
+    def _make(
+        display_service: DisplayService | Mock | None = None,
+        flat: dict[str, dict[str, float]] | None = None,
+        tiered: dict[str, list[Tier]] | None = None,
+    ) -> FakeProvider:
+        return FakeProvider(display_service=display_service, flat=flat, tiered=tiered)
+
+    return _make
 
 
 @pytest.fixture

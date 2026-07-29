@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""Tests for litellm_common/litellm_runtime/callback.py."""
+"""Tests for providers/litellm_runtime/callback.py."""
 
 from __future__ import annotations
 

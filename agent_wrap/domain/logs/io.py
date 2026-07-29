@@ -32,7 +32,7 @@ from agent_wrap.lib.atomic import atomic_write_json
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.service import PricingService
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord, MetaData
+    from agent_wrap.domain.providers.models import LogRecord, MetaData
     from agent_wrap.domain.stats.service import StatsService
 
 

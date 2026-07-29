@@ -5,7 +5,7 @@ Routes Claude Code through Alibaba Cloud DashScope via a shared LiteLLM sidecar.
 
 ## Lifecycle
 
-Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_common/README.md`](../litellm_common/README.md). DashScope adds master-key auto-approval in `.claude.json` so Claude Code never prompts to accept the proxy key.
+Sidecar lifecycle is shared across all LiteLLM providers — see [`providers/README.md`](../README.md). DashScope adds master-key auto-approval in `.claude.json` so Claude Code never prompts to accept the proxy key.
 
 ## Configuration
 

@@ -23,7 +23,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | [docs/architecture.md](docs/architecture.md) | Understanding the codebase architecture |
 | [docs/testing-conventions.md](docs/testing-conventions.md) | Writing or reviewing tests |
 | [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `agent` function |
-| [agent_wrap/domain/providers/litellm_common/README.md](agent_wrap/domain/providers/litellm_common/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
+| [agent_wrap/domain/providers/README.md](agent_wrap/domain/providers/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
 | Provider READMEs (`agent_wrap/domain/providers/*/README.md`) | Provider-specific env vars, credentials, or model mappings |
 
 ## Runtime contract
@@ -38,7 +38,7 @@ Provider credentials are resolved via an encrypted secrets store. The primary fl
 
 ### Agent lifecycle
 
-See [agent_wrap/domain/providers/litellm_common/README.md](agent_wrap/domain/providers/litellm_common/README.md).
+See [agent_wrap/domain/providers/README.md](agent_wrap/domain/providers/README.md).
 
 ## Per-project customization
 

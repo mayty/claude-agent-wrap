@@ -85,7 +85,7 @@ def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
 
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord
+    from agent_wrap.domain.providers.models import LogRecord
 
 
 def _write_session(project: Path, provider: str, session_id: str, records: list[Any]) -> Path:

@@ -38,13 +38,14 @@ class LiteLLMSidecarConfig:
     # --- behavior hooks (provider-specific) ---
     get_sidecar_env: Callable[[dict[str, str]], dict[str, str]]
     get_agent_env: Callable[[str, str], dict[str, str]]
-    get_sidecar_cmd_args: Callable[[], list[str]]
     on_started: Callable[[str], None]
     on_stopping: Callable[[str], None]
 
     # --- secrets ---
     #: Keys this sidecar requires from the secrets store.
-    #: Each entry is ``(key_name, user_facing_description)``.
+    #: Each entry is ``(key_name, user_facing_description)``. The resolved values
+    #: reach ``get_sidecar_env`` in a dict keyed by exactly these names, so a
+    #: provider may declare none or several.
     required_secrets: list[tuple[str, str]]
 
 

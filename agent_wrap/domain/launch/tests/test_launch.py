@@ -22,6 +22,8 @@ from agent_wrap.domain.updates.service import UpdateService
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 if TYPE_CHECKING:
+    from unittest.mock import Mock
+
     import pytest_mock
 
 
@@ -373,14 +375,51 @@ def test_host_network_wsl_agent_network_specified(
     assert ports == ["-p", "8080:8080"]
 
 
-def test_collect_sidecars_returns_provider_sidecars(
+def _stub_provider(mocker: pytest_mock.MockFixture, launch_svc: LaunchService) -> Mock:
+    """Point launch_svc's provider service at a provider declaring one sidecar."""
+    provider = mocker.Mock(spec=Provider)
+    provider.name = "litellm-test"
+    provider.sidecar.return_value = mocker.Mock(spec=Sidecar)
+    provider.sidecar.return_value.required_secrets.return_value = [("api_key", "Test Key")]
+    launch_svc._provider_service.get_provider.return_value = provider
+    return provider
+
+
+def test_assemble_sidecars_declares_the_providers_sidecar(
     mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
-    # Sentinel placeholders — only compared for identity, no interface needed.
-    sentinel = [mocker.Mock(spec=Sidecar), mocker.Mock(spec=Sidecar)]
-    provider = mocker.Mock(spec=Provider)
-    provider.sidecars.return_value = sentinel
-    assert launch_svc._collect_sidecars(provider) == sentinel
+    provider = _stub_provider(mocker, launch_svc)
+    launch_svc._secrets.read.return_value = "secret-value"
+    # No Telegram secrets configured, so only the provider's sidecar is declared.
+    launch_svc._sidecar_service.telegram_required_secrets.return_value = [("token", "Bot token")]
+    launch_svc._secrets.read.side_effect = [
+        "secret-value",
+        SecretNotFoundError("token", "Bot token"),
+    ]
+
+    assembly = launch_svc._assemble_sidecars("agent", "inst-1", headless=False)
+
+    assert assembly.sidecars == [provider.sidecar.return_value]
+    assert assembly.telegram_available is False
+    assert assembly.per_sidecar_secrets[provider.sidecar.return_value] == {
+        "api_key": "secret-value"
+    }
+
+
+def test_assemble_sidecars_appends_telegram_when_its_secrets_resolve(
+    mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    provider = _stub_provider(mocker, launch_svc)
+    launch_svc._secrets.read.return_value = "secret-value"
+    launch_svc._sidecar_service.telegram_required_secrets.return_value = [("token", "Bot token")]
+    tg_sidecar = mocker.Mock(spec=Sidecar)
+    launch_svc._sidecar_service.create_telegram_sidecar.return_value = tg_sidecar
+
+    assembly = launch_svc._assemble_sidecars("agent", "inst-1", headless=False)
+
+    # The provider's sidecar comes first; Telegram is appended by the runner.
+    assert assembly.sidecars == [provider.sidecar.return_value, tg_sidecar]
+    assert assembly.telegram_available is True
 
 
 def test_build_agent_labels_empty_instance(launch_svc: LaunchService) -> None:

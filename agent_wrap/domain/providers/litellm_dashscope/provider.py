@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
-from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 
 if TYPE_CHECKING:
     from typing import Any
@@ -14,14 +14,14 @@ if TYPE_CHECKING:
     from agent_wrap.domain.providers.models import Tier
 
 
-class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
+class DashscopeProvider(MasterKeyApprovalMixin, Provider):
     name = "litellm-dashscope"
     master_key_prefix: ClassVar[str] = "sk-ds-"
     secret_description: ClassVar[str] = "DashScope (Alibaba Cloud Model Studio) API Key"  # noqa: S105
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
-            "DASHSCOPE_API_KEY": secrets.get("_secret_key", ""),
+            "DASHSCOPE_API_KEY": secrets.get("api_key", ""),
         }
 
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
@@ -38,9 +38,6 @@ class DashscopeProvider(MasterKeyApprovalMixin, LiteLLMProvider):
             # https://www.alibabacloud.com/help/en/model-studio/context-cache
             "DISABLE_PROMPT_CACHING": "1",
         }
-
-    def get_sidecar_cmd_args(self) -> list[str]:
-        return []
 
     def _get_tiered_pricing(self) -> dict[str, list[Tier]]:
         """Return the tiered pricing table for DashScope models."""

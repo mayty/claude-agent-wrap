@@ -42,7 +42,7 @@ EXCLUDED_PATHS: tuple[str, ...] = ()
 # litellm_runtime directory (plain directory, no __init__.py) — files here
 # are mounted into the LiteLLM sidecar and must not depend on agent_wrap at
 # runtime.  Rule EC001 enforces this.
-_LITELLM_RUNTIME = "agent_wrap/domain/providers/litellm_common/litellm_runtime"
+_LITELLM_RUNTIME = "agent_wrap/domain/providers/litellm_runtime"
 
 
 def _discover_subpackages(domain_dir: Path) -> tuple[str, ...]:

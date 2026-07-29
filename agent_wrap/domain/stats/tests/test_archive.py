@@ -5,16 +5,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
-from unittest.mock import Mock
+from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
-from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.archive import (
     archive_time_keys,
     fold_records_into_archive,
@@ -25,38 +21,28 @@ from agent_wrap.domain.stats.archive import (
 from agent_wrap.domain.stats.models import RawRecord
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
+    from unittest.mock import Mock
 
     import pytest_mock
 
+    from agent_wrap.conftest import FakeProvider
     from agent_wrap.domain.pricing.models import TokenUsage
     from agent_wrap.domain.stats.models import ArchiveDoc, ArchiveLeaf
 
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
 
-class _FakeProvider(Provider):
-    def __init__(self, flat: dict[str, Any] | None = None):
-        super().__init__(
-            sidecar_service=Mock(spec=SidecarService), display_service=Mock(spec=DisplayService)
-        )
-        self._flat = flat or {}
-
-    def sidecars(self) -> list[Any]:
-        return []
-
-    def _get_pricing(self):
-        return self._flat
-
-    def _get_tiered_pricing(self):
-        raise NotImplementedError
-
-
 @pytest.fixture
-def pricing_service(mocker: pytest_mock.MockFixture, display_mock: Mock) -> PricingService:
+def pricing_service(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    make_fake_provider: Callable[..., FakeProvider],
+) -> PricingService:
     """Return a PricingService that prices claude-opus-4-8."""
     mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value = _FakeProvider(flat={"claude-opus-4-8": _RATES})
+    mock_ps.get_provider.return_value = make_fake_provider(flat={"claude-opus-4-8": _RATES})
     return PricingService(provider_service=mock_ps, display_service=display_mock)
 
 

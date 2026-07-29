@@ -5,7 +5,7 @@ Routes Claude Code through AWS Bedrock via a shared LiteLLM sidecar.
 
 ## Lifecycle
 
-Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_common/README.md`](../litellm_common/README.md).
+Sidecar lifecycle is shared across all LiteLLM providers — see [`providers/README.md`](../README.md).
 
 ## Configuration
 

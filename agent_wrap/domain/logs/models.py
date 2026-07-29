@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from agent_wrap.domain.providers.litellm_common.models import RequestTiming
+    from agent_wrap.domain.providers.models import RequestTiming
 
 
 class DaemonState(TypedDict):

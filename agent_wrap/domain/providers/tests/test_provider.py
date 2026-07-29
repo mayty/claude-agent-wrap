@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""Tests for agent_wrap/providers/litellm_common/provider.py (the slim factory)."""
+"""Tests for the Provider sidecar factory in agent_wrap.domain.providers.base."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 from agent_wrap.domain.display.service import DisplayService
-from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
+from agent_wrap.domain.providers import base
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
     SidecarService,
@@ -19,12 +20,13 @@ if TYPE_CHECKING:
     import pytest_mock
 
 
-class ConcreteTestProvider(LiteLLMProvider):
-    """Concrete subclass for testing the abstract LiteLLMProvider factory."""
+class ConcreteTestProvider(Provider):
+    """Concrete subclass for testing the abstract Provider factory."""
 
     name = "litellm-test"
     image = "test-image:latest"
     master_key_prefix = "sk-test-"
+    secret_description = "Test API Key"
 
     def __init__(
         self,
@@ -42,23 +44,24 @@ class ConcreteTestProvider(LiteLLMProvider):
         return super()._state_dir()
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
-        return {"UPSTREAM_KEY": secrets.get("_secret_key", "")}
+        return {"UPSTREAM_KEY": secrets.get("api_key", "")}
 
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {"API_KEY": master_key, "BASE_URL": base_url}
 
-    def get_sidecar_cmd_args(self) -> list[str]:
-        return []
+
+class NoSecretProvider(ConcreteTestProvider):
+    """A provider needing no upstream secret (e.g. fronting a local model)."""
+
+    name = "litellm-test-no-secret"
+    secret_description = ""
 
 
-def test_sidecars_returns_one_litellm_sidecar(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
+def test_sidecar_returns_a_litellm_sidecar(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     svc = mocker.Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = mocker.Mock(spec=LiteLLMSidecar)
     provider = ConcreteTestProvider(state_dir=tmp_path, sidecar_service=svc)
-    sidecars = provider.sidecars()
-    assert len(sidecars) == 1
+    assert provider.sidecar() is svc.create_litellm_sidecar.return_value
     svc.create_litellm_sidecar.assert_called_once()
 
 
@@ -76,8 +79,29 @@ def test_sidecar_config_carries_provider_bits(tmp_path: Path) -> None:
     assert config["log_dir"] == p._log_dir()
     # Hooks are the provider's bound methods.
     assert config["get_agent_env"]("k", "http://x") == {"API_KEY": "k", "BASE_URL": "http://x"}  # type: ignore[not-callable]
-    # required_secrets defaults to empty when the provider doesn't declare any.
-    assert config["required_secrets"] == []
+
+
+def test_sidecar_config_declares_the_providers_secret(tmp_path: Path) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    assert p._sidecar_config()["required_secrets"] == [("api_key", "Test API Key")]
+
+
+def test_provider_without_a_secret_description_declares_no_secrets(tmp_path: Path) -> None:
+    """A provider fronting an unauthenticated upstream declares nothing to resolve."""
+    p = NoSecretProvider(state_dir=tmp_path)
+    assert p.required_secrets() == []
+    assert p._sidecar_config()["required_secrets"] == []
+
+
+def test_sidecar_env_reads_secrets_by_declared_name(tmp_path: Path) -> None:
+    """The secrets dict is keyed by the names required_secrets() declared."""
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    assert p.get_sidecar_env({"api_key": "upstream-token"}) == {"UPSTREAM_KEY": "upstream-token"}
+
+
+def test_config_path_sits_beside_the_provider_module(tmp_path: Path) -> None:
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    assert p._config_path() == tmp_path / "config.yaml"
 
 
 def test_sidecar_config_wires_lifecycle_hooks(
@@ -104,5 +128,19 @@ def test_default_hooks_are_noops(tmp_path: Path) -> None:
 def test_log_dir_is_project_independent() -> None:
     """The log dir is the shared tool-dir store, not under the project's .claude."""
     p = ConcreteTestProvider()
-    assert p._log_dir() == p._tool_dir() / "litellm-logs"
+    # Read TOOL_DIR off the module so the conftest monkeypatch is honored.
+    assert p._log_dir() == base.TOOL_DIR / "litellm-logs"
     assert ".claude" not in p._log_dir().parts
+
+
+def test_callback_dir_resolves_to_the_real_litellm_runtime_directory(tmp_path: Path) -> None:
+    """
+    The mounted callback directory must exist and hold the callback module.
+
+    LiteLLMSidecar._start mounts every .py file in this directory only when
+    ``callback_dir.is_dir()``, so a stale path silently mounts nothing and disables
+    request logging rather than failing. Assert the real path still resolves.
+    """
+    callback_dir = ConcreteTestProvider(state_dir=tmp_path)._callback_dir()
+    assert callback_dir.is_dir(), f"{callback_dir} does not exist"
+    assert (callback_dir / "callback.py").is_file()

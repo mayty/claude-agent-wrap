@@ -13,51 +13,30 @@ import pytest
 
 from agent_wrap.cli.stats.tree import build_project_tree, flatten_tree
 from agent_wrap.domain.config.service import ConfigService
-from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
-from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.constants import ORPHANED_ARCHIVE_FILENAME
 from agent_wrap.domain.stats.cost import usage_source
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import pytest_mock
 
+    from agent_wrap.conftest import FakeProvider
     from agent_wrap.domain.stats.models import ArchiveDoc, ArchiveLeaf
-
-
-class FakeProvider(Provider):
-    def __init__(self, flat: dict[str, Any] | None = None, tiered: dict[str, Any] | None = None):
-        super().__init__(
-            sidecar_service=Mock(spec=SidecarService), display_service=Mock(spec=DisplayService)
-        )
-        self._flat = flat or {}
-        self._tiered = tiered
-
-    def sidecars(self) -> list[Any]:
-        return []
-
-    def _get_pricing(self):
-        return self._flat
-
-    def _get_tiered_pricing(self):
-        if self._tiered is None:
-            raise NotImplementedError
-        return self._tiered
 
 
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
 
 @pytest.fixture
-def fake_provider() -> FakeProvider:
+def fake_provider(make_fake_provider: Callable[..., FakeProvider]) -> FakeProvider:
     """Return a FakeProvider with the default Opus 4.8 rates."""
-    return FakeProvider(flat={"claude-opus-4-8": _RATES})
+    return make_fake_provider(flat={"claude-opus-4-8": _RATES})
 
 
 @pytest.fixture
@@ -74,9 +53,10 @@ def pricing_service(
 def pricing_service_empty(
     mocker: pytest_mock.MockerFixture,
     display_mock: Mock,
+    make_fake_provider: Callable[..., FakeProvider],
 ) -> PricingService:
     """Return a PricingService backed by a mocked ProviderService (no pricing data)."""
-    empty = FakeProvider(flat={})
+    empty = make_fake_provider(flat={})
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = empty
     return PricingService(provider_service=mockps, display_service=display_mock)

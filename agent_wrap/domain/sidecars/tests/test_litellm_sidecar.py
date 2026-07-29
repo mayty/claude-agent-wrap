@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""Tests for agent_wrap/sidecars/litellm.py."""
+"""Tests for agent_wrap/domain/sidecars/litellm.py."""
 
 from __future__ import annotations
 
@@ -35,9 +35,8 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
         "config_path": tmp_path / "config.yaml",
         "callback_dir": tmp_path / "callbacks",
         "log_dir": tmp_path / "logs",
-        "get_sidecar_env": lambda secrets: {"UPSTREAM_KEY": secrets.get("_secret_key", "")},
+        "get_sidecar_env": lambda secrets: {"UPSTREAM_KEY": secrets.get("api_key", "")},
         "get_agent_env": lambda master_key, base_url: {"API_KEY": master_key, "BASE_URL": base_url},
-        "get_sidecar_cmd_args": list,
         "on_started": lambda _key: None,
         "on_stopping": lambda _key: None,
         "required_secrets": [],
@@ -449,7 +448,7 @@ def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(tmp_path)
     mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
-    sc._start("upstream-key", "sk-test-master", "bridge")
+    sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
     assert any("run" in str(c) for c in mock_docker.call_args_list)
 
 
@@ -457,7 +456,7 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(tmp_path)
     mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 0), ("", 0), ("", 0)])
-    sc._start("upstream-key", "sk-test-master", "bridge")
+    sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
     calls = [c.args[0] for c in mock_docker.call_args_list if c.args]
     assert "rm" in calls
 
@@ -471,7 +470,7 @@ def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.M
     (callback_dir / "callback.py").touch()
     sc = _sidecar(tmp_path, log_dir=log_dir, callback_dir=callback_dir)
     mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
-    sc._start("upstream-key", "sk-test-master", "bridge")
+    sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
 
     run_call = next(c for c in mock_docker.call_args_list if c.args and c.args[0] == "run")
     run_args = list(run_call.args)
@@ -483,10 +482,42 @@ def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.M
     assert log_dir.is_dir()
 
 
+def test_start_passes_every_declared_secret_to_the_provider_hook(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """The resolved secrets dict reaches get_sidecar_env keyed by its declared names."""
+    (tmp_path / "config.yaml").write_text("model: test")
+    sc = _sidecar(
+        tmp_path,
+        get_sidecar_env=lambda secrets: {
+            "PRIMARY": secrets["primary_key"],
+            "SECONDARY": secrets["secondary_key"],
+        },
+    )
+    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    sc._start({"primary_key": "one", "secondary_key": "two"}, "sk-test-master", "bridge")
+
+    run_args = list(next(c for c in mock_docker.call_args_list if c.args[0] == "run").args)
+    assert "PRIMARY=one" in run_args
+    assert "SECONDARY=two" in run_args
+
+
+def test_start_with_no_secrets_declared(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    """A provider fronting an unauthenticated upstream declares and receives nothing."""
+    (tmp_path / "config.yaml").write_text("model: test")
+    sc = _sidecar(tmp_path, get_sidecar_env=lambda _secrets: {}, required_secrets=[])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    sc._start({}, "sk-test-master", "bridge")
+
+    run_args = list(next(c for c in mock_docker.call_args_list if c.args[0] == "run").args)
+    # The master key is still minted and injected; only the upstream token is absent.
+    assert "LITELLM_MASTER_KEY=sk-test-master" in run_args
+
+
 def test_start_missing_config_raises(tmp_path: Path) -> None:
     # No config.yaml written → _config_path raises.
     with pytest.raises(SystemExit, match="config not found"):
-        _sidecar(tmp_path)._start("upstream-key", "sk-test-master", "bridge")
+        _sidecar(tmp_path)._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
 
 
 def test_recover_master_key_success(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:

@@ -87,9 +87,11 @@ domain/<name>/
 
 ## Provider plugin system
 
-Providers live under `agent_wrap/domain/providers/`, each in its own subdirectory with a `README.md` documenting provider-specific env vars, credentials, and model mappings. All providers implement a common interface and route model traffic through a LiteLLM sidecar.
+Providers live under `agent_wrap/domain/providers/`, each in its own subdirectory with a `README.md` documenting provider-specific env vars, credentials, and model mappings. All providers implement a common interface and route model traffic through a LiteLLM sidecar. The `Provider` ABC is LiteLLM-specific by construction — it implements `sidecar()` itself rather than leaving it abstract, so there is no non-LiteLLM path a subclass could take.
 
-Providers access sidecar functionality through an injected `SidecarService` (see [agent_wrap/domain/sidecars/service.py](../agent_wrap/domain/sidecars/service.py)). The LiteLLM provider lifecycle is documented in [agent_wrap/domain/providers/litellm_common/README.md](../agent_wrap/domain/providers/litellm_common/README.md).
+A provider subdirectory is one that holds a `provider.py`; discovery skips any that does not. `litellm_runtime/` is therefore not a provider — see the key convention below.
+
+Providers access sidecar functionality through an injected `SidecarService` (see [agent_wrap/domain/sidecars/service.py](../agent_wrap/domain/sidecars/service.py)). The LiteLLM provider lifecycle is documented in [agent_wrap/domain/providers/README.md](../agent_wrap/domain/providers/README.md).
 
 ## Domain-layer architecture rules (non-negotiable)
 
@@ -151,7 +153,7 @@ Providers access sidecar functionality through an injected `SidecarService` (see
 - **``constants.py``**: module-level constants (whether public or ``_``-prefixed) belong in an optional ``constants.py`` within their domain subpackage, neighboring ``models.py`` (see rule 10).
 - **``service.py``**: every domain service class must be defined in ``service.py`` — not after the subpackage and not with a ``_service`` suffix (see rule 11).
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
-- **`litellm_common/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `litellm_common/models.py`.
+- **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.
 
 ## Anti-patterns (explicitly forbidden)

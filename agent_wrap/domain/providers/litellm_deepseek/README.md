@@ -5,7 +5,7 @@ Routes Claude Code through DeepSeek via a shared LiteLLM sidecar.
 
 ## Lifecycle
 
-Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_common/README.md`](../litellm_common/README.md). DeepSeek adds master-key auto-approval in `.claude.json` so Claude Code never prompts to accept the proxy key.
+Sidecar lifecycle is shared across all LiteLLM providers — see [`providers/README.md`](../README.md). DeepSeek adds master-key auto-approval in `.claude.json` so Claude Code never prompts to accept the proxy key.
 
 ## Configuration
 

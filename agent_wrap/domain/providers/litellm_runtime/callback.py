@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord, MetaData
+    from agent_wrap.domain.providers.models import LogRecord, MetaData
 
 # When mounted into the sidecar container, callback.py sits at /etc/litellm/
 # alongside helpers.py and string_hasher.py — not inside a Python package.
@@ -43,7 +43,7 @@ from string_hasher import StringHasher  # noqa: E402  # type: ignore[missing-imp
 
 # A single shared sidecar (first-launch-wins) serves every project on the host,
 # so its log directory (bind-mounted to /var/log/agent-wrap by
-# litellm_common/provider.py::_start) is project-independent. The callback routes
+# sidecars/litellm.py::_start) is project-independent. The callback routes
 # each record to /var/log/agent-wrap/<project_hash>/<provider>/<session_id>/ where:
 #   - <project_hash> varies per request and arrives in the x-agent-wrap-log-prefix
 #     header (injected by the wrapper via Claude Code's ANTHROPIC_CUSTOM_HEADERS);

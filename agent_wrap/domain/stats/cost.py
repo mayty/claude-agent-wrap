@@ -11,7 +11,7 @@ def usage_source(rec: dict[str, Any]) -> str:
     Classify how a success record's usage was obtained, for the verbose breakdown.
 
     Mirrors the three outcomes the callback's ``_usable_response`` stamps onto a
-    record's ``response`` (see ``providers/litellm_common/callback.py``):
+    record's ``response`` (see ``providers/litellm_runtime/callback.py``):
       * ``"native"`` — a parsed response dict with no ``_usage_source`` key (usage
         came straight from the response);
       * ``"standard_logging_object"`` — dict tagged with that source (usage was

@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.display.service import DisplayService
-    from agent_wrap.domain.providers.base import Provider
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.secrets.service import SecretsService
     from agent_wrap.domain.sidecars.base import Sidecar
@@ -277,10 +276,6 @@ class LaunchService:
 
         return mounts
 
-    def _collect_sidecars(self, provider: Provider) -> list[Sidecar]:
-        """Gather every sidecar an agent run depends on."""
-        return list(provider.sidecars())
-
     def _build_agent_labels(self, instance_id: str) -> list[str]:
         """Build the agent container's --label / --name flags."""
         if not instance_id:
@@ -367,8 +362,6 @@ class LaunchService:
     ) -> None:
         """Last-light-out teardown: release ALL declared sidecars when this is the last agent."""
         tracker.clear_running(running_handle, instance_id)
-        if not sidecars:
-            return
         for sidecar in reversed(sidecars):
             self._safe_sidecar_on_exit(sidecar)
         with priority_lock(
@@ -414,7 +407,7 @@ class LaunchService:
         headless: bool,
     ) -> SidecarAssembly:
         provider = self._provider_service.get_provider()
-        sidecars: list[Sidecar] = self._collect_sidecars(provider)
+        sidecars: list[Sidecar] = [provider.sidecar()]
         per_sidecar: dict[Sidecar, dict[str, str]] = {}
         for sc in sidecars:
             result = self._resolve_sidecar_secrets(

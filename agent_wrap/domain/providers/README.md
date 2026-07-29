@@ -1,8 +1,10 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 
-# LiteLLM Common Provider (internal)
+# Providers
 
-The shared base class for all LiteLLM-based providers. Subclass this (not the bare `Provider` ABC) when adding a new LiteLLM-backed provider.
+The provider plugin system. Each provider lives in its own subdirectory with a `provider.py`, a `config.yaml`, and a `README.md`; they are auto-discovered, so adding one needs no registry edit. Every provider is LiteLLM-backed, so the `Provider` ABC in [base.py](base.py) is the only base class to subclass — there is no separate LiteLLM base.
+
+Shared across all of them: the logging callback mounted into the sidecar (`litellm_runtime/`) and the log-record types the `logs` domain reads ([models.py](models.py)).
 
 ## Sidecar lifecycle
 
@@ -36,22 +38,22 @@ container mechanics. Three rules make it safe:
 
 ## Subclass contract
 
-Subclass `LiteLLMProvider` and override:
+Subclass `Provider` (`agent_wrap/domain/providers/base.py`) and override:
 
 | Method | Purpose |
 | --- | --- |
 | `image` (class attr) | Pinned container image (tag + digest) |
 | `master_key_prefix` (class attr) | Prefix for the auto-generated master key, per provider (e.g. `sk-aw-` for Bedrock, `sk-ds-` for DashScope/DeepSeek) |
-| `get_sidecar_env(secrets)` | Env vars for the sidecar container — extracts the upstream API key from `secrets["_secret_key"]` |
+| `secret_description` (class attr) | Human-readable description of the upstream credential. Drives `required_secrets()`, which returns `[("api_key", secret_description)]` — leave empty for an upstream needing no secret. |
+| `get_sidecar_env(secrets)` | Env vars for the sidecar container. *secrets* is keyed by the names `required_secrets()` declared, so read the upstream key from `secrets["api_key"]`. |
 | `get_agent_env(master_key, base_url)` | Env vars for the agent container |
-| `get_sidecar_cmd_args()` | Extra args for the sidecar `docker run` |
 | `on_started(master_key)` / `on_stopping(master_key)` (optional) | Run once when the sidecar starts/stops — e.g. approve/un-approve the master key in `.claude.json`. Default no-op. |
 
-The base class implements `sidecars()` (declared on the `Provider` ABC), returning one `LiteLLMSidecar` built from the overridden attributes + hooks above. The container lifecycle lives in `agent_wrap/domain/sidecars/litellm.py` (`LiteLLMSidecar`, configured by an immutable `LiteLLMSidecarConfig` so it holds no provider back-reference). Locking and the start/stop decision are **not** a sidecar concern: the runner holds one shared lock and consults one `SidecarTracker` (`agent_wrap/domain/sidecars/tracker.py`) — the host-wide lock-file registries of starting and running agents that drive the teardown decision.
+The base class implements `sidecar()`, returning the `LiteLLMSidecar` built from the attributes + hooks above. The container lifecycle lives in `agent_wrap/domain/sidecars/litellm.py` (`LiteLLMSidecar`, configured by an immutable `LiteLLMSidecarConfig` so it holds no provider back-reference). Locking and the start/stop decision are **not** a sidecar concern: the runner holds one shared lock and consults one `SidecarTracker` (`agent_wrap/domain/sidecars/tracker.py`) — the host-wide lock-file registries of starting and running agents that drive the teardown decision.
 
-The runner (`agent_wrap/cli/run/run.py`) collects the sidecars via `LaunchService._collect_sidecars(provider)` (private) — the single place a runner-level sidecar (independent of the model backend) would be appended. It runs each sidecar's lock-free `prepare()` (image pull), then registers a `start-waiters/` ticket, takes the shared lock, clears the ticket, `ensure()`s each (splicing the `docker run` flags each returns into the agent's launch command), and registers a `running/` entry as the last action under the lock; on exit it drops that entry, then under a yield-to-starters lock loop `release()`s each in reverse when no other agent is live. `ensure()` returns those flags as a flat `list[str]`; `cold_start_time` / `short_circuit_time` size the shared lock timeout (see above). With multiple sidecars, only one may request the agent's single `--network` — the others must be reachable via `--add-host`.
+The runner assembles the sidecar list in `LaunchService._assemble_sidecars` (`agent_wrap/domain/launch/service.py`), which pairs the provider's `sidecar()` with the runner-level Telegram sidecar (independent of the model backend). It runs each sidecar's lock-free `prepare()` (image pull), then registers a `start-waiters/` ticket, takes the shared lock, clears the ticket, `ensure()`s each (splicing the `docker run` flags each returns into the agent's launch command), and registers a `running/` entry as the last action under the lock; on exit it drops that entry, then under a yield-to-starters lock loop `release()`s each in reverse when no other agent is live. `ensure()` returns those flags as a flat `list[str]`; `cold_start_time` / `short_circuit_time` size the shared lock timeout (see above). With multiple sidecars, only one may request the agent's single `--network` — the others must be reachable via `--add-host`.
 
-Providers may also override the optional `_get_pricing()` / `_get_tiered_pricing()` hooks (defined on the base `Provider` ABC) to feed `agent stats`.
+Providers may also override the optional `_get_pricing()` / `_get_tiered_pricing()` hooks to feed `agent stats`; the tier arithmetic itself lives in `agent_wrap/domain/providers/pricing.py`.
 
 ## Request/response logging
 

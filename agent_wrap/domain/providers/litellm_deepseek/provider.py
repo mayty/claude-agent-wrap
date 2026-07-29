@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
 from agent_wrap.domain.providers.litellm_deepseek.constants import (
     MIN_MODEL_COUNT,
@@ -18,7 +19,6 @@ from agent_wrap.domain.providers.litellm_deepseek.constants import (
     PRICING_FETCH_TIMEOUT,
     PRICING_PAGE_URL,
 )
-from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -161,14 +161,14 @@ class _DeepSeekPricing:
         return prices
 
 
-class DeepSeekProvider(MasterKeyApprovalMixin, LiteLLMProvider):
+class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
     name = "litellm-deepseek"
     master_key_prefix: ClassVar[str] = "sk-ds-"
     secret_description: ClassVar[str] = "DeepSeek API Key"  # noqa: S105
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
-            "DEEPSEEK_API_KEY": secrets.get("_secret_key", ""),
+            "DEEPSEEK_API_KEY": secrets.get("api_key", ""),
         }
 
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
@@ -182,9 +182,6 @@ class DeepSeekProvider(MasterKeyApprovalMixin, LiteLLMProvider):
             "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
-
-    def get_sidecar_cmd_args(self) -> list[str]:
-        return []
 
     def _get_pricing(self) -> dict[str, dict[str, float]]:
         """Return the cached DeepSeek pricing table, scraping if stale."""

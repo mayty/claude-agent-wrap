@@ -10,7 +10,7 @@ from agent_wrap.domain.logs.normalize import (
 )
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord
+    from agent_wrap.domain.providers.models import LogRecord
 
 
 def _epoch(iso: str) -> float:
