@@ -11,9 +11,13 @@ Adds `agent secrets` (set, check, clear, cleanup) for managing encrypted sidecar
 credentials via the CLI; `agent run` now prompts for missing secrets interactively,
 and existing plaintext files migrate automatically. A new `agent cleanup` command
 removes orphaned logs and stale registry entries left behind by deleted projects.
-`agent stats` gains a `-p`/`--pattern` filter and a configurable `AGENT_DAY_START_UTC`
-day boundary. The `agent logs` viewer tracks daily usage for the bundled statusline
-and gets broader improvements, and tab completion is now Python-powered.
+Each provider now gets its own LiteLLM sidecar, so agents on different providers
+run concurrently instead of one provider's sidecar being shared (and fought over)
+by all of them. `agent stats` gains a `-p`/`--pattern` filter and a configurable
+`AGENT_DAY_START_UTC` day boundary. The `agent logs` viewer tracks daily usage for
+the bundled statusline and gets broader improvements, and tab completion is now
+Python-powered. **Breaking:** custom providers must update for the restructured
+`Provider` interface — see [release notes](releases/0.8.0.md).
 
 ## [0.7.1](releases/0.7.1.md) — 2026-06-30
 
