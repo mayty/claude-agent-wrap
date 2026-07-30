@@ -71,6 +71,9 @@ def test_sidecar_config_carries_provider_bits(tmp_path: Path) -> None:
     assert config["image"] == "test-image:latest"
     assert config["provider_name"] == "litellm-test"
     assert config["master_key_prefix"] == "sk-test-"
+    # Per-provider container, and a base port the sidecar scans upward from.
+    assert config["container_name"] == "agent-wrap-litellm-test"
+    assert config["internal_port"] == 48620
     # Timing knobs map from the provider's class attrs (lock-timeout inputs).
     assert config["cold_start_time"] == 120.0
     assert config["short_circuit_time"] == 2.0
@@ -144,3 +147,20 @@ def test_callback_dir_resolves_to_the_real_litellm_runtime_directory(tmp_path: P
     callback_dir = ConcreteTestProvider(state_dir=tmp_path)._callback_dir()
     assert callback_dir.is_dir(), f"{callback_dir} does not exist"
     assert (callback_dir / "callback.py").is_file()
+
+
+def test_container_name_is_derived_from_the_provider_name(tmp_path: Path) -> None:
+    """One container per provider is what lets two providers run side by side."""
+    assert ConcreteTestProvider(state_dir=tmp_path).container_name == "agent-wrap-litellm-test"
+    assert NoSecretProvider(state_dir=tmp_path).container_name == (
+        "agent-wrap-litellm-test-no-secret"
+    )
+
+
+def test_subclass_may_override_container_name(tmp_path: Path) -> None:
+    """A class attribute shadows the base property — the documented escape hatch."""
+
+    class PinnedProvider(ConcreteTestProvider):
+        container_name = "my-own-container"
+
+    assert PinnedProvider(state_dir=tmp_path).container_name == "my-own-container"

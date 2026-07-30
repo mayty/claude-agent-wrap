@@ -3,9 +3,12 @@
 Provider interface definition.
 
 Every provider routes model traffic through a LiteLLM sidecar — that is a structural
-invariant, not a convention. A provider is therefore a thin factory: it declares the
-one shared proxy container plus its pricing table, and supplies the image pin, the
-auth-key paths, the agent-side env vars, and its resolved on-disk paths.
+invariant, not a convention. A provider is therefore a thin factory: it declares its
+own proxy container plus its pricing table, and supplies the image pin, the auth-key
+paths, the agent-side env vars, and its resolved on-disk paths.
+
+The container is named after the provider, so agents on different providers run
+concurrently against their own sidecars instead of fighting over one.
 
 The container lifecycle — lazy start, health polling, network-mode detection, and
 master key minting/recovery — lives in ``agent_wrap/domain/sidecars/litellm.py``.
@@ -22,6 +25,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from agent_wrap.constants import LITELLM_IMAGE, TOOL_DIR
 from agent_wrap.domain.providers.constants import (
+    CONTAINER_NAME_PREFIX,
+    DEFAULT_SIDECAR_PORT,
     MODEL_CONTEXT_SUFFIX_RE,
     UNKNOWN_MODEL_COST_THRESHOLD_USD,
 )
@@ -39,12 +44,16 @@ class Provider(ABC):
     """
     Abstract base class for model-routing providers.
 
-    Each provider declares the single LiteLLM proxy sidecar an agent run depends on.
-    The launcher ensures it before docker run, splices the connectivity flags it
-    returns into the agent's docker run command, and releases it after the agent exits.
+    Each provider declares the LiteLLM proxy sidecar an agent run depends on — its own,
+    named after the provider. The launcher ensures it before docker run, splices the
+    connectivity flags it returns into the agent's docker run command, and releases it
+    after the last agent on this provider exits.
     """
 
     #: Provider name matching the AGENT_PROVIDER env var (e.g. "litellm-bedrock").
+    #: Must be a lowercase slug (``[a-z0-9-]+``): it becomes both the sidecar's
+    #: container name (see ``container_name``) and the ``<provider>`` segment of the
+    #: request-log path, which ``litellm_runtime/callback.py`` validates.
     name: str
 
     # ------------------------------------------------------------------
@@ -64,9 +73,11 @@ class Provider(ABC):
     # Shared defaults (rarely overridden)
     # ------------------------------------------------------------------
 
-    container_name: ClassVar[str] = "agent-wrap-litellm"
     network_name: ClassVar[str] = "agent-wrap-net"
-    internal_port: ClassVar[int] = 4000
+    #: Preferred base port for this provider's sidecar. Not the port finally used: the
+    #: sidecar scans upward from here at cold start and records what it resolved, so
+    #: every provider can share one base without colliding in host-network mode.
+    internal_port: ClassVar[int] = DEFAULT_SIDECAR_PORT
     health_timeout_sec: ClassVar[int] = 90
     health_endpoint: ClassVar[str] = "/health/liveliness"
     #: Seconds a cold start takes (docker run + health poll). The one launcher that
@@ -103,6 +114,20 @@ class Provider(ABC):
     # ------------------------------------------------------------------
     # Sidecar declaration
     # ------------------------------------------------------------------
+
+    @property
+    def container_name(self) -> str:
+        """
+        Name this provider's own sidecar container: ``agent-wrap-<name>``.
+
+        Per-provider rather than shared, so two agents on different providers each get
+        their own upstream instead of one inheriting the other's. It is also the
+        runner's refcount key, so each provider's sidecar is torn down independently.
+
+        A subclass may still pin a literal by assigning ``container_name = "…"``: a
+        class attribute shadows this property via the MRO.
+        """
+        return f"{CONTAINER_NAME_PREFIX}-{self.name}"
 
     def sidecar(self) -> Sidecar:
         """Return the LiteLLM proxy sidecar an agent run with this provider depends on."""
@@ -198,7 +223,9 @@ class Provider(ABC):
         The callback writes to <project_hash>/<provider>/<session_id>/ beneath it,
         using the x-agent-wrap-log-prefix header the wrapper injects per launch and
         the AGENT_WRAP_PROVIDER env var set on the sidecar. This is required because
-        a single shared sidecar (first-launch-wins) serves every project on the host.
+        each provider's sidecar (first-launch-wins per provider) serves every project
+        on the host, and several providers' sidecars share this directory — the
+        <provider> segment is what keeps their subtrees disjoint.
         """
         return TOOL_DIR / "litellm-logs"
 

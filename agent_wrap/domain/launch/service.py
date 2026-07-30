@@ -28,6 +28,7 @@ from agent_wrap.domain.launch.constants import (
 from agent_wrap.domain.launch.models import (
     DockerfileDirectives,
     HostNetworkResult,
+    LaunchPreparation,
     SidecarAssembly,
 )
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
@@ -117,9 +118,9 @@ class LaunchService:
 
         self._display.banner(f"Agent instance: {instance_id}")
 
-        running_handle: TextIO | None = None
+        running_handles: dict[str, TextIO | None] = {}
         try:
-            provider_run_args, running_handle = self._prepare_for_launch(
+            provider_run_args, running_handles = self._prepare_for_launch(
                 sidecars,
                 tracker,
                 net=(use_host_net, agent_network),
@@ -153,7 +154,7 @@ class LaunchService:
             result = subprocess.run(cmd)
             return result.returncode
         finally:
-            self._release_sidecars(sidecars, tracker, instance_id, running_handle)
+            self._release_sidecars(sidecars, tracker, instance_id, running_handles)
 
     # Instance helpers (shared utility methods)
 
@@ -290,7 +291,16 @@ class LaunchService:
         ]
 
     def _sidecar_lock_timeout(self, sidecars: list[Sidecar], queue_depth: int) -> float:
-        """Total seconds a launcher waits for the shared sidecar lock."""
+        """
+        Total seconds a launcher waits for the shared sidecar lock.
+
+        Sized from *this* launch's own sidecars, while the lock is global — so a herd
+        spanning several providers can make one launcher wait behind a foreign cold
+        start too. The budget absorbs it with room to spare: at defaults it is
+        120 + 128·2 (LiteLLM) + 45 + 128·2 (Telegram) = 677 s against a worst case of
+        one foreign 120 s cold start plus this launch's own 165 s of work, and it still
+        holds at AGENT_EXPECTED_QUEUE_DEPTH=1 (169 s vs. 120 s).
+        """
         return sum(sc.cold_start_time + queue_depth * sc.short_circuit_time for sc in sidecars)
 
     # Instance methods (use injected services)
@@ -358,10 +368,24 @@ class LaunchService:
         sidecars: list[Sidecar],
         tracker: SidecarTracker,
         instance_id: str,
-        running_handle: TextIO | None,
+        running_handles: dict[str, TextIO | None],
     ) -> None:
-        """Last-light-out teardown: release ALL declared sidecars when this is the last agent."""
-        tracker.clear_running(running_handle, instance_id)
+        """
+        Per-container last-light-out teardown.
+
+        Every registration is dropped first, so a concurrent stopper sees this agent as
+        gone on every container at once. Then, under the yield-to-starters lock, each
+        declared sidecar is released only if no *other* agent still holds its container
+        — so an agent on one provider stops that provider's sidecar while agents on
+        other providers keep theirs, and the shared Telegram container survives until
+        the last agent anywhere exits.
+
+        *running_handles* is keyed by container name (not by ``Sidecar``, unlike
+        ``per_sidecar_secrets``) and may be empty when ``ensure()`` failed mid-launch.
+        """
+        for sidecar in sidecars:
+            container = sidecar.container_name
+            tracker.clear_running(running_handles.get(container), container, instance_id)
         for sidecar in reversed(sidecars):
             self._safe_sidecar_on_exit(sidecar)
         with priority_lock(
@@ -370,8 +394,8 @@ class LaunchService:
             waiters_dir=tracker.start_waiters_dir,
             instance_id=instance_id,
         ):
-            if not tracker.has_live_runners(exclude_id=instance_id):
-                for sidecar in reversed(sidecars):
+            for sidecar in reversed(sidecars):
+                if not tracker.has_live_runners(sidecar.container_name, exclude_id=instance_id):
                     sidecar.release()
 
     # Private helpers
@@ -462,13 +486,13 @@ class LaunchService:
         instance_id: str,
         telegram_available: bool,
         per_sidecar_secrets: dict[Sidecar, dict[str, str]],
-    ) -> tuple[list[str], TextIO | None]:
+    ) -> LaunchPreparation:
         use_host_net, agent_network = net
         for sidecar in sidecars:
             sidecar.prepare()
 
         run_args: list[str] = []
-        running_handle: TextIO | None = None
+        running_handles: dict[str, TextIO | None] = {}
         timeout = self._sidecar_lock_timeout(sidecars, self._expected_queue_depth())
         with priority_lock(
             Priority.HI,
@@ -484,8 +508,16 @@ class LaunchService:
                     agent_network=agent_network,
                     secrets=per_sidecar_secrets[sidecar],
                 )
-            running_handle = tracker.register_running(instance_id)
-        return run_args, running_handle
+            # Registered together, as the last action under the lock: if any ensure()
+            # above raised, nothing is registered and teardown still runs for every
+            # sidecar this launch declared.
+            running_handles = {
+                sidecar.container_name: tracker.register_running(
+                    sidecar.container_name, instance_id
+                )
+                for sidecar in sidecars
+            }
+        return LaunchPreparation(run_args, running_handles)
 
     def _safe_sidecar_on_exit(self, sidecar: Sidecar) -> None:
         try:

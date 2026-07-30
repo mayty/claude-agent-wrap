@@ -78,6 +78,15 @@ def test_timing() -> None:
     assert sc.short_circuit_time == 2.0
 
 
+def test_container_name_property_exposes_the_config_value() -> None:
+    """
+    The runner refcounts on this. One name for every provider is deliberate: unlike a
+    provider's sidecar, this container really is shared, so it must outlive an agent on
+    any single provider and stop only when the last agent anywhere exits.
+    """
+    assert _sidecar().container_name == "agent-wrap-telegram"
+
+
 def test_prepare_image_exists(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True)
     mock_docker = mocker.patch(_DOCKER, autospec=True)

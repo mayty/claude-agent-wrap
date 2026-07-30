@@ -1,11 +1,11 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # LiteLLM Bedrock Provider
 
-Routes Claude Code through AWS Bedrock via a shared LiteLLM sidecar.
+Routes Claude Code through AWS Bedrock via its own LiteLLM sidecar.
 
 ## Lifecycle
 
-Sidecar lifecycle is shared across all LiteLLM providers — see [`providers/README.md`](../README.md).
+The sidecar lifecycle is common to all LiteLLM providers — see [`providers/README.md`](../README.md).
 
 ## Configuration
 
@@ -14,7 +14,10 @@ Sidecar lifecycle is shared across all LiteLLM providers — see [`providers/REA
 | Image | `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79...` |
 | Master key prefix | `sk-aw-` |
 | Sidecar region | `us-east-1` (env: `AWS_REGION_NAME`) |
-| Agent base URL | `http://agent-wrap-litellm:4000/bedrock` |
+| Sidecar container | `agent-wrap-litellm-bedrock` |
+| Agent base URL | `http://agent-wrap-litellm-bedrock:<port>/bedrock` |
+
+`<port>` is resolved when the sidecar starts (scanning upward from 48620) and recorded in the container as `AGENT_WRAP_SIDECAR_PORT`, so several providers' sidecars can run at once — see [`providers/README.md`](../README.md#sidecar-lifecycle).
 
 ## Credentials
 
@@ -29,7 +32,7 @@ Agent container (injected by `get_agent_env`):
 - `CLAUDE_CODE_USE_BEDROCK=1`
 - `AWS_REGION=us-east-1`
 - `AWS_BEARER_TOKEN_BEDROCK` — the sidecar's master key
-- `ANTHROPIC_BEDROCK_BASE_URL` — `http://agent-wrap-litellm:4000/bedrock`
+- `ANTHROPIC_BEDROCK_BASE_URL` — `http://agent-wrap-litellm-bedrock:<port>/bedrock`
 
 Sidecar container (injected by `get_sidecar_env`):
 

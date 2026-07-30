@@ -47,6 +47,12 @@ class TelegramSidecar(Sidecar):
     # --- Sidecar interface properties ---
 
     @property
+    def container_name(self) -> str:
+        # One container name for every provider, so the runner refcounts this sidecar
+        # across all of them — correct, since it is genuinely one shared container.
+        return self.config.container_name
+
+    @property
     def cold_start_time(self) -> float:
         return self.config.cold_start_time
 

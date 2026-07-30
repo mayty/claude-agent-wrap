@@ -14,10 +14,15 @@ needs without a wider contract.
 
 Locking and the start/stop decision are NOT a sidecar concern: the runner holds one
 shared lock around the whole ensure-all / release-all phase and consults a single
-``SidecarTracker`` once.  So ``ensure()`` and ``release()`` are pure container
+``SidecarTracker``.  So ``ensure()`` and ``release()`` are pure container
 mechanics — they run with the lock already held and must not lock, announce, or
 decide whether to stop.  Lock-free pre-work (e.g. the image pull) goes in ``prepare()``,
 which the runner runs *before* taking the lock.
+
+The one thing a sidecar contributes to that decision is its ``container_name``: the
+runner refcounts live agents **per container name**, so two sidecars naming different
+containers are torn down independently while two naming the same container share one
+refcount.
 """
 
 from __future__ import annotations
@@ -27,6 +32,19 @@ from abc import ABC, abstractmethod
 
 class Sidecar(ABC):
     """A shared helper container an agent run depends on."""
+
+    @property
+    @abstractmethod
+    def container_name(self) -> str:
+        """
+        The Docker container this sidecar manages — also its refcount identity.
+
+        The runner keys its ``running/`` registration on this value, so sidecars with
+        different container names are refcounted (and released) independently, while
+        sidecars sharing one — the single Telegram container across every provider —
+        share one refcount. Docker names match ``[a-zA-Z0-9][a-zA-Z0-9_.-]*``, so the
+        value is safe to use verbatim as a single path component.
+        """
 
     @property
     @abstractmethod
@@ -85,9 +103,10 @@ class Sidecar(ABC):
         Stop the sidecar container.
 
         Runs with the shared lock held and only after the runner's ``SidecarTracker``
-        has decided the run may stop. Must be idempotent / a no-op when the container
-        is not running (the runner releases every sidecar it began ensuring, in
-        reverse order, including one whose ``ensure()`` raised mid-start).
+        has reported no other live agent on this ``container_name``. Must be idempotent
+        / a no-op when the container is not running (the runner considers every sidecar
+        it began ensuring, in reverse order, including one whose ``ensure()`` raised
+        mid-start).
         """
 
     def on_exit(self) -> None:  # noqa: B027 -- intentional optional no-op hook

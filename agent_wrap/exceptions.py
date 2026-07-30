@@ -17,5 +17,9 @@ class LockTimeoutError(RuntimeError):
     """Raised by :func:`file_lock` when the lock can't be acquired in time."""
 
 
+class PortUnavailableError(RuntimeError):
+    """Raised by :func:`find_free_port` when no port in the scanned range is bindable."""
+
+
 class ProviderNotFoundError(Exception):
     """Raised when a requested provider name is not found in the registry."""

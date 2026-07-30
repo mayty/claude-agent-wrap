@@ -20,6 +20,15 @@ AGENT_PROVIDER=litellm-deepseek agent run
 
 Providers are auto-discovered by scanning `agent_wrap/domain/providers/*/provider.py` for concrete `Provider` subclasses (`inspect.getmembers()` + `inspect.isabstract()`) — drop in a directory and it shows up in the error message above without any registry edits. A subdirectory without a `provider.py` is skipped, which is how support directories such as `litellm_runtime/` stay out of the registry.
 
+Providers can be mixed freely across concurrent agents — each one has its own `agent-wrap-<provider>` sidecar, resolves its own port, and is torn down only when the last agent using it exits:
+
+```sh
+# shell A                                   # shell B
+AGENT_PROVIDER=litellm-bedrock agent run    AGENT_PROVIDER=litellm-deepseek agent run
+```
+
+See [Providers](providers.md#running-several-providers-at-once) for the details.
+
 ## `AGENT_USE_HOST_NETWORK` (WSL workaround)
 
 Setting `AGENT_USE_HOST_NETWORK=1` (or any non-empty value other than `0`/`false`/`no`) makes `agent run` launch the container with `--network host`. The switch is honored only on WSL hosts (detected via `microsoft` in `/proc/version`); on macOS or native Linux it is ignored with a note.
@@ -35,7 +44,8 @@ Trade-offs:
 - The container loses network isolation from the WSL distro — services bind on the distro's interfaces, not on `docker0`.
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. Make in-container services bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
 - If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
-- The flag also extends to any provider sidecar — when set on the **cold-start** launch, the sidecar is launched with `--network host` as well. First-launch-wins: subsequent launches without the flag adapt to the running mode rather than restarting it. To switch a running sidecar's mode, stop it and start the next launch with the desired flag value.
+- The flag also extends to any provider sidecar — when set on the **cold-start** launch, the sidecar is launched with `--network host` as well. First-launch-wins, **per provider**: subsequent launches on that provider adapt to its running mode rather than restarting it, and each provider's sidecar inherits the mode of whichever launch started it, independently of the others. To switch a running sidecar's mode, stop it and start the next launch with the desired flag value.
+- In host mode a sidecar's port is a host port, so ports are resolved at start time (scanning upward from 48620) rather than fixed. Two providers' sidecars therefore coexist without collision; the resolved port is recorded in the container and reused by later launches.
 
 ## `AGENT_SKIP_UPDATE_CHECK` (auto-update opt-out)
 
@@ -49,9 +59,9 @@ Other verbs (`agent stats`, `agent create`, and `agent update` itself) do not pe
 
 ## `AGENT_EXPECTED_QUEUE_DEPTH` (parallel-launch tuning)
 
-All providers share a single LiteLLM sidecar container, and each `agent run` briefly coordinates with any other simultaneous launches while the sidecar is started or torn down. `AGENT_EXPECTED_QUEUE_DEPTH` is the expected number of agents queued behind that coordination at once; it sizes how long a launch waits before treating itself as genuinely stuck rather than merely queued.
+Each `agent run` briefly coordinates with any other simultaneous launches while a sidecar is started or torn down. `AGENT_EXPECTED_QUEUE_DEPTH` is the expected number of agents queued behind that coordination at once; it sizes how long a launch waits before treating itself as genuinely stuck rather than merely queued.
 
-The default (128) comfortably covers ordinary use, including dozens of agents launching together — you do not need to set it. Raise it only when a script fans out far more simultaneous `agent run` jobs than that, so the extra agents at the back of the queue don't time out while waiting their turn:
+The default (128) comfortably covers ordinary use, including dozens of agents launching together — you do not need to set it. It also absorbs the extra wait when a launch herd spans several providers: the coordination is host-wide while each launch's budget is sized from its own sidecars, so one launch can queue behind another provider's cold start as well as its own. Raise it only when a script fans out far more simultaneous `agent run` jobs than that, so the extra agents at the back of the queue don't time out while waiting their turn:
 
 ```sh
 AGENT_EXPECTED_QUEUE_DEPTH=512 agent run

@@ -2,17 +2,27 @@
 """
 The LiteLLM proxy as a ``Sidecar``.
 
-Implements the full sidecar lifecycle: lazy start, health polling, an activity
-heartbeat (live count comes from ``docker ps``), network-mode detection, master key
-minting/recovery, and the connectivity matrix for agent↔sidecar communication across
-network namespaces.
+Implements the full sidecar lifecycle: lazy start, health polling, network-mode
+detection, port resolution, master key minting/recovery, and the connectivity matrix
+for agent↔sidecar communication across network namespaces.
+
+Each provider gets its own container (named after the provider), so agents on
+different providers run side by side. Two things follow from that and are resolved the
+same way — mint on cold start, recover from the running container afterwards, because
+the container is the single source of truth and needs no state file:
+
+* the **master key**, in ``-e LITELLM_MASTER_KEY``;
+* the **port**, in ``-e AGENT_WRAP_SIDECAR_PORT``. It cannot be a constant: in
+  host-network mode the container's port *is* a host port, so a second provider's
+  sidecar would collide. Cold start scans upward from the provider's preferred base.
 
 ``LiteLLMSidecar`` is a pure mechanism configured by an immutable
 ``LiteLLMSidecarConfig`` — the owning provider supplies the image pin, resolved
 on-disk paths, and the provider-specific behavior hooks (upstream auth env, agent
 env, key approval). It holds no back-reference to the provider, so it is unit-testable
 on its own. Locking and the start/stop decision are the runner's concern (one shared
-lock + one ``SidecarTracker``); this class only ensures/stops its container.
+lock + one ``SidecarTracker``, which refcounts per container name); this class only
+ensures/stops its container.
 """
 
 from __future__ import annotations
@@ -23,7 +33,9 @@ from typing import TYPE_CHECKING
 
 from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PollResult
 from agent_wrap.domain.sidecars.base import Sidecar
+from agent_wrap.domain.sidecars.constants import PORT_SCAN_LIMIT, SIDECAR_PORT_ENV
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
+from agent_wrap.lib.net import find_free_port
 from agent_wrap.lib.path_hash import project_path_hash
 from agent_wrap.lib.utils import generate_uuid
 
@@ -33,7 +45,7 @@ if TYPE_CHECKING:
 
 
 class LiteLLMSidecar(Sidecar):
-    """The shared LiteLLM proxy container, managed as a singleton sidecar."""
+    """One provider's LiteLLM proxy container, managed as a per-provider singleton."""
 
     def __init__(
         self,
@@ -43,6 +55,11 @@ class LiteLLMSidecar(Sidecar):
         self.config = config
         self._display = display_service
         self._master_key: str = ""
+        #: Port this container actually listens on — scanned at cold start, recovered
+        #: from the running container on the hot path. Zero until ``ensure()`` resolves
+        #: it; read it through the ``port`` property, never ``config.internal_port``
+        #: (which is only the preferred base).
+        self._port: int = 0
 
     @property
     def cold_start_time(self) -> float:
@@ -63,7 +80,13 @@ class LiteLLMSidecar(Sidecar):
 
     @property
     def internal_port(self) -> int:
+        """The provider's *preferred base* port — not necessarily the resolved one."""
         return self.config.internal_port
+
+    @property
+    def port(self) -> int:
+        """The port this container listens on, once ``ensure()`` has resolved it."""
+        return self._port
 
     @property
     def image(self) -> str:
@@ -76,6 +99,11 @@ class LiteLLMSidecar(Sidecar):
     @property
     def health_endpoint(self) -> str:
         return self.config.health_endpoint
+
+    @property
+    def _label(self) -> str:
+        """Display label naming the provider — two sidecars may be up at once."""
+        return f"{LITELLM_SIDECAR_LABEL} ({self.config.provider_name})"
 
     def required_secrets(self) -> list[tuple[str, str]]:
         return list(self.config.required_secrets)
@@ -97,7 +125,7 @@ class LiteLLMSidecar(Sidecar):
     ) -> list[str]:
         if agent_network == "bridge":
             msg = (
-                f"{LITELLM_SIDECAR_LABEL}: --network bridge is not supported "
+                f"{self._label}: --network bridge is not supported "
                 "(Docker's default bridge has no embedded DNS).\n"
                 "  Use a user-defined network (`docker network create <name>`) "
                 "or remove --network from agent-run-args to use agent-wrap-net."
@@ -135,18 +163,25 @@ class LiteLLMSidecar(Sidecar):
             and not self._is_on_network("host")
         ):
             self._display.warning(
-                f"{LITELLM_SIDECAR_LABEL}: existing sidecar predates agent-wrap-net; restarting"
+                f"{self._label}: existing sidecar predates agent-wrap-net; restarting"
             )
             docker_run("stop", self.container_name)
 
         if self._is_running():
-            # First-launch-wins: inherit running mode. The key was already approved
-            # by whoever started the sidecar (on_started), so do not re-approve here.
+            # First-launch-wins (per provider): inherit the running mode, key and port.
+            # The key was already approved by whoever started this sidecar (on_started),
+            # so do not re-approve here. Re-scanning for a port would be wrong — the
+            # container is already bound to the one it recorded.
             sidecar_mode = "host" if self._is_on_network("host") else "bridge"
             self._master_key = self._recover_master_key()
+            self._port = self._recover_port()
         else:
             sidecar_mode = "host" if use_host_net else "bridge"
             self._master_key = self._generate_master_key()
+            # Safe under the runner's shared lock, which serializes every launch's scan
+            # against every other. A foreign process stealing the port between the probe
+            # and uvicorn's bind surfaces as the health-poll failure handled below.
+            self._port = find_free_port(self.config.internal_port, PORT_SCAN_LIMIT)
             self._start(secrets, self._master_key, sidecar_mode)
             self.config.on_started(self._master_key)
             if not self._health_poll():
@@ -154,7 +189,7 @@ class LiteLLMSidecar(Sidecar):
                 # always runs — see run.py) is the single home for the stop, and it
                 # needs the container present to recover the key for un-approval. A
                 # later cold start's _start() reaps it via `rm -f`.
-                self._display.error(f"{LITELLM_SIDECAR_LABEL}: health check failed; recent logs:")
+                self._display.error(f"{self._label}: health check failed; recent logs:")
                 # Stream stdout+stderr through (capture=False): the failure mode
                 # here is usually unhealthy-but-alive (config error, proxy still
                 # running), so the container — and its logs — are still present.
@@ -173,7 +208,7 @@ class LiteLLMSidecar(Sidecar):
         agent_network: str | None,
     ) -> list[str]:
         """Build env var flags and connectivity args for the agent container."""
-        base_url = f"http://{self.container_name}:{self.internal_port}"
+        base_url = f"http://{self.container_name}:{self.port}"
         agent_env = dict(self.config.get_agent_env(self._master_key, base_url))
 
         # Inject the per-project log discriminator as a custom request header.
@@ -198,7 +233,7 @@ class LiteLLMSidecar(Sidecar):
             sidecar_ip = self._sidecar_ip_on_network(self.network_name)
             if not sidecar_ip:
                 msg = (
-                    f"{LITELLM_SIDECAR_LABEL}: sidecar has no IP on {self.network_name} "
+                    f"{self._label}: sidecar has no IP on {self.network_name} "
                     "— was it disconnected from the network?"
                 )
                 raise SystemExit(msg)
@@ -211,8 +246,8 @@ class LiteLLMSidecar(Sidecar):
     # --- Public: release ---
 
     def release(self) -> None:
-        # Runs under the runner's shared lock, only after its SidecarTracker decided
-        # the run may stop. Idempotent: a no-op when the container isn't running.
+        # Runs under the runner's shared lock, only after its SidecarTracker reported
+        # no other live agent on this container. Idempotent: a no-op when not running.
         if not self._is_running():
             return
         # Recover the key BEFORE stopping: `--rm` destroys the env source.
@@ -223,7 +258,7 @@ class LiteLLMSidecar(Sidecar):
         if self._master_key:
             self.config.on_stopping(self._master_key)
         self._display.spin_while(
-            label=LITELLM_SIDECAR_LABEL,
+            label=self._label,
             message="stopping…",
             done_message="stopped",
             work=lambda: docker_run("stop", self.container_name),
@@ -235,7 +270,7 @@ class LiteLLMSidecar(Sidecar):
         """Return the resolved config.yaml path, validating it exists."""
         config = self.config.config_path
         if not config.exists():
-            msg = f"{LITELLM_SIDECAR_LABEL}: config not found at {config}"
+            msg = f"{self._label}: config not found at {config}"
             raise SystemExit(msg)
         return config
 
@@ -257,7 +292,7 @@ class LiteLLMSidecar(Sidecar):
         )
         if rc != 0:
             msg = (
-                f"{LITELLM_SIDECAR_LABEL}: LITELLM_MASTER_KEY not recoverable from "
+                f"{self._label}: LITELLM_MASTER_KEY not recoverable from "
                 f"{self.container_name} (container gone); aborting"
             )
             raise SystemExit(msg)
@@ -267,10 +302,47 @@ class LiteLLMSidecar(Sidecar):
                 if key:
                     return key
         msg = (
-            f"{LITELLM_SIDECAR_LABEL}: LITELLM_MASTER_KEY not recoverable from "
+            f"{self._label}: LITELLM_MASTER_KEY not recoverable from "
             f"{self.container_name} (env line absent); aborting"
         )
         raise SystemExit(msg)
+
+    def _recover_port(self) -> int:
+        """
+        Read the port a running container recorded. An unrecoverable value is fatal.
+
+        Guessing the preferred base instead would misroute rather than fail: every
+        provider shares one base, and in host-network mode a container port *is* a host
+        port, so the base is most probably a *different* provider's sidecar. The agent
+        would then connect successfully to the wrong upstream, with the wrong credentials
+        and the wrong log subtree. So this is as fatal as a missing master key — a
+        container that predates this env var, or that someone started by hand, must be
+        removed so the next launch does a cold start.
+        """
+        stdout, rc = docker_run(
+            "inspect",
+            self.container_name,
+            "--format={{range .Config.Env}}{{println .}}{{end}}",
+        )
+        if rc != 0:
+            raise SystemExit(self._port_recovery_error("container gone"))
+        prefix = f"{SIDECAR_PORT_ENV}="
+        for line in stdout.splitlines():
+            if line.startswith(prefix):
+                raw = line.removeprefix(prefix).strip()
+                if raw.isdigit():
+                    return int(raw)
+                raise SystemExit(self._port_recovery_error(f"unparseable value {raw!r}"))
+        raise SystemExit(self._port_recovery_error("env line absent"))
+
+    def _port_recovery_error(self, reason: str) -> str:
+        """Build the abort message for an unrecoverable recorded port."""
+        return (
+            f"{self._label}: {SIDECAR_PORT_ENV} not recoverable from "
+            f"{self.container_name} ({reason}); aborting\n"
+            f"  Remove it with `docker rm -f {self.container_name}` "
+            "so the next launch cold-starts."
+        )
 
     def _is_running(self) -> bool:
         stdout, rc = docker_run(
@@ -299,7 +371,7 @@ class LiteLLMSidecar(Sidecar):
             return
         _, rc = docker_run("network", "create", self.network_name)
         if rc != 0:
-            msg = f"{LITELLM_SIDECAR_LABEL}: failed to create docker network {self.network_name}"
+            msg = f"{self._label}: failed to create docker network {self.network_name}"
             raise SystemExit(msg)
 
     def _ensure_image(self) -> None:
@@ -307,11 +379,11 @@ class LiteLLMSidecar(Sidecar):
         if image_exists(self.image):
             return
         self._display.warning(
-            f"{LITELLM_SIDECAR_LABEL}: pulling {self.image} (first run, may take a few minutes)…"
+            f"{self._label}: pulling {self.image} (first run, may take a few minutes)…"
         )
         _, rc = docker_run("pull", self.image, capture=False, timeout=900)
         if rc != 0:
-            msg = f"{LITELLM_SIDECAR_LABEL}: failed to pull image {self.image}"
+            msg = f"{self._label}: failed to pull image {self.image}"
             raise SystemExit(msg)
 
     def _start(self, secrets: dict[str, str], master_key: str, sidecar_mode: str) -> None:
@@ -327,10 +399,13 @@ class LiteLLMSidecar(Sidecar):
 
         network = "host" if sidecar_mode == "host" else self.network_name
 
+        # 127.0.0.1 is the container's own loopback in bridge mode and the host's in
+        # host mode — correct either way, as long as the port matches what the proxy
+        # was told to bind (self.port, resolved before this call).
         health_cmd = (
             f'python3 -c "import urllib.request; '
             f"urllib.request.urlopen("
-            f"'http://127.0.0.1:{self.internal_port}{self.health_endpoint}', "
+            f"'http://127.0.0.1:{self.port}{self.health_endpoint}', "
             f'timeout=2).read()"'
         )
 
@@ -341,9 +416,11 @@ class LiteLLMSidecar(Sidecar):
         for key, value in sidecar_env.items():
             env_flags.extend(["-e", f"{key}={value}"])
         env_flags.extend(["-e", f"LITELLM_MASTER_KEY={master_key}"])
-        # The provider is fixed for the shared sidecar's lifetime (first-launch-wins),
-        # so the callback reads it from the container env rather than per-request.
+        # The provider is fixed for this sidecar's lifetime (one container per
+        # provider), so the callback reads it from the container env, not per-request.
         env_flags.extend(["-e", f"AGENT_WRAP_PROVIDER={self.config.provider_name}"])
+        # Recorded so later launches adopt this port instead of re-scanning.
+        env_flags.extend(["-e", f"{SIDECAR_PORT_ENV}={self.port}"])
 
         cmd = [
             "run",
@@ -384,11 +461,11 @@ class LiteLLMSidecar(Sidecar):
             "--config",
             "/etc/litellm/config.yaml",
             "--port",
-            str(self.internal_port),
+            str(self.port),
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:
-            msg = f"{LITELLM_SIDECAR_LABEL}: failed to start {self.container_name}"
+            msg = f"{self._label}: failed to start {self.container_name}"
             raise SystemExit(msg)
 
     def _health_poll(self) -> bool:
@@ -408,7 +485,7 @@ class LiteLLMSidecar(Sidecar):
             return PollResult.PENDING, status
 
         return self._display.poll_until(
-            label=LITELLM_SIDECAR_LABEL,
+            label=self._label,
             poll=poll,
             message="waiting for healthy",
             done_message="ready",
@@ -418,9 +495,7 @@ class LiteLLMSidecar(Sidecar):
     def _attach_to_network(self, network: str) -> None:
         _, rc = docker_run("network", "inspect", network)
         if rc != 0:
-            msg = (
-                f"{LITELLM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) does not exist"
-            )
+            msg = f"{self._label}: network '{network}' (from agent-run-args) does not exist"
             raise SystemExit(msg)
 
         # Check if already connected
@@ -429,7 +504,7 @@ class LiteLLMSidecar(Sidecar):
 
         _, rc = docker_run("network", "connect", network, self.container_name)
         if rc != 0:
-            msg = f"{LITELLM_SIDECAR_LABEL}: failed to attach {self.container_name} to network '{network}'"
+            msg = f"{self._label}: failed to attach {self.container_name} to network '{network}'"
             raise SystemExit(msg)
 
     def _sidecar_ip_on_network(self, network: str) -> str:

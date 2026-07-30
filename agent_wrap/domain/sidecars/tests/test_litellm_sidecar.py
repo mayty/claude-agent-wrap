@@ -11,6 +11,7 @@ import pytest
 
 from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PollResult
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.sidecars.constants import PORT_SCAN_LIMIT
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig
 from agent_wrap.lib.path_hash import project_path_hash
@@ -23,9 +24,9 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
     """Build a LiteLLMSidecarConfig with simple hooks, rooted at *tmp_path*."""
     defaults: dict[str, Any] = {
         "image": "test-image:latest",
-        "container_name": "agent-wrap-litellm",
+        "container_name": "agent-wrap-litellm-test",
         "network_name": "agent-wrap-net",
-        "internal_port": 4000,
+        "internal_port": 48620,
         "master_key_prefix": "sk-test-",
         "provider_name": "litellm-test",
         "health_timeout_sec": 90,
@@ -51,6 +52,9 @@ def _sidecar(tmp_path: Path, **overrides: object) -> LiteLLMSidecar:
 
 _DOCKER = "agent_wrap.domain.sidecars.litellm.docker_run"
 _IMAGE_EXISTS = "agent_wrap.domain.sidecars.litellm.image_exists"
+_FIND_FREE_PORT = "agent_wrap.domain.sidecars.litellm.find_free_port"
+#: `docker inspect` env output the hot path needs: port recovery aborts without it.
+_PORT_ENV_LINE = "AGENT_WRAP_SIDECAR_PORT=48622\n"
 
 
 def test_timing(tmp_path: Path) -> None:
@@ -130,16 +134,18 @@ def test_sidecar_ip_on_network_failure(tmp_path: Path, mocker: pytest_mock.MockF
 def test_connectivity_host_sidecar_host_agent(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     result = sc._build_connectivity_args("host", agent_in_host_netns=True, agent_network=None)
     assert "--add-host" in result
-    assert "agent-wrap-litellm:127.0.0.1" in result
+    assert "agent-wrap-litellm-test:127.0.0.1" in result
 
 
 def test_connectivity_host_sidecar_bridge_agent(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     result = sc._build_connectivity_args("host", agent_in_host_netns=False, agent_network=None)
-    assert "agent-wrap-litellm:host-gateway" in result
+    assert "agent-wrap-litellm-test:host-gateway" in result
 
 
 def test_connectivity_bridge_sidecar_host_netns_agent(
@@ -147,9 +153,10 @@ def test_connectivity_bridge_sidecar_host_netns_agent(
 ) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     mocker.patch.object(sc, "_sidecar_ip_on_network", return_value="172.18.0.2")
     result = sc._build_connectivity_args("bridge", agent_in_host_netns=True, agent_network=None)
-    assert "agent-wrap-litellm:172.18.0.2" in result
+    assert "agent-wrap-litellm-test:172.18.0.2" in result
 
 
 def test_connectivity_bridge_sidecar_host_netns_no_ip_raises(
@@ -157,6 +164,7 @@ def test_connectivity_bridge_sidecar_host_netns_no_ip_raises(
 ) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     mocker.patch.object(sc, "_sidecar_ip_on_network", return_value="")
     with pytest.raises(SystemExit, match="no IP"):
         sc._build_connectivity_args("bridge", agent_in_host_netns=True, agent_network=None)
@@ -165,6 +173,7 @@ def test_connectivity_bridge_sidecar_host_netns_no_ip_raises(
 def test_connectivity_bridge_sidecar_no_agent_network(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network=None)
     assert "--network" in result
     assert "agent-wrap-net" in result
@@ -173,6 +182,7 @@ def test_connectivity_bridge_sidecar_no_agent_network(tmp_path: Path) -> None:
 def test_connectivity_bridge_sidecar_custom_agent_network(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
     assert "--network" not in result
     assert "-e" in result
@@ -183,6 +193,7 @@ def test_connectivity_injects_log_prefix_header(
 ) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     cwd = Path("/some/project")
     mocker.patch("agent_wrap.domain.sidecars.litellm.Path.cwd", return_value=cwd)
     result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
@@ -200,6 +211,7 @@ def test_connectivity_merges_existing_custom_header(
         },
     )
     sc._master_key = "sk-test-abc"
+    sc._port = 48620
     cwd = Path("/some/project")
     mocker.patch("agent_wrap.domain.sidecars.litellm.Path.cwd", return_value=cwd)
     result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
@@ -214,6 +226,7 @@ def test_ensure_returns_connectivity_args(tmp_path: Path, mocker: pytest_mock.Mo
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-recovered")
+    mocker.patch(_DOCKER, autospec=True, return_value=(_PORT_ENV_LINE, 0))
     result = sc.ensure(use_host_net=False, agent_network=None)
     # Returns docker run flags (env + connectivity), including the log header.
     assert "-e" in result
@@ -229,6 +242,7 @@ def test_ensure_existing_sidecar_does_not_reapprove(
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-recovered")
+    mocker.patch(_DOCKER, autospec=True, return_value=(_PORT_ENV_LINE, 0))
     sc.ensure(use_host_net=False, agent_network=None)
     assert sc._master_key == "sk-test-recovered"
     assert started_calls == []
@@ -265,6 +279,7 @@ def test_ensure_does_not_pull(tmp_path: Path, mocker: pytest_mock.MockFixture) -
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-recovered")
+    mocker.patch(_DOCKER, autospec=True, return_value=(_PORT_ENV_LINE, 0))
     sc.ensure(use_host_net=False, agent_network=None)
     ensure_image.assert_not_called()
 
@@ -300,7 +315,7 @@ def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.Mo
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-key")
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=(_PORT_ENV_LINE, 0))
     sc.ensure(use_host_net=False, agent_network=None)
     stop_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "stop"]
     assert len(stop_calls) == 1
@@ -340,7 +355,7 @@ def test_release_non_tty_prints_plain_line(tmp_path: Path, mocker: pytest_mock.M
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc.release()
     sc._display.spin_while.assert_called_once_with(  # type: ignore[union-attr]
-        label=LITELLM_SIDECAR_LABEL,
+        label=f"{LITELLM_SIDECAR_LABEL} (litellm-test)",
         message="stopping…",
         done_message="stopped",
         work=mocker.ANY,
@@ -358,7 +373,7 @@ def test_release_tty_finalizes(tmp_path: Path, mocker: pytest_mock.MockFixture) 
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc.release()
     sc._display.spin_while.assert_called_once_with(  # type: ignore[union-attr]
-        label=LITELLM_SIDECAR_LABEL,
+        label=f"{LITELLM_SIDECAR_LABEL} (litellm-test)",
         message="stopping…",
         done_message="stopped",
         work=mocker.ANY,
@@ -539,3 +554,117 @@ def test_recover_master_key_container_gone_raises(
     mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
     with pytest.raises(SystemExit, match="LITELLM_MASTER_KEY not recoverable"):
         _sidecar(tmp_path)._recover_master_key()
+
+
+def test_label_names_the_provider(tmp_path: Path) -> None:
+    """Two providers' sidecars can be up at once, so the label must say which is which."""
+    assert _sidecar(tmp_path)._label == f"{LITELLM_SIDECAR_LABEL} (litellm-test)"
+
+
+def test_internal_port_is_the_preferred_base_not_the_resolved_port(tmp_path: Path) -> None:
+    sc = _sidecar(tmp_path)
+    assert sc.internal_port == 48620
+    # Unresolved until ensure() runs — never silently equal to the base.
+    assert sc.port == 0
+
+
+def test_cold_start_scans_from_the_base_port(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    sc = _sidecar(tmp_path)
+    find = mocker.patch(_FIND_FREE_PORT, autospec=True, return_value=48621)
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=False)
+    mocker.patch.object(sc, "_start", autospec=True)
+    mocker.patch.object(sc, "_health_poll", autospec=True, return_value=True)
+
+    sc.ensure(use_host_net=True, agent_network=None, secrets={"api_key": "k"})
+
+    find.assert_called_once_with(48620, PORT_SCAN_LIMIT)
+    assert sc.port == 48621
+
+
+def test_hot_path_recovers_the_port_from_container_env(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """A second launch adopts the running container's port instead of re-scanning."""
+    sc = _sidecar(tmp_path)
+    find = mocker.patch(_FIND_FREE_PORT, autospec=True)
+    mocker.patch.object(sc, "_ensure_network", autospec=True)
+    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
+    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
+    mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-recovered")
+    mocker.patch(_DOCKER, autospec=True, return_value=("AGENT_WRAP_SIDECAR_PORT=48622\n", 0))
+
+    sc.ensure(use_host_net=False, agent_network=None)
+
+    assert sc.port == 48622
+    find.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "env_output",
+    ["ENV1=val\n", "AGENT_WRAP_SIDECAR_PORT=\n", "AGENT_WRAP_SIDECAR_PORT=not-a-port\n"],
+)
+def test_recover_port_unusable_value_raises(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, env_output: str
+) -> None:
+    """
+    Guessing the base would misroute, not fail: every provider shares one base, so in
+    host-network mode it is most probably another provider's sidecar.
+    """
+    sc = _sidecar(tmp_path)
+    mocker.patch(_DOCKER, autospec=True, return_value=(env_output, 0))
+    with pytest.raises(SystemExit, match="AGENT_WRAP_SIDECAR_PORT not recoverable"):
+        sc._recover_port()
+
+
+def test_recover_port_container_gone_raises(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    sc = _sidecar(tmp_path)
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
+    with pytest.raises(SystemExit, match="AGENT_WRAP_SIDECAR_PORT not recoverable"):
+        sc._recover_port()
+
+
+def test_recover_port_error_names_the_remedy(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """The abort is a hard stop, so it must tell the user how to clear the container."""
+    sc = _sidecar(tmp_path)
+    mocker.patch(_DOCKER, autospec=True, return_value=("ENV1=val\n", 0))
+    with pytest.raises(SystemExit, match="docker rm -f agent-wrap-litellm-test"):
+        sc._recover_port()
+
+
+def test_start_passes_the_resolved_port_to_the_proxy_and_the_health_cmd(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """--port, the healthcheck URL and the recorded env var must all agree."""
+    (tmp_path / "config.yaml").write_text("model: test")
+    sc = _sidecar(tmp_path)
+    sc._port = 48623
+    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+
+    sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
+
+    run_args = list(next(c for c in mock_docker.call_args_list if c.args[0] == "run").args)
+    assert run_args[run_args.index("--port") + 1] == "48623"
+    assert "AGENT_WRAP_SIDECAR_PORT=48623" in run_args
+    assert any("http://127.0.0.1:48623/health/liveliness" in a for a in run_args)
+    assert not any("48620" in a for a in run_args)
+
+
+def test_base_url_carries_the_resolved_port(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def capture(_master_key: str, base_url: str) -> dict[str, str]:
+        captured["base_url"] = base_url
+        return {}
+
+    sc = _sidecar(tmp_path, get_agent_env=capture)
+    sc._master_key = "sk-test-abc"
+    sc._port = 48624
+    sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    assert captured["base_url"] == "http://agent-wrap-litellm-test:48624"

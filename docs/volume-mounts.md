@@ -35,7 +35,7 @@ The following subdirectories and files are mapped to the same path on both sides
 - **Directories**: `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`
 - **Files**: `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`
 
-On launch the wrapper also creates `$(pwd)/.claude/litellm-logs` as a **symlink** (not a bind mount) pointing at this project's slice of the shared LiteLLM request logs under `<wrap-dir>/litellm-logs/<project_hash>/`, so the `agent logs` viewer reads them through the project's own `.claude/`.
+On launch the wrapper also creates `$(pwd)/.claude/litellm-logs` as a **symlink** (not a bind mount) pointing at this project's slice of the LiteLLM request logs under `<wrap-dir>/litellm-logs/<project_hash>/`, so the `agent logs` viewer reads them through the project's own `.claude/`. That store is shared across projects *and* providers — every provider's sidecar mounts it, and records land under `<project_hash>/<provider>/`.
 
 ## Read-only tool mounts
 
