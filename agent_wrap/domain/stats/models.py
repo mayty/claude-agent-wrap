@@ -17,7 +17,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class UsageArgs:
-    registry_path: Path
+    """The resolved selection window and filters for one ``agent stats`` invocation."""
+
     from_iso: str | None = None
     until_iso: str | None = None
     verbose: bool = False
@@ -44,16 +45,6 @@ class Group:
         self.sessions = 0
         self.last_ts: datetime | None = None
         self.exists = False
-
-
-# A single session file's contribution. The two dicts are plain (not
-# defaultdict) so the result pickles cleanly back from a pool worker.
-# *by_day* is {day: {model: Bucket}}, *by_source* is {source: {model: Bucket}}.
-class FileResult(NamedTuple):
-    had_record: bool
-    last_ts: datetime | None
-    by_day: dict[str, dict[str, Bucket]]
-    by_source: dict[str, dict[str, Bucket]]
 
 
 # A unit of parallel work. *dir_index* tags which logs dir the file belongs to
@@ -218,3 +209,60 @@ class GroupResult(NamedTuple):
     group_root: Path
     display_name: str
     is_transient: bool
+
+
+class CleanupScope(NamedTuple):
+    """What a cleanup would remove, surveyed before anything is deleted."""
+
+    orphaned_dirs: list[Path]
+    stale_paths: list[Path]
+    freed_estimate: int
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether there is nothing to clean up."""
+        return not self.orphaned_dirs and not self.stale_paths
+
+
+class CleanupOutcome(NamedTuple):
+    """
+    What a cleanup actually did.
+
+    *removed_paths* is empty when the archive did not finalize — the registry is
+    deliberately left alone in that case (see ``StatsService.run_cleanup``).
+    """
+
+    result: CleanupResult
+    removed_paths: list[Path]
+
+
+class StatsReport(NamedTuple):
+    """
+    Everything ``agent stats`` renders for one selection window.
+
+    ``rows`` holds only projects that contributed sessions; ``orphaned`` is the merged
+    live + archived ``<orphaned>`` row, or None when the pattern suppresses it. The
+    totals already include the orphaned spend, so the tables agree with each other.
+    ``unrecorded`` counts successful requests whose usage was never logged, which the
+    caller footnotes because those requests contribute $0 to the costs above.
+    """
+
+    rows: list[ProjectRow]
+    totals_by_model: dict[str, Bucket]
+    totals_by_day_by_model: dict[str, dict[str, Bucket]]
+    totals_by_source: dict[str, dict[str, Bucket]]
+    orphaned: OrphanedResult | None
+    unrecorded: int
+
+
+@dataclass(frozen=True)
+class WindowError:
+    """
+    A rejected ``--from``/``--until``/``--days`` combination, with the reason to print.
+
+    Deliberately not a NamedTuple: it shares a return union with the resolved
+    ``(from_iso, until_iso)`` pair, and a 1-tuple there would be structurally
+    unpackable — the type checker could not tell the failure from the success.
+    """
+
+    message: str

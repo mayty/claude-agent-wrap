@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from agent_wrap.constants import (
     CONTAINER_NAME_PREFIX,
     LITELLM_IMAGE,
+    LITELLM_LOGS_DIRNAME,
     SIDECAR_NETWORK_NAME,
     TOOL_DIR,
 )
@@ -231,7 +232,7 @@ class Provider(ABC):
         on the host, and several providers' sidecars share this directory — the
         <provider> segment is what keeps their subtrees disjoint.
         """
-        return TOOL_DIR / "litellm-logs"
+        return TOOL_DIR / LITELLM_LOGS_DIRNAME
 
     # ------------------------------------------------------------------
     # Raw pricing data (subclass contract)

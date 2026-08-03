@@ -14,6 +14,3 @@ DOCKER_UNREACHABLE = (
     "Docker is not reachable — container state is unavailable. "
     "Is the daemon running, and is this user in the docker group?"
 )
-
-#: Subdirectory of the install root holding the shared per-project request logs.
-LITELLM_LOGS_DIRNAME = "litellm-logs"

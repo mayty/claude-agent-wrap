@@ -9,7 +9,12 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from agent_wrap.constants import AGENT_LAUNCHES_DIR
+from agent_wrap.constants import (
+    AGENT_LAUNCHES_DIR,
+    LITELLM_LOGS_DIRNAME,
+    ORPHANED_LABEL,
+    PROJECT_REGISTRY_FILENAME,
+)
 from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.models import (
     CombinedSessionMeta,
@@ -124,13 +129,8 @@ def _lightweight_logs_summary(logs_dir: Path) -> tuple[int, float | None]:
     return len(seen_sessions), max_last_ts
 
 
-def lightweight_project_summary(project: Path) -> tuple[int, float | None]:
-    """Lightweight summary for a project, via its ``.claude/litellm-logs`` dir."""
-    return _lightweight_logs_summary(logs_dir(project))
-
-
 def logs_dir(project: Path) -> Path:
-    return project / ".claude" / "litellm-logs"
+    return project / ".claude" / LITELLM_LOGS_DIRNAME
 
 
 def _aslogs_dirs(project: Path | list[Path]) -> list[Path]:
@@ -194,8 +194,8 @@ def list_groups(stats_service: StatsService, projects: list[Path]) -> list[Group
     if orphaned:
         groups.append(
             {
-                "root": Path("<orphaned>"),
-                "name": "<orphaned>",
+                "root": Path(ORPHANED_LABEL),
+                "name": ORPHANED_LABEL,
                 "paths": [],
                 "logs_dirs": orphaned,
             }
@@ -509,7 +509,7 @@ def projects_fingerprint(projects: list[Path]) -> Fingerprint:
 
     Returns ``{"mtime": None, "size": None}`` when no projects have logs.
     """
-    registry = AGENT_LAUNCHES_DIR / "projects.txt"
+    registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
     best_mtime: int | None = None
     total_size: int | None = None
 

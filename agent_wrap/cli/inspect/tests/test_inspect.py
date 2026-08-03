@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.cli.commands import COMMANDS
+from agent_wrap.cli.constants import COMMANDS
 from agent_wrap.cli.inspect.run import build_parser, run
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService

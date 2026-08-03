@@ -394,3 +394,198 @@ def test_edge_case_import_agent_wrap_not_domain(make: _Maker) -> None:
     )
     fp = make.root / "agent_wrap" / "domain" / "stats" / "cost.py"
     assert check_file(fp) == []
+
+
+# --- Rule D: types belong in models.py -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        ("dataclass", "@dataclass\nclass Thing:\n    a: int\n"),
+        ("named_tuple", "class Thing(NamedTuple):\n    a: int\n"),
+        ("typed_dict", "class Thing(TypedDict):\n    a: int\n"),
+    ],
+)
+def test_rule_d_type_outside_models_flagged(make: _Maker, name: str, body: str) -> None:
+    make.write(f"agent_wrap/domain/stats/{name}.py", body)
+    fp = make.root / "agent_wrap" / "domain" / "stats" / f"{name}.py"
+    assert "ED001" in _violation_codes(check_file(fp))
+
+
+def test_rule_d_type_inside_models_allowed(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/models.py", "class Thing(NamedTuple):\n    a: int\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "models.py"
+    assert "ED001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_d_plain_class_is_behaviour_not_flagged(make: _Maker) -> None:
+    """A plain class is a service or helper, not a data carrier."""
+    make.write("agent_wrap/domain/stats/service.py", "class StatsService:\n    pass\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "service.py"
+    assert "ED001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_d_applies_to_cli_too(make: _Maker) -> None:
+    make.write("agent_wrap/cli/stats/render.py", "class Rows(NamedTuple):\n    a: int\n")
+    fp = make.root / "agent_wrap" / "cli" / "stats" / "render.py"
+    assert "ED001" in _violation_codes(check_file(fp))
+
+
+def test_rule_d_skips_lib(make: _Maker) -> None:
+    """lib/ is standalone general-purpose code with no models.py convention."""
+    make.write("agent_wrap/lib/flock.py", "class Row(NamedTuple):\n    a: int\n")
+    fp = make.root / "agent_wrap" / "lib" / "flock.py"
+    assert "ED001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_d_skips_test_files(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/tests/test_scan.py", "class Row(NamedTuple):\n    a: int\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "tests" / "test_scan.py"
+    assert "ED001" not in _violation_codes(check_file(fp))
+
+
+# --- Rule F: enums belong in constants.py -----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        ("enum", "class Thing(Enum):\n    A = 1\n"),
+        ("str_enum_mixin", "class Thing(str, Enum):\n    A = 'a'\n"),
+        ("qualified_base", "class Thing(enum.IntEnum):\n    A = 1\n"),
+    ],
+)
+def test_rule_f_enum_outside_constants_flagged(make: _Maker, name: str, body: str) -> None:
+    make.write(f"agent_wrap/domain/stats/{name}.py", body)
+    fp = make.root / "agent_wrap" / "domain" / "stats" / f"{name}.py"
+    assert "EF001" in _violation_codes(check_file(fp))
+
+
+def test_rule_f_enum_inside_constants_allowed(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/constants.py", "class Thing(Enum):\n    A = 1\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "constants.py"
+    assert "EF001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_f_enum_inside_models_flagged(make: _Maker) -> None:
+    """models.py is not the enum's home — it must move to constants.py."""
+    make.write("agent_wrap/domain/stats/models.py", "class Thing(Enum):\n    A = 1\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "models.py"
+    assert "EF001" in _violation_codes(check_file(fp))
+
+
+def test_rule_f_applies_to_cli_too(make: _Maker) -> None:
+    make.write("agent_wrap/cli/stats/render.py", "class Mode(Enum):\n    A = 1\n")
+    fp = make.root / "agent_wrap" / "cli" / "stats" / "render.py"
+    assert "EF001" in _violation_codes(check_file(fp))
+
+
+def test_rule_f_skips_lib(make: _Maker) -> None:
+    """lib/ is standalone general-purpose code with no constants.py convention."""
+    make.write("agent_wrap/lib/flock.py", "class Priority(Enum):\n    HI = 1\n")
+    fp = make.root / "agent_wrap" / "lib" / "flock.py"
+    assert "EF001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_f_skips_test_files(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/tests/test_scan.py", "class Mode(Enum):\n    A = 1\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "tests" / "test_scan.py"
+    assert "EF001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_f_applies_to_package_root(make: _Maker) -> None:
+    """The package root's models.py/constants.py pair follows the same split."""
+    make.write("agent_wrap/models.py", "class Thing(Enum):\n    A = 1\n")
+    fp = make.root / "agent_wrap" / "models.py"
+    assert "EF001" in _violation_codes(check_file(fp))
+
+
+def test_rule_f_package_root_constants_allowed(make: _Maker) -> None:
+    make.write("agent_wrap/constants.py", "class Thing(Enum):\n    A = 1\n")
+    fp = make.root / "agent_wrap" / "constants.py"
+    assert "EF001" not in _violation_codes(check_file(fp))
+
+
+# --- Rule E: constants belong in constants.py ------------------------------
+
+
+def test_rule_e_constant_outside_constants_flagged(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/scan.py", "MAX_FILES = 64\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EE001" in _violation_codes(check_file(fp))
+
+
+def test_rule_e_private_constant_also_flagged(make: _Maker) -> None:
+    """Rule 10 covers _-prefixed constants explicitly."""
+    make.write("agent_wrap/domain/stats/scan.py", "_MAX_FILES = 64\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EE001" in _violation_codes(check_file(fp))
+
+
+def test_rule_e_annotated_constant_flagged(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/scan.py", "MAX_FILES: int = 64\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EE001" in _violation_codes(check_file(fp))
+
+
+def test_rule_e_constant_inside_constants_allowed(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/constants.py", "MAX_FILES = 64\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "constants.py"
+    assert "EE001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_e_usage_and_summary_exempt(make: _Maker) -> None:
+    """cli/commands.py reads these off each run module by name, so they cannot move."""
+    make.write("agent_wrap/cli/stats/run.py", "USAGE = '[-v]'\nSUMMARY = 'Show stats'\n")
+    fp = make.root / "agent_wrap" / "cli" / "stats" / "run.py"
+    assert "EE001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_e_lower_case_binding_not_a_constant(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/scan.py", "logger = make_logger()\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EE001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_e_class_and_function_scope_ignored(make: _Maker) -> None:
+    """Only module-level assignments are constants; ClassVars and locals are not."""
+    make.write(
+        "agent_wrap/domain/stats/service.py",
+        """\
+        class StatsService:
+            MAX_FILES = 64
+
+            def go(self) -> None:
+                LOCAL_MAX = 5
+                print(LOCAL_MAX)
+        """,
+    )
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "service.py"
+    assert "EE001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_e_dunder_all_not_flagged(make: _Maker) -> None:
+    make.write("agent_wrap/domain/stats/scan.py", "__all__ = ['scan']\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EE001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_e_skips_lib(make: _Maker) -> None:
+    make.write("agent_wrap/lib/flock.py", "LOCK_POLL_INTERVAL = 0.1\n")
+    fp = make.root / "agent_wrap" / "lib" / "flock.py"
+    assert "EE001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_e_models_may_hold_no_constants(make: _Maker) -> None:
+    """models.py is exempt from rule D but still subject to rule E."""
+    make.write("agent_wrap/domain/stats/models.py", "MAX_FILES = 64\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "models.py"
+    assert "EE001" in _violation_codes(check_file(fp))
+
+
+def test_rule_d_constants_may_hold_no_types(make: _Maker) -> None:
+    """constants.py is exempt from rule E but still subject to rule D."""
+    make.write("agent_wrap/domain/stats/constants.py", "class Thing(NamedTuple):\n    a: int\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "constants.py"
+    assert "ED001" in _violation_codes(check_file(fp))

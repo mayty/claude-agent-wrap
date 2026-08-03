@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 
 from agent_wrap.cli.stats.render import range_label, render_core
 from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
-from agent_wrap.constants import USAGE_SOURCES
-from agent_wrap.domain.display.models import Ansi, RowItem
+from agent_wrap.constants import DIVIDER, USAGE_SOURCES
+from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.models import RowItem
 from agent_wrap.domain.pricing.models import Bucket
 
 if TYPE_CHECKING:
@@ -125,15 +126,12 @@ def render_source_breakdown(
     priced the model-keyed buckets (same basis as :func:`render`).
     Returns "" when no source has activity in the window.
     """
-    merged: dict[str, Bucket] = {}
-    for source, by_model in totals_by_source.items():
-        src_bucket = merged.setdefault(source, Bucket())
-        for b in by_model.values():
-            src_bucket.merge(b)
+    merged = {
+        source: Bucket.merged(by_model.values()) for source, by_model in totals_by_source.items()
+    }
 
     headers = ["SOURCE", "MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
     aligns = ["<", ">", ">", ">", ">", ">", ">"]
-    div = "__div__"
 
     def _row(label: str, b: Bucket, style: Ansi) -> RowItem:
         return RowItem(
@@ -150,21 +148,16 @@ def render_source_breakdown(
             prefix_len=0,
         )
 
-    body: list[RowItemOrDivider] = []
-    total = Bucket()
-    for source in USAGE_SOURCES:
-        b = merged.get(source)
-        # Unrecoverable rows carry msgs but zero tokens; the msgs guard keeps them
-        # (intentionally surfaced) while dropping sources with no activity at all.
-        if b is None or b.msgs == 0:
-            continue
-        total.merge(b)
-        body.append(_row(source, b, Ansi.NONE))
+    # Unrecoverable rows carry msgs but zero tokens; the msgs guard keeps them
+    # (intentionally surfaced) while dropping sources with no activity at all.
+    active = [(s, merged[s]) for s in USAGE_SOURCES if s in merged and merged[s].msgs > 0]
+    body: list[RowItemOrDivider] = [_row(s, b, Ansi.NONE) for s, b in active]
+    total = Bucket.merged(b for _s, b in active)
 
     if not body:
         return ""
 
-    body.append(div)
+    body.append(DIVIDER)
     body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
 
     shared_widths = display.compute_shared_widths([(headers, body, 1)], 6)

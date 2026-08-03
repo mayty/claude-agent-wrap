@@ -9,9 +9,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PollResult
+from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PORT_SCAN_LIMIT, PollResult
 from agent_wrap.domain.display.service import DisplayService
-from agent_wrap.domain.sidecars.constants import PORT_SCAN_LIMIT
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig
 from agent_wrap.lib.path_hash import project_path_hash
@@ -51,6 +50,7 @@ def _sidecar(tmp_path: Path, **overrides: object) -> LiteLLMSidecar:
 
 
 _DOCKER = "agent_wrap.domain.sidecars.litellm.docker_run"
+_NETWORK_EXISTS = "agent_wrap.domain.sidecars.litellm.network_exists"
 _IMAGE_EXISTS = "agent_wrap.domain.sidecars.litellm.image_exists"
 _FIND_FREE_PORT = "agent_wrap.domain.sidecars.litellm.find_free_port"
 #: `docker inspect` env output the hot path needs: port recovery aborts without it.
@@ -95,19 +95,25 @@ def test_is_on_network_false(tmp_path: Path, mocker: pytest_mock.MockFixture) ->
 
 
 def test_ensure_network_exists(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+    """An existing network is left alone — no create is attempted."""
+    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=True)
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     _sidecar(tmp_path)._ensure_network()
-    calls = [c.args for c in mock_docker.call_args_list]
-    assert any("network" in c and "inspect" in c for c in calls)
+    assert mock_docker.call_args_list == []
 
 
 def test_ensure_network_creates(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    """A missing network is created."""
+    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=False)
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     _sidecar(tmp_path)._ensure_network()
+    calls = [c.args for c in mock_docker.call_args_list]
+    assert any("network" in c and "create" in c for c in calls)
 
 
 def test_ensure_network_create_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 1)])
+    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=False)
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
     with pytest.raises(SystemExit):
         _sidecar(tmp_path)._ensure_network()
 

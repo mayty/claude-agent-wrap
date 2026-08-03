@@ -89,9 +89,6 @@ class EncryptionPrimitives:
     """HMAC-SHA256-CTR + encrypt-then-MAC for the secrets store."""
 
     MIN_PAYLOAD_LEN = 48  # 16 nonce + 0 data + 32 hmac minimum
-    NONCE_LEN = 16
-    MAC_LEN = 32
-    BLOCK_LEN = 32
 
     @staticmethod
     def encrypt(plaintext: bytes, key: bytes) -> bytes:

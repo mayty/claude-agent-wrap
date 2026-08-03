@@ -26,3 +26,20 @@ AGENT_ALIGNS = ("<", "<", "<", "<", ">")
 DETAILS_TITLE = "Details:"
 DETAILS_HEADERS = ("ITEM", "STATE")
 DETAILS_ALIGNS = ("<", "<")
+
+#: Long-form help printed for `agent inspect -h`.
+USAGE_TEXT = (
+    "Usage: agent inspect [--json]\n\n"
+    "Reports what agent-wrap is currently doing on this host: the sidecar\n"
+    "containers that are up (with their image, port, health, uptime, and how\n"
+    "many agents are attached), the agent containers running against them (with\n"
+    "their image, project directory, and provider), the logs viewer, the\n"
+    "on-disk log footprint, per-provider secret readiness, the installed\n"
+    "wrapper revision, and the host facts behind most launch surprises.\n\n"
+    "Read-only: it starts nothing, stops nothing, and writes nothing. It also\n"
+    "makes no network call, so the wrapper revision it reports is the local\n"
+    "one — use `agent update` to check for a newer release.\n\n"
+    "--json emits the same report as one JSON document instead of tables.\n\n"
+    "Exits 1 when the Docker daemon cannot be reached; every section that does\n"
+    "not depend on Docker is still reported."
+)

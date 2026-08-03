@@ -25,33 +25,18 @@ Two things are injected by the caller:
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
+from agent_wrap.cli.stats.models import AggregatedDayRows, BuildModelSection, CostFn
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
-from agent_wrap.domain.display.models import Ansi, RowItem, RowItemOrDivider
+from agent_wrap.constants import DIVIDER, ORPHANED_LABEL
+from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
-from agent_wrap.domain.stats.constants import ORPHANED_LABEL
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
-
-# A "cost view" callback. cost/unknown MUST come from this, never `Bucket.cost`.
-CostFn = Callable[[str, Bucket], tuple[float, bool]]
-BuildModelSection = Callable[[dict[str, Bucket], int, "DisplayService"], list[RowItemOrDivider]]
-
-
-class AggregatedDayRows(NamedTuple):
-    """Aggregated per-day rows with totals for the By-day table."""
-
-    day_rows_data: list[tuple[str, Bucket, float, bool]]
-    total_b: Bucket
-    total_cost: float
-    total_unknown: bool
-
-
-_DIV = "__div__"
 
 
 def range_label(from_iso: str | None, until_iso: str | None) -> str:
@@ -152,27 +137,19 @@ def _aggregate_day_rows(
 ) -> AggregatedDayRows:
     day_rows_data: list[tuple[str, Bucket, float, bool]] = []
     for d in shown_days:
-        day_total = Bucket()
         day_cost: float = 0.0
         day_unknown = False
         for model, b in dated[d].items():
-            day_total.merge(b)
             known, unknown = cost_fn(model, b)
             if unknown:
                 day_unknown = True
             else:
                 day_cost += known
-        day_rows_data.append((d, day_total, day_cost, day_unknown))
+        day_rows_data.append((d, Bucket.merged(dated[d].values()), day_cost, day_unknown))
 
-    total_b = Bucket()
-    total_cost: float = 0.0
-    total_unknown = False
-    for _, b, c, unk in day_rows_data:
-        total_b.merge(b)
-        if unk:
-            total_unknown = True
-        else:
-            total_cost += c
+    total_cost = sum(c for _d, _b, c, unk in day_rows_data if not unk)
+    total_unknown = any(unk for _d, _b, _c, unk in day_rows_data)
+    total_b = Bucket.merged(b for _d, b, _c, _unk in day_rows_data)
 
     return AggregatedDayRows(day_rows_data, total_b, total_cost, total_unknown)
 
@@ -201,7 +178,7 @@ def _build_recent_body(
 
     if shown_days:
         if body:
-            body.append(_DIV)
+            body.append(DIVIDER)
 
         day_rows_data, total_b, total_cost, total_unknown = _aggregate_day_rows(
             dated, shown_days, cost_fn
@@ -225,7 +202,7 @@ def _build_recent_body(
                 )
             )
 
-        body.append(_DIV)
+        body.append(DIVIDER)
         body.append(
             RowItem(
                 cells=[

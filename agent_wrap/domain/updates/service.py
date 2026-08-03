@@ -8,12 +8,15 @@ import subprocess
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
-from agent_wrap.domain.updates.constants import REBUILD_FILES, RESOURCE_FILES
+from agent_wrap.domain.updates.constants import (
+    REBUILD_FILES,
+    RESOURCE_FILES,
+    MdPropagation,
+    MdState,
+)
 from agent_wrap.domain.updates.models import (
     BehindCountResult,
     GitFullResult,
-    MdPropagation,
-    MdState,
     WrapperRevision,
 )
 from agent_wrap.lib.utils import is_truthy_env
@@ -41,7 +44,7 @@ class _GitOps:
             return "", 1
 
     @staticmethod
-    def git_full(*args: str, cwd: str | None = None, timeout: int | None = None) -> GitFullResult:
+    def git_full(*args: str, cwd: str | None = None) -> GitFullResult:
         """Run a git command and return (stdout, returncode, stderr)."""
         try:
             result = subprocess.run(
@@ -49,7 +52,6 @@ class _GitOps:
                 capture_output=True,
                 text=True,
                 cwd=cwd,
-                timeout=timeout,
             )
             return GitFullResult(result.stdout.strip(), result.returncode, result.stderr.strip())
         except (subprocess.TimeoutExpired, FileNotFoundError):

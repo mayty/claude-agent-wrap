@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from agent_wrap.domain.updates.models import MdPropagation, MdState
+from agent_wrap.domain.updates.constants import MdPropagation, MdState
 from agent_wrap.domain.updates.service import UpdateService, _GitOps
 
 

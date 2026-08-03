@@ -22,7 +22,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | [docs/container-environment.md](docs/container-environment.md) | Adding/editing container env var injection |
 | [docs/architecture.md](docs/architecture.md) | Understanding the codebase architecture |
 | [docs/testing-conventions.md](docs/testing-conventions.md) | Writing or reviewing tests |
-| [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `agent` function |
+| [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `PATH` setup for `agent` |
 | [agent_wrap/domain/providers/README.md](agent_wrap/domain/providers/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
 | Provider READMEs (`agent_wrap/domain/providers/*/README.md`) | Provider-specific env vars, credentials, or model mappings |
 
@@ -48,7 +48,7 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 ## Keeping `default-CLAUDE.md` in sync
 
-`ops/default-CLAUDE.md` is copied into every consumer project's `.claude_config/.claude/CLAUDE.md` on first `agent run` and is how agents running in *other* projects learn about this wrapper's runtime contract.
+`ops/default-CLAUDE.md` is copied once into the wrapper-global `.claude_config/.claude/CLAUDE.md` on first `agent run` — one copy shared by every project, not one per project — and is how agents running in *other* projects learn about this wrapper's runtime contract.
 
 **Update `ops/default-CLAUDE.md` whenever you change wrapper behavior that a consumer agent needs to know about:** adding/removing directives, changing mount paths or environment assumptions, changing dependency installation rules, or changing persistence paths. No update needed for internal refactors, changes to this repo's own `CLAUDE.md`, or host-only changes.
 
@@ -71,11 +71,14 @@ A `Makefile` provides all QA targets. Follow these rules:
 - **Module-level constants imported by more than one module belong in
   `agent_wrap/constants.py`.**
 - **Data/type-carrying classes belong in ``models.py``.** Dataclasses, TypedDicts,
-  enums, type aliases, and plain data-holding classes must be defined in an optional
-  ``models.py`` within their domain subpackage — not scattered across service files.
+  NamedTuples, type aliases, and plain data-holding classes must be defined in an
+  optional ``models.py`` within their domain subpackage — not scattered across
+  service files. Enums belong in ``constants.py`` instead (a fixed set of named
+  values, not a data-carrying type).
 - **Module-level constants belong in ``constants.py``.** All module-level constants
-  (whether public or ``_``-prefixed) must be defined in an optional ``constants.py``
-  within their domain subpackage, neighboring ``models.py``.
+  (whether public or ``_``-prefixed), including enums, must be defined in an optional
+  ``constants.py`` within their domain subpackage, neighboring ``models.py``. This
+  scope includes the package root (``agent_wrap/models.py`` / ``agent_wrap/constants.py``).
 - **Domain service classes belong in ``service.py``.** Every domain service class
   must be defined in ``service.py`` — not named after the subpackage (e.g.
   ``build.py``), and not with a ``_service`` suffix (e.g. ``provider_service.py``).

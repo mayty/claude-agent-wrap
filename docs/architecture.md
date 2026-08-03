@@ -82,7 +82,6 @@ domain/<name>/
 ├── service.py       # Domain service class (e.g., BuildService, LaunchService)
 └── tests/            # Unit tests for this service
     ├── __init__.py
-    ├── conftest.py   # Service-level fixtures
     └── test_<name>.py
 ```
 
@@ -121,9 +120,11 @@ Providers access sidecar functionality through an injected `SidecarService` (see
    rule 4 (which bans it only on domain service classes).
 8. **``models.py``** — every domain subpackage may include an optional
    ``models.py``. All data- or type-carrying classes — dataclasses, TypedDicts,
-   NamedTuples, enums, type aliases, and plain data-holding classes (whether
-   public or ``_``-prefixed) — must be defined in ``models.py``. Service classes
-   and namespace classes do **not** go in ``models.py``.
+   NamedTuples, type aliases, and plain data-holding classes (whether public or
+   ``_``-prefixed) — must be defined in ``models.py``. Service classes and
+   namespace classes do **not** go in ``models.py``. Enums belong in
+   ``constants.py`` instead (rule 10) — a fixed set of named values, not a
+   data-carrying type.
 9. **No pure-proxy service methods.** A method that delegates to another callable
    without adding any logic — no validation, transformation, conditional logic,
    error handling, or logging — is forbidden. This includes methods that only
@@ -132,11 +133,19 @@ Providers access sidecar functionality through an injected `SidecarService` (see
    pricing=self._pricing)``). Inline the target's implementation into the
    service method and remove the original target (no dual implementations).
    Service boundaries stay intact — callers continue through ``services.*``.
+
+   **Named exceptions** — these forward deliberately and must not be "fixed":
+
+   * factory methods (``SidecarService.create_tracker`` and its siblings) — constructing a collaborator *is* the behaviour;
+   * ``DisplayService.spin_while`` / ``poll_until`` — the ``Spinner`` collaborator owns the animation loop and stays a separate class;
+   * ``SidecarService.telegram_required_secrets`` — the secret list belongs to ``TelegramSidecar``, which declares it.
 10. **``constants.py``** — every domain subpackage may include an optional
     ``constants.py``. All module-level constants — plain variables, regex patterns,
-    frozensets, and path-like config values — must be defined here rather than
-    scattered across service files or helper modules. This mirrors rule 8
-    (``models.py``) but for constant definitions.
+    frozensets, path-like config values, and enums — must be defined here rather
+    than scattered across service files or helper modules. This mirrors rule 8
+    (``models.py``) but for constant definitions. This scope includes the package
+    root: ``agent_wrap/models.py`` / ``agent_wrap/constants.py`` follow the same
+    split as a domain subpackage's pair.
 11. **``service.py``** — every domain subpackage that defines a domain service class
     must place that class in a file named ``service.py``. Service files must not be
     named after the subpackage (e.g. ``build.py`` for ``BuildService``) or with a
@@ -150,8 +159,8 @@ Providers access sidecar functionality through an injected `SidecarService` (see
 - **``__init__.py``**: must not re-export names from sibling modules. Every consumer imports directly from the module that defines the name.
 - **Private names**: never import a private (`_`-prefixed) name from another module. If a name is intended for import outside its defining module, it must be public (no underscore).
 - **Namespace classes**: comment-separated blocks of standalone functions that share a micro-domain must be replaced with a namespace class — a class whose methods are all ``@staticmethod`` and that has no instance state (see rule 7). They are pure organizational containers; do not confuse them with domain service classes.
-- **``models.py``**: data- and type-carrying classes (dataclasses, TypedDicts, enums, type aliases) belong in an optional ``models.py`` within their domain subpackage (see rule 8).
-- **``constants.py``**: module-level constants (whether public or ``_``-prefixed) belong in an optional ``constants.py`` within their domain subpackage, neighboring ``models.py`` (see rule 10).
+- **``models.py``**: data- and type-carrying classes (dataclasses, TypedDicts, NamedTuples, type aliases) belong in an optional ``models.py`` within their domain subpackage (see rule 8).
+- **``constants.py``**: module-level constants (whether public or ``_``-prefixed), including enums, belong in an optional ``constants.py`` within their domain subpackage, neighboring ``models.py`` (see rule 10).
 - **``service.py``**: every domain service class must be defined in ``service.py`` — not after the subpackage and not with a ``_service`` suffix (see rule 11).
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
 - **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.

@@ -8,7 +8,8 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 from agent_wrap.__main__ import _complete, main
-from agent_wrap.cli.commands import COMMANDS, command_meta
+from agent_wrap.cli.commands import command_meta
+from agent_wrap.cli.constants import COMMANDS
 from agent_wrap.containers import services
 
 if TYPE_CHECKING:

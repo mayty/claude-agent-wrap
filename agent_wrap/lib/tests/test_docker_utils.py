@@ -47,15 +47,6 @@ def test_docker_run_file_not_found(mocker: pytest_mock.MockFixture) -> None:
     assert docker_run("info") == ("", 1)
 
 
-def test_docker_run_check_true_raises(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
-    mock_run.return_value.stdout = ""
-    mock_run.return_value.returncode = 1
-    mock_run.return_value.stderr = "error"
-    with pytest.raises(RuntimeError, match="docker info failed"):
-        docker_run("info", check=True)
-
-
 def test_rootless_true(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.return_value.stdout = "Security Options: rootless"

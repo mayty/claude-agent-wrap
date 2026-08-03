@@ -79,13 +79,14 @@ How tests are organized, mocked, and written in this project. All code contribut
   inputs are generated dynamically or each iteration needs different
   assertion logic.
 - When a test loops over inputs and asserts per-iteration, wrap each
-  iteration with the `pytest-subtests` plugin so that one failure does
-  not hide subsequent ones. Never use `unittest.TestCase` or
-  `self.subTest(...)` — this is a pytest-only project.
-- Add `pytest-subtests` as a dev dependency; use the `subtests`
-  fixture it provides:
+  iteration in a subtest so that one failure does not hide subsequent
+  ones. Never use `unittest.TestCase` or `self.subTest(...)` — this is a
+  pytest-only project.
+- Use the `subtests` fixture built into pytest 9 (typed as
+  `pytest.Subtests`). Do **not** add the `pytest-subtests` plugin as a
+  dependency — it would shadow the builtin:
   ```python
-  def test_something(subtests):
+  def test_something(subtests: pytest.Subtests):
       for item in items:
           with subtests.test(msg=str(item)):
               assert ...

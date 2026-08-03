@@ -11,9 +11,8 @@ from agent_wrap.lib.argparsing import make_parser, parse_or_code
 
 if TYPE_CHECKING:
     import argparse
-    from pathlib import Path
 
-    from agent_wrap.domain.stats.models import CleanupResult
+    from agent_wrap.domain.stats.models import CleanupOutcome, CleanupScope
 
 USAGE = "[--dry-run]"
 SUMMARY = "Delete orphaned project data (archiving usage first)"
@@ -35,37 +34,27 @@ def run(args: list[str]) -> int:
     if isinstance(ns, int):
         return ns
     dsp = services.display_service
-    config = services.config_service
     stats = services.stats_service
 
-    captured_scope: list[tuple[list[Path], list[Path], int]] = []
-
-    def _compute_scope() -> None:
-        orphaned_dirs = stats.orphaned_log_dirs(config.read_project_paths())
-        stale_paths = config.stale_project_paths()
-        # Measured before anything is deleted, and reused for --dry-run's
-        # preview — it describes exactly the dirs the confirmed run will remove.
-        freed_estimate = stats.orphaned_disk_usage(orphaned_dirs)
-        captured_scope.append((orphaned_dirs, stale_paths, freed_estimate))
-
+    scoped: list[CleanupScope] = []
     dsp.spin_while(
         label=CLEANUP_LABEL,
         message="scanning…",
         done_message=lambda: None,
-        work=_compute_scope,
+        work=lambda: scoped.append(stats.cleanup_scope()),
     )
-    orphaned_dirs, stale_paths, freed_estimate = captured_scope[0]
+    scope = scoped[0]
 
-    if not orphaned_dirs and not stale_paths:
+    if scope.is_empty:
         dsp.info("Nothing to clean up: no orphaned logs or stale registry entries found.")
         return 0
 
     dsp.info(
-        f"{len(orphaned_dirs)} project log(s) will be deleted, "
-        f"freeing ~{dsp.format_bytes(freed_estimate)}."
+        f"{len(scope.orphaned_dirs)} project log(s) will be deleted, "
+        f"freeing ~{dsp.format_bytes(scope.freed_estimate)}."
     )
-    if stale_paths:
-        dsp.info(f"{len(stale_paths)} stale project registry entr(y/ies) will be removed.")
+    if scope.stale_paths:
+        dsp.info(f"{len(scope.stale_paths)} stale project registry entr(y/ies) will be removed.")
 
     if ns.dry_run:
         return 0
@@ -75,27 +64,24 @@ def run(args: list[str]) -> int:
         dsp.info("Cleanup cancelled.")
         return 0
 
-    captured_result: list[CleanupResult] = []
+    outcomes: list[CleanupOutcome] = []
     dsp.spin_while(
         label=CLEANUP_LABEL,
         message="cleaning up…",
         done_message=lambda: None,
-        work=lambda: captured_result.append(stats.archive_and_delete_orphaned(orphaned_dirs)),
+        work=lambda: outcomes.append(stats.run_cleanup(scope)),
     )
-    result = captured_result[0]
+    result = outcomes[0].result
     if not result.finalized:
-        # The logs are gone but their usage only reached the staging file. Leave
-        # the registry alone so the surviving evidence stays consistent.
         dsp.error(
             "Deleted logs but failed to finalize the usage archive. "
             f"Run: mv {result.staging_path} {result.archive_path}"
         )
         return 1
 
-    removed_paths = config.prune_stale_projects(stale_paths)
     dsp.success(
         f"Cleanup complete: {result.removed} project log(s) deleted "
         f"({dsp.format_bytes(result.freed_bytes)} freed), "
-        f"{len(removed_paths)} stale registry entr(y/ies) removed."
+        f"{len(outcomes[0].removed_paths)} stale registry entr(y/ies) removed."
     )
     return 0

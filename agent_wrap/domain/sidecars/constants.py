@@ -1,17 +1,10 @@
 # This file has been edited with the assistance of an AI tool.
 """Constants for the sidecars domain."""
 
-from agent_wrap.constants import BASE_IMAGE_NAME
+from agent_wrap.constants import CONTAINER_NAME_PREFIX, TELEGRAM_SIDECAR_NAME
 
-#: Docker label name used to identify agent containers.
-ROLE_LABEL = "agent-wrap.role"
-#: Docker label value identifying agent containers.
-ROLE_VALUE = BASE_IMAGE_NAME
 #: Docker label carrying an agent's instance id — the flock registry's key.
 INSTANCE_ID_LABEL = "agent-wrap.instance-id"
-
-#: How many successive ports a cold start probes before giving up.
-PORT_SCAN_LIMIT = 50
 
 #: Container path the project directory is bind-mounted at, and so the mount entry
 #: whose source recovers an agent's cwd.
@@ -56,3 +49,11 @@ AGENT_INSPECT_TEMPLATE = (
     "{{json .Config.Labels}}\t"
     "{{json .Mounts}}"
 )
+
+#: Field counts the two templates render. A line with fewer fields is malformed and
+#: skipped; deriving them from the templates keeps the two from drifting apart.
+SIDECAR_FIELD_COUNT = SIDECAR_INSPECT_TEMPLATE.count(INSPECT_FIELD_SEP) + 1
+AGENT_FIELD_COUNT = AGENT_INSPECT_TEMPLATE.count(INSPECT_FIELD_SEP) + 1
+
+#: The single Telegram sidecar's container name.
+TELEGRAM_CONTAINER_NAME = f"{CONTAINER_NAME_PREFIX}-{TELEGRAM_SIDECAR_NAME}"

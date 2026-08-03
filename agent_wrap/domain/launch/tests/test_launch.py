@@ -35,8 +35,6 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
     """Return a LaunchService with spec-mocked dependencies."""
     build_svc = mocker.Mock(spec=BuildService)
     sidecar_svc = mocker.Mock(spec=SidecarService)
-    sidecar_svc.role_label = SidecarService.role_label
-    sidecar_svc.role_value = SidecarService.role_value
     return LaunchService(
         config_service=mocker.Mock(spec=ConfigService),
         secrets_service=mocker.Mock(spec=SecretsService),

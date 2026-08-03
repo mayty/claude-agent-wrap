@@ -17,10 +17,10 @@ source /path/to/claude-agent-wrap/agent-wrap.bashrc
 
 This adds `bin/agent` to your `PATH` and registers tab-completion. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required. See [Shell Commands](shell-commands.md).
 
-Build the base image once:
+Build the base image:
 
 ```bash
-agent rebuild
+agent rebuild --full
 ```
 
 This creates a `claude-agent` image. Your host UID/GID are passed in as build args (`HOST_UID`/`HOST_GID`) so the container can write to mounted directories without permission issues.

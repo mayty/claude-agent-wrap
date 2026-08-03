@@ -59,7 +59,7 @@ def test_file_lock_timeout_when_held(tmp_path: Path) -> None:
     holder = open(lock, "w")  # noqa: SIM115
     try:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
-        with pytest.raises(LockTimeoutError), file_lock(lock, timeout=0.2, poll=0.05):
+        with pytest.raises(LockTimeoutError), file_lock(lock, timeout=0.2):
             pass
     finally:
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
@@ -125,18 +125,6 @@ def test_live_lock_ids_does_not_truncate(tmp_path: Path) -> None:
     entry.write_text("payload")
     live_lock_ids(tmp_path)
     assert entry.read_text() == "payload"
-
-
-def test_live_lock_ids_excludes_named_id(tmp_path: Path) -> None:
-    mine = lock_and_hold(tmp_path / "mine")
-    theirs = lock_and_hold(tmp_path / "theirs")
-    assert mine is not None
-    assert theirs is not None
-    try:
-        assert live_lock_ids(tmp_path, exclude_id="mine") == ["theirs"]
-    finally:
-        mine.close()
-        theirs.close()
 
 
 def test_live_lock_ids_sorted(tmp_path: Path) -> None:

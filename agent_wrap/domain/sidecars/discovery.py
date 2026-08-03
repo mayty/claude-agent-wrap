@@ -33,29 +33,21 @@ from agent_wrap.constants import (
     SIDECAR_PORT_ENV,
     SIDECAR_PROVIDER_ENV,
     TELEGRAM_IMAGE,
-    TELEGRAM_SIDECAR_NAME,
 )
 from agent_wrap.domain.sidecars.constants import (
-    AGENT_INSPECT_TEMPLATE,
+    AGENT_FIELD_COUNT,
     INSPECT_FIELD_SEP,
     INSPECTABLE_ENV_KEYS,
     INSTANCE_ID_LABEL,
     LITELLM_ROLE,
-    SIDECAR_INSPECT_TEMPLATE,
+    SIDECAR_FIELD_COUNT,
+    TELEGRAM_CONTAINER_NAME,
     TELEGRAM_ROLE,
     UNKNOWN_ROLE,
     WORKSPACE_MOUNT_DEST,
 )
 from agent_wrap.domain.sidecars.models import AgentContainer, SidecarContainer
 from agent_wrap.lib.docker_utils import parse_docker_timestamp
-
-#: Field counts the two templates render. A line with fewer fields is malformed and
-#: skipped; comparing against the template keeps the two from drifting apart.
-SIDECAR_FIELD_COUNT = SIDECAR_INSPECT_TEMPLATE.count(INSPECT_FIELD_SEP) + 1
-AGENT_FIELD_COUNT = AGENT_INSPECT_TEMPLATE.count(INSPECT_FIELD_SEP) + 1
-
-#: The single Telegram sidecar's container name.
-TELEGRAM_CONTAINER_NAME = f"{CONTAINER_NAME_PREFIX}-{TELEGRAM_SIDECAR_NAME}"
 
 
 class ContainerParsing:

@@ -15,6 +15,8 @@ from agent_wrap.constants import (
     AGENT_WRAP_MOUNT,
     GLOBAL_CONFIG_DIR,
     OPS_DIR,
+    ROLE_LABEL,
+    ROLE_VALUE,
     SIDECAR_NETWORK_NAME,
     STATE_FILES,
     TELEGRAM_IMAGE,
@@ -284,7 +286,7 @@ class LaunchService:
             return []
         return [
             "--label",
-            f"{self._sidecar_service.role_label}={self._sidecar_service.role_value}",
+            f"{ROLE_LABEL}={ROLE_VALUE}",
             "--label",
             f"agent-wrap.instance-id={instance_id}",
             "--name",

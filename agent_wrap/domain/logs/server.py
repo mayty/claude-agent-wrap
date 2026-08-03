@@ -9,16 +9,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
 
-from agent_wrap.constants import LOGS_CONTENT_TYPES
-from agent_wrap.domain.logs.constants import LOGS_PAGE_DIR, PORT_SCAN_LIMIT
+from agent_wrap.constants import LOGS_CONTENT_TYPES, PORT_SCAN_LIMIT
+from agent_wrap.domain.logs.constants import LOGS_PAGE_DIR
 from agent_wrap.domain.logs.io import (
     read_session,
     read_strings,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from agent_wrap.domain.logs.cache import LogsCache
     from agent_wrap.domain.pricing.service import PricingService
 
@@ -80,7 +78,6 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
             return logs_dirs, project_id
 
         _API_DISPATCH: ClassVar[dict[str, str]] = {
-            "/api/groups": "_handle_groups",
             "/api/projects": "_handle_projects",
             "/api/sessions": "_handle_sessions",
             "/api/session": "_handle_session",
@@ -105,9 +102,6 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
         # ------------------------------------------------------------------
         # Cache-served meta endpoints (no disk I/O on the request path)
         # ------------------------------------------------------------------
-
-        def _handle_groups(self, _qs: dict[str, list[str]]) -> None:
-            self._send_json(cache.get_groups())
 
         def _handle_projects(self, _qs: dict[str, list[str]]) -> None:
             self._send_json(cache.get_projects())
@@ -245,22 +239,6 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-
-        def _stream_ndjson(self, items: Iterable[Any], status: int = 200) -> None:
-            """
-            Send an NDJSON response stream from an iterable of dicts.
-
-            Each item is serialized as one JSON line and flushed immediately so
-            the client can process lines as they arrive.
-            """
-            self.send_response(status)
-            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            for item in items:
-                line = json.dumps(item, default=str).encode("utf-8") + b"\n"
-                self.wfile.write(line)
-                self.wfile.flush()
 
         def _serve_static(self, path: str) -> None:
             sf = resolve_static(path)

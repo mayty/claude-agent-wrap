@@ -109,12 +109,7 @@ class _BedrockPricing:
         return table
 
     @staticmethod
-    def load_prices(
-        cache_path: Path,
-        region_label: str = DEFAULT_REGION_LABEL,
-        *,
-        refresh: bool = False,
-    ) -> dict[str, dict[str, float]]:
+    def load_prices(cache_path: Path) -> dict[str, dict[str, float]]:
         cached: dict[str, Any] | None = None
         if cache_path.is_file():
             try:
@@ -124,18 +119,18 @@ class _BedrockPricing:
 
         fresh_enough = (
             cached is not None
-            and cached.get("region") == region_label
+            and cached.get("region") == DEFAULT_REGION_LABEL
             and isinstance(cached.get("fetched_at"), (int, float))
             and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
         )
 
-        if fresh_enough and not refresh and cached is not None:
+        if fresh_enough and cached is not None:
             return cached.get("prices") or {}
 
         try:
             page = _BedrockPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             data = json.loads(_BedrockPricing.http_get(PRICING_DATA_URL))
-            prices = _BedrockPricing.build_pricing_table(page, data, region_label)
+            prices = _BedrockPricing.build_pricing_table(page, data, DEFAULT_REGION_LABEL)
         except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError):
             if cached:
                 return cached.get("prices") or {}
@@ -150,7 +145,7 @@ class _BedrockPricing:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(
                 json.dumps(
-                    {"region": region_label, "fetched_at": time.time(), "prices": prices},
+                    {"region": DEFAULT_REGION_LABEL, "fetched_at": time.time(), "prices": prices},
                     indent=2,
                     sort_keys=True,
                 ),

@@ -39,3 +39,10 @@ ENABLE_PROMPT_CACHING_1H=1 agent run
 ## WSLg (conditional)
 
 On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. The same `/mnt/wslg`-directory check that gates these vars also gates the `wl-paste-shim` mount described in [Volume Mounts](volume-mounts.md) — both fire together. See [Clipboard / WSLg](wslg-clipboard.md).
+
+## Injected settings (not env vars)
+
+Two entries are written into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch, both idempotently and both skipped if the file holds malformed JSON:
+
+- **`statusLine`** — points at `/opt/agent-wrap/statusline.py`, the bundled two-line status line. It shows the model and remaining context on one line, and today's token usage plus an available-update notice on the other.
+- **Telegram hooks** — three entries pointing at `/opt/agent-wrap/telegram-notify.sh`, added only once the Telegram secrets are set. See [Telegram Notifications](telegram-notifications.md).

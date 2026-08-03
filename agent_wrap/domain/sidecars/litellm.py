@@ -33,13 +33,18 @@ from typing import TYPE_CHECKING
 
 from agent_wrap.constants import (
     LITELLM_SIDECAR_LABEL,
+    PORT_SCAN_LIMIT,
     SIDECAR_PORT_ENV,
     SIDECAR_PROVIDER_ENV,
     PollResult,
 )
 from agent_wrap.domain.sidecars.base import Sidecar
-from agent_wrap.domain.sidecars.constants import PORT_SCAN_LIMIT
-from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
+from agent_wrap.lib.docker_utils import (
+    docker_run,
+    get_user_args,
+    image_exists,
+    network_exists,
+)
 from agent_wrap.lib.net import find_free_port
 from agent_wrap.lib.path_hash import project_path_hash
 from agent_wrap.lib.utils import generate_uuid
@@ -371,8 +376,7 @@ class LiteLLMSidecar(Sidecar):
         return network in stdout.splitlines()
 
     def _ensure_network(self) -> None:
-        _, rc = docker_run("network", "inspect", self.network_name)
-        if rc == 0:
+        if network_exists(self.network_name):
             return
         _, rc = docker_run("network", "create", self.network_name)
         if rc != 0:

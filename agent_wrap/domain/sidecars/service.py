@@ -12,19 +12,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agent_wrap.constants import CONTAINER_NAME_PREFIX
+from agent_wrap.constants import CONTAINER_NAME_PREFIX, ROLE_LABEL, ROLE_VALUE
 from agent_wrap.domain.sidecars.constants import (
     AGENT_INSPECT_TEMPLATE,
-    ROLE_LABEL,
-    ROLE_VALUE,
     SIDECAR_INSPECT_TEMPLATE,
 )
 from agent_wrap.domain.sidecars.discovery import ContainerRows
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
-from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig, TelegramSidecarConfig
+from agent_wrap.domain.sidecars.models import (
+    LiteLLMSidecarConfig,
+    RegistryState,
+    TelegramSidecarConfig,
+)
 from agent_wrap.domain.sidecars.telegram import TelegramSidecar
 from agent_wrap.domain.sidecars.tracker import SidecarTracker
 from agent_wrap.lib.docker_utils import inspect_containers, list_container_names
+from agent_wrap.lib.flock import live_lock_ids
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,7 +35,6 @@ if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.sidecars.models import (
         AgentContainer,
-        RegistryState,
         SidecarContainer,
     )
 
@@ -44,11 +46,6 @@ class SidecarService:
     Injected via constructor DI into every domain service that needs to
     create or manage sidecars.
     """
-
-    #: Label value used to identify agent containers.
-    role_label: str = ROLE_LABEL
-    #: Label role value identifying agent containers.
-    role_value: str = ROLE_VALUE
 
     def __init__(self, display_service: DisplayService) -> None:
         self._display = display_service
@@ -77,10 +74,28 @@ class SidecarService:
         """
         Read the whole flock registry under *tool_dir* without mutating it.
 
-        Reporting only. The launch path asks its own narrower question through
-        ``SidecarTracker.has_live_runners``, which reaps stale entries as it goes.
+        Every container's live runners plus the start queue. Reporting only: the launch
+        path asks its own narrower question through ``SidecarTracker.has_live_runners``,
+        which answers for one container and reaps stale entries as it goes. This walks
+        the whole tree, keys the result by container name, and mutates nothing — a reader
+        must not reap another run's state, and a stale file left here is reaped by the
+        next real launch.
+
+        Containers whose registration directory exists but holds no live entry are
+        reported with an empty list rather than omitted: the directories are never
+        removed, so their presence is history, but "known container, nobody attached"
+        is worth telling apart from "never seen".
         """
-        return SidecarTracker(tool_dir).registry_state()
+        tracker = SidecarTracker(tool_dir)
+        by_container: dict[str, list[str]] = {}
+        if tracker.running_dir.is_dir():
+            for entry in sorted(tracker.running_dir.iterdir()):
+                # Files directly under running/ predate the per-container layout.
+                if entry.is_dir():
+                    by_container[entry.name] = live_lock_ids(entry)
+        return RegistryState(
+            by_container=by_container, waiting=live_lock_ids(tracker.start_waiters_dir)
+        )
 
     def list_sidecar_containers(self) -> list[SidecarContainer]:
         """
@@ -122,7 +137,7 @@ class SidecarService:
         for containers in sidecars_by_instance.values():
             containers.sort()
 
-        names = list_container_names(f"label={self.role_label}={self.role_value}")
+        names = list_container_names(f"label={ROLE_LABEL}={ROLE_VALUE}")
         lines, _rc = inspect_containers(names, AGENT_INSPECT_TEMPLATE)
         rows = [ContainerRows.agent(line, sidecars_by_instance) for line in lines]
         return sorted(

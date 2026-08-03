@@ -39,7 +39,7 @@ On launch the wrapper also creates `$(pwd)/.claude/litellm-logs` as a **symlink*
 
 ## Read-only tool mounts
 
-The wrapper's own source files are mounted at `/opt/agent-wrap/` so the in-container agent can inspect and invoke them (the validator, status line, Telegram script, etc.):
+The wrapper's `ops/` directory is mounted at `/opt/agent-wrap/` so the in-container agent can inspect and invoke those files (the base `Dockerfile`, `default-CLAUDE.md`, `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, `wl-paste-shim`). The wrapper's Python source is not mounted:
 
 | Host | Container |
 | --- | --- |

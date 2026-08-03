@@ -2,8 +2,21 @@
 import os
 from enum import Enum, auto
 from pathlib import Path
+from typing import Final
 
 from agent_wrap.lib.daytime import local_utc_offset_hours
+
+# Minimum sys.argv length for a valid CLI invocation (program name + verb).
+MIN_ARGS = 2
+
+
+class PollResult(Enum):
+    """Verdict a poll callback returns each tick to ``DisplayService.poll_until``."""
+
+    PENDING = auto()
+    SUCCESS = auto()
+    FAILURE = auto()
+
 
 TOOL_DIR = Path(__file__).parent.parent.resolve()
 GLOBAL_CONFIG_DIR = TOOL_DIR / ".claude_config"
@@ -12,6 +25,19 @@ OPS_DIR = TOOL_DIR / "ops"
 
 # Genuine strings (not paths)
 BASE_IMAGE_NAME = "claude-agent"
+
+# Filename of the project registry that `agent run` appends to on every launch, and
+# that `agent stats` / the logs viewer read. Lives in AGENT_LAUNCHES_DIR.
+PROJECT_REGISTRY_FILENAME = "projects.txt"
+
+# Directory name of the shared per-project request logs. Sidecars write to
+# ``<tool_dir>/litellm-logs/<project_hash>/<provider>/<session>/``; each project's
+# ``.claude/litellm-logs`` is a symlink into its own slice.
+LITELLM_LOGS_DIRNAME = "litellm-logs"
+
+# How many successive ports a bind attempt probes before giving up. Shared by the
+# sidecar cold start and the logs viewer.
+PORT_SCAN_LIMIT = 50
 
 # Pinned sidecar Docker images (tag + digest)
 LITELLM_IMAGE = (
@@ -68,6 +94,10 @@ DAY_START_HOURS = _parsed_day_start_hours()
 # Recognised usage-source tags stamped onto records by the callback.
 USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")
 
+# Display label for orphaned sessions — logs from deleted or unregistered projects
+# that no longer have an entry in the project registry.
+ORPHANED_LABEL = "<orphaned>"
+
 # Files below this count are scanned serially (fork overhead > benefit).
 SCAN_PARALLEL_MIN_FILES = 64
 
@@ -85,6 +115,15 @@ STATE_FILES = (
 )
 
 # ── display / sidecars ────────────────────────────────────────────────────────
+
+# Sentinel marking a horizontal divider in a table body list. Typed Final so it
+# narrows to the Literal that ``RowItemOrDivider`` (display/models.py) expects.
+DIVIDER: Final = "__div__"
+
+#: Docker label name used to identify agent containers.
+ROLE_LABEL = "agent-wrap.role"
+#: Docker label value identifying agent containers.
+ROLE_VALUE = BASE_IMAGE_NAME
 
 LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"
@@ -124,11 +163,3 @@ SIDECAR_PORT_ENV = "AGENT_WRAP_SIDECAR_PORT"
 # container's lifetime (one container per provider), so the callback reads it from the
 # container env rather than per-request.
 SIDECAR_PROVIDER_ENV = "AGENT_WRAP_PROVIDER"
-
-
-class PollResult(Enum):
-    """Verdict a poll callback returns each tick to ``DisplayService.poll_until``."""
-
-    PENDING = auto()
-    SUCCESS = auto()
-    FAILURE = auto()

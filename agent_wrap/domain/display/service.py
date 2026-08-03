@@ -13,8 +13,8 @@ from agent_wrap.domain.display.constants import (
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
     THOUSAND,
+    Ansi,
 )
-from agent_wrap.domain.display.models import Ansi
 from agent_wrap.domain.display.spinner import Spinner
 
 if TYPE_CHECKING:

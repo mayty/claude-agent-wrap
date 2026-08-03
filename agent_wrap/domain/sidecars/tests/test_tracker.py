@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.domain.sidecars.tracker import SidecarTracker
-from agent_wrap.lib.flock import lock_and_hold
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -135,60 +134,3 @@ def test_probes_false_when_dirs_absent(tracker: SidecarTracker) -> None:
 def test_clear_tolerates_missing_handle_and_file(tracker: SidecarTracker) -> None:
     """clear_running is a safe no-op when there is nothing registered (e.g. failed start)."""
     tracker.clear_running(None, _BEDROCK, "inst-1")
-
-
-# --- registry_state (read-only reporting view) ---
-
-
-def test_registry_state_maps_containers_to_live_ids(tracker: SidecarTracker) -> None:
-    bedrock = tracker.register_running(_BEDROCK, "inst-1")
-    telegram = tracker.register_running(_TELEGRAM, "inst-1")
-    try:
-        state = tracker.registry_state()
-        assert state.by_container == {_BEDROCK: ["inst-1"], _TELEGRAM: ["inst-1"]}
-    finally:
-        tracker.clear_running(bedrock, _BEDROCK, "inst-1")
-        tracker.clear_running(telegram, _TELEGRAM, "inst-1")
-
-
-def test_registry_state_reports_known_container_with_nobody_attached(
-    tracker: SidecarTracker,
-) -> None:
-    """Registration dirs are never removed, so an empty one means 'nobody attached'."""
-    tracker.running_dir_for(_BEDROCK).mkdir(parents=True, exist_ok=True)
-    assert tracker.registry_state().by_container == {_BEDROCK: []}
-
-
-def test_registry_state_omits_dead_owner_but_keeps_its_file(tracker: SidecarTracker) -> None:
-    """A reporting read must not reap — unlike has_live_runners, which does."""
-    handle = tracker.register_running(_BEDROCK, "dead-inst")
-    assert handle is not None
-    handle.close()  # owner "crashed": lock dropped, file left behind
-
-    assert tracker.registry_state().by_container == {_BEDROCK: []}
-    assert (tracker.running_dir_for(_BEDROCK) / "dead-inst").exists()
-
-
-def test_registry_state_ignores_legacy_flat_file(tracker: SidecarTracker) -> None:
-    tracker.running_dir.mkdir(parents=True, exist_ok=True)
-    (tracker.running_dir / "legacy-inst").touch()
-    assert tracker.registry_state().by_container == {}
-
-
-def test_registry_state_reports_start_queue_separately(tracker: SidecarTracker) -> None:
-    running = tracker.register_running(_BEDROCK, "inst-1")
-    waiter = lock_and_hold(tracker.start_waiters_dir / "inst-2")
-    assert waiter is not None
-    try:
-        state = tracker.registry_state()
-        assert state.waiting == ["inst-2"]
-        assert state.by_container == {_BEDROCK: ["inst-1"]}
-    finally:
-        waiter.close()
-        tracker.clear_running(running, _BEDROCK, "inst-1")
-
-
-def test_registry_state_empty_when_nothing_registered(tracker: SidecarTracker) -> None:
-    state = tracker.registry_state()
-    assert state.by_container == {}
-    assert state.waiting == []

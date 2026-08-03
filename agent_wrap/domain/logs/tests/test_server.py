@@ -149,7 +149,6 @@ def api_server(tmp_path: Path) -> tuple[int, Path]:
     cache.get_sessions_fingerprint.return_value = {"mtime": 1, "size": 100}
     cache.get_session_fingerprint.return_value = {"mtime": 1, "size": 100}
     cache.get_hot_session.return_value = None
-    cache.get_groups.return_value = []  # type: ignore[implicit-any-empty-container]
     cache.get_projects.return_value = []  # type: ignore[implicit-any-empty-container]
     cache.get_projects_fingerprint.return_value = {"mtime": None, "size": None}  # type: ignore[implicit-any-empty-container]
     _start_server(port, cache)
@@ -255,13 +254,6 @@ def test_session_stat_missing_session_returns_400(api_server: tuple[int, Path]):
     status, body = _get_json(port, "/api/session-stat?project=0")
     assert status == 400
     assert "missing session param" in body["error"]
-
-
-def test_groups_returns_list(api_server: tuple[int, Path]):
-    port, _project = api_server
-    status, body = _get_json(port, "/api/groups")
-    assert status == 200
-    assert isinstance(body, list)
 
 
 def test_projects_returns_list(api_server: tuple[int, Path]):

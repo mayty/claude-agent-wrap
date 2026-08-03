@@ -40,15 +40,18 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+#: Seconds between acquisition attempts while :func:`file_lock` waits on a timeout.
+LOCK_POLL_INTERVAL = 0.1
+
 
 @contextmanager
-def file_lock(path: Path, *, timeout: float | None = None, poll: float = 0.1) -> Iterator[None]:
+def file_lock(path: Path, *, timeout: float | None = None) -> Iterator[None]:
     """
     Hold an exclusive ``flock`` on *path* for the duration of the block.
 
     With ``timeout=None`` this blocks indefinitely. With a positive *timeout* it
-    polls every *poll* seconds and raises :class:`LockTimeoutError` if the deadline
-    passes without acquiring the lock.
+    polls every :data:`LOCK_POLL_INTERVAL` seconds and raises
+    :class:`LockTimeoutError` if the deadline passes without acquiring the lock.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w")  # noqa: SIM115 -- fd lifetime is the context manager
@@ -65,7 +68,7 @@ def file_lock(path: Path, *, timeout: float | None = None, poll: float = 0.1) ->
                     if time.monotonic() >= deadline:
                         msg = f"timed out waiting for lock {path}"
                         raise LockTimeoutError(msg) from None
-                    time.sleep(poll)
+                    time.sleep(LOCK_POLL_INTERVAL)
         yield
     finally:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -128,7 +131,7 @@ def clear_lock_handle(handle: TextIO | None, path: Path) -> None:
         path.unlink()
 
 
-def live_lock_ids(directory: Path, *, exclude_id: str | None = None) -> list[str]:
+def live_lock_ids(directory: Path) -> list[str]:
     """
     List the names of files in *directory* whose locks are still held, sorted.
 
@@ -149,8 +152,6 @@ def live_lock_ids(directory: Path, *, exclude_id: str | None = None) -> list[str
     live: list[str] = []
     for path in sorted(directory.iterdir()):
         if not path.is_file():
-            continue
-        if exclude_id is not None and path.name == exclude_id:
             continue
         try:
             handle = open(path)  # noqa: SIM115 -- released in the finally below

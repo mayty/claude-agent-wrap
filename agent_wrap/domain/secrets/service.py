@@ -7,6 +7,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
+from agent_wrap.domain.secrets.models import SecretsCheckReport, SecretsSetResult
 from agent_wrap.domain.secrets.store import EncryptedFileStore
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
@@ -117,23 +118,27 @@ class SecretsService:
 
     # -- Sidecar secret actions ---------------------------------------------
 
-    def check_secrets(self, sidecar_name: str) -> dict[str, bool]:
+    def check_secrets(self, sidecar_name: str) -> SecretsCheckReport:
         """
         Verify all required secrets for *sidecar_name* are present.
 
-        Returns a dict mapping each namespaced key to ``True`` (present)
-        or ``False`` (missing).
+        Returns each namespaced key's presence together with the overall verdict, so a
+        caller renders the rows rather than deciding pass/fail itself.
         """
         required = self.get_required_secrets(sidecar_name)
-        result: dict[str, bool] = {}
+        entries: dict[str, bool] = {}
         for key, desc in required:
             namespaced = f"{sidecar_name}:{key}"
             try:
                 self.read(namespaced, desc, prompt_on_missing=False)
-                result[namespaced] = True
+                entries[namespaced] = True
             except SecretNotFoundError:
-                result[namespaced] = False
-        return result
+                entries[namespaced] = False
+        return SecretsCheckReport(
+            entries=entries,
+            all_present=all(entries.values()),
+            declares_none=not required,
+        )
 
     def missing_keys_by_sidecar(self) -> dict[str, list[str]]:
         """
@@ -162,17 +167,18 @@ class SecretsService:
             )
         return result
 
-    def set_secrets(self, sidecar_name: str) -> list[str]:
+    def set_secrets(self, sidecar_name: str) -> SecretsSetResult:
         """
         Prompt and persist all required secrets for *sidecar_name*.
 
-        Returns the list of namespaced keys that were set.
-
-        Raises :class:`RuntimeError` when stdin is not a TTY.
+        Returns the namespaced keys that were set. A missing TTY comes back as the
+        result's ``error`` rather than an exception, so the caller reports it instead
+        of stringifying a ``RuntimeError``.
         """
         if not sys.stdin.isatty():
-            msg = "Cannot prompt for secrets in a non-interactive session."
-            raise RuntimeError(msg)
+            return SecretsSetResult(
+                keys_set=[], error="Cannot prompt for secrets in a non-interactive session."
+            )
 
         required = self.get_required_secrets(sidecar_name)
         keys_set: list[str] = []
@@ -180,7 +186,7 @@ class SecretsService:
             namespaced = f"{sidecar_name}:{key}"
             self._write(namespaced, desc)
             keys_set.append(namespaced)
-        return keys_set
+        return SecretsSetResult(keys_set=keys_set)
 
     def clear_secrets(self, sidecar_name: str) -> list[str]:
         """Delete all secrets for *sidecar_name*. Returns the list of removed keys."""

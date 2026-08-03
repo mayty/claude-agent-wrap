@@ -11,15 +11,15 @@ from __future__ import annotations
 import os
 import sys
 
-from agent_wrap.cli.commands import COMMANDS, command_meta, format_usage
+from agent_wrap.cli.commands import command_meta, format_usage
+from agent_wrap.cli.constants import COMMANDS
+from agent_wrap.constants import MIN_ARGS
 from agent_wrap.containers import services
-
-_MIN_ARGS = 2
 
 
 def main() -> int:
     """Run the normal CLI dispatch path."""
-    if len(sys.argv) < _MIN_ARGS:
+    if len(sys.argv) < MIN_ARGS:
         meta = command_meta()
         services.display_service.error(format_usage(meta), end="")
         return 1

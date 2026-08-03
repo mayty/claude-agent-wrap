@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.cli.commands import COMMANDS
+from agent_wrap.cli.constants import COMMANDS
 from agent_wrap.cli.secrets.run import run as secrets_run
 from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
 from agent_wrap.containers import services
+from agent_wrap.domain.secrets.models import SecretsCheckReport, SecretsSetResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -56,39 +57,58 @@ def test_run_clear_requires_sidecar() -> None:
     )
 
 
-def test_run_check_calls_sidecar_secrets_service() -> None:
-    """'check telegram' calls secrets_service.check_secrets."""
-    services.secrets_service.get_required_secrets.return_value = [  # type: ignore[union-attr]
-        ("TelegramBotToken", "desc"),
-        ("TelegramChatId", "desc"),
-    ]
-    services.secrets_service.check_secrets.return_value = {  # type: ignore[union-attr]
-        "telegram:TelegramBotToken": True,
-        "telegram:TelegramChatId": True,
-    }
+def test_run_check_reports_all_present() -> None:
+    """'check telegram' returns 0 when the report says every secret is present."""
+    services.secrets_service.check_secrets.return_value = SecretsCheckReport(  # type: ignore[union-attr]
+        entries={"telegram:TelegramBotToken": True, "telegram:TelegramChatId": True},
+        all_present=True,
+        declares_none=False,
+    )
 
-    rc = secrets_run(["check", TELEGRAM_SIDECAR_NAME])
-    assert rc == 0
+    assert secrets_run(["check", TELEGRAM_SIDECAR_NAME]) == 0
     services.secrets_service.check_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
 
 
 def test_run_check_missing_secret_returns_one() -> None:
-    """'check' returns 1 when a required secret is missing."""
-    services.secrets_service.get_required_secrets.return_value = [("Token", "desc")]  # type: ignore[union-attr]
-    services.secrets_service.check_secrets.return_value = {"telegram:Token": False}  # type: ignore[union-attr]
+    """'check' returns 1 when the report's verdict is not all-present."""
+    services.secrets_service.check_secrets.return_value = SecretsCheckReport(  # type: ignore[union-attr]
+        entries={"telegram:Token": False}, all_present=False, declares_none=False
+    )
 
-    rc = secrets_run(["check", TELEGRAM_SIDECAR_NAME])
-    assert rc == 1
-    services.secrets_service.check_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
+    assert secrets_run(["check", TELEGRAM_SIDECAR_NAME]) == 1
+    services.display_service.error.assert_called_once()  # type: ignore[union-attr]
+
+
+def test_run_check_declares_no_secrets_returns_zero() -> None:
+    """A sidecar requiring nothing is reported as such, not as an empty pass."""
+    services.secrets_service.check_secrets.return_value = SecretsCheckReport(  # type: ignore[union-attr]
+        entries={}, all_present=True, declares_none=True
+    )
+
+    assert secrets_run(["check", TELEGRAM_SIDECAR_NAME]) == 0
+    assert "declares no secrets" in services.display_service.info.call_args[0][0]  # type: ignore[union-attr]
 
 
 def test_run_set_non_interactive_returns_one() -> None:
-    """'set' returns 1 when set_secrets raises RuntimeError."""
-    services.secrets_service.set_secrets.side_effect = RuntimeError("non-interactive")  # type: ignore[union-attr]
+    """'set' reports the result's error and fails when there is no TTY."""
+    services.secrets_service.set_secrets.return_value = SecretsSetResult(  # type: ignore[union-attr]
+        keys_set=[], error="Cannot prompt for secrets in a non-interactive session."
+    )
 
-    rc = secrets_run(["set", TELEGRAM_SIDECAR_NAME])
-    assert rc == 1
+    assert secrets_run(["set", TELEGRAM_SIDECAR_NAME]) == 1
     services.secrets_service.set_secrets.assert_called_once_with(TELEGRAM_SIDECAR_NAME)  # type: ignore[union-attr]
+    services.display_service.error.assert_called_once_with(  # type: ignore[union-attr]
+        "Cannot prompt for secrets in a non-interactive session."
+    )
+
+
+def test_run_set_succeeds_when_keys_were_set() -> None:
+    services.secrets_service.set_secrets.return_value = SecretsSetResult(  # type: ignore[union-attr]
+        keys_set=["telegram:Token"]
+    )
+
+    assert secrets_run(["set", TELEGRAM_SIDECAR_NAME]) == 0
+    services.display_service.error.assert_not_called()  # type: ignore[union-attr]
 
 
 def test_run_clear_removes_namespaced_keys() -> None:

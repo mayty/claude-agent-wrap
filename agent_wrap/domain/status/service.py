@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from agent_wrap.constants import (
     BASE_IMAGE_NAME,
     DAY_START_HOURS,
+    LITELLM_LOGS_DIRNAME,
     SIDECAR_NETWORK_NAME,
     TOOL_DIR,
 )
@@ -36,7 +37,6 @@ from agent_wrap.domain.status.constants import (
     DAY_START_ENV,
     DOCKER_UNREACHABLE,
     HOST_NETWORK_ENV,
-    LITELLM_LOGS_DIRNAME,
 )
 from agent_wrap.domain.status.models import (
     AgentRow,
@@ -212,17 +212,12 @@ class InspectService:
             base_image=BASE_IMAGE_NAME,
             base_image_present=docker_up and docker_utils.image_exists(BASE_IMAGE_NAME),
             network_name=SIDECAR_NETWORK_NAME,
-            network_present=docker_up and self._network_exists(),
+            network_present=docker_up and docker_utils.network_exists(SIDECAR_NETWORK_NAME),
             host_network_requested=requested,
             host_network_effective=requested and docker_utils.is_wsl(),
             day_start_hours=DAY_START_HOURS,
             day_start_overridden=bool(os.environ.get(DAY_START_ENV)),
         )
-
-    def _network_exists(self) -> bool:
-        """Whether the shared sidecar network is present."""
-        _, rc = docker_utils.docker_run("network", "inspect", SIDECAR_NETWORK_NAME, timeout=10)
-        return rc == 0
 
     def _storage_row(self) -> StorageRow:
         """Measure the shared logs tree and count registry entries."""

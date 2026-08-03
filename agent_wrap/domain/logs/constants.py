@@ -33,9 +33,6 @@ USAGE_JSON_RELPATH = Path(".claude") / "usage.json"
 # (server.py is at <root>/agent_wrap/cli/logs/, so the root is parents[3]).
 LOGS_PAGE_DIR = Path(__file__).resolve().parents[3] / "logs_page"
 
-# Port scan limit when binding — try up to this many ports before giving up.
-PORT_SCAN_LIMIT = 50
-
 # Poll interval for the in-memory cache's background filesystem watcher (seconds).
 CACHE_POLL_INTERVAL_SEC = 2.0
 

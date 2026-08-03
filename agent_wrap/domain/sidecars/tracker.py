@@ -43,9 +43,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
-from agent_wrap.domain.sidecars.constants import ROLE_LABEL, ROLE_VALUE
-from agent_wrap.domain.sidecars.models import RegistryState
-from agent_wrap.lib.flock import any_live_locks, clear_lock_handle, live_lock_ids, lock_and_hold
+from agent_wrap.lib.flock import any_live_locks, clear_lock_handle, lock_and_hold
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,11 +51,6 @@ if TYPE_CHECKING:
 
 class SidecarTracker:
     """Host-wide coordination state shared by every sidecar in a run."""
-
-    #: Label marking an agent container (used by the runner's --label flags).
-    role_label: ClassVar[str] = ROLE_LABEL
-    #: Label value identifying agent containers.
-    role_value: ClassVar[str] = ROLE_VALUE
 
     #: Sub-directory of the install root holding host-wide launch state.
     state_dirname: ClassVar[str] = AGENT_LAUNCHES_DIR.name
@@ -113,27 +106,3 @@ class SidecarTracker:
         are invisible here, which is what lets providers be torn down independently.
         """
         return any_live_locks(self.running_dir_for(container_name), exclude_id=exclude_id)
-
-    def registry_state(self) -> RegistryState:
-        """
-        Read the whole registry — every container's live runners plus the start queue.
-
-        The reporting counterpart to :meth:`has_live_runners`, which answers one
-        container's question and reaps as it goes. This walks the entire tree, keys the
-        result by container name, and mutates nothing: a reader must not reap another
-        run's state, and a stale file left behind here is reaped by the next real launch.
-
-        Containers whose registration directory exists but holds no live entry are
-        reported with an empty list rather than omitted — the directories are never
-        removed, so their presence is history, but the distinction between "known
-        container, nobody attached" and "never seen" is worth keeping.
-        """
-        by_container: dict[str, list[str]] = {}
-        if self.running_dir.is_dir():
-            for entry in sorted(self.running_dir.iterdir()):
-                # Files directly under running/ predate the per-container layout.
-                if entry.is_dir():
-                    by_container[entry.name] = live_lock_ids(entry)
-        return RegistryState(
-            by_container=by_container, waiting=live_lock_ids(self.start_waiters_dir)
-        )

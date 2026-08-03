@@ -3,20 +3,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import NamedTuple
-
-
-class MdState(Enum):
-    MATCHES = "matches"
-    CUSTOMIZED = "customized"
-    MISSING = "missing"
-
-
-class MdPropagation(Enum):
-    UNCHANGED = "unchanged"
-    UPDATED = "updated"
-    CONFLICT = "conflict"
 
 
 class GitFullResult(NamedTuple):

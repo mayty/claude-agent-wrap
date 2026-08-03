@@ -34,8 +34,9 @@ from agent_wrap.cli.inspect.constants import (
     SIDECAR_HEADERS,
     UNKNOWN,
 )
-from agent_wrap.constants import NO_HEALTHCHECK, RUNNING_STATUS
-from agent_wrap.domain.display.models import Ansi, RowItem
+from agent_wrap.constants import DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
+from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.models import RowItem
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.models import RowItemOrDivider
@@ -52,7 +53,6 @@ if TYPE_CHECKING:
     )
 
 #: Divider sentinel understood by ``DisplayService.render_table``.
-_DIV = "__div__"
 
 
 class Cells:
@@ -331,7 +331,7 @@ class Details:
             if not group:
                 continue
             if body:
-                body.append(_DIV)
+                body.append(DIVIDER)
             body.extend(group)
 
         headers = list(DETAILS_HEADERS)

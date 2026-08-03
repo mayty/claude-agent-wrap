@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.constants import LITELLM_LOGS_DIRNAME
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.stats.constants import CENTRAL_LOGS_DIRNAME, MARKER_NAME
+from agent_wrap.domain.stats.constants import MARKER_NAME
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
@@ -114,7 +115,7 @@ def test_symlinked_projects_group_by_literal_path(tmp_path: Path, stats_svc: Sta
 
 def _central(tool_dir: Path, name: str) -> Path:
     """Create a central <hash> log dir under <tool_dir>/litellm-logs/."""
-    d = tool_dir / CENTRAL_LOGS_DIRNAME / name
+    d = tool_dir / LITELLM_LOGS_DIRNAME / name
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -132,10 +133,10 @@ def test_orphaned_excludes_reachable_central_dir(
 
     project = tmp_path / "proj"
     (project / ".claude").mkdir(parents=True)
-    (project / ".claude" / CENTRAL_LOGS_DIRNAME).symlink_to(hash_a, target_is_directory=True)
+    (project / ".claude" / LITELLM_LOGS_DIRNAME).symlink_to(hash_a, target_is_directory=True)
 
     orphaned = stats_svc.orphaned_log_dirs([project])
-    assert orphaned == [tmp_path / CENTRAL_LOGS_DIRNAME / "hashB"]
+    assert orphaned == [tmp_path / LITELLM_LOGS_DIRNAME / "hashB"]
 
 
 def test_orphaned_includes_all_when_no_projects(
@@ -150,8 +151,8 @@ def test_orphaned_includes_all_when_no_projects(
 
     orphaned = stats_svc.orphaned_log_dirs([])
     assert orphaned == [
-        tmp_path / CENTRAL_LOGS_DIRNAME / "hashA",
-        tmp_path / CENTRAL_LOGS_DIRNAME / "hashB",
+        tmp_path / LITELLM_LOGS_DIRNAME / "hashA",
+        tmp_path / LITELLM_LOGS_DIRNAME / "hashB",
     ]
 
 
@@ -177,4 +178,4 @@ def test_orphaned_ignores_deleted_project_symlink(
     gone = tmp_path / "deleted-proj"  # never created
 
     orphaned = stats_svc.orphaned_log_dirs([gone])
-    assert orphaned == [tmp_path / CENTRAL_LOGS_DIRNAME / "hashA"]
+    assert orphaned == [tmp_path / LITELLM_LOGS_DIRNAME / "hashA"]

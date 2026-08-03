@@ -7,7 +7,7 @@ import dataclasses
 import json
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.inspect.constants import INSPECT_LABEL
+from agent_wrap.cli.inspect.constants import INSPECT_LABEL, USAGE_TEXT
 from agent_wrap.cli.inspect.render import render
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
@@ -20,25 +20,9 @@ if TYPE_CHECKING:
 USAGE = "[--json]"
 SUMMARY = "Show running sidecars, agents, and the rest of the current state"
 
-_USAGE_TEXT = (
-    "Usage: agent inspect [--json]\n\n"
-    "Reports what agent-wrap is currently doing on this host: the sidecar\n"
-    "containers that are up (with their image, port, health, uptime, and how\n"
-    "many agents are attached), the agent containers running against them (with\n"
-    "their image, project directory, and provider), the logs viewer, the\n"
-    "on-disk log footprint, per-provider secret readiness, the installed\n"
-    "wrapper revision, and the host facts behind most launch surprises.\n\n"
-    "Read-only: it starts nothing, stops nothing, and writes nothing. It also\n"
-    "makes no network call, so the wrapper revision it reports is the local\n"
-    "one — use `agent update` to check for a newer release.\n\n"
-    "--json emits the same report as one JSON document instead of tables.\n\n"
-    "Exits 1 when the Docker daemon cannot be reached; every section that does\n"
-    "not depend on Docker is still reported."
-)
-
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("inspect", usage_summary=USAGE, description=_USAGE_TEXT)
+    parser = make_parser("inspect", usage_summary=USAGE, description=USAGE_TEXT)
     parser.add_argument(
         "--json",
         action="store_true",
