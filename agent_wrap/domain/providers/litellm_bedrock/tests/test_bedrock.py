@@ -9,10 +9,10 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
     _BedrockPricing,
 )
-from agent_wrap.domain.providers.litellm_provider import LiteLLMProvider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
@@ -24,46 +24,45 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def bedrock() -> LiteLLMProvider:
-    """Return a LiteLLMProvider for litellm-bedrock with no-op sidecar."""
+def bedrock() -> Provider:
+    """Return a Provider for litellm-bedrock with no-op sidecar."""
     svc = Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = Mock(spec=LiteLLMSidecar)
     ps = ProviderService(sidecar_service=svc, display_service=Mock(spec=DisplayService))
     p = ps.get_provider("litellm-bedrock")
-    assert isinstance(p, LiteLLMProvider)
+    assert isinstance(p, Provider)
     return p
 
 
 @pytest.fixture
-def bedrock_spec(mocker: pytest_mock.MockFixture) -> LiteLLMProvider:
-    """Return a LiteLLMProvider with spec-mocked sidecar for sidecar tests."""
+def bedrock_spec(mocker: pytest_mock.MockFixture) -> Provider:
+    """Return a Provider with spec-mocked sidecar for sidecar tests."""
     svc = mocker.Mock(spec=SidecarService)
     svc.create_litellm_sidecar.return_value = mocker.Mock(spec=LiteLLMSidecar)
     ps = ProviderService(sidecar_service=svc, display_service=Mock(spec=DisplayService))
     p = ps.get_provider("litellm-bedrock")
-    assert isinstance(p, LiteLLMProvider)
+    assert isinstance(p, Provider)
     return p
 
 
-def test_bedrock_master_key_prefix(bedrock: LiteLLMProvider):
+def test_bedrock_master_key_prefix(bedrock: Provider):
     p = bedrock
     assert p.master_key_prefix == "sk-aw-"
 
 
-def test_bedrock_declares_litellm_sidecar(bedrock_spec: LiteLLMProvider):
+def test_bedrock_declares_litellm_sidecar(bedrock_spec: Provider):
     p = bedrock_spec
-    sidecars = p.sidecars()
-    assert len(sidecars) == 1
+    assert p.sidecar() is p._sidecar_service.create_litellm_sidecar.return_value  # pyrefly: ignore [missing-attribute]
 
 
-def test_bedrock_get_sidecar_env(bedrock: LiteLLMProvider):
+def test_bedrock_get_sidecar_env(bedrock: Provider):
     p = bedrock
-    env = p.get_sidecar_env({"_secret_key": "my-aws-key"})
+    env = p.get_sidecar_env({"api_key": "my-aws-key"})
     assert "AWS_BEARER_TOKEN_BEDROCK" in env
     assert env["AWS_BEARER_TOKEN_BEDROCK"] == "my-aws-key"
 
 
-def test_bedrock_get_agent_env(bedrock: LiteLLMProvider):
+def test_bedrock_get_agent_env(bedrock: Provider):
     p = bedrock
     env = p.get_agent_env("sk-aw-abc123", "http://proxy:4000/bedrock")
     assert env["AWS_BEARER_TOKEN_BEDROCK"] == "sk-aw-abc123"
@@ -72,17 +71,10 @@ def test_bedrock_get_agent_env(bedrock: LiteLLMProvider):
     assert env["AWS_REGION"] == "us-east-1"
 
 
-def test_bedrock_secret_description(bedrock: LiteLLMProvider):
+def test_bedrock_secret_description(bedrock: Provider):
     p = bedrock
     assert p.secret_description == "AWS Bedrock Bearer Token"
     assert p.required_secrets() == [("api_key", p.secret_description)]
-
-
-def test_bedrock_get_sidecar_cmd_args(bedrock: LiteLLMProvider):
-    p = bedrock
-    args = p.get_sidecar_cmd_args()
-    assert isinstance(args, list)
-    # Bedrock doesn't need extra cmd args
 
 
 def _row(name: str, keys: list[str]) -> str:

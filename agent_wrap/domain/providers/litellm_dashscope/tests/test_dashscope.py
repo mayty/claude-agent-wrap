@@ -51,12 +51,12 @@ def test_dashscope_master_key_prefix(dashscope: DashscopeProvider):
 
 
 def test_dashscope_declares_litellm_sidecar(dashscope_spec: DashscopeProvider):
-    sidecars = dashscope_spec.sidecars()
-    assert len(sidecars) == 1
+    svc = dashscope_spec._sidecar_service
+    assert dashscope_spec.sidecar() is svc.create_litellm_sidecar.return_value  # pyrefly: ignore [missing-attribute]
 
 
 def test_dashscope_get_sidecar_env(dashscope: DashscopeProvider):
-    env = dashscope.get_sidecar_env({"_secret_key": "my-dashscope-key"})
+    env = dashscope.get_sidecar_env({"api_key": "my-dashscope-key"})
     assert env["DASHSCOPE_API_KEY"] == "my-dashscope-key"
 
 
@@ -69,12 +69,6 @@ def test_dashscope_get_agent_env(dashscope: DashscopeProvider):
 def test_dashscope_secret_description(dashscope: DashscopeProvider):
     assert dashscope.secret_description == "DashScope (Alibaba Cloud Model Studio) API Key"
     assert dashscope.required_secrets() == [("api_key", dashscope.secret_description)]
-
-
-def test_dashscope_get_sidecar_cmd_args(dashscope: DashscopeProvider):
-    args = dashscope.get_sidecar_cmd_args()
-    assert isinstance(args, list)
-    assert len(args) == 0
 
 
 def test_api_key_approval_id():

@@ -32,6 +32,7 @@ from agent_wrap.domain.logs.daemon import (
     state_file,
     write_state,
 )
+from agent_wrap.domain.logs.models import ViewerState
 from agent_wrap.domain.logs.server import bind_port, get_handler
 from agent_wrap.lib.process_utils import pid_alive
 
@@ -78,6 +79,38 @@ class LogsService:
                 state_file().unlink(missing_ok=True)
             return None
         return state
+
+    def viewer_state(self) -> ViewerState:
+        """
+        Report the viewer's status without repairing anything.
+
+        The read-only counterpart to :meth:`running_server`, which unlinks the state
+        file when its pid is dead — correct on the launch path (so the port stops
+        looking taken), wrong for a reporting caller that must not delete state it only
+        looked at. The logfile's size and mtime come along because they are the cheapest
+        way to tell a healthy viewer from one crash-looping.
+        """
+        state = read_state()
+        log_path = state_dir() / LOG_FILE_NAME
+        try:
+            stat_result = log_path.stat()
+            log_size: int | None = stat_result.st_size
+            log_mtime: float | None = stat_result.st_mtime
+        except OSError:
+            log_size = None
+            log_mtime = None
+
+        if state is None:
+            return ViewerState(
+                running=False, pid=None, port=None, log_size=log_size, log_mtime=log_mtime
+            )
+        return ViewerState(
+            running=pid_alive(state["pid"]),
+            pid=state["pid"],
+            port=state["port"],
+            log_size=log_size,
+            log_mtime=log_mtime,
+        )
 
     def serve_foreground(self, port: int) -> int:
         """Blocking HTTP serve loop — the detached child's body. Writes state then blocks."""

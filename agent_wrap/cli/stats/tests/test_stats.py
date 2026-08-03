@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
@@ -13,12 +13,11 @@ import pytest
 from agent_wrap.cli.stats.complete import complete as stats_complete
 from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.cli.stats.run import run as stats_run
-from agent_wrap.cli.stats.usage_args import parse_usage_args
+from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
-from agent_wrap.domain.stats.constants import ORPHANED_LABEL
-from agent_wrap.domain.stats.models import AggregateResult
+from agent_wrap.domain.stats.models import StatsReport
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -119,140 +118,117 @@ def test_render_source_breakdown_merges_across_models(display_service: Mock) -> 
 
 
 @pytest.fixture
-def registry(tmp_path: Path) -> Path:
-    """Write a registry file where cli.stats.run expects it, holding one project."""
-    launches = tmp_path / ".agent-launches"
-    launches.mkdir(exist_ok=True)
-    projects_file = launches / "projects.txt"
-    projects_file.write_text(f"{tmp_path / 'proj'}\n", encoding="utf-8")
-    return projects_file
-
-
-@pytest.fixture
-def wired_services(registry: Path, tmp_path: Path) -> None:
+def wired_services(tmp_path: Path) -> None:
     """Seed the mocked services so `run()` reaches the render call."""
-    _ = registry
-    services.config_service.read_project_paths.return_value = [tmp_path / "proj"]  # type: ignore[union-attr]
-    services.stats_service.orphaned_log_dirs.return_value = []  # type: ignore[union-attr]
-    services.stats_service.scan_log_dirs.return_value = {}  # type: ignore[union-attr]
-    services.stats_service.aggregate_projects.return_value = AggregateResult([], {}, {}, {})  # type: ignore[union-attr]
-    services.stats_service.aggregate_orphaned.return_value = None  # type: ignore[union-attr]
-    services.stats_service.aggregate_archived_orphaned.return_value = None  # type: ignore[union-attr]
-    services.stats_service.merge_orphaned_results.return_value = None  # type: ignore[union-attr]
+    services.config_service.read_project_paths.return_value = [tmp_path / "proj"]  # pyrefly: ignore [missing-attribute]
+    services.stats_service.resolve_window.return_value = (None, None)  # pyrefly: ignore [missing-attribute]
+    services.stats_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
+
+
+def _report(
+    *, rows: list[Any] | None = None, orphaned: object = None, unrecorded: int = 0
+) -> StatsReport:
+    return StatsReport(
+        rows=rows or [],
+        totals_by_model={},
+        totals_by_day_by_model={},
+        totals_by_source={},
+        orphaned=orphaned,  # pyrefly: ignore [bad-argument-type]
+        unrecorded=unrecorded,
+    )
 
 
 def _orphaned_result(msgs: int) -> dict[str, object]:
     return {"sessions": 0, "last_ts": None, "total": _source_bucket(msgs, in_=10)}
 
 
+def _project_row() -> dict[str, Any]:
+    return {
+        "path": Path("/proj"),
+        "exists": True,
+        "sessions": 1,
+        "last_ts": None,
+        "total": _source_bucket(1),
+        "cost": 0.0,
+    }
+
+
 @pytest.mark.usefixtures("wired_services")
-def test_run_merges_archived_into_orphaned_row(mocker: MockerFixture) -> None:
-    """Both orphaned sources are combined, and the merged result reaches render()."""
-    live = _orphaned_result(1)
-    archived = _orphaned_result(2)
+def test_run_renders_the_reports_orphaned_row(mocker: MockerFixture) -> None:
+    """Whatever orphaned row the report carries is what render() is handed."""
     merged = _orphaned_result(3)
-    services.stats_service.aggregate_orphaned.return_value = live  # type: ignore[union-attr]
-    services.stats_service.aggregate_archived_orphaned.return_value = archived  # type: ignore[union-attr]
-    services.stats_service.merge_orphaned_results.return_value = merged  # type: ignore[union-attr]
+    services.stats_service.build_report.return_value = _report(orphaned=merged)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run([]) == 0
-    services.stats_service.merge_orphaned_results.assert_called_once_with(live, archived)  # type: ignore[union-attr]
     assert render_spy.call_args.kwargs["orphaned"] is merged
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_renders_archive_only_state(mocker: MockerFixture) -> None:
+def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
     """
-    With no projects and no live orphans, a non-empty archive must still render.
+    A report with no project rows but an orphaned row must still render.
 
-    The early "no logs found" return keys off the merged result, so an archive-only
-    state (everything already cleaned up) has to survive it.
+    The early "no logs found" return keys off both, so an archive-only state
+    (everything already cleaned up) has to survive it.
     """
     archived = _orphaned_result(2)
-    services.stats_service.aggregate_orphaned.return_value = None  # type: ignore[union-attr]
-    services.stats_service.aggregate_archived_orphaned.return_value = archived  # type: ignore[union-attr]
-    services.stats_service.merge_orphaned_results.return_value = archived  # type: ignore[union-attr]
+    services.stats_service.build_report.return_value = _report(orphaned=archived)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run([]) == 0
     render_spy.assert_called_once()
-    assert render_spy.call_args.kwargs["orphaned"] is archived
-    services.display_service.error.assert_not_called()  # type: ignore[union-attr]
+    services.display_service.error.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_errors_when_nothing_anywhere(mocker: MockerFixture) -> None:
+def test_run_errors_when_report_is_empty(mocker: MockerFixture) -> None:
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run([]) == 0
     render_spy.assert_not_called()
-    message = services.display_service.error.call_args[0][0]  # type: ignore[union-attr]
+    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no LiteLLM logs found" in message
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_skips_archived_when_pattern_excludes_orphaned(mocker: MockerFixture) -> None:
-    """Both orphaned calls share the pattern gate — they fold into the same totals."""
+def test_run_names_the_pattern_when_it_matched_nothing(mocker: MockerFixture) -> None:
+    """An empty report under a pattern must say so, not blame the whole registry."""
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
-    services.stats_service.aggregate_projects.return_value = AggregateResult(  # type: ignore[union-attr]
-        [
-            {
-                "path": Path("/proj"),
-                "exists": True,
-                "sessions": 1,
-                "last_ts": None,
-                "total": _source_bucket(1),
-                "cost": 0.0,
-            }
-        ],
-        {},
-        {},
-        {},
-    )
 
-    assert stats_run(["-p", "proj"]) == 0
-    services.stats_service.aggregate_orphaned.assert_not_called()  # type: ignore[union-attr]
-    services.stats_service.aggregate_archived_orphaned.assert_not_called()  # type: ignore[union-attr]
+    assert stats_run(["-p", "nomatch"]) == 0
+    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "nomatch" in message
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_passes_window_to_archived_call(mocker: MockerFixture) -> None:
+def test_run_passes_the_parsed_window_to_the_report(mocker: MockerFixture) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
-    services.stats_service.merge_orphaned_results.return_value = _orphaned_result(1)  # type: ignore[union-attr]
+    services.stats_service.resolve_window.return_value = ("2026-07-01", "2026-07-20")  # pyrefly: ignore [missing-attribute]
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
 
     assert stats_run(["--from", "2026-07-01", "--until", "2026-07-20"]) == 0
-    kwargs = services.stats_service.aggregate_archived_orphaned.call_args.kwargs  # type: ignore[union-attr]
-    assert kwargs["from_iso"] == "2026-07-01"
-    assert kwargs["until_iso"] == "2026-07-20"
+    _projects, args = services.stats_service.build_report.call_args.args  # pyrefly: ignore [missing-attribute]
+    assert (args.from_iso, args.until_iso) == ("2026-07-01", "2026-07-20")
 
 
-def test_parse_usage_args_verbose_short_flag(tmp_path: Path, display_service: Mock) -> None:
-    reg = tmp_path / "projects.txt"
-    reg.write_text("/x\n", encoding="utf-8")
-    parsed = parse_usage_args(
-        [str(reg), "-v"], usage_line="u", usage_text="u", display=display_service
-    )
-    assert parsed is not None
-    assert parsed.verbose is True
+@pytest.mark.usefixtures("wired_services")
+def test_run_footnotes_unrecorded_usage(mocker: MockerFixture) -> None:
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()], unrecorded=4)  # pyrefly: ignore [missing-attribute]
+
+    assert stats_run([]) == 0
+    warning = services.display_service.warning.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "4 successful request(s) had unrecorded usage" in warning
 
 
-def test_parse_usage_args_verbose_long_flag(tmp_path: Path, display_service: Mock) -> None:
-    reg = tmp_path / "projects.txt"
-    reg.write_text("/x\n", encoding="utf-8")
-    parsed = parse_usage_args(
-        [str(reg), "--verbose"], usage_line="u", usage_text="u", display=display_service
-    )
-    assert parsed is not None
-    assert parsed.verbose is True
+@pytest.mark.usefixtures("wired_services")
+def test_run_errors_when_no_projects_registered() -> None:
+    services.config_service.read_project_paths.return_value = []  # pyrefly: ignore [missing-attribute]
 
-
-def test_parse_usage_args_verbose_defaults_false(tmp_path: Path, display_service: Mock) -> None:
-    reg = tmp_path / "projects.txt"
-    reg.write_text("/x\n", encoding="utf-8")
-    parsed = parse_usage_args([str(reg)], usage_line="u", usage_text="u", display=display_service)
-    assert parsed is not None
-    assert parsed.verbose is False
+    assert stats_run([]) == 0
+    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "no projects recorded yet" in message
 
 
 def test_complete_bare_tab_shows_all_flags() -> None:

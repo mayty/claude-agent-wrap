@@ -11,7 +11,7 @@ from typing import Any
 _current_dir = str(Path(__file__).parent.resolve())
 if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
-from string_hasher import StringHasher  # noqa: E402  # type: ignore[missing-import]
+from string_hasher import StringHasher  # noqa: E402  # pyrefly: ignore [missing-import]
 
 # Global cache of hashers per session to enable cross-request deduplication
 # and prevent concurrent flushes from writing duplicate mappings.

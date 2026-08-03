@@ -9,9 +9,10 @@ import os
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from agent_wrap.constants import DAY_START_HOURS
+from agent_wrap.constants import DAY_START_HOURS, LITELLM_LOGS_DIRNAME
+from agent_wrap.domain.stats.constants import UNKNOWN_TIME_KEY
 from agent_wrap.domain.stats.cost import usage_source
-from agent_wrap.domain.stats.format_utils import day_in_range, epoch_to_dt
+from agent_wrap.domain.stats.format_utils import day_in_range
 from agent_wrap.domain.stats.models import (
     AccumulatedRecord,
     DirResult,
@@ -19,20 +20,18 @@ from agent_wrap.domain.stats.models import (
     RawRecord,
     ScanProjectResult,
 )
-from agent_wrap.lib.daytime import get_day
+from agent_wrap.lib.daytime import epoch_to_dt, get_day
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import TokenUsage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from datetime import datetime
     from pathlib import Path
 
     from agent_wrap.domain.pricing.models import Bucket
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.models import (
-        FileResult,
         ScanCache,
         WorkUnit,
     )
@@ -136,7 +135,7 @@ def accumulate_record(
         )
 
     ts = epoch_to_dt((rec.get("timing") or {}).get("start"))
-    day_key = get_day(ts, DAY_START_HOURS).isoformat() if ts else "?"
+    day_key = get_day(ts, DAY_START_HOURS).isoformat() if ts else UNKNOWN_TIME_KEY
     if not day_in_range(day_key, from_iso, until_iso):
         return AccumulatedRecord(
             accumulated=False,
@@ -272,30 +271,6 @@ def merge_by_day(dst: dict[str, dict[str, Bucket]], src: dict[str, dict[str, Buc
                 dst_day[key] = bucket
             else:
                 existing.merge(bucket)
-
-
-def fold_file_results(
-    results: Iterable[FileResult],
-) -> DirResult:
-    """
-    Fold per-file results into a dir aggregate.
-
-    A session is counted only when its file contributed at least one in-window
-    record, so the session column reflects the selected range rather than all-time
-    directories — matching the original per-dir scan.
-    """
-    by_day: dict[str, dict[str, Bucket]] = {}
-    by_source: dict[str, dict[str, Bucket]] = {}
-    last_ts: datetime | None = None
-    session_count = 0
-    for had_record, ts, file_by_day, file_by_source in results:
-        if had_record:
-            session_count += 1
-        if ts is not None and (last_ts is None or ts > last_ts):
-            last_ts = ts
-        merge_by_day(by_day, file_by_day)
-        merge_by_day(by_source, file_by_source)
-    return DirResult(session_count, last_ts, by_day, by_source)
 
 
 def price_buckets(
@@ -437,7 +412,7 @@ def scan_project(
     When ``scan_cache`` is given, this dir's pre-scanned result is reused instead
     of scanning on demand (see :meth:`StatsService.scan_log_dirs`).
     """
-    logs_dir = path / ".claude" / "litellm-logs"
+    logs_dir = path / ".claude" / LITELLM_LOGS_DIRNAME
     if not logs_dir.is_dir():
         return ScanProjectResult(sessions=0, last_ts=None, by_day={}, by_source={}, exists=False)
     if scan_cache is not None:

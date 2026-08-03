@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import operator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -42,7 +43,8 @@ class Node:
         self.name = name
         self.children: dict[str, Node] = {}
         self.row: ProjectRow | None = None
-        self.subtree_bucket = Bucket()
+        #: Sum over this node and all descendants; assigned by ``_aggregate``.
+        self.subtree_bucket: Bucket
         self.subtree_known_cost = 0.0
         self.subtree_unknown = False
         self.subtree_sessions = 0
@@ -146,9 +148,10 @@ def _split_self_rows(node: Node) -> None:
 
 def _aggregate(node: Node) -> None:
     """Post-order: fill `subtree_*` fields on every node."""
+    contributions: list[Bucket] = []
     for child in node.children.values():
         _aggregate(child)
-        node.subtree_bucket.merge(child.subtree_bucket)
+        contributions.append(child.subtree_bucket)
         node.subtree_known_cost += child.subtree_known_cost
         if child.subtree_unknown:
             node.subtree_unknown = True
@@ -160,7 +163,7 @@ def _aggregate(node: Node) -> None:
             node.subtree_last_ts = child.subtree_last_ts
     if node.row is not None:
         r = node.row
-        node.subtree_bucket.merge(r["total"])
+        contributions.append(r["total"])
         if r["cost"] is None:
             node.subtree_unknown = True
         else:
@@ -171,6 +174,7 @@ def _aggregate(node: Node) -> None:
             node.subtree_last_ts is None or r["last_ts"] > node.subtree_last_ts
         ):
             node.subtree_last_ts = r["last_ts"]
+    node.subtree_bucket = Bucket.merged(contributions)
 
 
 def flatten_tree(root: Node, *, display: DisplayService) -> list[DisplayRow]:
@@ -190,11 +194,11 @@ def flatten_tree(root: Node, *, display: DisplayService) -> list[DisplayRow]:
         dot = [c for c in children if c.name == "."]
         leaves = sorted(
             (c for c in children if c.name != "." and not c.children),
-            key=lambda c: c.name,
+            key=operator.attrgetter("name"),
         )
         nodes = sorted(
             (c for c in children if c.name != "." and c.children),
-            key=lambda c: (c.subtree_project_count, c.name),
+            key=operator.attrgetter("subtree_project_count", "name"),
         )
         ordered = dot + leaves + nodes
 

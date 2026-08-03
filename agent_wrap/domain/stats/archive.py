@@ -28,6 +28,7 @@ from collections import defaultdict
 from datetime import timezone
 from typing import TYPE_CHECKING
 
+from agent_wrap.domain.stats.constants import UNKNOWN_TIME_KEY
 from agent_wrap.lib.atomic import atomic_write_json
 
 if TYPE_CHECKING:
@@ -37,12 +38,6 @@ if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import Bucket
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.models import ArchiveDoc, ArchiveLeaf, RawRecord
-
-# Stand-in date/hour keys for records whose timestamp could not be read (the
-# callback failed to stamp ``timing.start``). Matches the synthetic day key
-# ``accumulate_record``/``day_in_range`` already use, so these records stay
-# visible in the all-time view and are excluded from any bounded window.
-UNKNOWN_TIME_KEY = "?"
 
 
 def archive_time_keys(ts: datetime | None) -> tuple[str, str]:

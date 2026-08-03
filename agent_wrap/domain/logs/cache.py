@@ -5,12 +5,18 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import operator
 import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from agent_wrap.constants import AGENT_LAUNCHES_DIR
+from agent_wrap.constants import (
+    AGENT_LAUNCHES_DIR,
+    LITELLM_LOGS_DIRNAME,
+    ORPHANED_LABEL,
+    PROJECT_REGISTRY_FILENAME,
+)
 from agent_wrap.domain.logs.constants import CACHE_POLL_INTERVAL_SEC
 from agent_wrap.domain.logs.daemon import log_debug, log_info
 from agent_wrap.domain.logs.io import (
@@ -77,7 +83,7 @@ class LogsCache:
         self._hot_strings: str | None = None
 
         # --- filesystem tracking (background thread only) ---
-        self._projects_txt_path = AGENT_LAUNCHES_DIR / "projects.txt"
+        self._projects_txt_path = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
         self._projects_txt_mtime: int | None = None
         self._projects_txt_size: int | None = None
         self._known_messages: dict[Path, tuple[int, int]] = {}  # path -> (mtime_ns, size)
@@ -91,9 +97,6 @@ class LogsCache:
     # ------------------------------------------------------------------
     # Public read accessors
     # ------------------------------------------------------------------
-
-    def get_groups(self) -> list[GroupInfo]:
-        return list(self._groups)
 
     def get_projects(self) -> list[ProjectInfo]:
         return list(self._projects)
@@ -473,7 +476,7 @@ class LogsCache:
                 break
         if not replaced and combined is not None:
             sessions.append(combined)
-        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
+        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         self._sessions[pid] = sessions
 
     # ------------------------------------------------------------------
@@ -536,7 +539,7 @@ class LogsCache:
         if not pending_groups and not merged_pids:
             return
 
-        new_entries = sorted(pending_groups.values(), key=lambda g: g["root"])
+        new_entries = sorted(pending_groups.values(), key=operator.itemgetter("root"))
         self._insert_new_groups(new_entries)
 
         # Re-index pid-keyed dicts BEFORE scanning new groups (so old data is
@@ -632,7 +635,7 @@ class LogsCache:
         at the end regardless of insertion position.
         """
         orphaned_group: GroupInfo | None = None
-        if self._groups and self._groups[-1]["name"] == "<orphaned>":
+        if self._groups and self._groups[-1]["name"] == ORPHANED_LABEL:
             orphaned_group = self._groups.pop()
 
         roots = [g["root"] for g in self._groups]
@@ -714,7 +717,7 @@ class LogsCache:
                     pass
 
         # Re-sort by last_ts descending.
-        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
+        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         self._sessions[pid] = sessions
 
     @staticmethod
@@ -731,7 +734,7 @@ class LogsCache:
         groups_to_drop: list[int] = []
         for pid, group in enumerate(self._groups):
             surviving = [p for p in group["paths"] if Path(p).resolve() not in removed_resolved]
-            if not surviving and group["name"] != "<orphaned>":
+            if not surviving and group["name"] != ORPHANED_LABEL:
                 groups_to_drop.append(pid)
             else:
                 group["paths"] = surviving
@@ -756,7 +759,7 @@ class LogsCache:
         self._projects_fp = self._recompute_projects_fp_from_cache()
 
     def _logs_dir_for(self, project_path: str | Path) -> Path:
-        return Path(project_path) / ".claude" / "litellm-logs"
+        return Path(project_path) / ".claude" / LITELLM_LOGS_DIRNAME
 
     # ------------------------------------------------------------------
     # Helpers
@@ -815,7 +818,7 @@ class LogsCache:
                     "last_ts": max_last_ts,
                 }
             )
-        out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)
+        out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         return out
 
     def _recompute_projects_fp_from_cache(self) -> Fingerprint:

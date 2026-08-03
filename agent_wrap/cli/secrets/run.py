@@ -39,36 +39,30 @@ class _SecretsActions:
 
     @staticmethod
     def check(sidecar_name: str) -> int:
-        """Verify all required secrets for *sidecar_name* are present."""
+        """Report which of *sidecar_name*'s required secrets are present."""
         dsp = services.display_service
-        srv = services.secrets_service
-        required = srv.get_required_secrets(sidecar_name)
-        if not required:
+        report = services.secrets_service.check_secrets(sidecar_name)
+        if report.declares_none:
             dsp.info(f"Sidecar '{sidecar_name}' declares no secrets.")
             return 0
 
-        results = srv.check_secrets(sidecar_name)
-        all_ok = True
-        max_secret_length = max(map(len, results.keys()))
-        for namespaced, present in results.items():
+        width = max(map(len, report.entries))
+        for namespaced, present in report.entries.items():
             if present:
-                dsp.success(f"{namespaced:{max_secret_length}s}  OK")
+                dsp.success(f"{namespaced:{width}s}  OK")
             else:
-                dsp.error(f"{namespaced:{max_secret_length}s}  MISSING")
-            all_ok = all_ok and present
-        return 0 if all_ok else 1
+                dsp.error(f"{namespaced:{width}s}  MISSING")
+        return 0 if report.all_present else 1
 
     @staticmethod
     def set(sidecar_name: str) -> int:
         """Prompt and persist all required secrets for *sidecar_name*."""
         dsp = services.display_service
-        srv = services.secrets_service
-        try:
-            keys_set = srv.set_secrets(sidecar_name)
-        except RuntimeError as e:
-            dsp.error(str(e))
+        result = services.secrets_service.set_secrets(sidecar_name)
+        if result.error is not None:
+            dsp.error(result.error)
             return 1
-        if not keys_set:
+        if not result.keys_set:
             dsp.info(f"Sidecar '{sidecar_name}' declares no secrets.")
         return 0
 

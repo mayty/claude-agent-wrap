@@ -40,7 +40,7 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
         "log_dir": _TEST_LOG_DIR,
     }
     defaults.update(overrides)
-    return TelegramSidecarConfig(**defaults)  # type: ignore[arg-type]
+    return TelegramSidecarConfig(**defaults)
 
 
 def _sidecar(display: DisplayService | None = None, **overrides: object) -> TelegramSidecar:
@@ -76,6 +76,15 @@ def test_timing() -> None:
     sc = _sidecar()
     assert sc.cold_start_time == 45.0
     assert sc.short_circuit_time == 2.0
+
+
+def test_container_name_property_exposes_the_config_value() -> None:
+    """
+    The runner refcounts on this. One name for every provider is deliberate: unlike a
+    provider's sidecar, this container really is shared, so it must outlive an agent on
+    any single provider and stop only when the last agent anywhere exits.
+    """
+    assert _sidecar().container_name == "agent-wrap-telegram"
 
 
 def test_prepare_image_exists(mocker: pytest_mock.MockFixture) -> None:
@@ -537,7 +546,7 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
     mock_spin = mocker.patch.object(
         sc._display,
         "spin_while",
-        side_effect=lambda *, work, **_: work(),
+        side_effect=lambda *, work, **_: work(),  # pyrefly: ignore [implicit-any-lambda]
     )
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
 

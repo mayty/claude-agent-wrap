@@ -131,7 +131,7 @@ def api_server(tmp_path: Path) -> tuple[int, Path]:
     sid = "abc12345-6789-abcd-ef01-234567890abc"
     _write_session(project, "litellm-bedrock", sid)
     cache = Mock(spec=LogsCache)
-    cache.get_logs_dirs.side_effect = lambda pid: (
+    cache.get_logs_dirs.side_effect = lambda pid: (  # pyrefly: ignore [implicit-any-lambda]
         [project / ".claude" / "litellm-logs"] if pid == 0 else None
     )
     cache.get_sessions.return_value = [
@@ -149,9 +149,8 @@ def api_server(tmp_path: Path) -> tuple[int, Path]:
     cache.get_sessions_fingerprint.return_value = {"mtime": 1, "size": 100}
     cache.get_session_fingerprint.return_value = {"mtime": 1, "size": 100}
     cache.get_hot_session.return_value = None
-    cache.get_groups.return_value = []  # type: ignore[implicit-any-empty-container]
-    cache.get_projects.return_value = []  # type: ignore[implicit-any-empty-container]
-    cache.get_projects_fingerprint.return_value = {"mtime": None, "size": None}  # type: ignore[implicit-any-empty-container]
+    cache.get_projects.return_value = []  # pyrefly: ignore [implicit-any-empty-container]
+    cache.get_projects_fingerprint.return_value = {"mtime": None, "size": None}  # pyrefly: ignore [implicit-any-empty-container]
     _start_server(port, cache)
     return port, project
 
@@ -209,7 +208,7 @@ def test_session_returns_details(api_server: tuple[int, Path], subtests: pytest.
     assert lines[0]["session_id"] == sid
     # Subsequent lines are records (no __type__)
     for i, line in enumerate(lines[1:]):
-        with subtests.test(msg=str(i)):  # type: ignore[bad-context-manager]
+        with subtests.test(msg=str(i)):
             assert "__type__" not in line
 
 
@@ -255,13 +254,6 @@ def test_session_stat_missing_session_returns_400(api_server: tuple[int, Path]):
     status, body = _get_json(port, "/api/session-stat?project=0")
     assert status == 400
     assert "missing session param" in body["error"]
-
-
-def test_groups_returns_list(api_server: tuple[int, Path]):
-    port, _project = api_server
-    status, body = _get_json(port, "/api/groups")
-    assert status == 200
-    assert isinstance(body, list)
 
 
 def test_projects_returns_list(api_server: tuple[int, Path]):

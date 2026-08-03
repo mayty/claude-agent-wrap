@@ -1,29 +1,23 @@
 # This file has been edited with the assistance of an AI tool.
-"""CLI argument parsing and project-registry loading for the usage-stats subcommands."""
+"""CLI argument parsing for the usage-stats subcommand."""
 
 from __future__ import annotations
 
 import argparse
 import re
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.stats.constants import (
-    DEFAULT_DAYS,
-    RELATIVE_DATE_RE,
-    VALUE_FLAGS,
-)
+from agent_wrap.cli.stats.constants import RELATIVE_DATE_RE, VALUE_FLAGS
 from agent_wrap.constants import DAY_START_HOURS
-from agent_wrap.domain.stats.models import UsageArgs
+from agent_wrap.containers import services
+from agent_wrap.domain.stats.models import UsageArgs, WindowError
 from agent_wrap.lib.daytime import get_day
 
 if TYPE_CHECKING:
+    from datetime import date
+
     from agent_wrap.domain.display.service import DisplayService
-
-
-def _today() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _parse_days(value: str) -> int:
@@ -55,100 +49,13 @@ def _parse_date_spec(value: str) -> date:
     """
     rel = RELATIVE_DATE_RE.match(value)
     if rel is not None:
-        return get_day(_today(), DAY_START_HOURS) - timedelta(days=int(rel.group(1)))
+        today = get_day(services.stats_service.now_utc(), DAY_START_HOURS)
+        return today - timedelta(days=int(rel.group(1)))
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007
     except ValueError:
         msg = f"expects YYYY-MM-DD or -Nd (e.g. -14d), got '{value}'"
         raise argparse.ArgumentTypeError(msg) from None
-
-
-def _shift(d: date, span: timedelta, *, sign: int) -> date:
-    """
-    ``date ± span``, clamped to ``[date.min, date.max]`` instead of raising OverflowError.
-
-    The unlimited ``--days 0`` case uses ``timedelta.max`` as its span; adding or
-    subtracting that from a real date overflows, so saturate to the open-side
-    sentinel (``date.max`` for a forward shift, ``date.min`` for a backward one).
-    """
-    try:
-        return d + sign * span
-    except OverflowError:
-        return date.max if sign > 0 else date.min
-
-
-def _combine_bounds(
-    from_date: date | None,
-    until_date: date | None,
-    days_bound: int | None,
-    *,
-    days_given: bool,
-) -> tuple[date, date]:
-    """
-    Apply the resolution table to already-parsed specs, returning ``(lo, hi)`` dates.
-
-    ``days_bound`` is the positive day count, or None for "no count" (flag absent
-    *or* the unlimited ``--days 0``); ``days_given`` distinguishes those two so a
-    bare side stays open for ``--days 0`` but defaults to now/DEFAULT_DAYS otherwise.
-
-    Open sides are returned as the ``date.min`` / ``date.max`` sentinels;
-    :func:`_resolve_range` maps those back to None at the ISO boundary.
-    """
-    today = get_day(_today(), DAY_START_HOURS)
-    # Bounds are inclusive on both sides, so an N-day window offsets by N-1.
-    # ``--days 0`` (days_given but no count) means "unlimited" — timedelta.max
-    # saturates the bare side to an open sentinel via _shift.
-    if days_given:
-        span = timedelta(days=days_bound - 1) if days_bound else timedelta.max
-    else:
-        span = timedelta(days=DEFAULT_DAYS - 1)
-
-    if from_date is not None and until_date is not None:
-        return from_date, until_date
-    if from_date is not None:
-        # --from [--days N]: [from, from+(N-1)]; [from, open] for --days 0; else [from, now].
-        return from_date, _shift(from_date, span, sign=1) if days_given else today
-    if until_date is not None:
-        # --until [--days N]: [until-(N-1), until]; [open, until] for --days 0; else default span.
-        return _shift(until_date, span, sign=-1), until_date
-    # No --from/--until: the last N (or DEFAULT_DAYS) inclusive days [now-(N-1), now],
-    # or all-time [open, now] for --days 0.
-    return _shift(today, span, sign=-1), today
-
-
-def _resolve_range(
-    from_date: date | None,
-    until_date: date | None,
-    days: int | None,
-    *,
-    days_given: bool,
-    display: DisplayService,
-) -> tuple[str | None, str | None] | None:
-    """
-    Resolve the parsed ``--from``/``--until``/``--days`` values into inclusive bounds.
-
-    ``from_date``/``until_date`` are ``date`` or None; ``days`` is an int or None;
-    ``days_given`` says whether ``--days`` was passed (to tell ``--days 0`` from
-    "absent"). Returns ``(from_iso, until_iso)`` (each None for an open side) or
-    None on error. At most two of the three flags may be given. ``--days 0``
-    means "unlimited" (no count bound). See the resolution table in the help.
-    """
-    if from_date is not None and until_date is not None and days_given:
-        display.error("usage: at most two of --from, --until, --days may be given")
-        return None
-
-    # A days count of 0 means "unlimited" — it imposes no bound on the open side.
-    days_bound = days or None
-
-    lo, hi = _combine_bounds(from_date, until_date, days_bound, days_given=days_given)
-
-    # The date.min / date.max sentinels mark open sides; collapse them back to None.
-    lo_iso = None if lo == date.min else lo.isoformat()
-    hi_iso = None if hi == date.max else hi.isoformat()
-    if lo_iso is not None and hi_iso is not None and lo_iso > hi_iso:
-        display.error("usage: --from date is after --until date")
-        return None
-    return lo_iso, hi_iso
 
 
 def _glue_dash_values(args: list[str]) -> list[str]:
@@ -191,9 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--pattern",
         dest="pattern",
         metavar="P",
-        help="only show projects whose display name matches regex P",
+        help="only show projects whose recorded registry path matches regex P",
     )
-    parser.add_argument("registry")
     return parser
 
 
@@ -205,13 +111,13 @@ def parse_usage_args(
     display: DisplayService,
 ) -> UsageArgs | None:
     """
-    Parse ``[-f|--from D] [-u|--until D] [-d|--days N] [-v] <projects.txt>``.
+    Parse ``[-v] [-p P] [-f|--from D] [-u|--until D] [-d|--days N]``.
 
     `usage_text` is rendered as the parser description for -h/--help; `usage_line`
     becomes the usage prefix. Returns None if help was printed or on any error
     (the caller treats None as "stop"). Per-value validation (date/days formats)
-    happens in the argparse ``type=`` converters; :func:`_resolve_range` applies
-    the cross-field semantics that a per-value converter can't see.
+    happens in the argparse ``type=`` converters; the cross-field window semantics
+    a per-value converter cannot see belong to ``StatsService.resolve_window``.
     """
     parser = build_parser()
     parser.usage = usage_line.removeprefix("Usage: ")
@@ -223,17 +129,13 @@ def parse_usage_args(
         # argparse already printed help (-h) or the error; both map to "stop".
         return None
 
-    reg = Path(ns.registry)
-    if not reg.is_file():
-        display.error(f"usage: registry not found at {reg}")
-        return None
-
-    resolved = _resolve_range(
-        ns.from_date, ns.until_date, ns.days, days_given=ns.days is not None, display=display
+    window = services.stats_service.resolve_window(
+        ns.from_date, ns.until_date, ns.days, days_given=ns.days is not None
     )
-    if resolved is None:
+    if isinstance(window, WindowError):
+        display.error(window.message)
         return None
-    from_iso, until_iso = resolved
+    from_iso, until_iso = window
 
     compiled_pattern: re.Pattern[str] | None = None
     if ns.pattern is not None:
@@ -244,7 +146,6 @@ def parse_usage_args(
             return None
 
     return UsageArgs(
-        registry_path=reg,
         from_iso=from_iso,
         until_iso=until_iso,
         verbose=ns.verbose,

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import DAY_START_HOURS, GLOBAL_CONFIG_DIR
+from agent_wrap.domain.logs.constants import USAGE_JSON_RELPATH
 from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.daytime import get_day
 
@@ -38,7 +39,7 @@ class UsageTracker:
     def __init__(self, pricing: PricingService, stats: StatsService) -> None:
         self._pricing = pricing
         self._stats = stats
-        self._output_path = GLOBAL_CONFIG_DIR / ".claude" / "usage.json"
+        self._output_path = GLOBAL_CONFIG_DIR / USAGE_JSON_RELPATH
 
         # Today's ISO day key (e.g. "2026-07-16") from DAY_START_HOURS.
         self._today_key = self._current_day_key()

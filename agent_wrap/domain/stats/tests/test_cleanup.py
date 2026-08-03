@@ -8,21 +8,23 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import Mock
 
 import pytest
 
 from agent_wrap.domain.config.service import ConfigService
-from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.service import PricingService
-from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
-from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.constants import ORPHANED_ARCHIVE_FILENAME
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from unittest.mock import Mock
+
     import pytest_mock
+
+    from agent_wrap.conftest import FakeProvider
+
 
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
@@ -31,28 +33,15 @@ _DENIED = "permission denied"
 _CROSS_DEVICE = "cross-device link"
 
 
-class _FakeProvider(Provider):
-    def __init__(self, flat: dict[str, Any] | None = None):
-        super().__init__(
-            sidecar_service=Mock(spec=SidecarService), display_service=Mock(spec=DisplayService)
-        )
-        self._flat = flat or {}
-
-    def sidecars(self) -> list[Any]:
-        return []
-
-    def _get_pricing(self):
-        return self._flat
-
-    def _get_tiered_pricing(self):
-        raise NotImplementedError
-
-
 @pytest.fixture
-def stats_svc(mocker: pytest_mock.MockFixture, display_mock: Mock) -> StatsService:
+def stats_svc(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    make_fake_provider: Callable[..., FakeProvider],
+) -> StatsService:
     """Return a StatsService whose pricing knows claude-opus-4-8."""
     mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value = _FakeProvider(flat={"claude-opus-4-8": _RATES})
+    mock_ps.get_provider.return_value = make_fake_provider(flat={"claude-opus-4-8": _RATES})
     pricing = PricingService(provider_service=mock_ps, display_service=display_mock)
     return StatsService(pricing, config_service=mocker.Mock(spec=ConfigService))
 

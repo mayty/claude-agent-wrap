@@ -16,6 +16,7 @@ import agent_wrap.domain.stats.service as stats_mod
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.cache import LogsCache
+from agent_wrap.domain.logs.io import logs_dir
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
@@ -24,6 +25,19 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
     from pytest_mock import MockerFixture
+
+
+def _group_count(cache: LogsCache) -> int:
+    """
+    Count cached groups through the public accessor.
+
+    ``get_logs_dirs`` returns None past the last group, so walking upward from 0
+    yields the group count without reaching into ``_groups``.
+    """
+    count = 0
+    while cache.get_logs_dirs(count) is not None:
+        count += 1
+    return count
 
 
 @pytest.fixture
@@ -57,7 +71,7 @@ def write_session() -> Callable[[Path, str, str, list[dict[str, Any]]], Path]:
 def pricing() -> PricingService:
     mock = Mock(spec=PricingService)
     mock.new_bucket.side_effect = Bucket
-    mock.normalize_model.side_effect = lambda m: m
+    mock.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
     mock.request_cache_ttl.return_value = None
     mock.extract_usage.return_value = {
         "input_tokens": 100,
@@ -133,12 +147,11 @@ def test_cache_populated_when_registry_exists(
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
-        groups = cache.get_groups()
-        assert len(groups) == 1
+        assert _group_count(cache) == 1
 
         projects = cache.get_projects()
         # Project has no sessions yet, so it shouldn't appear in projects list.
-        # But it should be discoverable via groups.
+        # But it should be discoverable as a group.
         assert isinstance(projects, list)
     finally:
         cache.stop()
@@ -155,7 +168,7 @@ def test_cache_empty_when_no_registry(
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
-        assert cache.get_groups() == []
+        assert _group_count(cache) == 0
         assert cache.get_projects() == []
         fp = cache.get_projects_fingerprint()
         assert fp["mtime"] is None
@@ -239,7 +252,7 @@ def test_concurrent_reads_dont_crash(started_cache: LogsCache) -> None:
     def reader() -> None:
         try:
             for _ in range(100):
-                started_cache.get_groups()
+                started_cache.get_logs_dirs(0)
                 started_cache.get_projects()
                 started_cache.get_projects_fingerprint()
                 started_cache.get_hot_session(0, "x")
@@ -260,8 +273,7 @@ def test_stop_terminates_poll_thread(started_cache: LogsCache) -> None:
     # If stop() returned, the thread is joined.  Give it a bit more time.
     time.sleep(0.1)
     # Access still works after stop.
-    _groups = started_cache.get_groups()
-    assert isinstance(_groups, list)
+    assert isinstance(started_cache.get_projects(), list)
 
 
 def test_oserror_handled_gracefully_during_poll(
@@ -301,8 +313,7 @@ def test_oserror_handled_gracefully_during_poll(
         time.sleep(2.5)
 
         # The poll thread should still be alive and cache accessible.
-        groups = cache.get_groups()
-        assert isinstance(groups, list)
+        assert isinstance(cache.get_logs_dirs(0), list)
     finally:
         cache.stop()
 
@@ -332,10 +343,9 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(  # noqa: PLR0
         manifest, path_to_key = cache._gather_directory_manifest()
         assert manifest.keys() == path_to_key.keys()
 
-        groups = cache.get_groups()
         expected: dict[Path, tuple[int, str]] = {}
-        for pid, group in enumerate(groups):
-            for logs_dir in group["logs_dirs"]:
+        for pid in range(_group_count(cache)):
+            for logs_dir in cache.get_logs_dirs(pid) or []:
                 for provider_dir in logs_dir.iterdir():
                     for session_dir in provider_dir.iterdir():
                         expected[session_dir / "messages.jsonl"] = (pid, session_dir.name)
@@ -594,19 +604,17 @@ def test_added_path_merges_into_existing_group(  # noqa: PLR0913
     cache = LogsCache(real_stats, config_svc, pricing)
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a])
     cache.start()
-    groups = cache.get_groups()
-    assert len(groups) == 1
-    assert groups[0]["paths"] == [proj_a]
+    assert _group_count(cache) == 1
+    # logs_dirs is [logs_dir(p) for p in paths], so it tracks group membership 1:1.
+    assert cache.get_logs_dirs(0) == [logs_dir(proj_a)]
 
     # Add proj_b — same group root, should merge.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
     cache._merge_added_paths({str(proj_b)})
 
-    # Single group, now with both paths.
-    groups = cache.get_groups()
-    assert len(groups) == 1
-    assert groups[0]["paths"] == [proj_a, proj_b]
-    assert len(groups[0]["logs_dirs"]) == 2
+    # Single group, now with both member paths.
+    assert _group_count(cache) == 1
+    assert cache.get_logs_dirs(0) == [logs_dir(proj_a), logs_dir(proj_b)]
 
     # Sessions merged: shared-sess count is 2.
     sessions = cache.get_sessions(0)
@@ -641,17 +649,17 @@ def test_added_group_inserted_mid_list(  # noqa: PLR0913
     cache = LogsCache(real_stats, config_svc, pricing)
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_c])
     cache.start()
-    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # type: ignore[index]
-    assert cache.get_sessions(1)[0]["session_id"] == "sess-c"  # type: ignore[index]
+    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # pyrefly: ignore [unsupported-operation]
+    assert cache.get_sessions(1)[0]["session_id"] == "sess-c"  # pyrefly: ignore [unsupported-operation]
 
     # Insert proj-b which sorts between aaa and ccc.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b, proj_c])
     cache._merge_added_paths({str(proj_b)})
 
     # Verify pid re-indexing: aaa at 0, bbb at 1, ccc shifted to 2.
-    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # type: ignore[index]
-    assert cache.get_sessions(1)[0]["session_id"] == "sess-b"  # type: ignore[index]
-    assert cache.get_sessions(2)[0]["session_id"] == "sess-c"  # type: ignore[index]
+    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # pyrefly: ignore [unsupported-operation]
+    assert cache.get_sessions(1)[0]["session_id"] == "sess-b"  # pyrefly: ignore [unsupported-operation]
+    assert cache.get_sessions(2)[0]["session_id"] == "sess-c"  # pyrefly: ignore [unsupported-operation]
     assert cache.get_sessions_fingerprint(2) is not None
 
     cache.stop()
@@ -679,7 +687,7 @@ def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913
     cache = LogsCache(real_stats, config_svc, pricing)
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
     cache.start()
-    assert len(cache.get_groups()) == 2
+    assert _group_count(cache) == 2
 
     # Replace proj_a with proj_c.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_b, proj_c])
@@ -689,7 +697,7 @@ def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913
     cache._merge_added_paths({str(proj_c)})
 
     # Only proj-b and proj-c remain.
-    assert len(cache.get_groups()) == 2
+    assert _group_count(cache) == 2
     sessions_0 = cache.get_sessions(0)
     assert sessions_0 is not None
     assert sessions_0[0]["session_id"] == "sess-b"

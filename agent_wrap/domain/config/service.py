@@ -16,7 +16,14 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_wrap.constants import AGENT_LAUNCHES_DIR, GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
+from agent_wrap.constants import (
+    AGENT_LAUNCHES_DIR,
+    GLOBAL_CONFIG_DIR,
+    LITELLM_LOGS_DIRNAME,
+    OPS_DIR,
+    PROJECT_REGISTRY_FILENAME,
+    TOOL_DIR,
+)
 from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
 from agent_wrap.lib.path_hash import project_path_hash
@@ -213,10 +220,10 @@ class ConfigService:
         Best-effort: any OSError is swallowed so logging never blocks a launch.
         """
         try:
-            target = TOOL_DIR / "litellm-logs" / project_path_hash(project_dir)
+            target = TOOL_DIR / LITELLM_LOGS_DIRNAME / project_path_hash(project_dir)
             target.mkdir(parents=True, exist_ok=True)
 
-            link = project_dir / ".claude" / "litellm-logs"
+            link = project_dir / ".claude" / LITELLM_LOGS_DIRNAME
             link.parent.mkdir(parents=True, exist_ok=True)
 
             if link.is_symlink():
@@ -225,10 +232,10 @@ class ConfigService:
                 link.unlink()  # stale — repoint below
             elif link.exists():
                 # A real directory/file from the old scheme — never destroy it.
-                bkp = link.parent / "litellm-logs-bkp"
+                bkp = link.parent / f"{LITELLM_LOGS_DIRNAME}-bkp"
                 n = 2
                 while bkp.exists():
-                    bkp = link.parent / f"litellm-logs-bkp-{n}"
+                    bkp = link.parent / f"{LITELLM_LOGS_DIRNAME}-bkp-{n}"
                     n += 1
                 link.rename(bkp)
                 self._display.info(f"agent-wrap: backed up pre-existing logs {link} -> {bkp}")
@@ -241,7 +248,7 @@ class ConfigService:
 
     def read_project_paths(self) -> list[Path]:
         """Return expanded project paths from the registry file."""
-        registry = AGENT_LAUNCHES_DIR / "projects.txt"
+        registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
         try:
             text = registry.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -278,7 +285,7 @@ class ConfigService:
 
             compressed = ProjectRegistry.compress(kept)
             with contextlib.suppress(OSError):
-                registry = AGENT_LAUNCHES_DIR / "projects.txt"
+                registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
                 atomic_write_text(registry, "\n".join(compressed) + "\n")
         except OSError:
             pass  # non-fatal
@@ -296,7 +303,7 @@ class ConfigService:
     def _has_logs_dir(self, path: Path) -> bool:
         """Report whether *path* still has a usable ``.claude/litellm-logs`` directory."""
         try:
-            return (path / ".claude" / "litellm-logs").is_dir()
+            return (path / ".claude" / LITELLM_LOGS_DIRNAME).is_dir()
         except OSError:
             return False
 
@@ -313,7 +320,7 @@ class ConfigService:
         kept = [str(path) for path in self.read_project_paths() if str(path) not in drop]
         compressed = ProjectRegistry.compress(kept)
         with contextlib.suppress(OSError):
-            registry = AGENT_LAUNCHES_DIR / "projects.txt"
+            registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
             atomic_write_text(registry, "\n".join(compressed) + "\n")
         return stale
 

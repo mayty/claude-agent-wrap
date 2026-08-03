@@ -25,7 +25,7 @@ from agent_wrap.domain.secrets.store import (
     KeyDerivation,
 )
 from agent_wrap.domain.sidecars.service import SidecarService
-from agent_wrap.exceptions import SecretNotFoundError
+from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 _FIXED_KEY = b"0" * 32  # stable key for reproducible tests
 _PATCH_KEYFILE_PATH = "agent_wrap.domain.secrets.store.SECRETS_KEYFILE_PATH"
@@ -241,7 +241,7 @@ def test_read_all_wrong_key_returns_empty(
 
     # Change the key — derive_key is already patched (autospec) by the
     # fixed_key fixture, so update its return value rather than re-patching.
-    KeyDerivation.derive_key.return_value = b"x" * 32  # type: ignore[missing-attribute]
+    KeyDerivation.derive_key.return_value = b"x" * 32  # pyrefly: ignore [missing-attribute]
 
     result = EncryptedFileStore.read_all(display=display_mock)
     assert result == {}
@@ -642,3 +642,101 @@ def test_migrate_bedrock_empty_falls_back_to_ssc(
     assert EncryptedFileStore.read_all(display=display_mock) == {
         "litellm-bedrock:api_key": "ssc-secret"
     }
+
+
+# --- missing_keys_by_sidecar (read-only reporting probe) ---
+
+
+@pytest.fixture
+def reporting_svc(
+    secrets_paths: tuple[Any, ...],  # noqa: ARG001
+    fixed_key: None,  # noqa: ARG001
+    mocker: pytest_mock.MockerFixture,
+    display_mock: Mock,
+) -> SecretsService:
+    """Return a SecretsService whose provider requires exactly one key."""
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"litellm-bedrock": object()}
+    provider.get_provider.return_value.required_secrets.return_value = [("api_key", "API key")]
+
+    sidecar = mocker.Mock(spec=SidecarService)
+    sidecar.telegram_required_secrets.return_value = [("TelegramBotToken", "bot token")]
+
+    return SecretsService(
+        provider_service=provider,
+        sidecar_service=sidecar,
+        display_service=display_mock,
+    )
+
+
+def test_missing_keys_lists_every_known_sidecar(reporting_svc: SecretsService) -> None:
+    assert set(reporting_svc.missing_keys_by_sidecar()) == {"litellm-bedrock", "telegram"}
+
+
+def test_missing_keys_reports_absent_keys(reporting_svc: SecretsService) -> None:
+    result = reporting_svc.missing_keys_by_sidecar()
+    assert result["litellm-bedrock"] == ["litellm-bedrock:api_key"]
+    assert result["telegram"] == ["telegram:TelegramBotToken"]
+
+
+def test_missing_keys_empty_when_stored(reporting_svc: SecretsService, display_mock: Mock) -> None:
+    EncryptedFileStore.write_all(
+        {"litellm-bedrock:api_key": "v", "telegram:TelegramBotToken": "v"},
+        display=display_mock,
+    )
+    result = reporting_svc.missing_keys_by_sidecar()
+    assert result["litellm-bedrock"] == []
+    assert result["telegram"] == []
+
+
+def test_missing_keys_does_not_migrate_legacy_file(
+    tmp_path: Path, reporting_svc: SecretsService
+) -> None:
+    """The reporting probe must not run the migration that deletes ~/claude_keys.json."""
+    old = tmp_path / "claude_keys.json"
+    old.write_text(json.dumps({"TelegramBotToken": "legacy-tg"}))
+
+    reporting_svc.missing_keys_by_sidecar()
+
+    assert old.is_file(), "reporting must not consume the legacy keyfile"
+
+
+def test_missing_keys_does_not_rewrite_the_store(
+    reporting_svc: SecretsService, display_mock: Mock, secrets_paths: tuple[Any, ...]
+) -> None:
+    secrets_path, _keyfile = secrets_paths
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "v"}, display=display_mock)
+    before = secrets_path.read_bytes()
+
+    reporting_svc.missing_keys_by_sidecar()
+
+    assert secrets_path.read_bytes() == before
+
+
+def test_missing_keys_returns_no_values(reporting_svc: SecretsService, display_mock: Mock) -> None:
+    """Only key names may be reported — never the secret values themselves."""
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "super-secret"}, display=display_mock)
+    result = reporting_svc.missing_keys_by_sidecar()
+    assert "super-secret" not in json.dumps(result)
+
+
+def test_missing_keys_survives_unknown_provider(
+    mocker: pytest_mock.MockerFixture,
+    secrets_paths: tuple[Any, ...],  # noqa: ARG001
+    fixed_key: None,  # noqa: ARG001
+    display_mock: Mock,
+) -> None:
+    """A provider that cannot be resolved must not abort the whole sweep."""
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"broken": object()}
+    provider.get_provider.side_effect = ProviderNotFoundError("gone")
+    sidecar = mocker.Mock(spec=SidecarService)
+    no_secrets: list[tuple[str, str]] = []
+    sidecar.telegram_required_secrets.return_value = no_secrets
+    svc = SecretsService(
+        provider_service=provider, sidecar_service=sidecar, display_service=display_mock
+    )
+
+    result = svc.missing_keys_by_sidecar()
+
+    assert result == {"broken": [], "telegram": []}

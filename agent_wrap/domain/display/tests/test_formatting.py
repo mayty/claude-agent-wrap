@@ -52,3 +52,30 @@ def test_format_count(display: DisplayService, n: int, expected: str) -> None:
 )
 def test_format_cost(display: DisplayService, cost: float | None, expected: str) -> None:
     assert display.format_cost(cost) == expected
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (None, "—"),
+        (-1, "—"),
+        (0, "0s"),
+        (1, "1s"),
+        (59, "59s"),
+        (60, "1m"),
+        (90, "1m"),
+        (3599, "59m"),
+        (3600, "1h 0m"),
+        (11520, "3h 12m"),
+        (86399, "23h 59m"),
+        (86400, "1d 0h"),
+        (90000, "1d 1h"),
+        (604800, "7d 0h"),
+    ],
+)
+def test_format_duration(display: DisplayService, seconds: float | None, expected: str) -> None:
+    assert display.format_duration(seconds) == expected
+
+
+def test_format_duration_truncates_fractional_seconds(display: DisplayService) -> None:
+    assert display.format_duration(59.9) == "59s"

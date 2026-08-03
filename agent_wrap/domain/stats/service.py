@@ -7,13 +7,15 @@ import copy
 import shutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import cache, partial
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     DAY_START_HOURS,
+    LITELLM_LOGS_DIRNAME,
+    ORPHANED_LABEL,
     SCAN_PARALLEL_MIN_FILES,
     TOOL_DIR,
 )
@@ -24,20 +26,26 @@ from agent_wrap.domain.stats.archive import (
     write_archive,
 )
 from agent_wrap.domain.stats.constants import (
-    CENTRAL_LOGS_DIRNAME,
+    DEFAULT_DAYS,
     MARKER_NAME,
     ORPHANED_ARCHIVE_FILENAME,
+    UNKNOWN_TIME_KEY,
 )
 from agent_wrap.domain.stats.format_utils import day_in_range
 from agent_wrap.domain.stats.models import (
     AggregateResult,
     ArchivedBuckets,
+    CleanupOutcome,
     CleanupResult,
+    CleanupScope,
     DirResult,
     Group,
     GroupResult,
     OrphanedResult,
     ProjectRow,
+    StatsReport,
+    UsageArgs,
+    WindowError,
     WorkUnit,
 )
 from agent_wrap.domain.stats.scan import (
@@ -54,6 +62,7 @@ from agent_wrap.lib.daytime import get_day
 from agent_wrap.lib.utils import directory_size
 
 if TYPE_CHECKING:
+    import re
     from pathlib import Path
 
     from agent_wrap.domain.config.service import ConfigService
@@ -169,7 +178,7 @@ class StatsService:
                     }
                 )
 
-        rows.sort(key=lambda r: r["cost"] if r["cost"] is not None else -1.0, reverse=True)
+        rows.sort(key=lambda r: r["cost"] if r["cost"] is not None else -1.0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         return AggregateResult(
             rows,
             dict(totals_by_model),
@@ -177,7 +186,171 @@ class StatsService:
             {s: dict(m) for s, m in totals_by_source.items()},
         )
 
-    # Delegates for CLI orchestration------------------------------------
+    def resolve_window(
+        self,
+        from_date: date | None,
+        until_date: date | None,
+        days: int | None,
+        *,
+        days_given: bool,
+    ) -> tuple[str | None, str | None] | WindowError:
+        """
+        Resolve parsed ``--from``/``--until``/``--days`` values into inclusive ISO bounds.
+
+        *days_given* distinguishes ``--days 0`` (given, meaning unlimited) from the flag
+        being absent, which a bare int cannot express. At most two of the three may be
+        given. Returns ``(from_iso, until_iso)`` with None for an open side, or a
+        :class:`WindowError` naming the problem.
+
+        The resolution table, all bounds inclusive:
+
+        * nothing → the last ``DEFAULT_DAYS`` days, ending today
+        * ``--from`` alone → ``[from, today]``
+        * ``--until`` alone → ``DEFAULT_DAYS`` ending at ``until``
+        * ``--days N`` alone → ``[today-(N-1), today]``
+        * ``--days 0`` alone → all time
+        * a bound plus ``--days N`` → the N-day span anchored at that bound
+        * a bound plus ``--days 0`` → open on the other side
+        """
+        if from_date is not None and until_date is not None and days_given:
+            return WindowError("usage: at most two of --from, --until, --days may be given")
+
+        # A count of 0 means "unlimited" — it imposes no bound on the open side.
+        lo, hi = self._combine_bounds(from_date, until_date, days or None, days_given=days_given)
+
+        # The date.min / date.max sentinels mark open sides; collapse them back to None.
+        lo_iso = None if lo == date.min else lo.isoformat()
+        hi_iso = None if hi == date.max else hi.isoformat()
+        if lo_iso is not None and hi_iso is not None and lo_iso > hi_iso:
+            return WindowError("usage: --from date is after --until date")
+        return lo_iso, hi_iso
+
+    def _combine_bounds(
+        self,
+        from_date: date | None,
+        until_date: date | None,
+        days_bound: int | None,
+        *,
+        days_given: bool,
+    ) -> tuple[date, date]:
+        """
+        Apply the resolution table to already-parsed specs, returning ``(lo, hi)`` dates.
+
+        ``days_bound`` is the positive day count, or None for "no count" (flag absent
+        *or* the unlimited ``--days 0``); *days_given* tells those apart so a bare side
+        stays open for ``--days 0`` but defaults to today/DEFAULT_DAYS otherwise. Open
+        sides come back as the ``date.min``/``date.max`` sentinels.
+        """
+        today = get_day(self.now_utc(), DAY_START_HOURS)
+        # Bounds are inclusive on both sides, so an N-day window offsets by N-1.
+        # ``--days 0`` (days_given but no count) means unlimited — timedelta.max
+        # saturates the bare side to an open sentinel via _shift.
+        if days_given:
+            span = timedelta(days=days_bound - 1) if days_bound else timedelta.max
+        else:
+            span = timedelta(days=DEFAULT_DAYS - 1)
+
+        if from_date is not None and until_date is not None:
+            return from_date, until_date
+        if from_date is not None:
+            # --from [--days N]: [from, from+(N-1)]; [from, open] for 0; else [from, today].
+            return from_date, self._shift(from_date, span, sign=1) if days_given else today
+        if until_date is not None:
+            # --until [--days N]: [until-(N-1), until]; [open, until] for 0; else default span.
+            return self._shift(until_date, span, sign=-1), until_date
+        # Neither bound: the last N (or DEFAULT_DAYS) inclusive days, or all-time for 0.
+        return self._shift(today, span, sign=-1), today
+
+    @staticmethod
+    def _shift(d: date, span: timedelta, *, sign: int) -> date:
+        """
+        ``date ± span``, clamped to ``[date.min, date.max]`` instead of raising.
+
+        The unlimited ``--days 0`` case uses ``timedelta.max`` as its span; adding or
+        subtracting that from a real date overflows, so saturate to the open-side
+        sentinel (``date.max`` forward, ``date.min`` backward).
+        """
+        try:
+            return d + sign * span
+        except OverflowError:
+            return date.max if sign > 0 else date.min
+
+    @staticmethod
+    def now_utc() -> datetime:
+        """Return the current UTC instant — the seam tests freeze for deterministic windows."""
+        return datetime.now(timezone.utc)
+
+    def build_report(self, projects: list[Path], args: UsageArgs) -> StatsReport:
+        """
+        Aggregate everything ``agent stats`` renders for one window, in one pass.
+
+        *projects* is the full registry, unfiltered — the orphaned-dir detection needs
+        every registered path to tell "no project owns this log dir" from "the pattern
+        hid its owner", so filtering happens inside.
+
+        Orphaned spend (live dirs plus what ``agent cleanup`` archived before deleting
+        them) folds into the shared totals, so it shares the pattern gate: folding in
+        spend whose row is suppressed would break the agreement between the projects
+        table and the by-day totals. Both sources render under one ``<orphaned>`` label
+        and are merged into a single row.
+        """
+        show_orphaned = args.pattern is None or args.pattern.search(ORPHANED_LABEL) is not None
+        selected = self.filter_projects(projects, args.pattern)
+
+        orphaned_dirs = self.orphaned_log_dirs(projects) if show_orphaned else []
+        scan_cache = self.scan_log_dirs(
+            [*(p / ".claude" / LITELLM_LOGS_DIRNAME for p in selected), *orphaned_dirs],
+            from_iso=args.from_iso,
+            until_iso=args.until_iso,
+        )
+
+        rows, totals_by_model, totals_by_day_by_model, totals_by_source = self.aggregate_projects(
+            selected,
+            from_iso=args.from_iso,
+            until_iso=args.until_iso,
+            scan_cache=scan_cache,
+        )
+
+        orphaned = None
+        if show_orphaned:
+            orphaned = self.merge_orphaned_results(
+                self.aggregate_orphaned(
+                    selected,
+                    totals_by_model,
+                    totals_by_day_by_model,
+                    totals_by_source,
+                    from_iso=args.from_iso,
+                    until_iso=args.until_iso,
+                    scan_cache=scan_cache,
+                ),
+                self.aggregate_archived_orphaned(
+                    totals_by_model,
+                    totals_by_day_by_model,
+                    totals_by_source,
+                    from_iso=args.from_iso,
+                    until_iso=args.until_iso,
+                ),
+            )
+
+        return StatsReport(
+            rows=[row for row in rows if row["sessions"] > 0],
+            totals_by_model=totals_by_model,
+            totals_by_day_by_model=totals_by_day_by_model,
+            totals_by_source=totals_by_source,
+            orphaned=orphaned,
+            unrecorded=sum(b.unrecorded for b in totals_by_model.values()),
+        )
+
+    def filter_projects(self, projects: list[Path], pattern: re.Pattern[str] | None) -> list[Path]:
+        """
+        Select the registered projects matching *pattern*, or all of them when None.
+
+        Matched against the whole recorded registry path, not the display name, so a
+        pattern can select by any path segment.
+        """
+        if pattern is None:
+            return projects
+        return [p for p in projects if pattern.search(str(p))]
 
     def scan_log_dirs(
         self,
@@ -272,14 +445,14 @@ class StatsService:
         """
         reachable: set[Path] = set()
         for project in projects:
-            link = project / ".claude" / CENTRAL_LOGS_DIRNAME
+            link = project / ".claude" / LITELLM_LOGS_DIRNAME
             try:
                 if link.is_dir():
                     reachable.add(link.resolve())
             except OSError:
                 continue
 
-        central = TOOL_DIR / CENTRAL_LOGS_DIRNAME
+        central = TOOL_DIR / LITELLM_LOGS_DIRNAME
         orphaned: list[Path] = []
         try:
             children = list(central.iterdir())
@@ -360,14 +533,45 @@ class StatsService:
     # Cleanup — archiving and deleting orphaned log dirs
     # ------------------------------------------------------------------
 
+    def cleanup_scope(self) -> CleanupScope:
+        """
+        Survey what a cleanup would remove, without removing anything.
+
+        The size is measured now, over exactly the dirs :meth:`run_cleanup` will be
+        given, so the preview a user confirms describes the run that follows — no
+        re-walk, no TOCTOU gap between the two.
+        """
+        orphaned_dirs = self.orphaned_log_dirs(self._config.read_project_paths())
+        return CleanupScope(
+            orphaned_dirs=orphaned_dirs,
+            stale_paths=self._config.stale_project_paths(),
+            freed_estimate=self.orphaned_disk_usage(orphaned_dirs),
+        )
+
     def orphaned_disk_usage(self, orphaned_dirs: list[Path]) -> int:
         """
         Total bytes occupied by *orphaned_dirs*.
 
-        Takes the dir list rather than recomputing it, so the caller can report a
-        size for exactly the same dirs it is about to delete.
+        Takes the dir list rather than recomputing it, so a caller can report a size
+        for exactly the same dirs it is about to delete.
         """
         return sum(directory_size(logs_dir) for logs_dir in orphaned_dirs)
+
+    def run_cleanup(self, scope: CleanupScope) -> CleanupOutcome:
+        """
+        Delete the log dirs in *scope*, archiving their usage, then prune the registry.
+
+        The registry is pruned only if the usage archive was finalized. When it was
+        not, the logs are already gone but their spend reached only the staging file,
+        so leaving the registry alone keeps the surviving evidence consistent — the
+        returned result carries the paths for the manual recovery.
+        """
+        result = self.archive_and_delete_orphaned(scope.orphaned_dirs)
+        if not result.finalized:
+            return CleanupOutcome(result=result, removed_paths=[])
+        return CleanupOutcome(
+            result=result, removed_paths=self._config.prune_stale_projects(scope.stale_paths)
+        )
 
     def archive_and_delete_orphaned(self, orphaned_dirs: list[Path]) -> CleanupResult:
         """
@@ -515,7 +719,7 @@ class StatsService:
         for date_key, by_hour in archive.items():
             for hour_key, by_model in by_hour.items():
                 dt = self._archived_hour_dt(date_key, hour_key)
-                day_key = get_day(dt, DAY_START_HOURS).isoformat() if dt else "?"
+                day_key = get_day(dt, DAY_START_HOURS).isoformat() if dt else UNKNOWN_TIME_KEY
                 if not day_in_range(day_key, from_iso, until_iso):
                     continue
                 if dt is not None and (last_ts is None or dt > last_ts):

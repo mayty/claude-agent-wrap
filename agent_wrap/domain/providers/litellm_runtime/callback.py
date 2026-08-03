@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord, MetaData
+    from agent_wrap.domain.providers.models import LogRecord, MetaData
 
 # When mounted into the sidecar container, callback.py sits at /etc/litellm/
 # alongside helpers.py and string_hasher.py — not inside a Python package.
@@ -34,16 +34,16 @@ if TYPE_CHECKING:
 _current_dir = str(Path(__file__).parent.resolve())
 if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
-from helpers import (  # type: ignore[no-redef]  # noqa: E402
+from helpers import (  # noqa: E402  # pyrefly: ignore [missing-import]
     get_response_content_str,
     get_session_hasher,
     json_safe,
 )
-from string_hasher import StringHasher  # noqa: E402  # type: ignore[missing-import]
+from string_hasher import StringHasher  # noqa: E402  # pyrefly: ignore [missing-import]
 
 # A single shared sidecar (first-launch-wins) serves every project on the host,
 # so its log directory (bind-mounted to /var/log/agent-wrap by
-# litellm_common/provider.py::_start) is project-independent. The callback routes
+# sidecars/litellm.py::_start) is project-independent. The callback routes
 # each record to /var/log/agent-wrap/<project_hash>/<provider>/<session_id>/ where:
 #   - <project_hash> varies per request and arrives in the x-agent-wrap-log-prefix
 #     header (injected by the wrapper via Claude Code's ANTHROPIC_CUSTOM_HEADERS);
@@ -433,8 +433,8 @@ try:
 
         async def async_pre_call_hook(
             self,
-            user_api_key_dict,  # type: ignore[implicit-any-parameter]  # noqa: ARG002
-            cache,  # type: ignore[implicit-any-parameter]  # noqa: ARG002
+            user_api_key_dict,  # noqa: ARG002  # pyrefly: ignore [implicit-any-parameter]
+            cache,  # noqa: ARG002  # pyrefly: ignore [implicit-any-parameter]
             data: dict[str, Any],
             call_type: str,  # noqa: ARG002
         ) -> dict[str, Any]:
@@ -443,10 +443,10 @@ try:
 
         async def async_log_success_event(
             self,
-            kwargs,  # type: ignore[implicit-any-parameter]
-            response_obj,  # type: ignore[implicit-any-parameter]
-            start_time,  # type: ignore[implicit-any-parameter]
-            end_time,  # type: ignore[implicit-any-parameter]
+            kwargs,  # pyrefly: ignore [implicit-any-parameter]
+            response_obj,  # pyrefly: ignore [implicit-any-parameter]
+            start_time,  # pyrefly: ignore [implicit-any-parameter]
+            end_time,  # pyrefly: ignore [implicit-any-parameter]
         ) -> None:
             record = build_record(
                 kwargs,
@@ -460,10 +460,10 @@ try:
 
         async def async_log_failure_event(
             self,
-            kwargs,  # type: ignore[implicit-any-parameter]
-            response_obj,  # type: ignore[implicit-any-parameter]
-            start_time,  # type: ignore[implicit-any-parameter]
-            end_time,  # type: ignore[implicit-any-parameter]
+            kwargs,  # pyrefly: ignore [implicit-any-parameter]
+            response_obj,  # pyrefly: ignore [implicit-any-parameter]
+            start_time,  # pyrefly: ignore [implicit-any-parameter]
+            end_time,  # pyrefly: ignore [implicit-any-parameter]
         ) -> None:
             record = build_record(
                 kwargs,

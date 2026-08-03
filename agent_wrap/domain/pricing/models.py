@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class TokenUsage(TypedDict):
@@ -87,6 +90,19 @@ class Bucket:
         self.cost += other.cost
         self.cost_unknown = self.cost_unknown or other.cost_unknown
         self.unrecorded += other.unrecorded
+
+    @classmethod
+    def merged(cls, buckets: Iterable[Bucket]) -> Bucket:
+        """
+        Return a new Bucket holding the sum of *buckets*.
+
+        Lets a consumer total a group without constructing an empty Bucket itself,
+        so bucket creation stays inside the pricing domain.
+        """
+        total = cls()
+        for bucket in buckets:
+            total.merge(bucket)
+        return total
 
     @property
     def cw(self) -> int:

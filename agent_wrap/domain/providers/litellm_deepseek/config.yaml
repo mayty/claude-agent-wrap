@@ -10,7 +10,7 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
 # Log every request/response to a JSONL file (mounted from the host by the
-# provider lifecycle). See litellm_common/callback.py.
+# provider lifecycle). See litellm_runtime/callback.py.
 litellm_settings:
   callbacks: callback.file_logger_instance
 

@@ -12,7 +12,7 @@ from agent_wrap.domain.logs.models import ExtractedFields, NormalizedRecordBase
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.service import PricingService
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord
+    from agent_wrap.domain.providers.models import LogRecord
 
 
 def _extract_record_fields(
@@ -78,7 +78,7 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecor
     ``response.choices[0].message``, resolving ``hash:<sha256>`` pointers.
     """
     resolved = resolve_hashes(rec, strings)
-    return normalize_record_unresolved(resolved)  # type: ignore[arg-type]
+    return normalize_record_unresolved(resolved)
 
 
 def enrich_with_costs(

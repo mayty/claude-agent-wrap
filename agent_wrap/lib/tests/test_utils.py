@@ -145,7 +145,7 @@ def test_directory_size_tolerates_vanishing_file(tmp_path: Path, mocker: MockerF
     def flaky(self: Path, *args: object, **kwargs: object):
         if self.name == "gone":
             raise OSError(_VANISHED)
-        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+        return real_stat(self, *args, **kwargs)  # pyrefly: ignore [bad-argument-type]
 
     mocker.patch.object(Path, "stat", flaky)
     assert directory_size(tmp_path) == 10

@@ -6,6 +6,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+    from typing import TextIO
+
     from agent_wrap.domain.sidecars.base import Sidecar
 
 
@@ -31,3 +33,14 @@ class SidecarAssembly(NamedTuple):
     sidecars: list[Sidecar]
     per_sidecar_secrets: dict[Sidecar, dict[str, str]]
     telegram_available: bool
+
+
+class LaunchPreparation(NamedTuple):
+    """Result of the under-lock prepare phase: agent flags plus held registrations."""
+
+    #: Connectivity + env flags every ensured sidecar contributed.
+    run_args: list[str]
+    #: Held ``running/`` registration handles, keyed by **sidecar container name** (the
+    #: refcount identity). Empty when a sidecar failed to ensure, since registration is
+    #: all-or-nothing — the last action under the lock.
+    running_handles: dict[str, TextIO | None]

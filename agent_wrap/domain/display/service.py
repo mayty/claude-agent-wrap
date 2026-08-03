@@ -7,8 +7,14 @@ import sys
 from getpass import getpass
 from typing import TYPE_CHECKING, TextIO
 
-from agent_wrap.domain.display.constants import KIBIBYTE, THOUSAND
-from agent_wrap.domain.display.models import Ansi
+from agent_wrap.domain.display.constants import (
+    KIBIBYTE,
+    SECONDS_PER_DAY,
+    SECONDS_PER_HOUR,
+    SECONDS_PER_MINUTE,
+    THOUSAND,
+    Ansi,
+)
 from agent_wrap.domain.display.spinner import Spinner
 
 if TYPE_CHECKING:
@@ -155,6 +161,28 @@ class DisplayService:
                 return f"{value:.1f}{unit}"
 
         return f"{value:.1f}{units[-1]}"
+
+    def format_duration(self, seconds: float | None) -> str:
+        """
+        Abbreviate an elapsed duration coarsely: ``11520`` → ``"3h 12m"``, ``None`` → ``"—"``.
+
+        Two units at most, largest first, and never sub-second precision — this reads
+        uptimes, where "3h 12m" is the useful answer and "3h 12m 07s" is noise. The
+        ``"—"`` for None matches :meth:`format_timestamp`, so a container that never
+        started renders the same as a missing timestamp.
+        """
+        if seconds is None or seconds < 0:
+            return "—"
+        secs = int(seconds)
+        if secs < SECONDS_PER_MINUTE:
+            return f"{secs}s"
+        if secs < SECONDS_PER_HOUR:
+            return f"{secs // SECONDS_PER_MINUTE}m"
+        if secs < SECONDS_PER_DAY:
+            hours, rem = divmod(secs, SECONDS_PER_HOUR)
+            return f"{hours}h {rem // SECONDS_PER_MINUTE}m"
+        days, rem = divmod(secs, SECONDS_PER_DAY)
+        return f"{days}d {rem // SECONDS_PER_HOUR}h"
 
     def format_timestamp(self, dt: datetime | None) -> str:
         """Format a datetime as ``YYYY-MM-DD``, or ``"—"`` when *dt* is None."""

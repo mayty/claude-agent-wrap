@@ -3,7 +3,7 @@
 
 A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process (in the default provider), and lets each project customize its environment with a simple `Dockerfile.agent`.
 
-It packages Claude Code into a reproducible container image and exposes a single command — `agent` — whose first argument is a verb (`run`, `rebuild`, `create`, `stats`, `logs`, `update`, `secrets`) that selects the operation. Volume mounts, credentials, and per-project image customization are handled automatically. Model traffic is routed through a provider plugin — all shipped providers use a [LiteLLM](https://github.com/BerriAI/litellm) sidecar. See [Providers](docs/providers.md) for available options.
+It packages Claude Code into a reproducible container image and exposes a single command — `agent` — whose first argument is a verb (`run`, `rebuild`, `create`, `stats`, `logs`, `inspect`, `cleanup`, `update`, `secrets`) that selects the operation. Volume mounts, credentials, and per-project image customization are handled automatically. Model traffic is routed through a provider plugin — all shipped providers use a [LiteLLM](https://github.com/BerriAI/litellm) sidecar. See [Providers](docs/providers.md) for available options.
 
 ## Documentation
 
@@ -30,7 +30,7 @@ This puts `bin/agent` on your `PATH` and enables tab-completion. (Programmatic c
 Build the base image once:
 
 ```bash
-agent rebuild
+agent rebuild --full
 ```
 
 From any project directory, run:
@@ -45,7 +45,7 @@ See the [Getting Started](docs/getting-started.md) guide for full setup instruct
 
 ```
 .
-├── .agent-launches/      # Project registry, pricing cache, launch coordination state (git-ignored)
+├── .agent-launches/      # Project registry, encrypted secrets, usage archive, launch state (git-ignored)
 ├── .claude_config/       # Global Claude config (git-ignored)
 ├── agent_wrap/           # Python orchestration (commands, providers, config)
 ├── bin/                  # `agent` executable launcher

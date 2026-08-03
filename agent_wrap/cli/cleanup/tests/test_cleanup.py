@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""CLI-layer tests for agent_wrap.cli.cleanup — argument parsing and calling protocol."""
+"""CLI-layer tests for agent_wrap.cli.cleanup — parsing, prompting, and reporting."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from agent_wrap.cli.cleanup.constants import CLEANUP_LABEL
 from agent_wrap.cli.cleanup.run import build_parser
 from agent_wrap.cli.cleanup.run import run as cleanup_run
 from agent_wrap.containers import services
-from agent_wrap.domain.stats.models import CleanupResult
+from agent_wrap.domain.stats.models import CleanupOutcome, CleanupResult, CleanupScope
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -22,39 +22,48 @@ _ORPHANED = [Path("/wrap/litellm-logs/hashA"), Path("/wrap/litellm-logs/hashB")]
 _STALE = [Path("/gone/project")]
 
 
+def _scope(
+    *,
+    orphaned: list[Path] | None = None,
+    stale: list[Path] | None = None,
+    freed_estimate: int = 3_145_728,
+) -> CleanupScope:
+    return CleanupScope(
+        orphaned_dirs=list(_ORPHANED) if orphaned is None else orphaned,
+        stale_paths=list(_STALE) if stale is None else stale,
+        freed_estimate=freed_estimate,
+    )
+
+
+def _outcome(*, finalized: bool = True, removed_paths: list[Path] | None = None) -> CleanupOutcome:
+    return CleanupOutcome(
+        result=CleanupResult(
+            removed=2,
+            freed_bytes=2_097_152,
+            archive_path=Path("/wrap/.agent-launches/orphaned-usage-archive.json"),
+            staging_path=Path("/wrap/.agent-launches/orphaned-usage-archive.new.json"),
+            finalized=finalized,
+        ),
+        removed_paths=list(_STALE) if removed_paths is None else removed_paths,
+    )
+
+
 @pytest.fixture
 def stats_mock() -> Mock:
-    """Return the mocked StatsService, pre-seeded with orphaned dirs and a size."""
+    """Return the mocked StatsService, pre-seeded with a scope and a successful run."""
     stats = services.stats_service
-    stats.orphaned_log_dirs.return_value = list(_ORPHANED)  # type: ignore[union-attr]
-    stats.orphaned_disk_usage.return_value = 3_145_728  # type: ignore[union-attr]
-    stats.archive_and_delete_orphaned.return_value = CleanupResult(  # type: ignore[union-attr]
-        removed=2,
-        freed_bytes=2_097_152,
-        archive_path=Path("/wrap/.agent-launches/orphaned-usage-archive.json"),
-        staging_path=Path("/wrap/.agent-launches/orphaned-usage-archive.new.json"),
-        finalized=True,
-    )
-    return stats  # type: ignore[return-value]
-
-
-@pytest.fixture
-def config_mock() -> Mock:
-    """Return the mocked ConfigService, pre-seeded with a stale registry entry."""
-    config = services.config_service
-    config.read_project_paths.return_value = []  # type: ignore[union-attr]
-    config.stale_project_paths.return_value = list(_STALE)  # type: ignore[union-attr]
-    config.prune_stale_projects.return_value = list(_STALE)  # type: ignore[union-attr]
-    return config  # type: ignore[return-value]
+    stats.cleanup_scope.return_value = _scope()  # pyrefly: ignore [missing-attribute]
+    stats.run_cleanup.return_value = _outcome()  # pyrefly: ignore [missing-attribute]
+    return stats
 
 
 @pytest.fixture
 def display_mock_service() -> Mock:
     """Return the mocked DisplayService, with formatters producing marked strings."""
     dsp = services.display_service
-    dsp.format_bytes.side_effect = lambda n: f"<{n}B>"  # type: ignore[union-attr]
-    dsp.spin_while.side_effect = lambda **kw: kw["work"]()  # type: ignore[union-attr]
-    return dsp  # type: ignore[return-value]
+    dsp.format_bytes.side_effect = lambda n: f"<{n}B>"  # pyrefly: ignore [missing-attribute]
+    dsp.spin_while.side_effect = lambda **kw: kw["work"]()  # pyrefly: ignore [missing-attribute]
+    return dsp
 
 
 def _stdout(dsp: Mock) -> str:
@@ -97,22 +106,20 @@ def test_run_unknown_arg_returns_one(capsys: pytest.CaptureFixture[str]) -> None
 # --- nothing to do ---------------------------------------------------------
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_nothing_to_clean_skips_prompt(display_mock_service: Mock) -> None:
-    services.stats_service.orphaned_log_dirs.return_value = []  # type: ignore[union-attr]
-    services.config_service.stale_project_paths.return_value = []  # type: ignore[union-attr]
+@pytest.mark.usefixtures("stats_mock")
+def test_empty_scope_skips_prompt(display_mock_service: Mock) -> None:
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 0
     assert "Nothing to clean up" in _stdout(display_mock_service)
     display_mock_service.prompt_confirm.assert_not_called()
-    services.stats_service.archive_and_delete_orphaned.assert_not_called()  # type: ignore[union-attr]
-    services.config_service.prune_stale_projects.assert_not_called()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 # --- dry run ---------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_dry_run_reports_without_prompting(display_mock_service: Mock) -> None:
     assert cleanup_run(["--dry-run"]) == 0
 
@@ -123,17 +130,16 @@ def test_dry_run_reports_without_prompting(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.assert_not_called()
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock", "display_mock_service")
+@pytest.mark.usefixtures("stats_mock", "display_mock_service")
 def test_dry_run_never_mutates() -> None:
     cleanup_run(["--dry-run"])
-    services.stats_service.archive_and_delete_orphaned.assert_not_called()  # type: ignore[union-attr]
-    services.config_service.prune_stale_projects.assert_not_called()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 # --- confirmation ----------------------------------------------------------
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_shows_summary_before_prompting(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = False
     cleanup_run([])
@@ -144,27 +150,27 @@ def test_shows_summary_before_prompting(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.assert_called_once()
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_declining_skips_both_mutations(display_mock_service: Mock) -> None:
+@pytest.mark.usefixtures("stats_mock")
+def test_declining_skips_the_cleanup(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = False
 
     assert cleanup_run([]) == 0
     assert "Cleanup cancelled." in _stdout(display_mock_service)
-    services.stats_service.archive_and_delete_orphaned.assert_not_called()  # type: ignore[union-attr]
-    services.config_service.prune_stale_projects.assert_not_called()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_confirming_acts_on_precomputed_lists(display_mock_service: Mock) -> None:
-    """The confirmed run must use the same lists the summary described."""
+@pytest.mark.usefixtures("stats_mock")
+def test_confirming_acts_on_the_surveyed_scope(display_mock_service: Mock) -> None:
+    """The confirmed run must act on the very scope the summary described."""
     display_mock_service.prompt_confirm.return_value = True
+    scope = _scope()
+    services.stats_service.cleanup_scope.return_value = scope  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 0
-    services.stats_service.archive_and_delete_orphaned.assert_called_once_with(_ORPHANED)  # type: ignore[union-attr]
-    services.config_service.prune_stale_projects.assert_called_once_with(_STALE)  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_called_once_with(scope)  # pyrefly: ignore [missing-attribute]
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_success_message_reports_actual_freed_bytes(display_mock_service: Mock) -> None:
     """The summary must report what was freed, not the pre-confirmation estimate."""
     display_mock_service.prompt_confirm.return_value = True
@@ -177,26 +183,13 @@ def test_success_message_reports_actual_freed_bytes(display_mock_service: Mock) 
     assert "1 stale registry entr(y/ies) removed" in out
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_sizes_computed_before_deleting(display_mock_service: Mock) -> None:
-    display_mock_service.prompt_confirm.return_value = True
-    cleanup_run([])
-    services.stats_service.orphaned_disk_usage.assert_called_once_with(_ORPHANED)  # type: ignore[union-attr]
-
-
 # --- unfinalized archive ---------------------------------------------------
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_unfinalized_archive_reports_manual_fallback(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = True
-    services.stats_service.archive_and_delete_orphaned.return_value = CleanupResult(  # type: ignore[union-attr]
-        removed=1,
-        freed_bytes=100,
-        archive_path=Path("/wrap/.agent-launches/orphaned-usage-archive.json"),
-        staging_path=Path("/wrap/.agent-launches/orphaned-usage-archive.new.json"),
-        finalized=False,
-    )
+    services.stats_service.run_cleanup.return_value = _outcome(finalized=False, removed_paths=[])  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 1
     message = display_mock_service.error.call_args[0][0]
@@ -205,67 +198,36 @@ def test_unfinalized_archive_reports_manual_fallback(display_mock_service: Mock)
     assert "/wrap/.agent-launches/orphaned-usage-archive.json" in message
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_unfinalized_archive_leaves_registry_alone(display_mock_service: Mock) -> None:
-    """A half-committed archive must not also lose the registry entries."""
-    display_mock_service.prompt_confirm.return_value = True
-    services.stats_service.archive_and_delete_orphaned.return_value = CleanupResult(  # type: ignore[union-attr]
-        removed=0,
-        freed_bytes=0,
-        archive_path=Path("/a.json"),
-        staging_path=Path("/a.new.json"),
-        finalized=False,
-    )
-
-    assert cleanup_run([]) == 1
-    services.config_service.prune_stale_projects.assert_not_called()  # type: ignore[union-attr]
-
-
 # --- orphaned dirs / stale entries independently present -------------------
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_runs_with_only_stale_entries(display_mock_service: Mock) -> None:
-    services.stats_service.orphaned_log_dirs.return_value = []  # type: ignore[union-attr]
-    services.stats_service.orphaned_disk_usage.return_value = 0  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], freed_estimate=0)  # pyrefly: ignore [missing-attribute]
     display_mock_service.prompt_confirm.return_value = True
 
     assert cleanup_run([]) == 0
     out = _stdout(display_mock_service)
     assert "0 project log(s) will be deleted" in out
     assert "<0B>" in out
-    services.config_service.prune_stale_projects.assert_called_once_with(_STALE)  # type: ignore[union-attr]
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_omits_stale_line_when_none(display_mock_service: Mock) -> None:
-    services.config_service.stale_project_paths.return_value = []  # type: ignore[union-attr]
-    services.config_service.prune_stale_projects.return_value = []  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(stale=[])  # pyrefly: ignore [missing-attribute]
     display_mock_service.prompt_confirm.return_value = True
 
     assert cleanup_run([]) == 0
     assert "stale project registry" not in _stdout(display_mock_service)
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_orphan_detection_uses_full_registry(display_mock_service: Mock) -> None:
-    """Orphan detection must see every registered project, or live dirs look orphaned."""
-    registered = [Path("/p/one"), Path("/p/two")]
-    services.config_service.read_project_paths.return_value = registered  # type: ignore[union-attr]
-    display_mock_service.prompt_confirm.return_value = True
-
-    cleanup_run([])
-    services.stats_service.orphaned_log_dirs.assert_called_once_with(registered)  # type: ignore[union-attr]
-
-
 # --- spinners ---------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
-def test_scope_spinner_runs_before_nothing_to_clean_check(display_mock_service: Mock) -> None:
+@pytest.mark.usefixtures("stats_mock")
+def test_scope_spinner_runs_before_empty_scope_check(display_mock_service: Mock) -> None:
     """The scan spinner must run even when there is nothing to clean up."""
-    services.stats_service.orphaned_log_dirs.return_value = []  # type: ignore[union-attr]
-    services.config_service.stale_project_paths.return_value = []  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 0
     display_mock_service.spin_while.assert_called_once()
@@ -276,7 +238,7 @@ def test_scope_spinner_runs_before_nothing_to_clean_check(display_mock_service: 
     assert callable(call.kwargs["work"])
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_scope_spinner_runs_on_dry_run(display_mock_service: Mock) -> None:
     assert cleanup_run(["--dry-run"]) == 0
     assert display_mock_service.spin_while.call_count == 1
@@ -284,7 +246,7 @@ def test_scope_spinner_runs_on_dry_run(display_mock_service: Mock) -> None:
     assert display_mock_service.spin_while.call_args[1]["message"] == "scanning…"
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_cleanup_spinner_not_run_on_decline(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = False
 
@@ -292,7 +254,7 @@ def test_cleanup_spinner_not_run_on_decline(display_mock_service: Mock) -> None:
     assert display_mock_service.spin_while.call_count == 1
 
 
-@pytest.mark.usefixtures("stats_mock", "config_mock")
+@pytest.mark.usefixtures("stats_mock")
 def test_cleanup_spinner_runs_after_confirmation(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = True
 
@@ -301,7 +263,7 @@ def test_cleanup_spinner_runs_after_confirmation(display_mock_service: Mock) -> 
     second_call = display_mock_service.spin_while.call_args_list[1]
     assert second_call.kwargs["label"] == CLEANUP_LABEL
     assert second_call.kwargs["message"] == "cleaning up…"
-    services.stats_service.archive_and_delete_orphaned.assert_called_once_with(_ORPHANED)  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
 # --- completion ------------------------------------------------------------

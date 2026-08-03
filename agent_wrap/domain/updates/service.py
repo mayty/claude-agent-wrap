@@ -8,12 +8,16 @@ import subprocess
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
-from agent_wrap.domain.updates.constants import REBUILD_FILES, RESOURCE_FILES
+from agent_wrap.domain.updates.constants import (
+    REBUILD_FILES,
+    RESOURCE_FILES,
+    MdPropagation,
+    MdState,
+)
 from agent_wrap.domain.updates.models import (
     BehindCountResult,
     GitFullResult,
-    MdPropagation,
-    MdState,
+    WrapperRevision,
 )
 from agent_wrap.lib.utils import is_truthy_env
 
@@ -40,7 +44,7 @@ class _GitOps:
             return "", 1
 
     @staticmethod
-    def git_full(*args: str, cwd: str | None = None, timeout: int | None = None) -> GitFullResult:
+    def git_full(*args: str, cwd: str | None = None) -> GitFullResult:
         """Run a git command and return (stdout, returncode, stderr)."""
         try:
             result = subprocess.run(
@@ -48,7 +52,6 @@ class _GitOps:
                 capture_output=True,
                 text=True,
                 cwd=cwd,
-                timeout=timeout,
             )
             return GitFullResult(result.stdout.strip(), result.returncode, result.stderr.strip())
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -245,6 +248,53 @@ class UpdateService:
 
     def __init__(self, display_service: DisplayService) -> None:
         self._display = display_service
+
+    def current_revision(self) -> WrapperRevision:
+        """
+        Resolve the installed wrapper's git identity, entirely from local state.
+
+        Deliberately **no fetch**, unlike :meth:`check_updates`: this answers "what am I
+        running", not "is there something newer", and a report must not make a network
+        call. Every git invocation passes ``--no-optional-locks`` and a short timeout —
+        ``status --porcelain`` refreshes the index by default, which would let a read-only
+        command create ``.git/index.lock``, and an unresponsive git must not hang the
+        report.
+
+        Outside a git repo (a tarball install) every field is blank rather than an error.
+        """
+        branch, rc = _GitOps.git(
+            "--no-optional-locks", "symbolic-ref", "--short", "HEAD", cwd=str(TOOL_DIR), timeout=5
+        )
+        if rc != 0 or not branch:
+            # rev-parse tells "detached HEAD" apart from "not a git repo".
+            _, head_rc = _GitOps.git(
+                "--no-optional-locks", "rev-parse", "HEAD", cwd=str(TOOL_DIR), timeout=5
+            )
+            if head_rc != 0:
+                return WrapperRevision(branch="", commit="", describe="", dirty=False)
+            branch = "detached"
+
+        commit, rc = _GitOps.git(
+            "--no-optional-locks", "rev-parse", "--short", "HEAD", cwd=str(TOOL_DIR), timeout=5
+        )
+        if rc != 0:
+            commit = ""
+
+        describe, rc = _GitOps.git(
+            "--no-optional-locks", "describe", "--tags", "--always", cwd=str(TOOL_DIR), timeout=5
+        )
+        if rc != 0:
+            describe = ""
+
+        porcelain, rc = _GitOps.git(
+            "--no-optional-locks", "status", "--porcelain", cwd=str(TOOL_DIR), timeout=10
+        )
+        return WrapperRevision(
+            branch=branch,
+            commit=commit,
+            describe=describe,
+            dirty=rc == 0 and bool(porcelain.strip()),
+        )
 
     def check_updates(self) -> bool:
         """

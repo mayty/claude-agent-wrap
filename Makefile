@@ -1,6 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 # agent-wrap QA targets.
-# Strict targets (for CI): lintcheck format-check test typecheck markdown-check check-executables
+# Strict targets (for CI): lintcheck format-check test typecheck markdown-check arch-check check-executables
 # Fix targets (for dev):    lint, format
 
 .PHONY: test lint lintcheck format format-check typecheck markdown-check arch-check check-executables check

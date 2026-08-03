@@ -1,11 +1,11 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # LiteLLM DeepSeek Provider
 
-Routes Claude Code through DeepSeek via a shared LiteLLM sidecar.
+Routes Claude Code through DeepSeek via its own LiteLLM sidecar.
 
 ## Lifecycle
 
-Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_common/README.md`](../litellm_common/README.md). DeepSeek adds master-key auto-approval in `.claude.json` so Claude Code never prompts to accept the proxy key.
+The sidecar lifecycle is common to all LiteLLM providers — see [`providers/README.md`](../README.md). DeepSeek adds master-key auto-approval in `.claude.json` so Claude Code never prompts to accept the proxy key.
 
 ## Configuration
 
@@ -13,8 +13,11 @@ Sidecar lifecycle is shared across all LiteLLM providers — see [`litellm_commo
 | --- | --- |
 | Image | `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79...` |
 | Master key prefix | `sk-ds-` |
-| Agent base URL | `http://agent-wrap-litellm:4000` |
+| Sidecar container | `agent-wrap-litellm-deepseek` |
+| Agent base URL | `http://agent-wrap-litellm-deepseek:<port>` |
 | Upstream endpoint | `https://api.deepseek.com/anthropic` |
+
+`<port>` is resolved when the sidecar starts (scanning upward from 48620) and recorded in the container as `AGENT_WRAP_SIDECAR_PORT`, so several providers' sidecars can run at once — see [`providers/README.md`](../README.md#sidecar-lifecycle).
 
 ## Credentials
 
@@ -25,7 +28,7 @@ The primary flow is the interactive prompt on the first `agent run` — this sec
 Agent container (injected by `get_agent_env`):
 
 - `ANTHROPIC_API_KEY` — the sidecar's master key
-- `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm:4000`
+- `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm-deepseek:<port>`
 - `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` — `deepseek-v4-pro[1m]`
 - `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `deepseek-v4-flash`
 - `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-v4-flash`

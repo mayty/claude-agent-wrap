@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 
+from agent_wrap.cli.logs.constants import USAGE_TEXT
 from agent_wrap.constants import (
     LOGS_DEFAULT_PORT,
     LOGS_MAX_PORT,
@@ -20,19 +21,6 @@ from agent_wrap.lib.argparsing import make_parser, parse_or_code
 
 USAGE = "[--port N] [--stop]"
 SUMMARY = "Browse LiteLLM request logs in a local web viewer"
-
-_USAGE_TEXT = (
-    "Usage: agent logs [--port N] [--stop]\n\n"
-    "Starts a local web viewer for the LiteLLM request logs written under each\n"
-    "project's .claude/litellm-logs/ directory. Pick a project, then a session,\n"
-    "and read every logged request chat-style.\n\n"
-    "The viewer runs in the background and prints its connect line; if one is\n"
-    "already running, the existing connect line is reprinted (the port is\n"
-    "ignored).\n\n"
-    "--port N binds the viewer to port N (default 8765); if busy, the next free\n"
-    "port is used. The server binds to 127.0.0.1 only and is read-only.\n"
-    "--stop stops the background viewer."
-)
 
 
 def _port(value: str) -> int:
@@ -49,7 +37,7 @@ def _port(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("logs", usage_summary=USAGE, description=_USAGE_TEXT)
+    parser = make_parser("logs", usage_summary=USAGE, description=USAGE_TEXT)
     parser.add_argument("--port", type=_port, default=LOGS_DEFAULT_PORT, metavar="N")
     parser.add_argument("--stop", action="store_true", help="stop the background viewer")
     # Hidden internal flag: the re-exec'd child that actually runs the blocking

@@ -14,7 +14,7 @@ it stops, rather than per agent. The per-agent toggling it replaced was a
 concurrency bug: one agent's exit could un-approve a key another agent was still
 using.
 
-Mix into a ``LiteLLMProvider`` subclass and call ``_approve_master_key`` from
+Mix into a ``Provider`` subclass and call ``_approve_master_key`` from
 ``on_started`` and ``_unapprove_master_key`` from ``on_stopping``.
 """
 

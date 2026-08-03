@@ -12,7 +12,6 @@ import pytest
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.io import (
-    lightweight_project_summary,
     list_groups,
     list_projects,
     list_sessions,
@@ -69,7 +68,7 @@ def config_svc() -> ConfigService:
 def pricing_svc(mocker: MockerFixture) -> PricingService:
     """Return a PricingService backed by a mock ProviderService (no-op compute_cost)."""
     mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
+    mock_ps.get_provider.return_value.compute_cost.return_value = None
     return PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
 
 
@@ -85,7 +84,7 @@ def _ts_rec(iso: str, **extra: Any) -> dict[str, Any]:
 
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.litellm_common.models import LogRecord
+    from agent_wrap.domain.providers.models import LogRecord
 
 
 def _write_session(project: Path, provider: str, session_id: str, records: list[Any]) -> Path:
@@ -676,45 +675,12 @@ def test_read_last_record_ts_handles_non_json_lines(tmp_path: Path):
     assert read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
 
 
-def test_lightweight_project_summary_empty_project(tmp_path: Path):
-    project = tmp_path / "proj"
-    assert lightweight_project_summary(project) == (0, None)
-
-
-def test_lightweight_project_summary_single_session(tmp_path: Path):
-    project = tmp_path / "proj"
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
-    )
-    count, last_ts = lightweight_project_summary(project)
-    assert count == 1
-    assert last_ts == _epoch("2026-06-05T00:00:00+00:00")
-
-
-def test_lightweight_project_summary_multiple_sessions(tmp_path: Path):
-    project = tmp_path / "proj"
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s-old",
-        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
-    )
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s-new",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
-    )
-    count, last_ts = lightweight_project_summary(project)
-    assert count == 2
-    assert last_ts == _epoch("2026-06-05T00:00:00+00:00")
-
-
-def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
-    """Same session_id under two providers → count=1, max ts from newest file."""
+def test_list_projects_dedups_sessions_across_providers(
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
+) -> None:
+    """Same session_id under two providers → counted once, ts from the newest file."""
+    tool_dir = tmp_path
+    (tool_dir / ".agent-launches").mkdir(parents=True)
     project = tmp_path / "proj"
     _write_session(
         project,
@@ -722,8 +688,8 @@ def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
     )
-    # Ensure the second write gets a strictly higher mtime so the
-    # function picks the correct file for last_ts extraction.
+    # Ensure the second write gets a strictly higher mtime so the newest file
+    # is the one the last_ts is read from.
     time.sleep(0.01)
     _write_session(
         project,
@@ -731,18 +697,25 @@ def test_lightweight_project_summary_dedups_across_providers(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
     )
-    count, last_ts = lightweight_project_summary(project)
-    assert count == 1
-    assert last_ts == _epoch("2026-06-05T00:00:00+00:00")
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    groups = list_groups(isolated_stats, config_svc.read_project_paths())
+    result = list_projects(groups)
+    assert len(result) == 1
+    assert result[0]["sessions"] == 1
+    assert result[0]["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
 
 
-def test_lightweight_project_summary_skips_empty_sessions(tmp_path: Path):
-    """Session dir without a messages.jsonl should be skipped."""
+def test_list_projects_skips_sessions_without_messages(
+    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
+) -> None:
+    """A session dir with no messages.jsonl contributes nothing, so the project drops out."""
+    tool_dir = tmp_path
+    (tool_dir / ".agent-launches").mkdir(parents=True)
     project = tmp_path / "proj"
     (project / ".claude" / "litellm-logs" / "litellm-bedrock" / "empty").mkdir(parents=True)
-    count, last_ts = lightweight_project_summary(project)
-    assert count == 0
-    assert last_ts is None
+    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    groups = list_groups(isolated_stats, config_svc.read_project_paths())
+    assert list_projects(groups) == []
 
 
 def test_list_projects_lightweight_produces_same_shape(

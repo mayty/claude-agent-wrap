@@ -60,10 +60,10 @@ def test_from_claude_agent_image_missing(
         f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=False
     )
     assert build_svc._check_from_line(resolved) is False
-    build_svc._display.error.assert_any_call(  # type: ignore[union-attr]
+    build_svc._display.error.assert_any_call(  # pyrefly: ignore [missing-attribute]
         f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built."
     )
-    assert build_svc._display.error.call_count == 2  # type: ignore[union-attr]
+    assert build_svc._display.error.call_count == 2  # pyrefly: ignore [missing-attribute]
 
 
 def test_from_custom_image(
@@ -78,7 +78,7 @@ def test_from_custom_image(
         context=tmp_path,
     )
     assert build_svc._check_from_line(resolved) is True
-    build_svc._display.warning.assert_called_once_with(  # type: ignore[union-attr]
+    build_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         f"'{resolved.dockerfile}' inherits from 'ubuntu:24.04' rather than"
         " 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse"
         " the base toolchain."
@@ -126,7 +126,7 @@ def test_multistage_dockerfile_last_custom_base(build_svc: BuildService, tmp_pat
         context=tmp_path,
     )
     assert build_svc._check_from_line(resolved) is True
-    build_svc._display.warning.assert_called_once_with(  # type: ignore[union-attr]
+    build_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         f"'{resolved.dockerfile}' inherits from 'ubuntu:24.04' rather than"
         " 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse"
         " the base toolchain."
@@ -145,7 +145,7 @@ def test_do_rebuild_resolve_image_exit(
     )
     rc = build_svc._do_rebuild(full=False)
     assert rc == 1
-    build_svc._display.error.assert_called_once_with("no Dockerfile.agent")  # type: ignore[union-attr]
+    build_svc._display.error.assert_called_once_with("no Dockerfile.agent")  # pyrefly: ignore [missing-attribute]
 
 
 def test_do_rebuild_full_build_fails(

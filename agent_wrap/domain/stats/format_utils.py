@@ -3,17 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-
-def epoch_to_dt(x: float | None) -> datetime | None:
-    """Convert a Unix epoch-seconds float to a UTC-aware datetime, or None."""
-    if x is None:
-        return None
-    try:
-        return datetime.fromtimestamp(x, tz=timezone.utc)
-    except (ValueError, OSError, OverflowError):
-        return None
+from agent_wrap.domain.stats.constants import UNKNOWN_TIME_KEY
 
 
 def day_in_range(day_key: str, from_iso: str | None, until_iso: str | None) -> bool:
@@ -28,7 +18,7 @@ def day_in_range(day_key: str, from_iso: str | None, until_iso: str | None) -> b
     so it is included only when the range is fully open (both bounds None), i.e.
     the all-time view.
     """
-    if day_key == "?":
+    if day_key == UNKNOWN_TIME_KEY:
         return from_iso is None and until_iso is None
     if from_iso is not None and day_key < from_iso:
         return False

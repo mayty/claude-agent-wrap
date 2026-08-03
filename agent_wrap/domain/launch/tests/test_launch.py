@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import call as mocker_call
 
 import pytest
 
@@ -17,11 +19,14 @@ from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.base import Sidecar
-from agent_wrap.domain.sidecars.service import SidecarService
+from agent_wrap.domain.sidecars.service import SidecarService, SidecarTracker
 from agent_wrap.domain.updates.service import UpdateService
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 if TYPE_CHECKING:
+    from typing import TextIO
+    from unittest.mock import Mock
+
     import pytest_mock
 
 
@@ -30,8 +35,6 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
     """Return a LaunchService with spec-mocked dependencies."""
     build_svc = mocker.Mock(spec=BuildService)
     sidecar_svc = mocker.Mock(spec=SidecarService)
-    sidecar_svc.role_label = SidecarService.role_label
-    sidecar_svc.role_value = SidecarService.role_value
     return LaunchService(
         config_service=mocker.Mock(spec=ConfigService),
         secrets_service=mocker.Mock(spec=SecretsService),
@@ -138,35 +141,35 @@ def test_resolve_secrets_found_no_prompt(
 
 
 def test_launch_headless_skips_update_check(launch_svc: LaunchService) -> None:
-    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # type: ignore[union-attr]
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # pyrefly: ignore [missing-attribute]
     rc = launch_svc.launch(use_base=False, claude_args=["-p", "hi"])
     assert rc == 1
-    launch_svc._updates.check_updates.assert_not_called()  # type: ignore[union-attr]
+    launch_svc._updates.check_updates.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 def test_launch_non_headless_runs_update_check_and_short_circuits(
     launch_svc: LaunchService,
 ) -> None:
-    launch_svc._updates.check_updates.return_value = True  # type: ignore[union-attr]
+    launch_svc._updates.check_updates.return_value = True  # pyrefly: ignore [missing-attribute]
     rc = launch_svc.launch(use_base=False, claude_args=["--model", "x"])
     assert rc == 0
-    launch_svc._build_service.resolve_image.assert_not_called()  # type: ignore[union-attr]
+    launch_svc._build_service.resolve_image.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 def test_launch_non_headless_update_check_false_continues(launch_svc: LaunchService) -> None:
-    launch_svc._updates.check_updates.return_value = False  # type: ignore[union-attr]
-    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # type: ignore[union-attr]
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # pyrefly: ignore [missing-attribute]
     rc = launch_svc.launch(use_base=False, claude_args=[])
     assert rc == 1
-    launch_svc._updates.check_updates.assert_called_once()  # type: ignore[union-attr]
+    launch_svc._updates.check_updates.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
 def test_launch_unknown_provider_reports_clean_error(
     tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
     mocker.patch.object(Path, "cwd", return_value=tmp_path)
-    launch_svc._updates.check_updates.return_value = False  # type: ignore[union-attr]
-    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # type: ignore[union-attr]
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
     )
     mocker.patch(
@@ -174,14 +177,14 @@ def test_launch_unknown_provider_reports_clean_error(
         return_value=True,
         autospec=True,
     )
-    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # type: ignore[union-attr]
+    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # pyrefly: ignore [missing-attribute]
         "Unknown provider: bogus\nAvailable: litellm-bedrock"
     )
 
     rc = launch_svc.launch(use_base=False, claude_args=[])
 
     assert rc == 1
-    launch_svc._display.error.assert_called_once_with(  # type: ignore[union-attr]
+    launch_svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         "Unknown provider: bogus\nAvailable: litellm-bedrock"
     )
 
@@ -211,7 +214,7 @@ def test_build_wslg_args_not_present(
     fake_mnt = tmp_path / "mnt" / "wslg"
     mocker.patch(
         "agent_wrap.domain.launch.service.Path",
-        lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
+        lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),  # pyrefly: ignore [implicit-any-lambda]
     )
     result = launch_svc._build_wslg_args()
     assert result == []
@@ -224,7 +227,7 @@ def test_build_wslg_args_present(
     fake_mnt.mkdir(parents=True)
     mocker.patch(
         "agent_wrap.domain.launch.service.Path",
-        lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),
+        lambda path: fake_mnt if str(path) == "/mnt/wslg" else Path(path),  # pyrefly: ignore [implicit-any-lambda]
     )
     result = launch_svc._build_wslg_args()
     assert "-v" in result
@@ -314,7 +317,7 @@ def test_parse_directives_with_dockerfile(tmp_path: Path, launch_svc: LaunchServ
         "EXPOSE 8080\n"
         "# agent-run-args: --cap-add SYS_ADMIN\n"
     )
-    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
         agent_user="customuser",
         expose_ports=["8080"],
         extra_run_args=["--cap-add", "SYS_ADMIN"],
@@ -341,7 +344,7 @@ def test_host_network_not_wsl(
     mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=False, autospec=True)
     use, _, _ = launch_svc._resolve_host_network(None, ["-p", "8080:8080"])
     assert use is False
-    launch_svc._display.warning.assert_any_call(  # type: ignore[union-attr]
+    launch_svc._display.warning.assert_any_call(  # pyrefly: ignore [missing-attribute]
         "AGENT_USE_HOST_NETWORK ignored — only honored on WSL hosts."
     )
 
@@ -366,21 +369,58 @@ def test_host_network_wsl_agent_network_specified(
     mocker.patch("agent_wrap.lib.docker_utils.is_wsl", return_value=True, autospec=True)
     use, _, ports = launch_svc._resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
-    launch_svc._display.warning.assert_any_call(  # type: ignore[union-attr]
+    launch_svc._display.warning.assert_any_call(  # pyrefly: ignore [missing-attribute]
         "AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already "
         "specifies --network via agent-run-args."
     )
     assert ports == ["-p", "8080:8080"]
 
 
-def test_collect_sidecars_returns_provider_sidecars(
+def _stub_provider(mocker: pytest_mock.MockFixture, launch_svc: LaunchService) -> Mock:
+    """Point launch_svc's provider service at a provider declaring one sidecar."""
+    provider = mocker.Mock(spec=Provider)
+    provider.name = "litellm-test"
+    provider.sidecar.return_value = mocker.Mock(spec=Sidecar)
+    provider.sidecar.return_value.required_secrets.return_value = [("api_key", "Test Key")]
+    launch_svc._provider_service.get_provider.return_value = provider  # pyrefly: ignore [missing-attribute]
+    return provider
+
+
+def test_assemble_sidecars_declares_the_providers_sidecar(
     mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
-    # Sentinel placeholders — only compared for identity, no interface needed.
-    sentinel = [mocker.Mock(spec=Sidecar), mocker.Mock(spec=Sidecar)]
-    provider = mocker.Mock(spec=Provider)
-    provider.sidecars.return_value = sentinel
-    assert launch_svc._collect_sidecars(provider) == sentinel
+    provider = _stub_provider(mocker, launch_svc)
+    launch_svc._secrets.read.return_value = "secret-value"  # pyrefly: ignore [missing-attribute]
+    # No Telegram secrets configured, so only the provider's sidecar is declared.
+    launch_svc._sidecar_service.telegram_required_secrets.return_value = [("token", "Bot token")]  # pyrefly: ignore [missing-attribute]
+    launch_svc._secrets.read.side_effect = [  # pyrefly: ignore [missing-attribute]
+        "secret-value",
+        SecretNotFoundError("token", "Bot token"),
+    ]
+
+    assembly = launch_svc._assemble_sidecars("agent", "inst-1", headless=False)
+
+    assert assembly.sidecars == [provider.sidecar.return_value]
+    assert assembly.telegram_available is False
+    assert assembly.per_sidecar_secrets[provider.sidecar.return_value] == {
+        "api_key": "secret-value"
+    }
+
+
+def test_assemble_sidecars_appends_telegram_when_its_secrets_resolve(
+    mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    provider = _stub_provider(mocker, launch_svc)
+    launch_svc._secrets.read.return_value = "secret-value"  # pyrefly: ignore [missing-attribute]
+    launch_svc._sidecar_service.telegram_required_secrets.return_value = [("token", "Bot token")]  # pyrefly: ignore [missing-attribute]
+    tg_sidecar = mocker.Mock(spec=Sidecar)
+    launch_svc._sidecar_service.create_telegram_sidecar.return_value = tg_sidecar  # pyrefly: ignore [missing-attribute]
+
+    assembly = launch_svc._assemble_sidecars("agent", "inst-1", headless=False)
+
+    # The provider's sidecar comes first; Telegram is appended by the runner.
+    assert assembly.sidecars == [provider.sidecar.return_value, tg_sidecar]
+    assert assembly.telegram_available is True
 
 
 def test_build_agent_labels_empty_instance(launch_svc: LaunchService) -> None:
@@ -440,3 +480,135 @@ def test_extract_network_missing_value(launch_svc: LaunchService) -> None:
 def test_extract_network_among_other_flags(launch_svc: LaunchService) -> None:
     args = ["--device", "/dev/fuse", "--network", "mynet", "--cap-add", "SYS_ADMIN"]
     assert launch_svc._extract_network(args) == "mynet"
+
+
+@pytest.fixture
+def two_sidecars(mocker: pytest_mock.MockFixture) -> list[Mock]:
+    """
+    Return a provider sidecar plus the shared Telegram one, with distinct container names.
+
+    ``Mock(spec=Sidecar)`` would hand back a Mock for ``container_name``, which the
+    tracker cannot use as a path component — so it is always set explicitly.
+    """
+    litellm = mocker.Mock(spec=Sidecar, cold_start_time=120.0, short_circuit_time=2.0)
+    litellm.container_name = "agent-wrap-litellm-bedrock"
+    telegram = mocker.Mock(spec=Sidecar, cold_start_time=45.0, short_circuit_time=2.0)
+    telegram.container_name = "agent-wrap-telegram"
+    return [litellm, telegram]
+
+
+@pytest.fixture
+def tracker(mocker: pytest_mock.MockFixture, tmp_path: Path) -> Mock:
+    """Return a spec-mocked tracker with real lock paths (priority_lock uses them)."""
+    trk = mocker.Mock(spec=SidecarTracker)
+    trk.lock_path = tmp_path / "sidecars.lock"
+    trk.start_waiters_dir = tmp_path / "start-waiters"
+    return trk
+
+
+def test_prepare_for_launch_registers_one_entry_per_sidecar_container(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    """Each container is registered separately — that is what makes refcounts per-provider."""
+    no_flags: list[str] = []
+    for sc in two_sidecars:
+        sc.ensure.return_value = no_flags
+    tracker.register_running.side_effect = lambda container, _inst: f"handle-{container}"  # pyrefly: ignore [implicit-any-lambda]
+
+    prepared = launch_svc._prepare_for_launch(
+        two_sidecars,
+        tracker,
+        net=(False, None),
+        instance_id="inst-1",
+        telegram_available=True,
+        per_sidecar_secrets={sc: {} for sc in two_sidecars},
+    )
+
+    assert prepared.running_handles == {
+        "agent-wrap-litellm-bedrock": "handle-agent-wrap-litellm-bedrock",
+        "agent-wrap-telegram": "handle-agent-wrap-telegram",
+    }
+    # Registration is the LAST action under the lock: every ensure() ran first.
+    for sc in two_sidecars:
+        sc.ensure.assert_called_once()
+
+
+def test_prepare_for_launch_registers_nothing_when_an_ensure_fails(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    """All-or-nothing: a half-ensured launch must not leave a registration behind."""
+    two_sidecars[0].ensure.return_value = ["-e", "X=1"]
+    two_sidecars[1].ensure.side_effect = SystemExit(1)
+
+    with pytest.raises(SystemExit):
+        launch_svc._prepare_for_launch(
+            two_sidecars,
+            tracker,
+            net=(False, None),
+            instance_id="inst-1",
+            telegram_available=True,
+            per_sidecar_secrets={sc: {} for sc in two_sidecars},
+        )
+
+    tracker.register_running.assert_not_called()
+
+
+def test_release_stops_only_the_sidecars_with_no_live_runners(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    """
+    The heart of concurrent providers: this agent's own sidecar stops, while the shared
+    Telegram container another agent is still using is left alone.
+    """
+    litellm, telegram = two_sidecars
+    live = {"agent-wrap-telegram": True, "agent-wrap-litellm-bedrock": False}
+    tracker.has_live_runners.side_effect = lambda container, **_kwargs: live[container]  # pyrefly: ignore [implicit-any-lambda]
+
+    launch_svc._release_sidecars(
+        two_sidecars,
+        tracker,
+        "inst-1",
+        {sc.container_name: None for sc in two_sidecars},
+    )
+
+    litellm.release.assert_called_once_with()
+    telegram.release.assert_not_called()
+
+
+def test_release_clears_every_registration_before_taking_the_stop_lock(
+    launch_svc: LaunchService,
+    two_sidecars: list[Mock],
+    tracker: Mock,
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """
+    A stopper must see this agent as gone on *every* container at once; clearing
+    lazily, per container, would let it be counted as its own live runner.
+    """
+    tracker.has_live_runners.return_value = False
+    handles: dict[str, TextIO | None] = {
+        sc.container_name: mocker.Mock(spec=io.TextIOWrapper) for sc in two_sidecars
+    }
+
+    launch_svc._release_sidecars(two_sidecars, tracker, "inst-1", handles)
+
+    # Each handle goes back paired with its own container name.
+    assert tracker.clear_running.call_args_list == [
+        mocker_call(handles[sc.container_name], sc.container_name, "inst-1") for sc in two_sidecars
+    ]
+    cleared = [i for i, c in enumerate(tracker.mock_calls) if c[0] == "clear_running"]
+    probed = [i for i, c in enumerate(tracker.mock_calls) if c[0] == "has_live_runners"]
+    assert max(cleared) < min(probed)
+
+
+def test_release_tolerates_missing_handles(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    """The mid-failure path: nothing was registered, but teardown still runs in full."""
+    tracker.has_live_runners.return_value = False
+
+    launch_svc._release_sidecars(two_sidecars, tracker, "inst-1", {})
+
+    for sc in two_sidecars:
+        tracker.clear_running.assert_any_call(None, sc.container_name, "inst-1")
+        sc.release.assert_called_once_with()

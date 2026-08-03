@@ -560,7 +560,7 @@ def test_link_litellm_logs_backs_up_real_directory(svc: ConfigService, tmp_path:
     assert (bkp / "litellm-bedrock" / "keep.txt").read_text() == "old data"
     assert link.is_symlink()
     assert link.resolve() == (tmp_path / "litellm-logs" / project_path_hash(project)).resolve()
-    svc._display.info.assert_called_once_with(  # type: ignore[union-attr]
+    svc._display.info.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         f"agent-wrap: backed up pre-existing logs {link} -> {bkp}"
     )
 

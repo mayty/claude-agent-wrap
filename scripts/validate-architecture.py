@@ -12,6 +12,13 @@
 #   EC001 — LiteLLM runtime agent_wrap import: files under litellm_runtime/
 #           must not import from agent_wrap outside of a `if TYPE_CHECKING:`
 #           guard.
+#   ED001 — Misplaced type: a dataclass / NamedTuple / TypedDict defined
+#           outside its package's `models.py` (architecture rule 8).
+#   EE001 — Misplaced constant: an UPPER_CASE module-level assignment outside
+#           its package's `constants.py` (architecture rule 10).
+#   EF001 — Misplaced enum: an Enum class defined outside its package's
+#           `constants.py` (architecture rule 10). Applies to the same scope
+#           as ED001/EE001, including the package root.
 #
 # Usage: python3 scripts/validate-architecture.py
 #
@@ -42,7 +49,7 @@ EXCLUDED_PATHS: tuple[str, ...] = ()
 # litellm_runtime directory (plain directory, no __init__.py) — files here
 # are mounted into the LiteLLM sidecar and must not depend on agent_wrap at
 # runtime.  Rule EC001 enforces this.
-_LITELLM_RUNTIME = "agent_wrap/domain/providers/litellm_common/litellm_runtime"
+_LITELLM_RUNTIME = "agent_wrap/domain/providers/litellm_runtime"
 
 
 def _discover_subpackages(domain_dir: Path) -> tuple[str, ...]:
@@ -66,7 +73,7 @@ def _discover_subpackages(domain_dir: Path) -> tuple[str, ...]:
         else:
             found.append(entry.name)
 
-    found.sort(key=lambda s: (-len(s), s))
+    found.sort(key=lambda s: (-len(s), s))  # pyrefly: ignore [implicit-any-lambda]
     return tuple(found)
 
 
@@ -430,6 +437,141 @@ def _check_rule_c(
     return violations
 
 
+def _is_type_carrying_class(node: ast.ClassDef) -> bool:
+    """
+    Whether *node* declares a data/type-carrying class rather than behaviour.
+
+    Recognises the three forms rule 8 names: a ``@dataclass``, a ``NamedTuple``, and a
+    ``TypedDict``. A plain class is behaviour and is not flagged — "plain data-holding
+    class" cannot be told from a service by AST alone. Enums are a separate case (see
+    ``_is_enum_class``) — they belong in ``constants.py``, not ``models.py``.
+    """
+    for base in node.bases:
+        name = ast.unparse(base).rsplit(".", 1)[-1]
+        if name in ("NamedTuple", "TypedDict"):
+            return True
+    return any(
+        ast.unparse(dec).rsplit(".", 1)[-1].partition("(")[0] == "dataclass"
+        for dec in node.decorator_list
+    )
+
+
+def _is_enum_class(node: ast.ClassDef) -> bool:
+    """
+    Whether *node* declares an ``Enum`` (including ``IntEnum``/``StrEnum`` variants and
+    the ``str, Enum`` mixin form, qualified or not, e.g. ``enum.IntEnum``).
+    """
+    return any(ast.unparse(base).rsplit(".", 1)[-1].endswith("Enum") for base in node.bases)
+
+
+def _check_rule_d(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
+    """
+    Return ED001 violations found in *tree*.
+
+    Rule 8: a data/type-carrying class belongs in its package's ``models.py``. Applies
+    to ``agent_wrap/domain/``, ``agent_wrap/cli/``, and the package root — ``lib/`` is
+    standalone general-purpose code that does not follow the models.py convention.
+    """
+    rel_file = str(file_path.relative_to(ROOT))
+    return [
+        (
+            rel_file,
+            node.lineno,
+            "ED001",
+            f"data/type-carrying class '{node.name}' must live in this package's models.py",
+        )
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and _is_type_carrying_class(node)
+    ]
+
+
+def _check_rule_f(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
+    """
+    Return EF001 violations found in *tree*.
+
+    Rule 10: an enum belongs in its package's ``constants.py`` — a fixed set of named
+    values, not a data-carrying type. Applies wherever rule D applies (see
+    ``_models_constants_scope``), including the package root.
+    """
+    rel_file = str(file_path.relative_to(ROOT))
+    return [
+        (
+            rel_file,
+            node.lineno,
+            "EF001",
+            f"enum '{node.name}' must live in this package's constants.py",
+        )
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and _is_enum_class(node)
+    ]
+
+
+def _check_rule_e(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
+    """
+    Return EE001 violations found in *tree*.
+
+    Rule 10: a module-level constant belongs in its package's ``constants.py``. A
+    constant is an UPPER_CASE (or ``_UPPER_CASE``) module-level assignment.
+    ``USAGE``/``SUMMARY`` are exempt: ``cli/commands.py`` reads them reflectively off
+    each command's ``run`` module by name, so they cannot move.
+    """
+    violations: list[tuple[str, int, str, str]] = []
+    rel_file = str(file_path.relative_to(ROOT))
+    exempt = {"USAGE", "SUMMARY"}
+
+    for node in tree.body if isinstance(tree, ast.Module) else []:
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            bare = target.id.lstrip("_")
+            if bare in exempt or not bare.isupper() or not bare.replace("_", "").isalnum():
+                continue
+            violations.append(
+                (
+                    rel_file,
+                    node.lineno,
+                    "EE001",
+                    (
+                        f"module-level constant '{target.id}' must live in this package's "
+                        f"constants.py"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def _models_constants_scope(file_path: Path) -> str | None:
+    """
+    Return "models" / "constants" when *file_path* is subject to rule 8 / 10.
+
+    Both rules apply under ``agent_wrap/domain/``, ``agent_wrap/cli/``, and the
+    package root itself (``agent_wrap/*.py``, not recursing into subdirectories) —
+    skipping the file that is itself the designated home, test files, and
+    ``litellm_runtime/`` (a plain directory mounted into the sidecar, exempt by
+    convention). ``lib/`` has no models.py/constants.py convention and stays excluded.
+    """
+    try:
+        rel = file_path.relative_to(ROOT / "agent_wrap")
+    except ValueError:
+        return None
+    if len(rel.parts) > 1 and rel.parts[0] not in ("domain", "cli"):
+        return None
+    if _is_test_file(file_path) or _is_litellm_runtime(file_path):
+        return None
+    if file_path.name == "models.py":
+        return "constants"
+    if file_path.name == "constants.py":
+        return "models"
+    return "both"
+
+
 def check_file(file_path: Path) -> list[tuple[str, int, str, str]]:
     """Run both architecture rules against a single ``.py`` file."""
     violations: list[tuple[str, int, str, str]] = []
@@ -468,6 +610,14 @@ def check_file(file_path: Path) -> list[tuple[str, int, str, str]]:
     if _is_litellm_runtime(file_path):
         violations.extend(_check_rule_c(file_path, tree, parent_map))
 
+    # Rules D/E/F: types belong in models.py, constants (incl. enums) in constants.py.
+    scope = _models_constants_scope(file_path)
+    if scope in ("models", "both"):
+        violations.extend(_check_rule_d(file_path, tree))
+    if scope in ("constants", "both"):
+        violations.extend(_check_rule_e(file_path, tree))
+        violations.extend(_check_rule_f(file_path, tree))
+
     return violations
 
 
@@ -487,16 +637,11 @@ def main() -> None:
         for rel_path, line, code, msg in violations:
             print(f"{rel_path}:{line}: error: {code}: {msg}", file=sys.stderr)
 
-        ea_count = sum(1 for v in violations if v[2] == "EA001")
-        eb_count = sum(1 for v in violations if v[2] == "EB001")
-        ec_count = sum(1 for v in violations if v[2] == "EC001")
         parts: list[str] = []
-        if ea_count:
-            parts.append(f"{ea_count} EA001")
-        if eb_count:
-            parts.append(f"{eb_count} EB001")
-        if ec_count:
-            parts.append(f"{ec_count} EC001")
+        for code in ("EA001", "EB001", "EC001", "ED001", "EE001", "EF001"):
+            count = sum(1 for v in violations if v[2] == code)
+            if count:
+                parts.append(f"{count} {code}")
 
         print(
             f"\n{len(violations)} architecture violations found ({', '.join(parts)})",
