@@ -446,3 +446,113 @@ def test_apply_already_up_to_date(
     rc = update_svc.apply("origin/main")
     assert rc == 0
     display_mock.success.assert_any_call("Already up to date")
+
+
+# --- current_revision (local-only, read-only) ---
+
+_GIT = "agent_wrap.domain.updates.service._GitOps.git"
+
+
+def _fake_git(responses: dict[str, tuple[str, int]]):
+    """Build a _GitOps.git stub keyed on the git subcommand (after global flags)."""
+
+    def fake(*args: Any, **_: Any) -> tuple[str, int]:
+        subcommand = next((a for a in args if not a.startswith("-")), "")
+        return responses.get(subcommand, ("", 0))
+
+    return fake
+
+
+def test_current_revision_reports_branch_commit_and_describe(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch(
+        _GIT,
+        autospec=True,
+        side_effect=_fake_git(
+            {
+                "symbolic-ref": ("master", 0),
+                "rev-parse": ("7e8ef2f", 0),
+                "describe": ("0.8.0", 0),
+                "status": ("", 0),
+            }
+        ),
+    )
+    revision = update_svc.current_revision()
+    assert revision.branch == "master"
+    assert revision.commit == "7e8ef2f"
+    assert revision.describe == "0.8.0"
+    assert revision.dirty is False
+
+
+def test_current_revision_flags_dirty_worktree(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch(
+        _GIT,
+        autospec=True,
+        side_effect=_fake_git(
+            {
+                "symbolic-ref": ("master", 0),
+                "rev-parse": ("7e8ef2f", 0),
+                "describe": ("0.8.0", 0),
+                "status": (" M agent_wrap/x.py", 0),
+            }
+        ),
+    )
+    assert update_svc.current_revision().dirty is True
+
+
+def test_current_revision_detached_head(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch(
+        _GIT,
+        autospec=True,
+        side_effect=_fake_git(
+            {"symbolic-ref": ("", 1), "rev-parse": ("7e8ef2f", 0), "describe": ("0.8.0", 0)}
+        ),
+    )
+    assert update_svc.current_revision().branch == "detached"
+
+
+def test_current_revision_blank_outside_a_git_repo(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch(_GIT, autospec=True, return_value=("", 1))
+    revision = update_svc.current_revision()
+    assert revision.branch == ""
+    assert revision.commit == ""
+    assert revision.describe == ""
+    assert revision.dirty is False
+
+
+def test_current_revision_never_fetches(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    """A report must not reach the network to say what revision is installed."""
+    git = mocker.patch(_GIT, autospec=True, return_value=("ok", 0))
+    update_svc.current_revision()
+    subcommands = [call.args for call in git.call_args_list]
+    assert not any("fetch" in args for args in subcommands)
+
+
+def test_current_revision_passes_no_optional_locks(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    """Otherwise `status --porcelain` refreshes the index and creates .git/index.lock."""
+    git = mocker.patch(_GIT, autospec=True, return_value=("ok", 0))
+    update_svc.current_revision()
+    assert git.call_args_list
+    for call in git.call_args_list:
+        assert "--no-optional-locks" in call.args
+
+
+def test_current_revision_bounds_every_git_call(
+    update_svc: UpdateService, mocker: pytest_mock.MockFixture
+) -> None:
+    """A wedged git must not hang the report."""
+    git = mocker.patch(_GIT, autospec=True, return_value=("ok", 0))
+    update_svc.current_revision()
+    for call in git.call_args_list:
+        assert call.kwargs["timeout"] > 0

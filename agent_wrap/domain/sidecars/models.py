@@ -79,3 +79,83 @@ class TelegramSidecarConfig:
     #: sidecar is still *declared* so last-light-out teardown reaps the shared
     #: container, but its startup (prepare/ensure) is skipped.
     headless: bool = False
+
+
+@dataclass(frozen=True)
+class SidecarContainer:
+    """
+    One discovered sidecar container, as a reporting snapshot.
+
+    Every field is a scalar, deliberately: the raw ``.Config.Env`` this is built from
+    carries ``LITELLM_MASTER_KEY``, the upstream provider credential, and
+    ``TELEGRAM_BOT_TOKEN``. There is no field here a secret could be stored in, so it
+    cannot reach a report, a ``--json`` dump, or a traceback.
+    """
+
+    name: str
+    #: "litellm", "telegram", or "unknown" — derived from the container name.
+    role: str
+    #: Provider this sidecar serves, or "" for the Telegram sidecar.
+    provider: str
+    #: Docker's own state string ("running", "exited", "created", …).
+    status: str
+    #: Health-check verdict, or "none" when the container declares no health check
+    #: (the Telegram sidecar does not).
+    health: str
+    #: Seconds since the container started; None when it never started.
+    uptime_sec: int | None
+    #: Resolved listening port, or None when it could not be recovered.
+    port: int | None
+    #: Exit code, only meaningful when *status* is "exited".
+    exit_code: int | None
+    #: Image the container actually runs, for comparison against the pinned digest.
+    image: str
+    #: Whether *image* differs from the pin agent-wrap would start today.
+    stale_image: bool
+    #: Docker networks the container is attached to (names only, never IPs).
+    networks: list[str]
+
+
+@dataclass(frozen=True)
+class AgentContainer:
+    """
+    One discovered agent container, as a reporting snapshot.
+
+    Scalar-only for the same reason as :class:`SidecarContainer`: the ``.Mounts`` array
+    this is built from lists every bind-mounted host path, of which only the project
+    directory is wanted.
+    """
+
+    name: str
+    #: The ``agent-wrap.instance-id`` label — the key the flock registry uses.
+    instance_id: str
+    #: Docker's own state string ("running", "exited", …).
+    status: str
+    #: Seconds since the container started; None when it never started.
+    uptime_sec: int | None
+    #: Host path mounted at /workspace, or "" when not recoverable.
+    cwd: str
+    #: Image the container runs — "claude-agent" or a per-project "claude-agent-<name>".
+    image: str
+    #: Provider this agent's model traffic goes through, derived from *sidecars*; "" when
+    #: it holds no LiteLLM registration (a headless run, or one already tearing down).
+    provider: str
+    #: Sidecar container names this agent holds a live registration on.
+    sidecars: list[str]
+
+
+@dataclass(frozen=True)
+class RegistryState:
+    """
+    The flock registry's live contents, read without mutating it.
+
+    Assembled from ``running/<container>/<instance_id>`` and ``start-waiters/``. Note
+    that an empty entry for a running container is a legitimate transient state, not an
+    orphan: teardown clears registrations *before* taking the lock to stop the
+    container (see ``LaunchService._release_sidecars``).
+    """
+
+    #: container name → live instance ids registered on it.
+    by_container: dict[str, list[str]]
+    #: instance ids queued for the shared sidecar lock.
+    waiting: list[str]

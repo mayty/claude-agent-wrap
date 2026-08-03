@@ -24,6 +24,11 @@ POLL_INTERVAL_SEC = 0.05
 # Global, gitignored runtime state for the background viewer.
 STATE_FILE_NAME = "logs-server.json"
 
+# Today's usage totals, written by UsageTracker and read by the bundled statusline
+# (as ~/.claude/usage.json inside the container — the same file via the bind mount).
+# Relative to GLOBAL_CONFIG_DIR.
+USAGE_JSON_RELPATH = Path(".claude") / "usage.json"
+
 # The web UI ships as static assets under the repo-root ``logs_page/`` dir
 # (server.py is at <root>/agent_wrap/cli/logs/, so the root is parents[3]).
 LOGS_PAGE_DIR = Path(__file__).resolve().parents[3] / "logs_page"

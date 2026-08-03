@@ -8,6 +8,7 @@ import inspect
 import os
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import DEFAULT_PROVIDER_NAME
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.constants import PROVIDERS_DIR
 from agent_wrap.exceptions import ProviderNotFoundError
@@ -53,9 +54,9 @@ class ProviderService:
         """
         Resolve and instantiate a provider by name.
 
-        Falls back to the AGENT_PROVIDER env var, then to "litellm-bedrock".
+        Falls back to the AGENT_PROVIDER env var, then to ``DEFAULT_PROVIDER_NAME``.
         """
-        resolved = name or os.environ.get("AGENT_PROVIDER", "litellm-bedrock")
+        resolved = name or os.environ.get("AGENT_PROVIDER", DEFAULT_PROVIDER_NAME)
         registry = self.discover_providers()
         cls = registry.get(resolved)
         if cls is None:

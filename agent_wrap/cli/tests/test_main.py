@@ -106,5 +106,15 @@ def test_every_command_has_complete_function(subtests: pytest.Subtests) -> None:
 
 def test_commands_dict_matches_registered_verbs() -> None:
     """COMMANDS keys match the set of known verbs."""
-    expected = {"cleanup", "create", "logs", "rebuild", "run", "secrets", "stats", "update"}
+    expected = {
+        "cleanup",
+        "create",
+        "inspect",
+        "logs",
+        "rebuild",
+        "run",
+        "secrets",
+        "stats",
+        "update",
+    }
     assert set(COMMANDS) == expected

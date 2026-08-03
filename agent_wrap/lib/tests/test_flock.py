@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.exceptions import LockTimeoutError
-from agent_wrap.lib.flock import file_lock, try_file_lock
+from agent_wrap.lib.flock import file_lock, live_lock_ids, lock_and_hold, try_file_lock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,3 +91,68 @@ def test_try_file_lock_releases_after_block(tmp_path: Path) -> None:
     # A subsequent acquire should succeed since the first was released.
     with try_file_lock(lock) as acquired:
         assert acquired is True
+
+
+def test_live_lock_ids_reports_held_entries(tmp_path: Path) -> None:
+    handle = lock_and_hold(tmp_path / "held")
+    assert handle is not None
+    try:
+        assert live_lock_ids(tmp_path) == ["held"]
+    finally:
+        handle.close()
+
+
+def test_live_lock_ids_omits_stale_entry(tmp_path: Path) -> None:
+    stale = tmp_path / "stale"
+    handle = lock_and_hold(stale)
+    assert handle is not None
+    handle.close()  # owner "exited" — the lock is takeable again
+    assert live_lock_ids(tmp_path) == []
+
+
+def test_live_lock_ids_leaves_stale_file_on_disk(tmp_path: Path) -> None:
+    """The whole point vs any_live_locks: reporting must not reap."""
+    stale = tmp_path / "stale"
+    handle = lock_and_hold(stale)
+    assert handle is not None
+    handle.close()
+    live_lock_ids(tmp_path)
+    assert stale.exists()
+
+
+def test_live_lock_ids_does_not_truncate(tmp_path: Path) -> None:
+    entry = tmp_path / "entry"
+    entry.write_text("payload")
+    live_lock_ids(tmp_path)
+    assert entry.read_text() == "payload"
+
+
+def test_live_lock_ids_excludes_named_id(tmp_path: Path) -> None:
+    mine = lock_and_hold(tmp_path / "mine")
+    theirs = lock_and_hold(tmp_path / "theirs")
+    assert mine is not None
+    assert theirs is not None
+    try:
+        assert live_lock_ids(tmp_path, exclude_id="mine") == ["theirs"]
+    finally:
+        mine.close()
+        theirs.close()
+
+
+def test_live_lock_ids_sorted(tmp_path: Path) -> None:
+    handles = [lock_and_hold(tmp_path / name) for name in ("c", "a", "b")]
+    try:
+        assert live_lock_ids(tmp_path) == ["a", "b", "c"]
+    finally:
+        for handle in handles:
+            assert handle is not None
+            handle.close()
+
+
+def test_live_lock_ids_ignores_subdirectories(tmp_path: Path) -> None:
+    (tmp_path / "subdir").mkdir()
+    assert live_lock_ids(tmp_path) == []
+
+
+def test_live_lock_ids_missing_directory(tmp_path: Path) -> None:
+    assert live_lock_ids(tmp_path / "absent") == []

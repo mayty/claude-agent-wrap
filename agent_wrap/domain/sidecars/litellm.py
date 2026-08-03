@@ -31,9 +31,14 @@ from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PollResult
+from agent_wrap.constants import (
+    LITELLM_SIDECAR_LABEL,
+    SIDECAR_PORT_ENV,
+    SIDECAR_PROVIDER_ENV,
+    PollResult,
+)
 from agent_wrap.domain.sidecars.base import Sidecar
-from agent_wrap.domain.sidecars.constants import PORT_SCAN_LIMIT, SIDECAR_PORT_ENV
+from agent_wrap.domain.sidecars.constants import PORT_SCAN_LIMIT
 from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
 from agent_wrap.lib.net import find_free_port
 from agent_wrap.lib.path_hash import project_path_hash
@@ -418,7 +423,7 @@ class LiteLLMSidecar(Sidecar):
         env_flags.extend(["-e", f"LITELLM_MASTER_KEY={master_key}"])
         # The provider is fixed for this sidecar's lifetime (one container per
         # provider), so the callback reads it from the container env, not per-request.
-        env_flags.extend(["-e", f"AGENT_WRAP_PROVIDER={self.config.provider_name}"])
+        env_flags.extend(["-e", f"{SIDECAR_PROVIDER_ENV}={self.config.provider_name}"])
         # Recorded so later launches adopt this port instead of re-scanning.
         env_flags.extend(["-e", f"{SIDECAR_PORT_ENV}={self.port}"])
 

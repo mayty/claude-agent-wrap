@@ -15,6 +15,7 @@ from agent_wrap.constants import (
     AGENT_WRAP_MOUNT,
     GLOBAL_CONFIG_DIR,
     OPS_DIR,
+    SIDECAR_NETWORK_NAME,
     STATE_FILES,
     TELEGRAM_IMAGE,
     TELEGRAM_SIDECAR_NAME,
@@ -412,7 +413,7 @@ class LaunchService:
         return self._sidecar_service.create_telegram_sidecar(
             image=TELEGRAM_IMAGE,
             container_name="agent-wrap-telegram",
-            network_name="agent-wrap-net",
+            network_name=SIDECAR_NETWORK_NAME,
             internal_port=6837,
             agent_name=agent_name,
             instance_id=instance_id,

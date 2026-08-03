@@ -11,7 +11,8 @@ import pytest
 
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
-from agent_wrap.domain.logs.daemon import state_file, write_state
+from agent_wrap.domain.logs.constants import LOG_FILE_NAME
+from agent_wrap.domain.logs.daemon import state_dir, state_file, write_state
 from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
@@ -115,3 +116,47 @@ def test_stop_daemon_permission_error_propagates(mocker: MockerFixture, logs_svc
 
     with pytest.raises(PermissionError):
         logs_svc.stop_daemon()
+
+
+# --- viewer_state (read-only counterpart of running_server) ---
+
+
+def test_viewer_state_running_when_pid_alive(mocker: MockerFixture, logs_svc: LogsService) -> None:
+    write_state(pid=4242, port=9001)
+    mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=True, autospec=True)
+    state = logs_svc.viewer_state()
+    assert state.running is True
+    assert state.pid == 4242
+    assert state.port == 9001
+
+
+def test_viewer_state_keeps_stale_state_file(mocker: MockerFixture, logs_svc: LogsService) -> None:
+    """running_server() unlinks it; a reporting read must not."""
+    write_state(pid=4242, port=9001)
+    mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=False, autospec=True)
+    state = logs_svc.viewer_state()
+    assert state.running is False
+    assert state.pid == 4242
+    assert state_file().exists()
+
+
+def test_viewer_state_not_running_without_state_file(logs_svc: LogsService) -> None:
+    state = logs_svc.viewer_state()
+    assert state.running is False
+    assert state.pid is None
+    assert state.port is None
+
+
+def test_viewer_state_reports_logfile_size(mocker: MockerFixture, logs_svc: LogsService) -> None:
+    write_state(pid=4242, port=9001)
+    mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=True, autospec=True)
+    (state_dir() / LOG_FILE_NAME).write_text("x" * 128)
+    state = logs_svc.viewer_state()
+    assert state.log_size == 128
+    assert state.log_mtime is not None
+
+
+def test_viewer_state_logfile_absent(logs_svc: LogsService) -> None:
+    state = logs_svc.viewer_state()
+    assert state.log_size is None
+    assert state.log_mtime is None

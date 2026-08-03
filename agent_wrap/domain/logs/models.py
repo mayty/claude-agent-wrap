@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
 
 if TYPE_CHECKING:
@@ -23,6 +24,25 @@ class Fingerprint(TypedDict):
 
     mtime: int | None
     size: int | None
+
+
+@dataclass(frozen=True)
+class ViewerState:
+    """
+    A logs-viewer snapshot for reporting, including its logfile's liveness.
+
+    Distinct from :class:`DaemonState`: that is the on-disk state file's shape, read on
+    the path that also *repairs* it. This adds what a report wants (is the logfile
+    growing?) and is produced without touching anything.
+    """
+
+    running: bool
+    pid: int | None
+    port: int | None
+    #: Size of the viewer's logfile in bytes, or None when it is absent.
+    log_size: int | None
+    #: Epoch seconds of the logfile's last write, or None when it is absent.
+    log_mtime: float | None
 
 
 class GroupInfo(TypedDict):

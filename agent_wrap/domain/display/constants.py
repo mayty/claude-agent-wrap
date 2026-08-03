@@ -8,6 +8,11 @@ THOUSAND = 1_000
 # byte counts come from the filesystem.
 KIBIBYTE = 1024
 
+# Duration abbreviation steps.
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE
+SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR
+
 # Spinner glyph sets
 SPINNERS: dict[str, tuple[tuple[str, ...], float | None]] = {
     "default": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), None),

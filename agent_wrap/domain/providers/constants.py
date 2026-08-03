@@ -6,11 +6,6 @@ from pathlib import Path
 
 PROVIDERS_DIR = Path(__file__).parent
 
-# Prefix for every provider's own sidecar container. The full name is
-# f"{CONTAINER_NAME_PREFIX}-{provider.name}" (e.g. "agent-wrap-litellm-bedrock"), which
-# is what makes concurrent per-provider sidecars possible.
-CONTAINER_NAME_PREFIX = "agent-wrap"
-
 # Preferred base port for a provider's sidecar. The resolved port is scanned upward
 # from here at cold start, so every provider can share one base. Chosen well above the
 # usual ephemeral range and outside IANA's registered block to keep the window quiet.

@@ -15,9 +15,15 @@ Three flavours, matching the call sites in the sidecar lifecycle:
   rather than just one ``with`` block. The kernel drops the lock automatically when
   the holding process dies, which is what makes liveness immune to PID recycling.
 
-All open the lock file in write mode (``flock`` needs a real fd). The two context
-managers release + close on exit, even when the body raises; :func:`lock_and_hold`
-hands ownership of the handle to the caller.
+The three above open the lock file in write mode (``flock`` needs a real fd). The two
+context managers release + close on exit, even when the body raises;
+:func:`lock_and_hold` hands ownership of the handle to the caller.
+
+Two directory-level probes read a whole directory of such files:
+
+* :func:`any_live_locks` — the teardown predicate. Reaps stale files as it goes.
+* :func:`live_lock_ids` — the reporting variant. Names every live holder and mutates
+  nothing, so a read-only caller cannot reap state it merely looked at.
 """
 
 from __future__ import annotations
@@ -120,6 +126,46 @@ def clear_lock_handle(handle: TextIO | None, path: Path) -> None:
         handle.close()
     with contextlib.suppress(OSError):
         path.unlink()
+
+
+def live_lock_ids(directory: Path, *, exclude_id: str | None = None) -> list[str]:
+    """
+    List the names of files in *directory* whose locks are still held, sorted.
+
+    The read-only twin of :func:`any_live_locks`: it reports every live holder instead
+    of just whether one exists, and — the reason it exists — it **never unlinks**
+    anything. A reporting caller must not reap another process's state as a side effect
+    of looking at it, and must not decide teardown from a mutated view.
+
+    Probing opens the file read-only, unlike the helpers above: ``flock`` needs a real
+    fd but not a writable one (Linux grants ``LOCK_EX`` on an ``O_RDONLY`` fd), and
+    opening for write would truncate a file this function has no business changing.
+
+    A stale file — one whose owner exited, so the lock is takeable — is simply omitted;
+    it stays on disk for :func:`any_live_locks` to reap on the next real launch.
+    """
+    if not directory.is_dir():
+        return []
+    live: list[str] = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        if exclude_id is not None and path.name == exclude_id:
+            continue
+        try:
+            handle = open(path)  # noqa: SIM115 -- released in the finally below
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                live.append(path.name)  # someone holds it — the owner is alive
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+    return live
 
 
 def any_live_locks(directory: Path, *, exclude_id: str | None = None) -> bool:

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from agent_wrap.domain.secrets.service import SecretsService
     from agent_wrap.domain.sidecars.service import SidecarService
     from agent_wrap.domain.stats.service import StatsService
+    from agent_wrap.domain.status.service import InspectService
     from agent_wrap.domain.updates.service import UpdateService
 
 
@@ -119,6 +120,19 @@ class Services:
             stats_service=self.stats_service,
             config_service=self.config_service,
             display_service=self.display_service,
+        )
+
+    @cached_property
+    def inspect_service(self) -> InspectService:
+        from agent_wrap.domain.status.service import InspectService
+
+        return InspectService(
+            sidecar_service=self.sidecar_service,
+            provider_service=self.provider_service,
+            secrets_service=self.secrets_service,
+            logs_service=self.logs_service,
+            updates_service=self.update_service,
+            config_service=self.config_service,
         )
 
     @cached_property

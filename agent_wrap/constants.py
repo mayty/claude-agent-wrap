@@ -90,6 +90,41 @@ LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"
 TELEGRAM_SIDECAR_NAME = "telegram"
 
+# Docker's own state string for a container that is up. Anything else means it is not,
+# and a container that is not running has no uptime — docker keeps reporting StartedAt
+# for a stopped container (its last start), which would read as the age of a corpse.
+RUNNING_STATUS = "running"
+
+# Health value reported for a container that declares no health check at all. The
+# Telegram sidecar is started without --health-cmd, unlike the LiteLLM one, so this is
+# a fact about the container rather than a problem.
+NO_HEALTHCHECK = "none"
+
+# User-defined Docker network every sidecar and agent joins, which is what gives the
+# agent container DNS resolution for the sidecar's name. Docker's default bridge has no
+# embedded DNS, so this cannot be replaced by it.
+SIDECAR_NETWORK_NAME = "agent-wrap-net"
+
+# Provider used when AGENT_PROVIDER is unset.
+DEFAULT_PROVIDER_NAME = "litellm-bedrock"
+
+# Prefix shared by every sidecar container. A provider's own sidecar is
+# f"{CONTAINER_NAME_PREFIX}-{provider.name}" (e.g. "agent-wrap-litellm-bedrock"), which
+# is what makes concurrent per-provider sidecars possible; the single Telegram sidecar
+# is "agent-wrap-telegram". Agent containers deliberately do NOT share this prefix
+# (they are "claude-agent-<instance_id>"), so the prefix alone selects sidecars.
+CONTAINER_NAME_PREFIX = "agent-wrap"
+
+# Container env var carrying the port a sidecar resolved at cold start. The running
+# container is the single source of truth: later launches recover it from here rather
+# than re-scanning (which would pick a different port and break connectivity).
+SIDECAR_PORT_ENV = "AGENT_WRAP_SIDECAR_PORT"
+
+# Container env var carrying the provider a LiteLLM sidecar serves. Fixed for the
+# container's lifetime (one container per provider), so the callback reads it from the
+# container env rather than per-request.
+SIDECAR_PROVIDER_ENV = "AGENT_WRAP_PROVIDER"
+
 
 class PollResult(Enum):
     """Verdict a poll callback returns each tick to ``DisplayService.poll_until``."""

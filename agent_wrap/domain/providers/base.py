@@ -23,9 +23,13 @@ from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from agent_wrap.constants import LITELLM_IMAGE, TOOL_DIR
-from agent_wrap.domain.providers.constants import (
+from agent_wrap.constants import (
     CONTAINER_NAME_PREFIX,
+    LITELLM_IMAGE,
+    SIDECAR_NETWORK_NAME,
+    TOOL_DIR,
+)
+from agent_wrap.domain.providers.constants import (
     DEFAULT_SIDECAR_PORT,
     MODEL_CONTEXT_SUFFIX_RE,
     UNKNOWN_MODEL_COST_THRESHOLD_USD,
@@ -73,7 +77,7 @@ class Provider(ABC):
     # Shared defaults (rarely overridden)
     # ------------------------------------------------------------------
 
-    network_name: ClassVar[str] = "agent-wrap-net"
+    network_name: ClassVar[str] = SIDECAR_NETWORK_NAME
     #: Preferred base port for this provider's sidecar. Not the port finally used: the
     #: sidecar scans upward from here at cold start and records what it resolved, so
     #: every provider can share one base without colliding in host-network mode.

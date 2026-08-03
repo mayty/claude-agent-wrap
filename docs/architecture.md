@@ -11,7 +11,7 @@ A Docker-based wrapper for the Claude Code CLI that isolates the agent in contai
 
 ```
 agent_wrap/
-├── cli/             # User-facing CLI commands (run, rebuild, create, logs, stats, cleanup, update, secrets)
+├── cli/             # User-facing CLI commands (run, rebuild, create, logs, stats, inspect, cleanup, update, secrets)
 ├── domain/          # Business logic — one subpackage per concern, each with its own tests/
 │   ├── build/       #   Image build orchestration
 │   ├── config/      #   Configuration reading
@@ -24,6 +24,7 @@ agent_wrap/
 │   ├── secrets/     #   Credential management
 │   ├── sidecars/    #   Sidecar lifecycle management
 │   ├── stats/       #   Usage statistics
+│   ├── status/      #   System-state aggregation (the `inspect` command)
 │   └── updates/     #   Self-update checks
 ├── lib/             # Reusable general-purpose utilities — "could be extracted to a standalone library"
 ├── constants.py     # Module-level constants shared by multiple modules
