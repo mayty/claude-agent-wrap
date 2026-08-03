@@ -53,7 +53,7 @@ def test_running_server_none_when_no_file(logs_svc: LogsService):
 def test_stop_when_not_running(mocker: MockerFixture, logs_svc: LogsService):
     mocker.patch.object(logs_svc, "running_server", return_value=None, autospec=True)
     assert logs_svc.stop_daemon() == 0
-    logs_svc._display.info.assert_any_call("no viewer is running")  # type: ignore[union-attr]
+    logs_svc._display.info.assert_any_call("no viewer is running")  # pyrefly: ignore [missing-attribute]
 
 
 def test_stop_daemon_sends_sigterm_and_removes_state(mocker: MockerFixture, logs_svc: LogsService):
@@ -63,13 +63,14 @@ def test_stop_daemon_sends_sigterm_and_removes_state(mocker: MockerFixture, logs
     )
     signals: list[tuple[int, int]] = []
     mocker.patch(
-        "agent_wrap.domain.logs.service.os.kill", lambda pid, sig: signals.append((pid, sig))
+        "agent_wrap.domain.logs.service.os.kill",
+        lambda pid, sig: signals.append((pid, sig)),  # pyrefly: ignore [implicit-any-lambda]
     )
     mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=False, autospec=True)
     assert logs_svc.stop_daemon() == 0
     assert (4242, signal.SIGTERM) in signals
     assert not state_file().exists()
-    logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # type: ignore[union-attr]
+    logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # pyrefly: ignore [missing-attribute]
 
 
 def test_stop_daemon_sends_sigkill_after_timeout(mocker: MockerFixture, logs_svc: LogsService):
@@ -80,7 +81,8 @@ def test_stop_daemon_sends_sigkill_after_timeout(mocker: MockerFixture, logs_svc
     )
     signals: list[tuple[int, int]] = []
     mocker.patch(
-        "agent_wrap.domain.logs.service.os.kill", lambda pid, sig: signals.append((pid, sig))
+        "agent_wrap.domain.logs.service.os.kill",
+        lambda pid, sig: signals.append((pid, sig)),  # pyrefly: ignore [implicit-any-lambda]
     )
     mocker.patch("agent_wrap.domain.logs.service.time.sleep")
     ticks = iter([0.0, 0.1, 0.2, 99.0, 99.0, 99.1])
@@ -99,7 +101,7 @@ def test_stop_daemon_sends_sigkill_after_timeout(mocker: MockerFixture, logs_svc
     assert (4242, signal.SIGTERM) in signals
     assert (4242, signal.SIGKILL) in signals
     assert not state_file().exists()
-    logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # type: ignore[union-attr]
+    logs_svc._display.success.assert_any_call("Logs viewer stopped.")  # pyrefly: ignore [missing-attribute]
 
 
 def test_stop_daemon_permission_error_propagates(mocker: MockerFixture, logs_svc: LogsService):

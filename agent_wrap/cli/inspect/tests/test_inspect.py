@@ -108,7 +108,7 @@ def _report(
 @pytest.fixture
 def inspect_mock() -> Mock:
     mock = services.inspect_service
-    mock.build_report.return_value = _report()
+    mock.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
     return mock
 
 
@@ -116,7 +116,7 @@ def inspect_mock() -> Mock:
 def display_mock_service(mocker: pytest_mock.MockFixture) -> Mock:
     """Return the mocked display service with real formatters and a pass-through spinner."""
     dsp = mocker.Mock(spec=DisplayService, wraps=DisplayService())
-    dsp.spin_while.side_effect = lambda **kw: kw["work"]()
+    dsp.spin_while.side_effect = lambda **kw: kw["work"]()  # pyrefly: ignore [implicit-any-lambda]
     mocker.patch.object(services, "display_service", dsp)
     return dsp
 

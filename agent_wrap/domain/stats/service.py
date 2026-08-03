@@ -178,7 +178,7 @@ class StatsService:
                     }
                 )
 
-        rows.sort(key=lambda r: r["cost"] if r["cost"] is not None else -1.0, reverse=True)
+        rows.sort(key=lambda r: r["cost"] if r["cost"] is not None else -1.0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         return AggregateResult(
             rows,
             dict(totals_by_model),

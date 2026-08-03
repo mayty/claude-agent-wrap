@@ -78,7 +78,7 @@ def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecor
     ``response.choices[0].message``, resolving ``hash:<sha256>`` pointers.
     """
     resolved = resolve_hashes(rec, strings)
-    return normalize_record_unresolved(resolved)  # type: ignore[arg-type]
+    return normalize_record_unresolved(resolved)
 
 
 def enrich_with_costs(

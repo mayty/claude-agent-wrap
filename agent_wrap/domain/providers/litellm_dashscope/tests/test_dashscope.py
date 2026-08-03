@@ -52,7 +52,7 @@ def test_dashscope_master_key_prefix(dashscope: DashscopeProvider):
 
 def test_dashscope_declares_litellm_sidecar(dashscope_spec: DashscopeProvider):
     svc = dashscope_spec._sidecar_service
-    assert dashscope_spec.sidecar() is svc.create_litellm_sidecar.return_value  # type: ignore[attr-defined]
+    assert dashscope_spec.sidecar() is svc.create_litellm_sidecar.return_value  # pyrefly: ignore [missing-attribute]
 
 
 def test_dashscope_get_sidecar_env(dashscope: DashscopeProvider):

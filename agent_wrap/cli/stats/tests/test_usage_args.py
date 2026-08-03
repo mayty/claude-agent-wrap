@@ -30,17 +30,17 @@ _TODAY = date(2026, 6, 29)
 def _parse(mocker: MockerFixture, display_mock: Mock, *flags: str):
     """Parse *flags*, with "today" frozen and the window resolver stubbed."""
     frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
-    services.stats_service.now_utc.return_value = frozen  # type: ignore[missing-attribute]
+    services.stats_service.now_utc.return_value = frozen  # pyrefly: ignore [missing-attribute]
     # Pin the day boundary so a relative -Nd reduces to plain UTC-date arithmetic
     # regardless of the CI host's local offset.
     mocker.patch.object(ua, "DAY_START_HOURS", 0)
-    services.stats_service.resolve_window.return_value = ("lo", "hi")  # type: ignore[missing-attribute]
+    services.stats_service.resolve_window.return_value = ("lo", "hi")  # pyrefly: ignore [missing-attribute]
     return parse_usage_args(list(flags), usage_line="u", usage_text="u", display=display_mock)
 
 
 def _resolve_call() -> tuple[date | None, date | None, int | None, bool]:
     """Return the (from, until, days, days_given) the parser handed the resolver."""
-    call = services.stats_service.resolve_window.call_args  # type: ignore[missing-attribute]
+    call = services.stats_service.resolve_window.call_args  # pyrefly: ignore [missing-attribute]
     return (*call.args, call.kwargs["days_given"])
 
 
@@ -87,9 +87,9 @@ def test_verbose_flag(mocker: MockerFixture, display_mock: Mock):
 
 def test_window_error_is_reported_and_stops(mocker: MockerFixture, display_mock: Mock):
     frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
-    services.stats_service.now_utc.return_value = frozen  # type: ignore[missing-attribute]
+    services.stats_service.now_utc.return_value = frozen  # pyrefly: ignore [missing-attribute]
     mocker.patch.object(ua, "DAY_START_HOURS", 0)
-    services.stats_service.resolve_window.return_value = WindowError("nope")  # type: ignore[missing-attribute]
+    services.stats_service.resolve_window.return_value = WindowError("nope")  # pyrefly: ignore [missing-attribute]
     parsed = parse_usage_args(["-d", "3"], usage_line="u", usage_text="u", display=display_mock)
     assert parsed is None
     display_mock.error.assert_called_once_with("nope")

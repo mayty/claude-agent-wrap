@@ -68,7 +68,7 @@ def config_svc() -> ConfigService:
 def pricing_svc(mocker: MockerFixture) -> PricingService:
     """Return a PricingService backed by a mock ProviderService (no-op compute_cost)."""
     mock_ps = mocker.Mock(spec=ProviderService)
-    mock_ps.get_provider.return_value.compute_cost.return_value = None  # type: ignore[implicit-any-empty-container]
+    mock_ps.get_provider.return_value.compute_cost.return_value = None
     return PricingService(provider_service=mock_ps, display_service=Mock(spec=DisplayService))
 
 

@@ -291,7 +291,7 @@ def test_scan_log_dirs_serial_matches_scan_logs_dir(
     mocker.patch("agent_wrap.domain.stats.service.SCAN_PARALLEL_MIN_FILES", 10**9)  # force serial
     cache = stats_svc.scan_log_dirs(dirs, from_iso=None, until_iso=None)
     for d in dirs:
-        with subtests.test(msg=str(d)):  # type: ignore[bad-context-manager]
+        with subtests.test(msg=str(d)):
             expect = scan_logs_dir(d, pricing_service, from_iso=None, until_iso=None)
             got = cache[d]
             assert got[0] == expect[0]  # sessions

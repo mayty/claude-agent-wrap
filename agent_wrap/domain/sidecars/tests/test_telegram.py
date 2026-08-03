@@ -40,7 +40,7 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
         "log_dir": _TEST_LOG_DIR,
     }
     defaults.update(overrides)
-    return TelegramSidecarConfig(**defaults)  # type: ignore[arg-type]
+    return TelegramSidecarConfig(**defaults)
 
 
 def _sidecar(display: DisplayService | None = None, **overrides: object) -> TelegramSidecar:
@@ -546,7 +546,7 @@ def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:
     mock_spin = mocker.patch.object(
         sc._display,
         "spin_while",
-        side_effect=lambda *, work, **_: work(),
+        side_effect=lambda *, work, **_: work(),  # pyrefly: ignore [implicit-any-lambda]
     )
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
 

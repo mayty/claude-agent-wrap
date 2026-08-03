@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import operator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -193,11 +194,11 @@ def flatten_tree(root: Node, *, display: DisplayService) -> list[DisplayRow]:
         dot = [c for c in children if c.name == "."]
         leaves = sorted(
             (c for c in children if c.name != "." and not c.children),
-            key=lambda c: c.name,
+            key=operator.attrgetter("name"),
         )
         nodes = sorted(
             (c for c in children if c.name != "." and c.children),
-            key=lambda c: (c.subtree_project_count, c.name),
+            key=operator.attrgetter("subtree_project_count", "name"),
         )
         ordered = dot + leaves + nodes
 

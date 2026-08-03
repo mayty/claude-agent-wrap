@@ -24,18 +24,18 @@ def test_create_complete_no_completions() -> None:
 
 def test_create_delegates_to_service() -> None:
     """CLI entry point delegates to services.create_service.create()."""
-    services.create_service.create.return_value = 0
+    services.create_service.create.return_value = 0  # pyrefly: ignore [missing-attribute]
     rc = create_run([])
     assert rc == 0
-    services.create_service.create.assert_called_once_with()  # type: ignore[missing-attribute]
+    services.create_service.create.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
 
 
 def test_create_forwards_service_error_code() -> None:
     """Non-zero return from the service is forwarded to the caller."""
-    services.create_service.create.return_value = 1
+    services.create_service.create.return_value = 1  # pyrefly: ignore [missing-attribute]
     rc = create_run([])
     assert rc == 1
-    services.create_service.create.assert_called_once_with()  # type: ignore[missing-attribute]  # reason: service was called
+    services.create_service.create.assert_called_once_with()  # reason: service was called  # pyrefly: ignore [missing-attribute]
 
 
 def test_create_rejects_extra_args(capsys: pytest.CaptureFixture[str]) -> None:

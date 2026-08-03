@@ -52,18 +52,18 @@ def _outcome(*, finalized: bool = True, removed_paths: list[Path] | None = None)
 def stats_mock() -> Mock:
     """Return the mocked StatsService, pre-seeded with a scope and a successful run."""
     stats = services.stats_service
-    stats.cleanup_scope.return_value = _scope()  # type: ignore[union-attr]
-    stats.run_cleanup.return_value = _outcome()  # type: ignore[union-attr]
-    return stats  # type: ignore[return-value]
+    stats.cleanup_scope.return_value = _scope()  # pyrefly: ignore [missing-attribute]
+    stats.run_cleanup.return_value = _outcome()  # pyrefly: ignore [missing-attribute]
+    return stats
 
 
 @pytest.fixture
 def display_mock_service() -> Mock:
     """Return the mocked DisplayService, with formatters producing marked strings."""
     dsp = services.display_service
-    dsp.format_bytes.side_effect = lambda n: f"<{n}B>"  # type: ignore[union-attr]
-    dsp.spin_while.side_effect = lambda **kw: kw["work"]()  # type: ignore[union-attr]
-    return dsp  # type: ignore[return-value]
+    dsp.format_bytes.side_effect = lambda n: f"<{n}B>"  # pyrefly: ignore [missing-attribute]
+    dsp.spin_while.side_effect = lambda **kw: kw["work"]()  # pyrefly: ignore [missing-attribute]
+    return dsp
 
 
 def _stdout(dsp: Mock) -> str:
@@ -108,12 +108,12 @@ def test_run_unknown_arg_returns_one(capsys: pytest.CaptureFixture[str]) -> None
 
 @pytest.mark.usefixtures("stats_mock")
 def test_empty_scope_skips_prompt(display_mock_service: Mock) -> None:
-    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 0
     assert "Nothing to clean up" in _stdout(display_mock_service)
     display_mock_service.prompt_confirm.assert_not_called()
-    services.stats_service.run_cleanup.assert_not_called()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 # --- dry run ---------------------------------------------------------------
@@ -133,7 +133,7 @@ def test_dry_run_reports_without_prompting(display_mock_service: Mock) -> None:
 @pytest.mark.usefixtures("stats_mock", "display_mock_service")
 def test_dry_run_never_mutates() -> None:
     cleanup_run(["--dry-run"])
-    services.stats_service.run_cleanup.assert_not_called()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 # --- confirmation ----------------------------------------------------------
@@ -156,7 +156,7 @@ def test_declining_skips_the_cleanup(display_mock_service: Mock) -> None:
 
     assert cleanup_run([]) == 0
     assert "Cleanup cancelled." in _stdout(display_mock_service)
-    services.stats_service.run_cleanup.assert_not_called()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock")
@@ -164,10 +164,10 @@ def test_confirming_acts_on_the_surveyed_scope(display_mock_service: Mock) -> No
     """The confirmed run must act on the very scope the summary described."""
     display_mock_service.prompt_confirm.return_value = True
     scope = _scope()
-    services.stats_service.cleanup_scope.return_value = scope  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = scope  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 0
-    services.stats_service.run_cleanup.assert_called_once_with(scope)  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_called_once_with(scope)  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock")
@@ -189,9 +189,7 @@ def test_success_message_reports_actual_freed_bytes(display_mock_service: Mock) 
 @pytest.mark.usefixtures("stats_mock")
 def test_unfinalized_archive_reports_manual_fallback(display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = True
-    services.stats_service.run_cleanup.return_value = _outcome(  # type: ignore[union-attr]
-        finalized=False, removed_paths=[]
-    )
+    services.stats_service.run_cleanup.return_value = _outcome(finalized=False, removed_paths=[])  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 1
     message = display_mock_service.error.call_args[0][0]
@@ -205,7 +203,7 @@ def test_unfinalized_archive_reports_manual_fallback(display_mock_service: Mock)
 
 @pytest.mark.usefixtures("stats_mock")
 def test_runs_with_only_stale_entries(display_mock_service: Mock) -> None:
-    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], freed_estimate=0)  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], freed_estimate=0)  # pyrefly: ignore [missing-attribute]
     display_mock_service.prompt_confirm.return_value = True
 
     assert cleanup_run([]) == 0
@@ -216,7 +214,7 @@ def test_runs_with_only_stale_entries(display_mock_service: Mock) -> None:
 
 @pytest.mark.usefixtures("stats_mock")
 def test_omits_stale_line_when_none(display_mock_service: Mock) -> None:
-    services.stats_service.cleanup_scope.return_value = _scope(stale=[])  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(stale=[])  # pyrefly: ignore [missing-attribute]
     display_mock_service.prompt_confirm.return_value = True
 
     assert cleanup_run([]) == 0
@@ -229,7 +227,7 @@ def test_omits_stale_line_when_none(display_mock_service: Mock) -> None:
 @pytest.mark.usefixtures("stats_mock")
 def test_scope_spinner_runs_before_empty_scope_check(display_mock_service: Mock) -> None:
     """The scan spinner must run even when there is nothing to clean up."""
-    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # type: ignore[union-attr]
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # pyrefly: ignore [missing-attribute]
 
     assert cleanup_run([]) == 0
     display_mock_service.spin_while.assert_called_once()
@@ -265,7 +263,7 @@ def test_cleanup_spinner_runs_after_confirmation(display_mock_service: Mock) -> 
     second_call = display_mock_service.spin_while.call_args_list[1]
     assert second_call.kwargs["label"] == CLEANUP_LABEL
     assert second_call.kwargs["message"] == "cleaning up…"
-    services.stats_service.run_cleanup.assert_called_once()  # type: ignore[union-attr]
+    services.stats_service.run_cleanup.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
 # --- completion ------------------------------------------------------------

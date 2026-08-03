@@ -120,9 +120,9 @@ def test_render_source_breakdown_merges_across_models(display_service: Mock) -> 
 @pytest.fixture
 def wired_services(tmp_path: Path) -> None:
     """Seed the mocked services so `run()` reaches the render call."""
-    services.config_service.read_project_paths.return_value = [tmp_path / "proj"]  # type: ignore[union-attr]
-    services.stats_service.resolve_window.return_value = (None, None)  # type: ignore[union-attr]
-    services.stats_service.build_report.return_value = _report()  # type: ignore[union-attr]
+    services.config_service.read_project_paths.return_value = [tmp_path / "proj"]  # pyrefly: ignore [missing-attribute]
+    services.stats_service.resolve_window.return_value = (None, None)  # pyrefly: ignore [missing-attribute]
+    services.stats_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
 
 
 def _report(
@@ -133,7 +133,7 @@ def _report(
         totals_by_model={},
         totals_by_day_by_model={},
         totals_by_source={},
-        orphaned=orphaned,  # type: ignore[arg-type]
+        orphaned=orphaned,  # pyrefly: ignore [bad-argument-type]
         unrecorded=unrecorded,
     )
 
@@ -157,7 +157,7 @@ def _project_row() -> dict[str, Any]:
 def test_run_renders_the_reports_orphaned_row(mocker: MockerFixture) -> None:
     """Whatever orphaned row the report carries is what render() is handed."""
     merged = _orphaned_result(3)
-    services.stats_service.build_report.return_value = _report(orphaned=merged)  # type: ignore[union-attr]
+    services.stats_service.build_report.return_value = _report(orphaned=merged)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run([]) == 0
@@ -173,12 +173,12 @@ def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
     (everything already cleaned up) has to survive it.
     """
     archived = _orphaned_result(2)
-    services.stats_service.build_report.return_value = _report(orphaned=archived)  # type: ignore[union-attr]
+    services.stats_service.build_report.return_value = _report(orphaned=archived)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run([]) == 0
     render_spy.assert_called_once()
-    services.display_service.error.assert_not_called()  # type: ignore[union-attr]
+    services.display_service.error.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("wired_services")
@@ -187,7 +187,7 @@ def test_run_errors_when_report_is_empty(mocker: MockerFixture) -> None:
 
     assert stats_run([]) == 0
     render_spy.assert_not_called()
-    message = services.display_service.error.call_args[0][0]  # type: ignore[union-attr]
+    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no LiteLLM logs found" in message
 
 
@@ -197,39 +197,37 @@ def test_run_names_the_pattern_when_it_matched_nothing(mocker: MockerFixture) ->
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run(["-p", "nomatch"]) == 0
-    message = services.display_service.error.call_args[0][0]  # type: ignore[union-attr]
+    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "nomatch" in message
 
 
 @pytest.mark.usefixtures("wired_services")
 def test_run_passes_the_parsed_window_to_the_report(mocker: MockerFixture) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
-    services.stats_service.resolve_window.return_value = ("2026-07-01", "2026-07-20")  # type: ignore[union-attr]
-    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # type: ignore[union-attr]
+    services.stats_service.resolve_window.return_value = ("2026-07-01", "2026-07-20")  # pyrefly: ignore [missing-attribute]
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
 
     assert stats_run(["--from", "2026-07-01", "--until", "2026-07-20"]) == 0
-    _projects, args = services.stats_service.build_report.call_args.args  # type: ignore[union-attr]
+    _projects, args = services.stats_service.build_report.call_args.args  # pyrefly: ignore [missing-attribute]
     assert (args.from_iso, args.until_iso) == ("2026-07-01", "2026-07-20")
 
 
 @pytest.mark.usefixtures("wired_services")
 def test_run_footnotes_unrecorded_usage(mocker: MockerFixture) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
-    services.stats_service.build_report.return_value = _report(  # type: ignore[union-attr]
-        rows=[_project_row()], unrecorded=4
-    )
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()], unrecorded=4)  # pyrefly: ignore [missing-attribute]
 
     assert stats_run([]) == 0
-    warning = services.display_service.warning.call_args[0][0]  # type: ignore[union-attr]
+    warning = services.display_service.warning.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "4 successful request(s) had unrecorded usage" in warning
 
 
 @pytest.mark.usefixtures("wired_services")
 def test_run_errors_when_no_projects_registered() -> None:
-    services.config_service.read_project_paths.return_value = []  # type: ignore[union-attr]
+    services.config_service.read_project_paths.return_value = []  # pyrefly: ignore [missing-attribute]
 
     assert stats_run([]) == 0
-    message = services.display_service.error.call_args[0][0]  # type: ignore[union-attr]
+    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no projects recorded yet" in message
 
 

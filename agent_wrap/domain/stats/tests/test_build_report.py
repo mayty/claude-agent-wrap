@@ -71,7 +71,7 @@ def _orphaned(sessions: int = 1) -> dict[str, object]:
 
 def test_rows_without_sessions_are_dropped(stats: StatsService):
     """A registered project that logged nothing in the window is not a row."""
-    stats.aggregate_projects.return_value = AggregateResult(  # type: ignore[attr-defined]
+    stats.aggregate_projects.return_value = AggregateResult(  # pyrefly: ignore [missing-attribute]
         [_row("live", 2), _row("silent", 0)], {}, {}, {}
     )
     report = stats.build_report([], UsageArgs())
@@ -80,33 +80,33 @@ def test_rows_without_sessions_are_dropped(stats: StatsService):
 
 def test_both_orphaned_sources_are_merged(stats: StatsService):
     live, archived, merged = _orphaned(1), _orphaned(2), _orphaned(3)
-    stats.aggregate_orphaned.return_value = live  # type: ignore[attr-defined]
-    stats.aggregate_archived_orphaned.return_value = archived  # type: ignore[attr-defined]
-    stats.merge_orphaned_results.return_value = merged  # type: ignore[attr-defined]
+    stats.aggregate_orphaned.return_value = live  # pyrefly: ignore [missing-attribute]
+    stats.aggregate_archived_orphaned.return_value = archived  # pyrefly: ignore [missing-attribute]
+    stats.merge_orphaned_results.return_value = merged  # pyrefly: ignore [missing-attribute]
 
     report = stats.build_report([], UsageArgs())
-    stats.merge_orphaned_results.assert_called_once_with(live, archived)  # type: ignore[attr-defined]
+    stats.merge_orphaned_results.assert_called_once_with(live, archived)  # pyrefly: ignore [missing-attribute]
     assert report.orphaned is merged
 
 
 def test_pattern_excluding_orphaned_skips_both_sources(stats: StatsService):
     """Both orphaned calls share the gate — they fold into the shared totals."""
     report = stats.build_report([], UsageArgs(pattern=re.compile("proj")))
-    stats.orphaned_log_dirs.assert_not_called()  # type: ignore[attr-defined]
-    stats.aggregate_orphaned.assert_not_called()  # type: ignore[attr-defined]
-    stats.aggregate_archived_orphaned.assert_not_called()  # type: ignore[attr-defined]
+    stats.orphaned_log_dirs.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    stats.aggregate_orphaned.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    stats.aggregate_archived_orphaned.assert_not_called()  # pyrefly: ignore [missing-attribute]
     assert report.orphaned is None
 
 
 def test_pattern_matching_orphaned_label_keeps_it(stats: StatsService):
     stats.build_report([], UsageArgs(pattern=re.compile("orphan")))
-    stats.aggregate_orphaned.assert_called_once()  # type: ignore[attr-defined]
+    stats.aggregate_orphaned.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
 def test_pattern_filters_which_projects_are_scanned(stats: StatsService, tmp_path: Path):
     keep, drop = tmp_path / "keep-me", tmp_path / "drop-me"
     stats.build_report([keep, drop], UsageArgs(pattern=re.compile("keep")))
-    scanned = stats.scan_log_dirs.call_args.args[0]  # type: ignore[attr-defined]
+    scanned = stats.scan_log_dirs.call_args.args[0]  # pyrefly: ignore [missing-attribute]
     assert scanned == [keep / ".claude" / LITELLM_LOGS_DIRNAME]
 
 
@@ -119,26 +119,26 @@ def test_orphaned_detection_sees_unfiltered_projects(stats: StatsService, tmp_pa
     """
     a, b = tmp_path / "a", tmp_path / "b"
     stats.build_report([a, b], UsageArgs(pattern=re.compile("^$|a")))
-    stats.orphaned_log_dirs.assert_called_once_with([a, b])  # type: ignore[attr-defined]
+    stats.orphaned_log_dirs.assert_called_once_with([a, b])  # pyrefly: ignore [missing-attribute]
 
 
 def test_window_is_passed_to_every_collaborator(stats: StatsService):
-    stats.merge_orphaned_results.return_value = _orphaned()  # type: ignore[attr-defined]
+    stats.merge_orphaned_results.return_value = _orphaned()  # pyrefly: ignore [missing-attribute]
     args = UsageArgs(from_iso="2026-07-01", until_iso="2026-07-20")
     stats.build_report([], args)
 
     for mock in (
-        stats.scan_log_dirs,  # type: ignore[attr-defined]
-        stats.aggregate_projects,  # type: ignore[attr-defined]
-        stats.aggregate_orphaned,  # type: ignore[attr-defined]
-        stats.aggregate_archived_orphaned,  # type: ignore[attr-defined]
+        stats.scan_log_dirs,
+        stats.aggregate_projects,
+        stats.aggregate_orphaned,
+        stats.aggregate_archived_orphaned,
     ):
-        kwargs = mock.call_args.kwargs  # type: ignore[missing-attribute]
+        kwargs = mock.call_args.kwargs  # pyrefly: ignore [missing-attribute]
         assert (kwargs["from_iso"], kwargs["until_iso"]) == ("2026-07-01", "2026-07-20")
 
 
 def test_unrecorded_is_summed_across_models(stats: StatsService):
-    stats.aggregate_projects.return_value = AggregateResult(  # type: ignore[attr-defined]
+    stats.aggregate_projects.return_value = AggregateResult(  # pyrefly: ignore [missing-attribute]
         [], {"a/m1": _bucket(unrecorded=2), "a/m2": _bucket(unrecorded=3)}, {}, {}
     )
     assert stats.build_report([], UsageArgs()).unrecorded == 5
@@ -147,8 +147,8 @@ def test_unrecorded_is_summed_across_models(stats: StatsService):
 def test_orphaned_dirs_are_scanned_with_the_projects(stats: StatsService, tmp_path: Path):
     """One scan covers both, so the orphaned dirs must be in the same call."""
     orphan_dir = tmp_path / "litellm-logs" / "deadbeef"
-    stats.orphaned_log_dirs.return_value = [orphan_dir]  # type: ignore[attr-defined]
+    stats.orphaned_log_dirs.return_value = [orphan_dir]  # pyrefly: ignore [missing-attribute]
     proj = tmp_path / "proj"
     stats.build_report([proj], UsageArgs())
-    scanned = stats.scan_log_dirs.call_args.args[0]  # type: ignore[attr-defined]
+    scanned = stats.scan_log_dirs.call_args.args[0]  # pyrefly: ignore [missing-attribute]
     assert scanned == [proj / ".claude" / LITELLM_LOGS_DIRNAME, orphan_dir]

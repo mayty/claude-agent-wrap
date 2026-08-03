@@ -636,8 +636,8 @@ def test_merge_orphaned_results_passes_through_single_side(stats_svc: StatsServi
         "last_ts": datetime(2026, 7, 1, tzinfo=timezone.utc),
         "total": stats_svc._pricing.new_bucket(),
     }
-    assert stats_svc.merge_orphaned_results(only, None) is only  # type: ignore[arg-type]
-    assert stats_svc.merge_orphaned_results(None, only) is only  # type: ignore[arg-type]
+    assert stats_svc.merge_orphaned_results(only, None) is only
+    assert stats_svc.merge_orphaned_results(None, only) is only
     assert stats_svc.merge_orphaned_results(None, None) is None
 
 

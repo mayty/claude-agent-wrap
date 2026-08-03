@@ -73,7 +73,7 @@ def _discover_subpackages(domain_dir: Path) -> tuple[str, ...]:
         else:
             found.append(entry.name)
 
-    found.sort(key=lambda s: (-len(s), s))
+    found.sort(key=lambda s: (-len(s), s))  # pyrefly: ignore [implicit-any-lambda]
     return tuple(found)
 
 

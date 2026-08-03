@@ -251,8 +251,8 @@ def test_merge_does_not_alias_source_leaves() -> None:
 
 def test_merge_tolerates_leaf_missing_fields() -> None:
     """A hand-edited archive missing a key merges instead of raising."""
-    dst: ArchiveDoc = {"2026-07-20": {"14": {"p/m": {"native": {"msgs": 1}}}}}  # type: ignore[typeddict-item]
-    merge_archives(dst, {"2026-07-20": {"14": {"p/m": {"native": {"msgs": 2}}}}})  # type: ignore[typeddict-item]
+    dst: ArchiveDoc = {"2026-07-20": {"14": {"p/m": {"native": {"msgs": 1}}}}}  # pyrefly: ignore [bad-typed-dict-key]
+    merge_archives(dst, {"2026-07-20": {"14": {"p/m": {"native": {"msgs": 2}}}}})  # pyrefly: ignore [bad-typed-dict-key]
     assert dst["2026-07-20"]["14"]["p/m"]["native"]["msgs"] == 3
 
 

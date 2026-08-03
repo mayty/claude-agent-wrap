@@ -137,10 +137,10 @@ def parse_docker_timestamp(raw: str) -> datetime | None:
     Parse a docker RFC3339 timestamp into a UTC-aware datetime, or None if unusable.
 
     Written out rather than handed to ``datetime.fromisoformat`` because the supported
-    floor is Python 3.10, which accepts neither a trailing ``Z`` nor docker's
-    nanosecond precision (it wants exactly 3 or 6 fractional digits). Fractional digits
-    are truncated, not rounded — sub-microsecond precision is meaningless for the
-    uptimes this feeds.
+    floor is Python 3.10, which accepts neither a trailing ``Z``, nor a colon-less UTC
+    offset (``+0200``), nor docker's nanosecond precision (it wants exactly 3 or 6
+    fractional digits). Fractional digits are truncated, not rounded — sub-microsecond
+    precision is meaningless for the uptimes this feeds.
 
     Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None.
     """
@@ -150,6 +150,8 @@ def parse_docker_timestamp(raw: str) -> datetime | None:
 
     frac = (match.group("frac") or "")[:_MAX_FRACTIONAL_DIGITS]
     tz = match.group("tz") or "Z"
+    if tz != "Z" and ":" not in tz:
+        tz = f"{tz[:3]}:{tz[3:]}"
     normalized = match.group("base")
     if frac:
         normalized += f".{frac}"

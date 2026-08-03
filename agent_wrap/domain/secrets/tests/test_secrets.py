@@ -241,7 +241,7 @@ def test_read_all_wrong_key_returns_empty(
 
     # Change the key — derive_key is already patched (autospec) by the
     # fixed_key fixture, so update its return value rather than re-patching.
-    KeyDerivation.derive_key.return_value = b"x" * 32  # type: ignore[missing-attribute]
+    KeyDerivation.derive_key.return_value = b"x" * 32  # pyrefly: ignore [missing-attribute]
 
     result = EncryptedFileStore.read_all(display=display_mock)
     assert result == {}

@@ -225,7 +225,7 @@ def list_projects(groups: list[GroupInfo]) -> list[ProjectInfo]:
                 "last_ts": max_last_ts,
             }
         )
-    out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)
+    out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
     return out
 
 
@@ -420,7 +420,7 @@ def list_sessions(project: Path | list[Path]) -> list[CombinedSessionMeta]:
                     by_session[sid] = combined
 
     out = list(by_session.values())
-    out.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
+    out.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
     return out
 
 
@@ -578,12 +578,12 @@ def _read_provider_session(
     records: list[NormalizedRecord] = []
     for rec in raw_records:
         raw_response = rec.get("response")
-        normalized = normalize_record_unresolved(rec)  # type: ignore[arg-type]
+        normalized = normalize_record_unresolved(rec)  # pyrefly: ignore [bad-argument-type]
         enriched = enrich_with_costs(
             normalized, raw_response, provider, pricing, rec.get("request")
         )
-        normalized.update(enriched)  # type: ignore[arg-type]
-        records.append(normalized)  # type: ignore[arg-type]
+        normalized.update(enriched)  # pyrefly: ignore [no-matching-overload]
+        records.append(normalized)  # pyrefly: ignore [bad-argument-type]
 
     entry: ProviderSessionMeta = {
         "provider": provider,
@@ -680,5 +680,5 @@ def read_session(
                 else:
                     _merge_session_meta(combined_meta, entry)
 
-    all_records.sort(key=lambda r: (r["timing"] or {}).get("start") or 0)
+    all_records.sort(key=lambda r: (r["timing"] or {}).get("start") or 0)  # pyrefly: ignore [implicit-any-lambda]
     return {"reqs": all_records[from_index:], "session_meta": combined_meta}

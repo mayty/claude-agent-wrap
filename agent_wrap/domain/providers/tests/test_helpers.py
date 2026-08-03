@@ -24,7 +24,7 @@ def _import_runtime_module(name: str):
     assert spec is not None, f"Could not find {_RUNTIME_DIR / f'{name}.py'}"
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    spec.loader.exec_module(mod)  # pyrefly: ignore [missing-attribute]
     return mod
 
 

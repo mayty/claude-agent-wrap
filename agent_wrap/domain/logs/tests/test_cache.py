@@ -71,7 +71,7 @@ def write_session() -> Callable[[Path, str, str, list[dict[str, Any]]], Path]:
 def pricing() -> PricingService:
     mock = Mock(spec=PricingService)
     mock.new_bucket.side_effect = Bucket
-    mock.normalize_model.side_effect = lambda m: m
+    mock.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
     mock.request_cache_ttl.return_value = None
     mock.extract_usage.return_value = {
         "input_tokens": 100,
@@ -649,17 +649,17 @@ def test_added_group_inserted_mid_list(  # noqa: PLR0913
     cache = LogsCache(real_stats, config_svc, pricing)
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_c])
     cache.start()
-    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # type: ignore[index]
-    assert cache.get_sessions(1)[0]["session_id"] == "sess-c"  # type: ignore[index]
+    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # pyrefly: ignore [unsupported-operation]
+    assert cache.get_sessions(1)[0]["session_id"] == "sess-c"  # pyrefly: ignore [unsupported-operation]
 
     # Insert proj-b which sorts between aaa and ccc.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b, proj_c])
     cache._merge_added_paths({str(proj_b)})
 
     # Verify pid re-indexing: aaa at 0, bbb at 1, ccc shifted to 2.
-    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # type: ignore[index]
-    assert cache.get_sessions(1)[0]["session_id"] == "sess-b"  # type: ignore[index]
-    assert cache.get_sessions(2)[0]["session_id"] == "sess-c"  # type: ignore[index]
+    assert cache.get_sessions(0)[0]["session_id"] == "sess-a"  # pyrefly: ignore [unsupported-operation]
+    assert cache.get_sessions(1)[0]["session_id"] == "sess-b"  # pyrefly: ignore [unsupported-operation]
+    assert cache.get_sessions(2)[0]["session_id"] == "sess-c"  # pyrefly: ignore [unsupported-operation]
     assert cache.get_sessions_fingerprint(2) is not None
 
     cache.stop()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import operator
 import threading
 from datetime import timedelta
 from pathlib import Path
@@ -475,7 +476,7 @@ class LogsCache:
                 break
         if not replaced and combined is not None:
             sessions.append(combined)
-        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
+        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         self._sessions[pid] = sessions
 
     # ------------------------------------------------------------------
@@ -538,7 +539,7 @@ class LogsCache:
         if not pending_groups and not merged_pids:
             return
 
-        new_entries = sorted(pending_groups.values(), key=lambda g: g["root"])
+        new_entries = sorted(pending_groups.values(), key=operator.itemgetter("root"))
         self._insert_new_groups(new_entries)
 
         # Re-index pid-keyed dicts BEFORE scanning new groups (so old data is
@@ -716,7 +717,7 @@ class LogsCache:
                     pass
 
         # Re-sort by last_ts descending.
-        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)
+        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         self._sessions[pid] = sessions
 
     @staticmethod
@@ -817,7 +818,7 @@ class LogsCache:
                     "last_ts": max_last_ts,
                 }
             )
-        out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)
+        out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
         return out
 
     def _recompute_projects_fp_from_cache(self) -> Fingerprint:

@@ -28,7 +28,7 @@ def _import_runtime_module(name: str):
     assert spec is not None, f"Could not find {_RUNTIME_DIR / f'{name}.py'}"
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    spec.loader.exec_module(mod)  # pyrefly: ignore [missing-attribute]
     return mod
 
 
@@ -126,7 +126,7 @@ def test_string_hasher_real_flush() -> None:
         assert len(lines) == 3
 
         # Verify we can parse all lines and find our mappings
-        mappings: dict[str, Any] = {}  # type: ignore[implicit-any-empty-container]
+        mappings: dict[str, Any] = {}
         for line in lines:
             entry = json.loads(line)
             mappings[entry["hash"]] = entry["original"]
@@ -145,25 +145,25 @@ def test_build_record_success_shape() -> None:
             "completionStartTime": 1780916982.5,
             "endTime": 1780916985.0,
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
     assert record["status"] == "success"
     assert record["model"] == "bedrock/claude"
     assert record["request"]["url"] == "/bedrock/x"
-    assert record["response"] == {"choices": [{"text": "yo"}]}  # type: ignore[implicit-any-empty-container]
+    assert record["response"] == {"choices": [{"text": "yo"}]}
     assert record["error"] is None
     # Timing is sourced verbatim from LiteLLM's standard_logging_object.
     assert record["timing"] == {
         "start": 1780916982.12,
         "completionStart": 1780916982.5,
         "end": 1780916985.0,
-    }  # type: ignore[implicit-any-empty-container]
+    }
 
 
 def test_build_record_timing_defaults_to_none_without_logging_object() -> None:
     record = build_record({}, None, status="success")
-    assert record["timing"] == {"start": None, "completionStart": None, "end": None}  # type: ignore[implicit-any-empty-container]
+    assert record["timing"] == {"start": None, "completionStart": None, "end": None}
 
 
 def test_build_record_timing_falls_back_to_callback_datetimes() -> None:
@@ -177,14 +177,14 @@ def test_build_record_timing_falls_back_to_callback_datetimes() -> None:
         "start": start.timestamp(),
         "completionStart": start.timestamp(),
         "end": end.timestamp(),
-    }  # type: ignore[implicit-any-empty-container]
+    }
 
 
 def test_build_record_timing_prefers_slo_epoch_over_datetime_fallback() -> None:
     # The standard_logging_object epoch values win when present; the datetime
     # fallback is only used for fields LiteLLM omitted.
     start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
-    kwargs = {"standard_logging_object": {"startTime": 1780916982.12}}  # type: ignore[implicit-any-empty-container]
+    kwargs = {"standard_logging_object": {"startTime": 1780916982.12}}
     record = build_record(kwargs, None, status="success", start_time=start)
     assert record["timing"]["start"] == 1780916982.12
     assert record["timing"]["completionStart"] == start.timestamp()
@@ -218,20 +218,20 @@ def test_build_record_drops_proxy_server_request_cycle() -> None:
     psr = {
         "url": "http://example.com",
         "method": "POST",
-        "headers": {},  # type: ignore[implicit-any-empty-container]
+        "headers": {},  # pyrefly: ignore [implicit-any-empty-container]
         "body": {
             "model": "m",
             "messages": [{"role": "user", "content": "hello"}],
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
     # Create the self-cycle that LiteLLM's data structure has
-    psr["body"]["proxy_server_request"] = psr  # type: ignore[index]
+    psr["body"]["proxy_server_request"] = psr  # pyrefly: ignore [bad-assignment]
 
     kwargs = {
         "model": "m",
         "messages": [{"role": "user", "content": "hello"}],
         "litellm_params": {"proxy_server_request": psr},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record = build_record(kwargs, {}, status="success")
 
     # The cycle should be broken — body.proxy_server_request must not appear
@@ -256,13 +256,13 @@ def test_build_record_handles_shared_references() -> None:
             "model": "m",
             "messages": messages,  # same Python list as kwargs["messages"]
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
 
     kwargs = {
         "model": "m",
         "messages": messages,
         "litellm_params": {"proxy_server_request": psr},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record = build_record(kwargs, {}, status="success")
 
     # Both copies of the shared list are serialized inline — no wrap-ref pointers
@@ -292,7 +292,7 @@ def test_build_record_no_wrap_refs_in_output() -> None:
                 },
             },
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
 
     record = build_record(
         kwargs,
@@ -306,10 +306,10 @@ def test_build_record_no_wrap_refs_in_output() -> None:
 def test_build_record_uses_model_dump_for_pydantic_like() -> None:
     class Modelish:
         def model_dump(self) -> dict[str, object]:
-            return {"kind": "modelish", "n": 1}  # type: ignore[implicit-any-empty-container]
+            return {"kind": "modelish", "n": 1}
 
     record = build_record({"model": "m"}, Modelish(), status="success")
-    assert record["response"] == {"kind": "modelish", "n": 1}  # type: ignore[implicit-any-empty-container]
+    assert record["response"] == {"kind": "modelish", "n": 1}
 
 
 class _RawResponse:
@@ -333,7 +333,7 @@ def test_build_record_recovers_usage_from_slo_when_response_not_dict() -> None:
             "completion_tokens": 152,
             "cache_read_input_tokens": 1000,
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record = build_record(kwargs, _RawResponse(), status="success")
 
     assert record["response"]["_usage_source"] == "standard_logging_object"
@@ -350,8 +350,8 @@ def test_build_record_native_dict_response_carries_no_marker() -> None:
     kwargs = {
         "model": "bedrock/claude",
         "standard_logging_object": {"prompt_tokens": 10, "completion_tokens": 2},
-    }  # type: ignore[implicit-any-empty-container]
-    response = {"choices": [{"text": "yo"}], "usage": {"input_tokens": 5}}  # type: ignore[implicit-any-empty-container]
+    }
+    response = {"choices": [{"text": "yo"}], "usage": {"input_tokens": 5}}
     record = build_record(kwargs, response, status="success")
 
     assert record["response"] == response
@@ -360,8 +360,8 @@ def test_build_record_native_dict_response_carries_no_marker() -> None:
 
 def test_build_record_marks_unrecoverable_when_slo_has_no_usage() -> None:
     """No usable usage anywhere → tagged 'unrecoverable', not a silent $0 record."""
-    slo = {"some": "diagnostic", "tokens": "missing"}  # type: ignore[implicit-any-empty-container]
-    kwargs = {"model": "bedrock/claude", "standard_logging_object": slo}  # type: ignore[implicit-any-empty-container]
+    slo = {"some": "diagnostic", "tokens": "missing"}
+    kwargs = {"model": "bedrock/claude", "standard_logging_object": slo}
     record = build_record(kwargs, _RawResponse(), status="success")
 
     assert record["response"]["_usage_source"] == "unrecoverable"
@@ -380,7 +380,7 @@ def test_build_record_recovery_preserves_response_content() -> None:
             "prompt_tokens": 1357,
             "completion_tokens": 152,
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record = build_record(kwargs, _RawResponse(), status="success")
 
     response = record["response"]
@@ -408,9 +408,9 @@ def test_build_record_hashes_long_strings() -> None:
             "proxy_server_request": {
                 "headers": {"x-claude-code-session-id": "test-session"},
                 "body": {"messages": [{"role": "user", "content": long_string}]},
-            }  # type: ignore[implicit-any-empty-container]
+            }
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
 
     # We can't test the actual file creation in unit tests due to permissions,
     # but we can verify the hashing behavior in the record
@@ -434,9 +434,9 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
             "proxy_server_request": {
                 "headers": {"x-claude-code-session-id": "test-session"},
                 "body": {"messages": [{"role": "user", "content": short_string}]},
-            }  # type: ignore[implicit-any-empty-container]
+            }
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
 
     record = build_record(kwargs, {"choices": [{"text": "yo"}]}, status="success")
 
@@ -449,7 +449,7 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
 
 
 def _name_response(content: str) -> dict[str, Any]:
-    return {"choices": [{"message": {"role": "assistant", "content": content}}]}  # type: ignore[implicit-any-empty-container]
+    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
 
 
 def test_extract_session_alias_from_name_payload() -> None:
@@ -469,7 +469,7 @@ def test_extract_session_alias_tolerates_trailing_prose() -> None:
 
 
 def test_extract_session_alias_handles_choices_text_shape() -> None:
-    resp = {"choices": [{"text": '{"name": "add-auth-feature"}'}]}  # type: ignore[implicit-any-empty-container]
+    resp = {"choices": [{"text": '{"name": "add-auth-feature"}'}]}
     assert extract_session_alias(resp) == "add-auth-feature"
 
 
@@ -505,7 +505,7 @@ def testextract_session_title_tolerates_trailing_prose() -> None:
 
 
 def testextract_session_title_handles_choices_text_shape() -> None:
-    resp = {"choices": [{"text": '{"title": "Add authentication"}'}]}  # type: ignore[implicit-any-empty-container]
+    resp = {"choices": [{"text": '{"title": "Add authentication"}'}]}
     assert extract_session_title(resp) == "Add authentication"
 
 
@@ -513,28 +513,28 @@ def test_get_session_id_extracted_from_headers() -> None:
     kwargs = {
         "litellm_params": {
             "proxy_server_request": {
-                "headers": {"x-claude-code-session-id": "test-session-123", "other-header": "value"}  # type: ignore[implicit-any-empty-container]
-            }  # type: ignore[implicit-any-empty-container]
-        }  # type: ignore[implicit-any-empty-container]
-    }  # type: ignore[implicit-any-empty-container]
+                "headers": {"x-claude-code-session-id": "test-session-123", "other-header": "value"}
+            }
+        }
+    }
     assert _get_session_id(kwargs) == "test-session-123"
 
 
 def test_get_session_id_fallback_when_missing() -> None:
-    kwargs = {"litellm_params": {}}  # type: ignore[implicit-any-empty-container]
+    kwargs = {"litellm_params": {}}  # pyrefly: ignore [implicit-any-empty-container]
     assert _get_session_id(kwargs) == "unknown-session"
 
-    kwargs = {"litellm_params": {"proxy_server_request": {}}}  # type: ignore[implicit-any-empty-container]
+    kwargs = {"litellm_params": {"proxy_server_request": {}}}  # pyrefly: ignore [implicit-any-empty-container]
     assert _get_session_id(kwargs) == "unknown-session"
 
-    kwargs = {"litellm_params": {"proxy_server_request": {"headers": {}}}}  # type: ignore[implicit-any-empty-container]
+    kwargs = {"litellm_params": {"proxy_server_request": {"headers": {}}}}  # pyrefly: ignore [implicit-any-empty-container]
     assert _get_session_id(kwargs) == "unknown-session"
 
 
 def _hash_kwargs(value: str) -> dict[str, Any]:
     return {
-        "litellm_params": {"proxy_server_request": {"headers": {"x-agent-wrap-log-prefix": value}}}  # type: ignore[implicit-any-empty-container]
-    }  # type: ignore[implicit-any-empty-container]
+        "litellm_params": {"proxy_server_request": {"headers": {"x-agent-wrap-log-prefix": value}}}
+    }
 
 
 def test_get_project_hash_from_header() -> None:
@@ -581,10 +581,10 @@ def test_get_log_dir_composes_hash_provider_session(monkeypatch: pytest.MonkeyPa
                 "headers": {
                     "x-agent-wrap-log-prefix": "0123456789abcdef",
                     "x-claude-code-session-id": "sess-1",
-                }  # type: ignore[implicit-any-empty-container]
-            }  # type: ignore[implicit-any-empty-container]
-        }  # type: ignore[implicit-any-empty-container]
-    }  # type: ignore[implicit-any-empty-container]
+                }
+            }
+        }
+    }
     assert _get_log_dir(kwargs) == Path(
         "/var/log/agent-wrap/0123456789abcdef/litellm-bedrock/sess-1"
     )
@@ -612,9 +612,9 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
             "proxy_server_request": {
                 "headers": {"x-claude-code-session-id": session_id},
                 "body": {"messages": [{"role": "user", "content": long_string}]},
-            }  # type: ignore[implicit-any-empty-container]
+            }
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record1 = build_record(kwargs1, {"choices": [{"text": "response 1"}]}, status="success")
 
     # Simulate Request 2 with the SAME string (should be deduplicated in memory)
@@ -624,9 +624,9 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
             "proxy_server_request": {
                 "headers": {"x-claude-code-session-id": session_id},
                 "body": {"messages": [{"role": "user", "content": long_string}]},
-            }  # type: ignore[implicit-any-empty-container]
+            }
         },
-    }  # type: ignore[implicit-any-empty-container]
+    }
     record2 = build_record(kwargs2, {"choices": [{"text": "response 2"}]}, status="success")
 
     # Both records should have the exact same hash
@@ -640,10 +640,10 @@ def test_cross_request_deduplication_and_concurrent_flush_safety() -> None:
     assert len(hasher._strings_to_hashes) == 1
 
     # Test concurrent flush safety directly on the hasher
-    hasher._hashes_to_strings = {"hash:test": "test_string"}  # type: ignore[implicit-any-empty-container]
+    hasher._hashes_to_strings = {"hash:test": "test_string"}
 
     # Simulate concurrent grab-and-clear
-    hasher._hashes_to_strings = {}  # type: ignore[implicit-any-empty-container]
+    hasher._hashes_to_strings = {}  # pyrefly: ignore [implicit-any-empty-container]
 
     # A concurrent hash_string call would populate the new dict
     hasher.hash_string("y" * 100)
@@ -706,11 +706,11 @@ def test_resolve_conflict_strips_effort_from_output_config() -> None:
         "messages": [{"role": "user", "content": "Generate a title"}],
         "thinking": {"type": "disabled"},
         "output_config": {"effort": "high", "style": "concise"},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
     assert "effort" not in result["output_config"]
-    assert result["output_config"] == {"style": "concise"}  # type: ignore[implicit-any-empty-container]
-    assert result["thinking"] == {"type": "disabled"}  # type: ignore[implicit-any-empty-container]
+    assert result["output_config"] == {"style": "concise"}
+    assert result["thinking"] == {"type": "disabled"}
 
 
 def test_resolve_conflict_handles_missing_output_config() -> None:
@@ -719,7 +719,7 @@ def test_resolve_conflict_handles_missing_output_config() -> None:
         "model": "deepseek-v4-flash",
         "messages": [{"role": "user", "content": "Generate a title"}],
         "thinking": {"type": "disabled"},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
     assert result == data  # unchanged
 
@@ -731,10 +731,10 @@ def test_resolve_conflict_preserves_output_config_when_thinking_enabled() -> Non
         "messages": [{"role": "user", "content": "Solve this complex problem"}],
         "thinking": {"type": "enabled", "budget_tokens": 4000},
         "output_config": {"effort": "high"},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
-    assert result["output_config"] == {"effort": "high"}  # type: ignore[implicit-any-empty-container]
-    assert result["thinking"] == {"type": "enabled", "budget_tokens": 4000}  # type: ignore[implicit-any-empty-container]
+    assert result["output_config"] == {"effort": "high"}
+    assert result["thinking"] == {"type": "enabled", "budget_tokens": 4000}
 
 
 def test_resolve_conflict_preserves_output_config_when_thinking_absent() -> None:
@@ -743,9 +743,9 @@ def test_resolve_conflict_preserves_output_config_when_thinking_absent() -> None
         "model": "deepseek-v4-pro[1m]",
         "messages": [{"role": "user", "content": "Hello"}],
         "output_config": {"effort": "high"},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
-    assert result["output_config"] == {"effort": "high"}  # type: ignore[implicit-any-empty-container]
+    assert result["output_config"] == {"effort": "high"}
 
 
 def test_resolve_conflict_handles_thinking_none() -> None:
@@ -755,9 +755,9 @@ def test_resolve_conflict_handles_thinking_none() -> None:
         "messages": [{"role": "user", "content": "Hello"}],
         "thinking": None,
         "output_config": {"effort": "high"},
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
-    assert result["output_config"] == {"effort": "high"}  # type: ignore[implicit-any-empty-container]
+    assert result["output_config"] == {"effort": "high"}
 
 
 def test_resolve_conflict_handles_output_config_not_dict() -> None:
@@ -767,7 +767,7 @@ def test_resolve_conflict_handles_output_config_not_dict() -> None:
         "messages": [{"role": "user", "content": "Generate a title"}],
         "thinking": {"type": "disabled"},
         "output_config": "not-a-dict",
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
     assert result == data  # unchanged
 
@@ -781,11 +781,11 @@ def test_resolve_conflict_only_modifies_effort_in_output_config() -> None:
         "output_config": {"effort": "high", "style": "concise", "max_tokens": 256},
         "max_tokens": 512,
         "temperature": 0.7,
-    }  # type: ignore[implicit-any-empty-container]
+    }
     result = _resolve_thinking_reasoning_conflict(data)
     assert "effort" not in result["output_config"]
-    assert result["output_config"] == {"style": "concise", "max_tokens": 256}  # type: ignore[implicit-any-empty-container]
+    assert result["output_config"] == {"style": "concise", "max_tokens": 256}
     assert result["model"] == "deepseek-v4-flash"
     assert result["max_tokens"] == 512
     assert result["temperature"] == 0.7
-    assert result["thinking"] == {"type": "disabled"}  # type: ignore[implicit-any-empty-container]
+    assert result["thinking"] == {"type": "disabled"}

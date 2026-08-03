@@ -52,7 +52,7 @@ def test_bedrock_master_key_prefix(bedrock: Provider):
 
 def test_bedrock_declares_litellm_sidecar(bedrock_spec: Provider):
     p = bedrock_spec
-    assert p.sidecar() is p._sidecar_service.create_litellm_sidecar.return_value  # type: ignore[attr-defined]
+    assert p.sidecar() is p._sidecar_service.create_litellm_sidecar.return_value  # pyrefly: ignore [missing-attribute]
 
 
 def test_bedrock_get_sidecar_env(bedrock: Provider):

@@ -27,7 +27,7 @@ def pricing() -> Mock:
     """Return a PricingService mock wired for fold_raw_to_buckets / price_buckets."""
     mock = Mock(spec=PricingService)
     mock.new_bucket.side_effect = Bucket
-    mock.normalize_model.side_effect = lambda m: m
+    mock.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
     mock.compute_cost.return_value = 0.001
     mock.request_cache_ttl.return_value = None
     return mock

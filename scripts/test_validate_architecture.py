@@ -15,14 +15,14 @@ _spec = importlib.util.spec_from_file_location("validate_architecture", _SCRIPT_
 assert _spec is not None
 _module = importlib.util.module_from_spec(_spec)
 sys.modules["validate_architecture"] = _module
-_spec.loader.exec_module(_module)  # type: ignore[arg-type]
+_spec.loader.exec_module(_module)  # pyrefly: ignore [missing-attribute]
 
 # Convenience aliases
-source_subpackage_key = _module.source_subpackage_key  # type: ignore[attr-defined]
-target_subpackage_key = _module.target_subpackage_key  # type: ignore[attr-defined]
-check_file = _module.check_file  # type: ignore[attr-defined]
-DOMAIN_DIR = _module.DOMAIN_DIR  # type: ignore[attr-defined]
-ROOT = _module.ROOT  # type: ignore[attr-defined]
+source_subpackage_key = _module.source_subpackage_key
+target_subpackage_key = _module.target_subpackage_key
+check_file = _module.check_file
+DOMAIN_DIR = _module.DOMAIN_DIR
+ROOT = _module.ROOT
 
 
 def test_source_subpackage_key_top_level() -> None:

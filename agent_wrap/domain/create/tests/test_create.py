@@ -42,7 +42,7 @@ def test_create_refuses_if_exists(
     (tmp_path / "Dockerfile.agent").write_text("FROM claude-agent\n")
     rc = svc.create()
     assert rc == 1
-    svc._display.error.assert_called_once_with(  # type: ignore[union-attr]
+    svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         f"Error: {tmp_path / 'Dockerfile.agent'} already exists"
     )
 
@@ -57,6 +57,6 @@ def test_create_empty_sanitized_name_returns_error(
     monkeypatch.chdir(dir_with_bad_name)
     rc = svc.create()
     assert rc == 1
-    svc._display.error.assert_called_once_with(  # type: ignore[union-attr]
+    svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         f"Error: could not derive agent-name from directory '{dir_with_bad_name}'"
     )

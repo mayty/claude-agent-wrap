@@ -81,7 +81,7 @@ def test_sidecar_config_carries_provider_bits(tmp_path: Path) -> None:
     assert config["config_path"] == p._config_path()
     assert config["log_dir"] == p._log_dir()
     # Hooks are the provider's bound methods.
-    assert config["get_agent_env"]("k", "http://x") == {"API_KEY": "k", "BASE_URL": "http://x"}  # type: ignore[not-callable]
+    assert config["get_agent_env"]("k", "http://x") == {"API_KEY": "k", "BASE_URL": "http://x"}  # pyrefly: ignore [not-callable]
 
 
 def test_sidecar_config_declares_the_providers_secret(tmp_path: Path) -> None:
@@ -115,8 +115,8 @@ def test_sidecar_config_wires_lifecycle_hooks(
     started = mocker.patch.object(p, "on_started", autospec=True)
     stopping = mocker.patch.object(p, "on_stopping", autospec=True)
     config = p._sidecar_config()
-    config["on_started"]("sk-test-k")  # type: ignore[not-callable]
-    config["on_stopping"]("sk-test-k")  # type: ignore[not-callable]
+    config["on_started"]("sk-test-k")  # pyrefly: ignore [not-callable]
+    config["on_stopping"]("sk-test-k")  # pyrefly: ignore [not-callable]
     started.assert_called_once_with("sk-test-k")
     stopping.assert_called_once_with("sk-test-k")
 

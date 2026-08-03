@@ -42,7 +42,7 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
         "required_secrets": [],
     }
     defaults.update(overrides)
-    return LiteLLMSidecarConfig(**defaults)  # type: ignore[arg-type]
+    return LiteLLMSidecarConfig(**defaults)
 
 
 def _sidecar(tmp_path: Path, **overrides: object) -> LiteLLMSidecar:
@@ -212,7 +212,7 @@ def test_connectivity_merges_existing_custom_header(
 ) -> None:
     sc = _sidecar(
         tmp_path,
-        get_agent_env=lambda _master_key, _base_url: {
+        get_agent_env=lambda _master_key, _base_url: {  # pyrefly: ignore [implicit-any-lambda]
             "ANTHROPIC_CUSTOM_HEADERS": "x-foo: bar",
         },
     )
@@ -330,7 +330,7 @@ def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.Mo
 def test_release_stops_and_unapproves(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     stopping_calls: list[str] = []
     sc = _sidecar(tmp_path, on_stopping=stopping_calls.append)
-    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())
+    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())  # pyrefly: ignore [implicit-any-lambda]
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-key")
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
@@ -355,12 +355,12 @@ def test_release_no_stop_when_not_running(tmp_path: Path, mocker: pytest_mock.Mo
 def test_release_non_tty_prints_plain_line(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """Non-TTY stop prints a single plain status line and still stops the container."""
     sc = _sidecar(tmp_path)
-    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())
+    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())  # pyrefly: ignore [implicit-any-lambda]
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-key")
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc.release()
-    sc._display.spin_while.assert_called_once_with(  # type: ignore[union-attr]
+    sc._display.spin_while.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         label=f"{LITELLM_SIDECAR_LABEL} (litellm-test)",
         message="stopping…",
         done_message="stopped",
@@ -373,12 +373,12 @@ def test_release_non_tty_prints_plain_line(tmp_path: Path, mocker: pytest_mock.M
 def test_release_tty_finalizes(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """TTY stop animates then clears the line and prints the 'stopped' finalize line."""
     sc = _sidecar(tmp_path)
-    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())
+    mocker.patch.object(sc._display, "spin_while", side_effect=lambda **kw: kw["work"]())  # pyrefly: ignore [implicit-any-lambda]
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_recover_master_key", autospec=True, return_value="sk-test-key")
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc.release()
-    sc._display.spin_while.assert_called_once_with(  # type: ignore[union-attr]
+    sc._display.spin_while.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         label=f"{LITELLM_SIDECAR_LABEL} (litellm-test)",
         message="stopping…",
         done_message="stopped",
@@ -407,7 +407,9 @@ def test_health_poll_healthy_quick(
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch.object(
-        sc._display, "poll_until", side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS
+        sc._display,
+        "poll_until",
+        side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS,  # pyrefly: ignore [implicit-any-lambda]
     )
     mocker.patch(_DOCKER, autospec=True, return_value=("healthy", 0))
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
@@ -420,7 +422,9 @@ def test_health_poll_unhealthy(
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch.object(
-        sc._display, "poll_until", side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS
+        sc._display,
+        "poll_until",
+        side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS,  # pyrefly: ignore [implicit-any-lambda]
     )
     mocker.patch(_DOCKER, autospec=True, return_value=("unhealthy", 0))
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
@@ -433,7 +437,9 @@ def test_health_poll_container_gone(
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch.object(
-        sc._display, "poll_until", side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS
+        sc._display,
+        "poll_until",
+        side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS,  # pyrefly: ignore [implicit-any-lambda]
     )
     mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
     assert sc._health_poll() is False
@@ -510,7 +516,7 @@ def test_start_passes_every_declared_secret_to_the_provider_hook(
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(
         tmp_path,
-        get_sidecar_env=lambda secrets: {
+        get_sidecar_env=lambda secrets: {  # pyrefly: ignore [implicit-any-lambda]
             "PRIMARY": secrets["primary_key"],
             "SECONDARY": secrets["secondary_key"],
         },
@@ -526,7 +532,7 @@ def test_start_passes_every_declared_secret_to_the_provider_hook(
 def test_start_with_no_secrets_declared(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """A provider fronting an unauthenticated upstream declares and receives nothing."""
     (tmp_path / "config.yaml").write_text("model: test")
-    sc = _sidecar(tmp_path, get_sidecar_env=lambda _secrets: {}, required_secrets=[])
+    sc = _sidecar(tmp_path, get_sidecar_env=lambda _secrets: {}, required_secrets=[])  # pyrefly: ignore [implicit-any-lambda]
     mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
     sc._start({}, "sk-test-master", "bridge")
 

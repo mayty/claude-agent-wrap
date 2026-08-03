@@ -10,6 +10,7 @@ subpackage accesses sidecar functionality through an injected
 
 from __future__ import annotations
 
+import operator
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.constants import CONTAINER_NAME_PREFIX, ROLE_LABEL, ROLE_VALUE
@@ -115,7 +116,7 @@ class SidecarService:
         names = list_container_names(f"name=^{CONTAINER_NAME_PREFIX}-")
         lines, _rc = inspect_containers(names, SIDECAR_INSPECT_TEMPLATE)
         rows = [ContainerRows.sidecar(line) for line in lines]
-        return sorted((row for row in rows if row is not None), key=lambda row: row.name)
+        return sorted((row for row in rows if row is not None), key=operator.attrgetter("name"))
 
     def list_agent_containers(self, tool_dir: Path) -> list[AgentContainer]:
         """
@@ -142,5 +143,5 @@ class SidecarService:
         rows = [ContainerRows.agent(line, sidecars_by_instance) for line in lines]
         return sorted(
             (row for row in rows if row is not None),
-            key=lambda row: (row.image, row.cwd, row.name),
+            key=operator.attrgetter("image", "cwd", "name"),
         )
