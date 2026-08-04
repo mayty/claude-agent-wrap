@@ -39,7 +39,7 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
             "DISABLE_PROMPT_CACHING": "1",
         }
 
-    def _get_tiered_pricing(self) -> dict[str, list[Tier]]:
+    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:  # noqa: ARG002
         """Return the tiered pricing table for DashScope models."""
         return {
             "qwen3.7-plus": [

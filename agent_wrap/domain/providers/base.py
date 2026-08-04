@@ -238,7 +238,7 @@ class Provider(ABC):
     # Raw pricing data (subclass contract)
     # ------------------------------------------------------------------
 
-    def _get_pricing(self) -> dict[str, dict[str, float]]:
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """
         Return a flat pricing table for this provider.
 
@@ -246,18 +246,22 @@ class Provider(ABC):
         Values are dicts with keys: 'in', 'out', 'cw_5m', 'cw_1h', 'cr'
         representing the cost per 1 million tokens.
 
+        *refresh_pricing_data* re-fetches pricing from upstream, bypassing cached data.
+
         Raises ``NotImplementedError`` by default — providers that support
         flat-rate pricing must override.
         """
         raise NotImplementedError
 
-    def _get_tiered_pricing(self) -> dict[str, list[Tier]]:
+    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
         """
         Return a tiered pricing table for this provider.
 
         Keys are canonical model identifiers.  Values are lists of
         :class:`Tier` dicts, each with 'max_in' (token threshold), 'in_',
         'out', 'cw_5m', 'cw_1h', and 'cr' fields.
+
+        *refresh_pricing_data* re-fetches pricing from upstream, bypassing cached data.
 
         Raises ``NotImplementedError`` by default — providers that support
         tiered pricing must override.
@@ -269,7 +273,7 @@ class Provider(ABC):
     # ------------------------------------------------------------------
 
     @cache  # noqa: B019
-    def _build_pricing_table(self) -> dict[str, list[Tier]]:
+    def _build_pricing_table(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
         """
         Build a unified tiered pricing table.
 
@@ -277,14 +281,19 @@ class Provider(ABC):
         Falls back to ``_get_pricing()``, converting each flat-rate entry
         into a single infinite tier.  Returns an empty dict when neither
         method is implemented.
+
+        *refresh_pricing_data* re-fetches pricing from upstream instead of serving any cached
+        table; the result is still cached under its (self, refresh_pricing_data) key.
         """
+        if refresh_pricing_data:
+            self._build_pricing_table.cache_clear()
         try:
-            return self._get_tiered_pricing()
+            return self._get_tiered_pricing(refresh_pricing_data=refresh_pricing_data)
         except NotImplementedError:
             pass
 
         try:
-            flat = self._get_pricing()
+            flat = self._get_pricing(refresh_pricing_data=refresh_pricing_data)
         except NotImplementedError:
             return {}
 
@@ -330,7 +339,13 @@ class Provider(ABC):
             )
         return cost
 
-    def compute_cost(self, model: str, usage: TokenUsage) -> float | None:
+    def compute_cost(
+        self,
+        model: str,
+        usage: TokenUsage,
+        *,
+        refresh_pricing_data: bool = False,
+    ) -> float | None:
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
 
@@ -344,12 +359,15 @@ class Provider(ABC):
         (Claude display names → canonical keys), but the default implementation
         still tolerates raw model names as a fallback.
 
+        *refresh_pricing_data* re-fetches pricing from upstream instead of serving the cached
+        pricing table.
+
         When *model* has no pricing-table match, this returns a known ``0.0``
         instead of ``None`` if the usage's cost would round down to $0 even
         under the most expensive tier this provider knows — see
         ``CostComputer.worst_case_cost``.
         """
-        table = self._build_pricing_table()
+        table = self._build_pricing_table(refresh_pricing_data=refresh_pricing_data)
         if not table:
             return None
 

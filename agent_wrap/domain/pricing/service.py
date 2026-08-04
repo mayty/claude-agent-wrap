@@ -154,6 +154,7 @@ class PricingService:
         model: str,
         *,
         usage: TokenUsage,
+        refresh_pricing_data: bool = False,
     ) -> float | None:
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
@@ -161,6 +162,12 @@ class PricingService:
         Normalizes *model* (Claude display names → canonical keys) then delegates
         to the provider's ``compute_cost`` method.  Callers must extract usage
         first via :meth:`extract_usage`.
+
+        Provider instances come from ``ProviderService.get_provider``, which
+        caches them, so the provider-level ``@cache`` on pricing-table
+        construction is shared across calls. When ``refresh_pricing_data`` is
+        set, it is passed down so the provider re-fetches its pricing once (the
+        first call repopulates the cache; subsequent calls hit it).
         """
         clean = model.rsplit("/", 1)[-1]
         normalized = self.normalize_model(clean) or clean
@@ -170,7 +177,7 @@ class PricingService:
             # Provider lookup is best-effort — any failure (unknown provider,
             # misconfiguration, etc.) should silently fall back to unknown cost.
             return None
-        return p.compute_cost(normalized, usage)
+        return p.compute_cost(normalized, usage, refresh_pricing_data=refresh_pricing_data)
 
     # ------------------------------------------------------------------
     # Usage extraction

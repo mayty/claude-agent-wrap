@@ -110,10 +110,10 @@ class FakeProvider(Provider):
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {"API_KEY": master_key, "BASE_URL": base_url}
 
-    def _get_pricing(self) -> dict[str, dict[str, float]]:
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:  # noqa: ARG002
         return self._flat
 
-    def _get_tiered_pricing(self) -> dict[str, list[Tier]]:
+    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:  # noqa: ARG002
         if self._tiered is None:
             raise NotImplementedError
         return self._tiered

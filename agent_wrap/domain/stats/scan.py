@@ -276,6 +276,8 @@ def merge_by_day(dst: dict[str, dict[str, Bucket]], src: dict[str, dict[str, Buc
 def price_buckets(
     by_day: dict[str, dict[str, Bucket]],
     pricing: PricingService,
+    *,
+    refresh_pricing_data: bool = False,
 ) -> None:
     """Fill in costs for every Bucket in *by_day* using *pricing*."""
     for by_model in by_day.values():
@@ -291,7 +293,9 @@ def price_buckets(
                 },
                 "cache_read_input_tokens": bucket.cr,
             }
-            cost = pricing.compute_cost(provider, model, usage=usage)
+            cost = pricing.compute_cost(
+                provider, model, usage=usage, refresh_pricing_data=refresh_pricing_data
+            )
             if cost is None:
                 bucket.cost_unknown = True
             else:
@@ -356,6 +360,7 @@ def scan_logs_dir(
     *,
     from_iso: str | None = None,
     until_iso: str | None = None,
+    refresh_pricing_data: bool = False,
 ) -> DirResult:
     """
     Scan a LiteLLM logs dir (``<provider>/<session>/messages.jsonl``) line-by-line,
@@ -391,18 +396,19 @@ def scan_logs_dir(
         all_records.extend(records)
 
     by_day, by_source = fold_raw_to_buckets(all_records, pricing)
-    price_buckets(by_day, pricing)
-    price_buckets(by_source, pricing)
+    price_buckets(by_day, pricing, refresh_pricing_data=refresh_pricing_data)
+    price_buckets(by_source, pricing, refresh_pricing_data=refresh_pricing_data)
     return DirResult(sessions, last_ts, by_day, by_source)
 
 
-def scan_project(
+def scan_project(  # noqa: PLR0913
     path: Path,
     pricing: PricingService,
     *,
     from_iso: str | None = None,
     until_iso: str | None = None,
     scan_cache: ScanCache | None = None,
+    refresh_pricing_data: bool = False,
 ) -> ScanProjectResult:
     """
     Scan one project's LiteLLM logs.
@@ -419,7 +425,11 @@ def scan_project(
         sessions, last_ts, by_day, by_source = scan_cache.get(logs_dir, DirResult(0, None, {}, {}))
     else:
         sessions, last_ts, by_day, by_source = scan_logs_dir(
-            logs_dir, pricing, from_iso=from_iso, until_iso=until_iso
+            logs_dir,
+            pricing,
+            from_iso=from_iso,
+            until_iso=until_iso,
+            refresh_pricing_data=refresh_pricing_data,
         )
     return ScanProjectResult(
         sessions=sessions, last_ts=last_ts, by_day=by_day, by_source=by_source, exists=True

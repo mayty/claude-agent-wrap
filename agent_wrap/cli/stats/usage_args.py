@@ -90,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-r", "--refresh", action="store_true")
     parser.add_argument("-f", "--from", dest="from_date", type=_parse_date_spec, metavar="D")
     parser.add_argument("-u", "--until", dest="until_date", type=_parse_date_spec, metavar="D")
     parser.add_argument("-d", "--days", dest="days", type=_parse_days, metavar="N")
@@ -111,7 +112,7 @@ def parse_usage_args(
     display: DisplayService,
 ) -> UsageArgs | None:
     """
-    Parse ``[-v] [-p P] [-f|--from D] [-u|--until D] [-d|--days N]``.
+    Parse ``[-v] [-r] [-p P] [-f|--from D] [-u|--until D] [-d|--days N]``.
 
     `usage_text` is rendered as the parser description for -h/--help; `usage_line`
     becomes the usage prefix. Returns None if help was printed or on any error
@@ -150,4 +151,5 @@ def parse_usage_args(
         until_iso=until_iso,
         verbose=ns.verbose,
         pattern=compiled_pattern,
+        refresh=ns.refresh,
     )

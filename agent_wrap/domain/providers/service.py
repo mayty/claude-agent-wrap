@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+from functools import cache
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import DEFAULT_PROVIDER_NAME
@@ -50,9 +51,14 @@ class ProviderService:
                     registry[obj.name] = obj
         return registry
 
+    @cache  # noqa: B019 — ProviderService is a process-lifetime singleton, so
+    # the per-instance cache is exactly the shared instance pool wanted.
     def get_provider(self, name: str | None = None) -> Provider:
         """
         Resolve and instantiate a provider by name.
+
+        Instances are cached per (service, name), so the provider-level
+        ``@cache`` on pricing-table construction is hit across repeated calls.
 
         Falls back to the AGENT_PROVIDER env var, then to ``DEFAULT_PROVIDER_NAME``.
         """

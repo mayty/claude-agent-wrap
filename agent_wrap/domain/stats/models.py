@@ -23,6 +23,7 @@ class UsageArgs:
     until_iso: str | None = None
     verbose: bool = False
     pattern: re.Pattern[str] | None = None
+    refresh: bool = False
 
 
 class Group:

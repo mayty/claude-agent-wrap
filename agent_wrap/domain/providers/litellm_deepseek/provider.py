@@ -113,7 +113,9 @@ class _DeepSeekPricing:
         return prices
 
     @staticmethod
-    def load_prices(cache_path: Path) -> dict[str, dict[str, float]]:
+    def load_prices(
+        cache_path: Path, *, refresh_pricing_data: bool = False
+    ) -> dict[str, dict[str, float]]:
         """Return cached or freshly-scraped DeepSeek pricing."""
         cached: dict[str, Any] | None = None
         if cache_path.is_file():
@@ -128,7 +130,7 @@ class _DeepSeekPricing:
             and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
         )
 
-        if cached is not None and fresh_enough:
+        if not refresh_pricing_data and cached is not None and fresh_enough:
             return cached.get("prices") or {}
 
         try:
@@ -183,10 +185,10 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
 
-    def _get_pricing(self) -> dict[str, dict[str, float]]:
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """Return the cached DeepSeek pricing table, scraping if stale."""
         cache_path = self._state_dir() / "pricing.json"
-        return _DeepSeekPricing.load_prices(cache_path)
+        return _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)
 
     # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 
