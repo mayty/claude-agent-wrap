@@ -75,7 +75,7 @@ def test_skips_malformed_json(svc: ConfigService, tmp_path: Path):
     assert settings.read_text() == "{bad json"
 
 
-def test_injects_all_three_hooks(svc: ConfigService, tmp_path: Path):
+def test_injects_all_four_hooks(svc: ConfigService, tmp_path: Path):
     settings = tmp_path / "settings.json"
     settings.write_text("{}")
     svc._ensure_telegram_hooks(settings)
@@ -84,6 +84,7 @@ def test_injects_all_three_hooks(svc: ConfigService, tmp_path: Path):
     assert "PermissionRequest" in hooks
     assert "Stop" in hooks
     assert "StopFailure" in hooks
+    assert "SessionEnd" in hooks
 
 
 def test_telegram_hooks_idempotent(svc: ConfigService, tmp_path: Path):
@@ -112,6 +113,15 @@ def test_stopfailure_has_argument(svc: ConfigService, tmp_path: Path):
     data = json.loads(settings.read_text())
     cmd = data["hooks"]["StopFailure"][0]["hooks"][0]["command"]
     assert cmd.endswith("stopfailure")
+
+
+def test_sessionend_has_argument(svc: ConfigService, tmp_path: Path):
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    svc._ensure_telegram_hooks(settings)
+    data = json.loads(settings.read_text())
+    cmd = data["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+    assert cmd.endswith("sessionend")
 
 
 def test_preserves_existing_hooks(svc: ConfigService, tmp_path: Path):

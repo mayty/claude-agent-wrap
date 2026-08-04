@@ -45,8 +45,8 @@ LITELLM_IMAGE = (
     "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
 )
 TELEGRAM_IMAGE = (
-    "mayty/claude-agent-wrap-telegram:0.1.0"
-    "@sha256:73c39566944046389ebd3bad89d1e4d6c2afe545f641edc74e0e08914c41d4bf"
+    "mayty/claude-agent-wrap-telegram:0.2.0"
+    "@sha256:db00b47cf61c4a59d436e016039ea0184a0f07ad6c68ba9e42db242f6dce2898"
 )
 
 # ── logs viewer ──────────────────────────────────────────────────────────────
