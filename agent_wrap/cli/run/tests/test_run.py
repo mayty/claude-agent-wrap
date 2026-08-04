@@ -32,6 +32,14 @@ def test_run_passes_base_flag() -> None:
     services.launch_service.launch.assert_called_once_with(use_base=True, claude_args=[])  # pyrefly: ignore [missing-attribute]
 
 
+def test_run_passes_b_flag() -> None:
+    """-b is the shorthand for --base and forwards identically."""
+    services.launch_service.launch.return_value = 0  # pyrefly: ignore [missing-attribute]
+    rc = agent_run(["-b"])
+    assert rc == 0
+    services.launch_service.launch.assert_called_once_with(use_base=True, claude_args=[])  # pyrefly: ignore [missing-attribute]
+
+
 def test_run_forwards_claude_args() -> None:
     """Remaining args after --base are forwarded as claude_args."""
     services.launch_service.launch.return_value = 0  # pyrefly: ignore [missing-attribute]
@@ -62,6 +70,7 @@ def test_run_claude_args_only() -> None:
 def test_complete_bare_tab_shows_flags() -> None:
     result = run_complete(2, ["agent", "run", ""])
     assert "--base" in result
+    assert "-b" in result
 
 
 def test_complete_flag_consumed() -> None:

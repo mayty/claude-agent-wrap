@@ -151,6 +151,11 @@ def test_parser_accepts_json_flag() -> None:
     assert build_parser().parse_args(["--json"]).as_json is True
 
 
+def test_parser_accepts_j_flag() -> None:
+    """-j is the shorthand for --json."""
+    assert build_parser().parse_args(["-j"]).as_json is True
+
+
 def test_help_returns_zero() -> None:
     assert run(["--help"]) == 0
 
@@ -496,6 +501,7 @@ def test_docker_down_still_prints_filesystem_sections(
 def test_completion_offers_the_json_flag() -> None:
     _run_fn, complete_fn = COMMANDS["inspect"]
     assert "--json" in complete_fn(2, ["agent", "inspect", ""])
+    assert "-j" in complete_fn(2, ["agent", "inspect", ""])
 
 
 def test_completion_omits_an_already_used_flag() -> None:

@@ -19,7 +19,7 @@ from agent_wrap.constants import (
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
 
-USAGE = "[--port N] [--stop]"
+USAGE = "[-p|--port N] [-s|--stop]"
 SUMMARY = "Browse LiteLLM request logs in a local web viewer"
 
 
@@ -38,8 +38,8 @@ def _port(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("logs", usage_summary=USAGE, description=USAGE_TEXT)
-    parser.add_argument("--port", type=_port, default=LOGS_DEFAULT_PORT, metavar="N")
-    parser.add_argument("--stop", action="store_true", help="stop the background viewer")
+    parser.add_argument("-p", "--port", type=_port, default=LOGS_DEFAULT_PORT, metavar="N")
+    parser.add_argument("-s", "--stop", action="store_true", help="stop the background viewer")
     # Hidden internal flag: the re-exec'd child that actually runs the blocking
     # server. Suppressed so it stays out of help/USAGE and bashrc completion.
     parser.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
