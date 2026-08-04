@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 _DOCKER_PROBE = "agent_wrap.domain.status.service.docker_utils.daemon_reachable"
 _IMAGE_EXISTS = "agent_wrap.domain.status.service.docker_utils.image_exists"
 _IMAGE_CLAUDE_VERSION = "agent_wrap.domain.status.service.docker_utils.image_claude_version"
+_LATEST_CLAUDE_VERSION = "agent_wrap.domain.status.service.docker_utils.latest_claude_version"
 _IS_WSL = "agent_wrap.domain.status.service.docker_utils.is_wsl"
 _DOCKER_RUN = "agent_wrap.domain.status.service.docker_utils.docker_run"
 _DIR_SIZE = "agent_wrap.domain.status.service.directory_size"
@@ -73,6 +74,9 @@ def docker_probes(mocker: pytest_mock.MockFixture) -> dict[str, Mock]:
         "image_exists": mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True),
         "image_claude_version": mocker.patch(
             _IMAGE_CLAUDE_VERSION, autospec=True, return_value="2.0.50"
+        ),
+        "latest_claude_version": mocker.patch(
+            _LATEST_CLAUDE_VERSION, autospec=True, return_value=None
         ),
         "is_wsl": mocker.patch(_IS_WSL, autospec=True, return_value=False),
         "docker_run": mocker.patch(_DOCKER_RUN, autospec=True, return_value=("", 0)),
@@ -348,6 +352,45 @@ def test_environment_row_version_none_on_failure(
     env = service.build_report().environment
     assert env.base_image_present is True
     assert env.base_image_version is None
+
+
+def test_environment_row_flags_update_when_latest_is_newer(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["latest_claude_version"].return_value = "2.0.51"
+    env = service.build_report().environment
+    assert env.latest_claude_version == "2.0.51"
+    assert env.claude_update_available is True
+
+
+def test_environment_row_no_update_when_latest_check_fails(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """An unreachable registry must not look like 'no update' — or 'an update'."""
+    docker_probes["latest_claude_version"].return_value = None
+    env = service.build_report().environment
+    assert env.latest_claude_version is None
+    assert env.claude_update_available is False
+
+
+def test_environment_row_no_update_when_same_version(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["latest_claude_version"].return_value = "2.0.50"
+    env = service.build_report().environment
+    assert env.latest_claude_version == "2.0.50"
+    assert env.claude_update_available is False
+
+
+def test_environment_row_skips_latest_check_when_image_absent(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["image_exists"].return_value = False
+    env = service.build_report().environment
+    assert env.base_image_present is False
+    assert env.latest_claude_version is None
+    assert env.claude_update_available is False
+    docker_probes["latest_claude_version"].assert_not_called()
 
 
 def test_report_json_carries_no_secret_values(service: InspectService, logs_mock: Mock) -> None:

@@ -277,7 +277,14 @@ class Details:
             state = f"{environment.base_image} present"
             if environment.base_image_version:
                 state += f" (Claude Code v{environment.base_image_version})"
-            image_row = Cells.row("base image", state)
+            if (
+                environment.claude_update_available
+                and environment.latest_claude_version is not None
+            ):
+                state += f" → v{environment.latest_claude_version} available"
+                image_row = Cells.row("base image", state, Ansi.BOLD_YELLOW)
+            else:
+                image_row = Cells.row("base image", state)
         else:
             image_row = Cells.row(
                 "base image",
