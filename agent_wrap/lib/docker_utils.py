@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -172,6 +173,39 @@ def image_exists(image: str) -> bool:
     """Check if a Docker image exists locally."""
     _, rc = docker_run("image", "inspect", image, timeout=10)
     return rc == 0
+
+
+def image_claude_version(image: str) -> str | None:
+    """
+    Return the @anthropic-ai/claude-code version inside *image*, or None.
+
+    Reads the installed global npm package via ``npm ls --json`` in a short-lived
+    container. Returns None when the command times out or the version cannot be
+    parsed. A non-zero npm exit code is tolerated: ``npm ls`` flags dependency
+    problems with rc=1 while still printing the JSON with the version.
+    """
+    stdout, _ = docker_run(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "",
+        image,
+        "npm",
+        "ls",
+        "@anthropic-ai/claude-code",
+        "--global",
+        "--depth=0",
+        "--json",
+        timeout=10,
+    )
+    if not stdout:
+        return None
+    try:
+        data = json.loads(stdout)
+        package = data.get("dependencies", {}).get("@anthropic-ai/claude-code", {})
+        return package.get("version")
+    except (json.JSONDecodeError, AttributeError):
+        return None
 
 
 def network_exists(network: str) -> bool:

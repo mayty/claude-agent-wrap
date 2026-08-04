@@ -112,6 +112,9 @@ class EnvironmentRow:
 
     base_image: str
     base_image_present: bool
+    #: Version of the Claude Code CLI inside the base image (e.g. "2.0.50"),
+    #: or None when the image is absent or the version could not be read.
+    base_image_version: str | None
     network_name: str
     network_present: bool
     #: Whether AGENT_USE_HOST_NETWORK is set to a truthy value.

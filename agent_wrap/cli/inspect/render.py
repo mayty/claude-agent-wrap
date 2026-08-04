@@ -274,7 +274,10 @@ class Details:
         network on the next launch, while a missing base image needs a rebuild.
         """
         if environment.base_image_present:
-            image_row = Cells.row("base image", f"{environment.base_image} present")
+            state = f"{environment.base_image} present"
+            if environment.base_image_version:
+                state += f" (Claude Code v{environment.base_image_version})"
+            image_row = Cells.row("base image", state)
         else:
             image_row = Cells.row(
                 "base image",

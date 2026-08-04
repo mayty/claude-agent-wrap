@@ -208,9 +208,14 @@ class InspectService:
         silently ignored off WSL, which otherwise looks like the setting not working.
         """
         requested = is_truthy_env(os.environ.get(HOST_NETWORK_ENV, ""))
+        image_present = docker_up and docker_utils.image_exists(BASE_IMAGE_NAME)
+        version: str | None = None
+        if image_present:
+            version = docker_utils.image_claude_version(BASE_IMAGE_NAME)
         return EnvironmentRow(
             base_image=BASE_IMAGE_NAME,
-            base_image_present=docker_up and docker_utils.image_exists(BASE_IMAGE_NAME),
+            base_image_present=image_present,
+            base_image_version=version,
             network_name=SIDECAR_NETWORK_NAME,
             network_present=docker_up and docker_utils.network_exists(SIDECAR_NETWORK_NAME),
             host_network_requested=requested,

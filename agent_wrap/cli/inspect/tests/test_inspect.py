@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import TYPE_CHECKING
 
@@ -94,6 +95,7 @@ def _report(
         environment=EnvironmentRow(
             base_image="claude-agent",
             base_image_present=True,
+            base_image_version="2.0.50",
             network_name="agent-wrap-net",
             network_present=True,
             host_network_requested=False,
@@ -262,6 +264,36 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
         "day boundary",
     ):
         assert label in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_shows_base_image_version(display_mock_service: Mock) -> None:
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present (Claude Code v2.0.50)" in out
+
+
+def test_human_output_omits_version_when_none(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A failed version probe degrades to the plain 'present' row."""
+    report = _report()
+    report = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(report.environment, base_image_version=None),
+    )
+    inspect_mock.build_report.return_value = report
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present" in out
+    assert "Claude Code v" not in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_json_output_includes_base_image_version(display_mock_service: Mock) -> None:
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["environment"]["base_image_version"] == "2.0.50"
 
 
 @pytest.mark.usefixtures("inspect_mock")

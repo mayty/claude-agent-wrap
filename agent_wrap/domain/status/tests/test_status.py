@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 _DOCKER_PROBE = "agent_wrap.domain.status.service.docker_utils.daemon_reachable"
 _IMAGE_EXISTS = "agent_wrap.domain.status.service.docker_utils.image_exists"
+_IMAGE_CLAUDE_VERSION = "agent_wrap.domain.status.service.docker_utils.image_claude_version"
 _IS_WSL = "agent_wrap.domain.status.service.docker_utils.is_wsl"
 _DOCKER_RUN = "agent_wrap.domain.status.service.docker_utils.docker_run"
 _DIR_SIZE = "agent_wrap.domain.status.service.directory_size"
@@ -70,6 +71,9 @@ def docker_probes(mocker: pytest_mock.MockFixture) -> dict[str, Mock]:
     return {
         "reachable": mocker.patch(_DOCKER_PROBE, autospec=True, return_value=True),
         "image_exists": mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True),
+        "image_claude_version": mocker.patch(
+            _IMAGE_CLAUDE_VERSION, autospec=True, return_value="2.0.50"
+        ),
         "is_wsl": mocker.patch(_IS_WSL, autospec=True, return_value=False),
         "docker_run": mocker.patch(_DOCKER_RUN, autospec=True, return_value=("", 0)),
         "dir_size": mocker.patch(_DIR_SIZE, autospec=True, return_value=1024),
@@ -314,6 +318,36 @@ def test_report_is_json_serialisable(service: InspectService) -> None:
     """Guards against a stray Path or datetime leaking into any model."""
     payload = json.dumps(dataclasses.asdict(service.build_report()))
     assert json.loads(payload)["sidecars"][0]["port"] == 48620
+    assert json.loads(payload)["environment"]["base_image_version"] == "2.0.50"
+
+
+def test_environment_row_includes_base_image_version(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["image_claude_version"].return_value = "2.0.50"
+    env = service.build_report().environment
+    assert env.base_image_present is True
+    assert env.base_image_version == "2.0.50"
+
+
+def test_environment_row_skips_version_when_image_absent(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["image_exists"].return_value = False
+    env = service.build_report().environment
+    assert env.base_image_present is False
+    assert env.base_image_version is None
+    docker_probes["image_claude_version"].assert_not_called()
+
+
+def test_environment_row_version_none_on_failure(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """A failed version probe does not turn the image itself into a miss."""
+    docker_probes["image_claude_version"].return_value = None
+    env = service.build_report().environment
+    assert env.base_image_present is True
+    assert env.base_image_version is None
 
 
 def test_report_json_carries_no_secret_values(service: InspectService, logs_mock: Mock) -> None:
