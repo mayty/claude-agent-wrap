@@ -5,7 +5,7 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.8.0](releases/0.8.0.md) — 2026-08-03
+## [0.8.0](releases/0.8.0.md) — 2026-08-05
 
 Adds `agent secrets` for managing encrypted sidecar credentials, `agent cleanup`
 for removing orphaned logs and stale registry entries, and `agent inspect` for
