@@ -79,7 +79,7 @@ class ConfigService:
 
     def _ensure_telegram_hooks(self, settings_path: Path) -> None:
         """
-        Idempotently inject PermissionRequest/Stop/StopFailure hooks.
+        Idempotently inject PermissionRequest/Stop/StopFailure/SessionEnd hooks.
 
         Each hook runs telegram-notify.sh directly (the script has its
         execute bit set).
@@ -99,6 +99,7 @@ class ConfigService:
         self._ensure_hook(data, "PermissionRequest", cmd)
         self._ensure_hook(data, "Stop", f"{cmd} stop")
         self._ensure_hook(data, "StopFailure", f"{cmd} stopfailure")
+        self._ensure_hook(data, "SessionEnd", f"{cmd} sessionend")
         atomic_write_json(settings_path, data)
 
     def _ensure_hook(self, data: dict[str, Any], event: str, command: str) -> None:

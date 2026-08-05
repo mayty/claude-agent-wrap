@@ -109,7 +109,9 @@ class _BedrockPricing:
         return table
 
     @staticmethod
-    def load_prices(cache_path: Path) -> dict[str, dict[str, float]]:
+    def load_prices(
+        cache_path: Path, *, refresh_pricing_data: bool = False
+    ) -> dict[str, dict[str, float]]:
         cached: dict[str, Any] | None = None
         if cache_path.is_file():
             try:
@@ -124,7 +126,7 @@ class _BedrockPricing:
             and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
         )
 
-        if fresh_enough and cached is not None:
+        if not refresh_pricing_data and fresh_enough and cached is not None:
             return cached.get("prices") or {}
 
         try:
@@ -175,7 +177,7 @@ class BedrockProvider(Provider):
             "AWS_REGION": "us-east-1",
         }
 
-    def _get_pricing(self) -> dict[str, dict[str, float]]:
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """Return the cached AWS Bedrock pricing table for this provider."""
         cache_path = self._state_dir() / "pricing.json"
-        return _BedrockPricing.load_prices(cache_path)
+        return _BedrockPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)

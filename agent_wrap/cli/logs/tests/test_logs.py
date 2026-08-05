@@ -22,6 +22,11 @@ def test_parse_port_custom() -> None:
     assert build_parser().parse_args(["--port", "9000"]).port == 9000
 
 
+def test_parse_p_flag() -> None:
+    """-p is the shorthand for --port."""
+    assert build_parser().parse_args(["-p", "9000"]).port == 9000
+
+
 def test_parse_port_rejects_non_integer(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         build_parser().parse_args(["--port", "abc"])
@@ -52,6 +57,11 @@ def test_parse_port_unknown_arg(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_parsestop_daemon_flag() -> None:
     assert build_parser().parse_args(["--stop"]).stop is True
+
+
+def test_parse_s_flag() -> None:
+    """-s is the shorthand for --stop."""
+    assert build_parser().parse_args(["-s"]).stop is True
 
 
 def test_runstop_daemon_dispatches_tostop_daemon() -> None:
@@ -103,7 +113,9 @@ def test_run_help_returns_zero() -> None:
 def test_complete_bare_tab_shows_flags() -> None:
     result = logs_complete(2, ["agent", "logs", ""])
     assert "--port" in result
+    assert "-p" in result
     assert "--stop" in result
+    assert "-s" in result
     assert "--foreground" not in result  # hidden
 
 

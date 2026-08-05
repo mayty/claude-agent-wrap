@@ -83,6 +83,11 @@ def test_parse_dry_run_flag() -> None:
     assert build_parser().parse_args(["--dry-run"]).dry_run is True
 
 
+def test_parse_n_flag() -> None:
+    """-n is the shorthand for --dry-run."""
+    assert build_parser().parse_args(["-n"]).dry_run is True
+
+
 def test_parse_defaults_dry_run_false() -> None:
     assert build_parser().parse_args([]).dry_run is False
 
@@ -270,7 +275,9 @@ def test_cleanup_spinner_runs_after_confirmation(display_mock_service: Mock) -> 
 
 
 def test_complete_bare_tab_shows_flag() -> None:
-    assert "--dry-run" in cleanup_complete(2, ["agent", "cleanup", ""])
+    result = cleanup_complete(2, ["agent", "cleanup", ""])
+    assert "--dry-run" in result
+    assert "-n" in result
 
 
 def test_complete_flag_consumed() -> None:

@@ -11,13 +11,13 @@ from agent_wrap.lib.argparsing import make_parser
 if TYPE_CHECKING:
     import argparse
 
-USAGE = "[--base] [claude-args...]"
+USAGE = "[-b|--base] [claude-args...]"
 SUMMARY = "Launch Claude Code in Docker"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("run", usage_summary=USAGE, add_help=False)
-    parser.add_argument("--base", action="store_true")
+    parser.add_argument("-b", "--base", action="store_true")
     return parser
 
 

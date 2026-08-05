@@ -11,7 +11,8 @@ VALUE_FLAGS = ("-f", "--from", "-u", "--until")
 
 #: Usage prefix for `agent stats`, also printed on a usage error.
 USAGE_LINE = (
-    "Usage: agent stats [-v|--verbose] [-p|--pattern P] [-f|--from D] [-u|--until D] [-d|--days N]"
+    "Usage: agent stats [-v|--verbose] [-r|--refresh] [-p|--pattern P] [-f|--from D] "
+    "[-u|--until D] [-d|--days N]"
 )
 
 #: Long-form help printed for `agent stats -h`.
@@ -35,6 +36,8 @@ USAGE_TEXT = (
     "-v/--verbose adds a usage-source breakdown table over the same window,\n"
     "splitting totals by how each record's usage was obtained\n"
     "(native response vs. standard_logging_object recovery vs. unrecoverable).\n\n"
+    "-r/--refresh re-fetches pricing from the providers' pricing pages instead of\n"
+    "using the cached 7-day pricing tables.\n\n"
     "Pricing is fetched dynamically per-provider as logs are scanned.\n\n"
     "Projects are recorded by `agent` on each launch — a project that\n"
     "has never had `agent` invoked from it will not appear here."

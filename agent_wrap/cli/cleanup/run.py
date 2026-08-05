@@ -14,13 +14,14 @@ if TYPE_CHECKING:
 
     from agent_wrap.domain.stats.models import CleanupOutcome, CleanupScope
 
-USAGE = "[--dry-run]"
+USAGE = "[-n|--dry-run]"
 SUMMARY = "Delete orphaned project data (archiving usage first)"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("cleanup", usage_summary=USAGE)
     parser.add_argument(
+        "-n",
         "--dry-run",
         action="store_true",
         help="Show what would be cleaned up, without deleting anything or prompting.",

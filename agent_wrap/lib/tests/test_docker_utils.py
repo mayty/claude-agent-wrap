@@ -14,10 +14,13 @@ from agent_wrap.lib.docker_utils import (
     get_tty_args,
     get_user_args,
     host_network_build_args,
+    image_claude_version,
     image_exists,
     inspect_containers,
+    is_newer_version,
     is_rootless,
     is_wsl,
+    latest_claude_version,
     list_container_names,
     parse_docker_timestamp,
 )
@@ -101,6 +104,122 @@ def test_image_exists_file_not_found(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.side_effect = FileNotFoundError()
     assert image_exists("missing") is False
+
+
+def test_image_claude_version_returns_version_on_success(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = (
+        '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.50"}}}'
+    )
+    mock_run.return_value.returncode = 0
+    assert image_claude_version("claude-agent") == "2.0.50"
+
+
+def test_image_claude_version_returns_none_on_empty_stdout(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = ""
+    mock_run.return_value.returncode = 1
+    assert image_claude_version("claude-agent") is None
+
+
+def test_image_claude_version_tolerates_nonzero_rc_with_json(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """A dependency problem exits 1, but npm ls still prints the version JSON."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = (
+        '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.50"}}}'
+    )
+    mock_run.return_value.returncode = 1
+    assert image_claude_version("claude-agent") == "2.0.50"
+
+
+def test_image_claude_version_returns_none_on_invalid_json(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "not json"
+    mock_run.return_value.returncode = 0
+    assert image_claude_version("claude-agent") is None
+
+
+# --- latest_claude_version ---
+
+
+def test_latest_claude_version_returns_version_on_success(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "2.0.51\n"
+    mock_run.return_value.returncode = 0
+    assert latest_claude_version("claude-agent") == "2.0.51"
+
+
+def test_latest_claude_version_returns_none_on_empty_stdout(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = ""
+    mock_run.return_value.returncode = 1
+    assert latest_claude_version("claude-agent") is None
+
+
+def test_latest_claude_version_returns_none_on_timeout(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd="docker", timeout=15)
+    assert latest_claude_version("claude-agent") is None
+
+
+def test_latest_claude_version_uses_view_with_greater_timeout(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """A registry query reaches the network, so it gets more than the local 10s."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "2.0.51\n"
+    mock_run.return_value.returncode = 0
+    latest_claude_version("claude-agent")
+    argv = mock_run.call_args[0][0]
+    assert "view" in argv
+    assert "@anthropic-ai/claude-code" in argv
+    assert mock_run.call_args[1]["timeout"] == 15
+
+
+# --- is_newer_version ---
+
+
+def test_is_newer_version_true_when_latest_newer() -> None:
+    assert is_newer_version("2.0.50", "2.0.51") is True
+
+
+def test_is_newer_version_compares_numeric_parts() -> None:
+    """2.0.10 must sort after 2.0.9, which a string compare gets wrong."""
+    assert is_newer_version("2.0.9", "2.0.10") is True
+
+
+def test_is_newer_version_false_when_same() -> None:
+    assert is_newer_version("2.0.50", "2.0.50") is False
+
+
+def test_is_newer_version_false_when_installed_newer() -> None:
+    assert is_newer_version("2.0.51", "2.0.50") is False
+
+
+def test_is_newer_version_false_on_none_inputs() -> None:
+    assert is_newer_version(None, "2.0.51") is False
+    assert is_newer_version("2.0.50", None) is False
+    assert is_newer_version(None, None) is False
+
+
+def test_is_newer_version_false_on_invalid_versions() -> None:
+    assert is_newer_version("garbage", "2.0.51") is False
+    assert is_newer_version("2.0.50", "not-a-version") is False
+    assert is_newer_version("", "2.0.51") is False
 
 
 def test_user_args_root_when_rootless(mocker: pytest_mock.MockFixture) -> None:

@@ -18,6 +18,11 @@ def test_parse_full_flag() -> None:
     assert build_parser().parse_args(["--full"]).full is True
 
 
+def test_parse_f_flag() -> None:
+    """-f is the shorthand for --full."""
+    assert build_parser().parse_args(["-f"]).full is True
+
+
 def test_help_short() -> None:
     with pytest.raises(SystemExit) as exc:
         build_parser().parse_args(["-h"])
@@ -49,6 +54,7 @@ def test_run_unknown_arg_returns_one(capsys: pytest.CaptureFixture[str]) -> None
 def test_complete_bare_tab_shows_flags() -> None:
     result = rebuild_complete(2, ["agent", "rebuild", ""])
     assert "--full" in result
+    assert "-f" in result
     assert "-h" in result
 
 

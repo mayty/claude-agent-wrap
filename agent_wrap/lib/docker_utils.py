@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -172,6 +173,85 @@ def image_exists(image: str) -> bool:
     """Check if a Docker image exists locally."""
     _, rc = docker_run("image", "inspect", image, timeout=10)
     return rc == 0
+
+
+def image_claude_version(image: str) -> str | None:
+    """
+    Return the @anthropic-ai/claude-code version inside *image*, or None.
+
+    Reads the installed global npm package via ``npm ls --json`` in a short-lived
+    container. Returns None when the command times out or the version cannot be
+    parsed. A non-zero npm exit code is tolerated: ``npm ls`` flags dependency
+    problems with rc=1 while still printing the JSON with the version.
+    """
+    stdout, _ = docker_run(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "",
+        image,
+        "npm",
+        "ls",
+        "@anthropic-ai/claude-code",
+        "--global",
+        "--depth=0",
+        "--json",
+        timeout=10,
+    )
+    if not stdout:
+        return None
+    try:
+        data = json.loads(stdout)
+        package = data.get("dependencies", {}).get("@anthropic-ai/claude-code", {})
+        return package.get("version")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def latest_claude_version(image: str) -> str | None:
+    """
+    Return the latest @anthropic-ai/claude-code version on the npm registry, or None.
+
+    Runs ``npm view`` — which queries the registry over the network — in a
+    short-lived container from *image*. Returns None when the command times out,
+    the registry is unreachable, or the output cannot be parsed. The timeout is
+    longer than :func:`image_claude_version`'s because this actually reaches the
+    network.
+    """
+    stdout, _ = docker_run(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "",
+        image,
+        "npm",
+        "view",
+        "@anthropic-ai/claude-code",
+        "version",
+        timeout=15,
+    )
+    line = stdout.strip().splitlines()[0].strip() if stdout else ""
+    return line or None
+
+
+def is_newer_version(installed: str | None, latest: str | None) -> bool:
+    """
+    Whether *latest* is a newer version than *installed*.
+
+    Compares dot-separated numeric parts ("2.0.50" -> (2, 0, 50)) as tuples, so
+    "2.0.10" sorts after "2.0.9". Returns False when either side is None or
+    cannot be parsed — an unknown latest version must never look like an update.
+    """
+    if not installed or not latest:
+        return False
+    try:
+        installed_parts = tuple(int(part) for part in installed.split("."))
+        latest_parts = tuple(int(part) for part in latest.split("."))
+    except ValueError:
+        return False
+    if not installed_parts or not latest_parts:
+        return False
+    return latest_parts > installed_parts
 
 
 def network_exists(network: str) -> bool:

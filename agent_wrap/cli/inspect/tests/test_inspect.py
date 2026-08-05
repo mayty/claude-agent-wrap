@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import TYPE_CHECKING
 
@@ -94,6 +95,9 @@ def _report(
         environment=EnvironmentRow(
             base_image="claude-agent",
             base_image_present=True,
+            base_image_version="2.0.50",
+            latest_claude_version=None,
+            claude_update_available=False,
             network_name="agent-wrap-net",
             network_present=True,
             host_network_requested=False,
@@ -145,6 +149,11 @@ def test_parser_defaults_to_human_output() -> None:
 
 def test_parser_accepts_json_flag() -> None:
     assert build_parser().parse_args(["--json"]).as_json is True
+
+
+def test_parser_accepts_j_flag() -> None:
+    """-j is the shorthand for --json."""
+    assert build_parser().parse_args(["-j"]).as_json is True
 
 
 def test_help_returns_zero() -> None:
@@ -262,6 +271,91 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
         "day boundary",
     ):
         assert label in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_shows_base_image_version(display_mock_service: Mock) -> None:
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present (Claude Code v2.0.50)" in out
+
+
+def test_human_output_flags_an_available_update(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    report = _report()
+    report = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment,
+            latest_claude_version="2.0.51",
+            claude_update_available=True,
+        ),
+    )
+    inspect_mock.build_report.return_value = report
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present (Claude Code v2.0.50) → v2.0.51 available" in out
+
+
+def test_human_output_shows_no_update_when_current(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A current version must not be flagged — that is the steady state."""
+    report = _report()
+    report = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment,
+            latest_claude_version="2.0.50",
+            claude_update_available=False,
+        ),
+    )
+    inspect_mock.build_report.return_value = report
+    run([])
+    out = _stdout(display_mock_service)
+    assert "→" not in out
+
+
+def test_human_output_omits_version_when_none(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A failed version probe degrades to the plain 'present' row."""
+    report = _report()
+    report = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(report.environment, base_image_version=None),
+    )
+    inspect_mock.build_report.return_value = report
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present" in out
+    assert "Claude Code v" not in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_json_output_includes_base_image_version(display_mock_service: Mock) -> None:
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["environment"]["base_image_version"] == "2.0.50"
+
+
+def test_json_output_includes_update_fields(inspect_mock: Mock, display_mock_service: Mock) -> None:
+    report = _report()
+    report = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment,
+            latest_claude_version="2.0.51",
+            claude_update_available=True,
+        ),
+    )
+    inspect_mock.build_report.return_value = report
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    env = payload["environment"]
+    assert env["latest_claude_version"] == "2.0.51"
+    assert env["claude_update_available"] is True
 
 
 @pytest.mark.usefixtures("inspect_mock")
@@ -407,6 +501,7 @@ def test_docker_down_still_prints_filesystem_sections(
 def test_completion_offers_the_json_flag() -> None:
     _run_fn, complete_fn = COMMANDS["inspect"]
     assert "--json" in complete_fn(2, ["agent", "inspect", ""])
+    assert "-j" in complete_fn(2, ["agent", "inspect", ""])
 
 
 def test_completion_omits_an_already_used_flag() -> None:

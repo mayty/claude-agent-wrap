@@ -119,6 +119,7 @@ class StatsService:
         from_iso: str | None = None,
         until_iso: str | None = None,
         scan_cache: ScanCache | None = None,
+        refresh_pricing_data: bool = False,
     ) -> AggregateResult:
         """
         Scan every project and roll its in-window buckets up into the render inputs.
@@ -136,7 +137,12 @@ class StatsService:
 
         for path in projects:
             sessions, last_ts, by_day, by_source, exists = scan_project(
-                path, self._pricing, from_iso=from_iso, until_iso=until_iso, scan_cache=scan_cache
+                path,
+                self._pricing,
+                from_iso=from_iso,
+                until_iso=until_iso,
+                scan_cache=scan_cache,
+                refresh_pricing_data=refresh_pricing_data,
             )
 
             root, name, transient = self.resolve_group(path)
@@ -302,6 +308,7 @@ class StatsService:
             [*(p / ".claude" / LITELLM_LOGS_DIRNAME for p in selected), *orphaned_dirs],
             from_iso=args.from_iso,
             until_iso=args.until_iso,
+            refresh_pricing_data=args.refresh,
         )
 
         rows, totals_by_model, totals_by_day_by_model, totals_by_source = self.aggregate_projects(
@@ -309,6 +316,7 @@ class StatsService:
             from_iso=args.from_iso,
             until_iso=args.until_iso,
             scan_cache=scan_cache,
+            refresh_pricing_data=args.refresh,
         )
 
         orphaned = None
@@ -322,6 +330,7 @@ class StatsService:
                     from_iso=args.from_iso,
                     until_iso=args.until_iso,
                     scan_cache=scan_cache,
+                    refresh_pricing_data=args.refresh,
                 ),
                 self.aggregate_archived_orphaned(
                     totals_by_model,
@@ -329,6 +338,7 @@ class StatsService:
                     totals_by_source,
                     from_iso=args.from_iso,
                     until_iso=args.until_iso,
+                    refresh_pricing_data=args.refresh,
                 ),
             )
 
@@ -358,6 +368,7 @@ class StatsService:
         *,
         from_iso: str | None,
         until_iso: str | None,
+        refresh_pricing_data: bool = False,
     ) -> ScanCache:
         """
         Scan many logs dirs and return a ``{logs_dir: folded_result}`` cache.
@@ -414,8 +425,8 @@ class StatsService:
                 all_records.extend(records)
 
             by_day, by_source = fold_raw_to_buckets(all_records, self._pricing)
-            price_buckets(by_day, self._pricing)
-            price_buckets(by_source, self._pricing)
+            price_buckets(by_day, self._pricing, refresh_pricing_data=refresh_pricing_data)
+            price_buckets(by_source, self._pricing, refresh_pricing_data=refresh_pricing_data)
             cache[logs_dir] = DirResult(sessions, last_ts, by_day, by_source)
         return cache
 
@@ -478,6 +489,7 @@ class StatsService:
         from_iso: str | None = None,
         until_iso: str | None = None,
         scan_cache: ScanCache | None = None,
+        refresh_pricing_data: bool = False,
     ) -> OrphanedResult | None:
         """
         Aggregate central log dirs not reachable from any registered project.
@@ -503,7 +515,11 @@ class StatsService:
                 )
             else:
                 d_sessions, d_last_ts, by_day, by_source = scan_logs_dir(
-                    logs_dir, self._pricing, from_iso=from_iso, until_iso=until_iso
+                    logs_dir,
+                    self._pricing,
+                    from_iso=from_iso,
+                    until_iso=until_iso,
+                    refresh_pricing_data=refresh_pricing_data,
                 )
             sessions += d_sessions
             if d_last_ts is not None and (last_ts is None or d_last_ts > last_ts):
@@ -645,7 +661,7 @@ class StatsService:
             finalized=True,
         )
 
-    def aggregate_archived_orphaned(
+    def aggregate_archived_orphaned(  # noqa: PLR0913
         self,
         totals_by_model: dict[str, Bucket],
         totals_by_day_by_model: dict[str, dict[str, Bucket]],
@@ -653,6 +669,7 @@ class StatsService:
         *,
         from_iso: str | None = None,
         until_iso: str | None = None,
+        refresh_pricing_data: bool = False,
     ) -> OrphanedResult | None:
         """
         Aggregate usage ``agent cleanup`` archived from dirs it already deleted.
@@ -678,8 +695,8 @@ class StatsService:
         )
 
         # Price while local, then merge — never the other way round.
-        price_buckets(local_by_day, self._pricing)
-        price_buckets(local_by_source, self._pricing)
+        price_buckets(local_by_day, self._pricing, refresh_pricing_data=refresh_pricing_data)
+        price_buckets(local_by_source, self._pricing, refresh_pricing_data=refresh_pricing_data)
 
         total = self._pricing.new_bucket()
         for day, by_model in local_by_day.items():

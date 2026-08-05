@@ -30,8 +30,8 @@ Agent container (injected by `get_agent_env`):
 - `ANTHROPIC_API_KEY` — the sidecar's master key
 - `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm-deepseek:<port>`
 - `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` — `deepseek-v4-pro[1m]`
-- `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `deepseek-v4-flash`
-- `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-v4-flash`
+- `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `deepseek-v4-flash[1m]`
+- `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-v4-flash[1m]`
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
 
 Sidecar container (injected by `get_sidecar_env`):

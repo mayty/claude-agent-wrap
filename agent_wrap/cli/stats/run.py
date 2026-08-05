@@ -8,7 +8,7 @@ from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.cli.stats.usage_args import parse_usage_args
 from agent_wrap.containers import services
 
-USAGE = "[-v|--verbose] [-p|--pattern P] [-f|--from D] [-u|--until D] [-d|--days N]"
+USAGE = "[-v|--verbose] [-r|--refresh] [-p|--pattern P] [-f|--from D] [-u|--until D] [-d|--days N]"
 SUMMARY = "Show token usage stats (reads from .claude/litellm-logs/)"
 
 

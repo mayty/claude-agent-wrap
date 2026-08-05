@@ -112,6 +112,14 @@ class EnvironmentRow:
 
     base_image: str
     base_image_present: bool
+    #: Version of the Claude Code CLI inside the base image (e.g. "2.0.50"),
+    #: or None when the image is absent or the version could not be read.
+    base_image_version: str | None
+    #: Latest version of the Claude Code CLI on the npm registry (e.g. "2.0.51"),
+    #: or None when it could not be checked (no network, registry unreachable).
+    latest_claude_version: str | None
+    #: True when the npm registry reports a newer version than the base image's.
+    claude_update_available: bool
     network_name: str
     network_present: bool
     #: Whether AGENT_USE_HOST_NETWORK is set to a truthy value.

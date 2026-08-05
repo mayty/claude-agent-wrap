@@ -46,6 +46,11 @@ def test_explicit_bedrock(svc: ProviderService):
     assert p.name == "litellm-bedrock"
 
 
+def test_get_provider_instances_are_cached(svc: ProviderService):
+    """Repeated lookups for one provider reuse the same instance."""
+    assert svc.get_provider("litellm-bedrock") is svc.get_provider("litellm-bedrock")
+
+
 def test_discovers_deepseek(svc: ProviderService):
     registry = svc.discover_providers()
     assert "litellm-deepseek" in registry

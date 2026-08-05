@@ -1,12 +1,14 @@
 #!/bin/bash
 # This file has been edited with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 # telegram-notify.sh — Thin proxy that forwards Claude Code hook events to
 # the Telegram decision sidecar. The sidecar owns all rendering, credentials,
 # and Telegram Bot API interaction.
 #
-# Usage: telegram-notify.sh [stop|stopfailure]
+# Usage: telegram-notify.sh [stop|stopfailure|sessionend]
 #   stop         — Stop hook: fire-and-forget notification
 #   stopfailure  — StopFailure hook: fire-and-forget notification
+#   sessionend   — SessionEnd hook: fire-and-forget cleanup
 #   (default)    — PermissionRequest hook: held-open decision request
 #
 # The hook framework passes JSON on stdin. We forward it verbatim — the
@@ -115,6 +117,20 @@ case "$HOOK_MODE" in
         CURL_PID=""
         http_code=$(cat "$CURL_OUT")
         log "stop-reason=notified http-status=${http_code:-0}"
+        ;;
+    sessionend)
+        # Fire-and-forget cleanup — no body, just signal the sidecar.
+        log "request POST $HOST/cleanup"
+        curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 10 \
+            -H "$AUTH" \
+            -X POST \
+            "$HOST/cleanup" >"$CURL_OUT" 2>/dev/null &
+        CURL_PID=$!
+        wait "$CURL_PID" 2>/dev/null || true
+        CURL_PID=""
+        http_code=$(cat "$CURL_OUT")
+        log "stop-reason=cleanup http-status=${http_code:-0}"
         ;;
     *)
         # PermissionRequest — held-open decision, raw stdin forwarded as-is.

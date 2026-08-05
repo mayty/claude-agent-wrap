@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
@@ -10,6 +12,7 @@ import pytest
 
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.base import Provider
+from agent_wrap.domain.providers.litellm_bedrock.constants import DEFAULT_REGION_LABEL
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
     _BedrockPricing,
 )
@@ -20,6 +23,8 @@ from agent_wrap.domain.sidecars.service import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest_mock
 
 
@@ -122,3 +127,67 @@ def test_build_pricing_table_resolves_fable_row():
         "cw_1h": 20.0,
         "cr": 1.0,
     }
+
+
+def _fresh_cache(tmp_path: Path) -> Path:
+    """Write a brand-new pricing cache; return its path."""
+    cache_path = tmp_path / "pricing.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "region": DEFAULT_REGION_LABEL,
+                "fetched_at": time.time(),
+                "prices": {"claude-sonnet-4-5": {"in": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return cache_path
+
+
+def _price_data_json() -> bytes:
+    """Return the AWS metered-unit JSON needed to resolve the _PAGE_HTML rows."""
+    return json.dumps(
+        {
+            "regions": {
+                DEFAULT_REGION_LABEL: {
+                    "O_IN": {"price": "3.0"},
+                    "O_OUT": {"price": "15.0"},
+                    "O_CW5": {"price": "3.75"},
+                    "O_CW1": {"price": "4.5"},
+                    "O_CR": {"price": "0.3"},
+                    "F_IN": {"price": "10.0"},
+                    "F_OUT": {"price": "50.0"},
+                    "F_CW5": {"price": "12.5"},
+                    "F_CW1": {"price": "20.0"},
+                    "F_CR": {"price": "1.0"},
+                }
+            }
+        }
+    ).encode()
+
+
+def test_load_prices_serves_fresh_cache_without_fetching(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+):
+    cache_path = _fresh_cache(tmp_path)
+    http_get = mocker.patch.object(_BedrockPricing, "http_get", autospec=True)
+
+    prices = _BedrockPricing.load_prices(cache_path)
+
+    assert prices == {"claude-sonnet-4-5": {"in": 1.0}}
+    http_get.assert_not_called()
+
+
+def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_mock.MockFixture):
+    """``refresh_pricing_data=True`` bypasses even a brand-new cache and re-fetches."""
+    cache_path = _fresh_cache(tmp_path)
+    http_get = mocker.patch.object(_BedrockPricing, "http_get", autospec=True)
+    http_get.side_effect = [_PAGE_HTML.encode(), _price_data_json()]
+
+    prices = _BedrockPricing.load_prices(cache_path, refresh_pricing_data=True)
+
+    # Freshly built from the mocked page, not the cached placeholder row.
+    assert prices["claude-opus-4-8"]["in"] == 3.0
+    assert "claude-sonnet-4-5" not in prices
+    assert http_get.call_count == 2

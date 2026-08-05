@@ -449,7 +449,9 @@ def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
 
     cost = svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage)
     assert cost == 0.005
-    fake_provider.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
+    fake_provider.compute_cost.assert_called_once_with(
+        "claude-opus-4-7", usage, refresh_pricing_data=False
+    )
 
 
 def test_compute_cost_display_name_is_normalized(svc: PricingService) -> None:
@@ -459,7 +461,9 @@ def test_compute_cost_display_name_is_normalized(svc: PricingService) -> None:
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
 
     svc.compute_cost("litellm-bedrock", "Claude Opus 4.7", usage=usage)
-    fake_provider.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
+    fake_provider.compute_cost.assert_called_once_with(
+        "claude-opus-4-7", usage, refresh_pricing_data=False
+    )
 
 
 def test_compute_cost_unknown_provider_returns_none(
@@ -477,4 +481,19 @@ def test_compute_cost_slash_prefixed_model(svc: PricingService) -> None:
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
 
     svc.compute_cost("litellm-bedrock", "bedrock/claude-opus-4-7", usage=usage)
-    fake_provider.compute_cost.assert_called_once_with("claude-opus-4-7", usage)
+    fake_provider.compute_cost.assert_called_once_with(
+        "claude-opus-4-7", usage, refresh_pricing_data=False
+    )
+
+
+def test_compute_cost_refresh_forces_delegation(svc: PricingService) -> None:
+    """``refresh_pricing_data=True`` asks the provider to bypass its cache."""
+    usage = _zero_usage()
+    fake_provider = Mock(spec=Provider)
+    fake_provider.compute_cost.return_value = 0.0
+    svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
+
+    svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage, refresh_pricing_data=True)
+    fake_provider.compute_cost.assert_called_once_with(
+        "claude-opus-4-7", usage, refresh_pricing_data=True
+    )

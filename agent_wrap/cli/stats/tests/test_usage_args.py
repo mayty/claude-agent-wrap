@@ -85,6 +85,24 @@ def test_verbose_flag(mocker: MockerFixture, display_mock: Mock):
     assert parsed.verbose is True
 
 
+def test_refresh_flag(mocker: MockerFixture, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, "-r")
+    assert parsed is not None
+    assert parsed.refresh is True
+
+
+def test_refresh_long_flag(mocker: MockerFixture, display_mock: Mock):
+    parsed = _parse(mocker, display_mock, "--refresh")
+    assert parsed is not None
+    assert parsed.refresh is True
+
+
+def test_refresh_defaults_false(mocker: MockerFixture, display_mock: Mock):
+    parsed = _parse(mocker, display_mock)
+    assert parsed is not None
+    assert parsed.refresh is False
+
+
 def test_window_error_is_reported_and_stops(mocker: MockerFixture, display_mock: Mock):
     frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
     services.stats_service.now_utc.return_value = frozen  # pyrefly: ignore [missing-attribute]

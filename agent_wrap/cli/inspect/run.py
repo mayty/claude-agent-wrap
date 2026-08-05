@@ -17,13 +17,14 @@ if TYPE_CHECKING:
 
     from agent_wrap.domain.status.models import InspectReport
 
-USAGE = "[--json]"
+USAGE = "[-j|--json]"
 SUMMARY = "Show running sidecars, agents, and the rest of the current state"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("inspect", usage_summary=USAGE, description=USAGE_TEXT)
     parser.add_argument(
+        "-j",
         "--json",
         action="store_true",
         dest="as_json",

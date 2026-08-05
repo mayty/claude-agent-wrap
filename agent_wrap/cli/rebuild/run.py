@@ -11,13 +11,14 @@ from agent_wrap.lib.argparsing import make_parser, parse_or_code
 if TYPE_CHECKING:
     import argparse
 
-USAGE = "[--full]"
+USAGE = "[-f|--full]"
 SUMMARY = "Rebuild Docker image"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("rebuild", usage_summary=USAGE)
     parser.add_argument(
+        "-f",
         "--full",
         action="store_true",
         help="Rebuild the base 'claude-agent' image first, then the project image.",

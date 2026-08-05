@@ -137,6 +137,24 @@ def test_window_is_passed_to_every_collaborator(stats: StatsService):
         assert (kwargs["from_iso"], kwargs["until_iso"]) == ("2026-07-01", "2026-07-20")
 
 
+def test_refresh_flag_is_passed_to_collaborators(stats: StatsService):
+    """``UsageArgs(refresh=True)`` re-fetches pricing in every scan path."""
+    stats.build_report([], UsageArgs(refresh=True))
+    for mock in (stats.scan_log_dirs, stats.aggregate_projects):
+        assert mock.call_args.kwargs["refresh_pricing_data"] is True  # pyrefly: ignore [missing-attribute]
+    for mock in (stats.aggregate_orphaned, stats.aggregate_archived_orphaned):
+        assert mock.call_args.kwargs["refresh_pricing_data"] is True  # pyrefly: ignore [missing-attribute]
+
+
+def test_no_refresh_flag_leaves_collaborators_alone(stats: StatsService):
+    """A plain run never asks for a pricing re-fetch."""
+    stats.build_report([], UsageArgs())
+    for mock in (stats.scan_log_dirs, stats.aggregate_projects):
+        assert mock.call_args.kwargs["refresh_pricing_data"] is False  # pyrefly: ignore [missing-attribute]
+    for mock in (stats.aggregate_orphaned, stats.aggregate_archived_orphaned):
+        assert mock.call_args.kwargs["refresh_pricing_data"] is False  # pyrefly: ignore [missing-attribute]
+
+
 def test_unrecorded_is_summed_across_models(stats: StatsService):
     stats.aggregate_projects.return_value = AggregateResult(  # pyrefly: ignore [missing-attribute]
         [], {"a/m1": _bucket(unrecorded=2), "a/m2": _bucket(unrecorded=3)}, {}, {}
