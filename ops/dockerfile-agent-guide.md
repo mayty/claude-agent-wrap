@@ -22,7 +22,10 @@ Set a literal name in the `# agent-name:` directive (lowercase, matching `[a-z0-
 - **`# agent-user: <username>`** — sets the container username (default `ubuntu`).
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens.
 - **`EXPOSE <port>`** — publishes ports on `127.0.0.1`.
-- **`ARG HOST_UID` / `ARG HOST_GID`** — build args for host-UID awareness.
+
+**Build args:** the wrapper always passes `HOST_UID` and `HOST_GID` to `docker build`.
+These are ordinary Dockerfile `ARG`s rather than wrapper directives — declare them with
+`ARG HOST_UID` / `ARG HOST_GID` if your build needs to read them.
 
 **Working directory:** must remain `WORKDIR /workspace` — do not change it.
 

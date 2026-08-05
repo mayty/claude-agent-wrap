@@ -1,0 +1,48 @@
+<!-- This file has been edited with the assistance of an AI tool. -->
+# LiteLLM Bedrock Provider
+
+Routes Claude Code through AWS Bedrock via its own LiteLLM sidecar.
+
+## Lifecycle
+
+The sidecar lifecycle is common to all LiteLLM providers — see [`providers/README.md`](../README.md).
+
+## Configuration
+
+| Item | Value |
+| --- | --- |
+| Image | `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79...` |
+| Master key prefix | `sk-aw-` |
+| Sidecar region | `us-east-1` (env: `AWS_REGION_NAME`) |
+| Sidecar container | `agent-wrap-litellm-bedrock` |
+| Agent base URL | `http://agent-wrap-litellm-bedrock:<port>/bedrock` |
+
+`<port>` is resolved when the sidecar starts (scanning upward from 48620) and recorded in the container as `AGENT_WRAP_SIDECAR_PORT`, so several providers' sidecars can run at once — see [`providers/README.md`](../README.md#sidecar-lifecycle).
+
+## Credentials
+
+The primary flow is the interactive prompt on the first `agent run` — this secret is required, so a TTY triggers a prompt when it's missing, and the value is stored encrypted in the secrets storage. Use `agent secrets set litellm-bedrock` / `check` / `clear` to manages it explicitly.
+
+The Bedrock key goes **only** to the sidecar. Inside the agent, `AWS_BEARER_TOKEN_BEDROCK` is the proxy's auto-generated master key.
+
+## Env vars
+
+Agent container (injected by `get_agent_env`):
+
+- `CLAUDE_CODE_USE_BEDROCK=1`
+- `AWS_REGION=us-east-1`
+- `AWS_BEARER_TOKEN_BEDROCK` — the sidecar's master key
+- `ANTHROPIC_BEDROCK_BASE_URL` — `http://agent-wrap-litellm-bedrock:<port>/bedrock`
+
+Sidecar container (injected by `get_sidecar_env`):
+
+- `AWS_BEARER_TOKEN_BEDROCK` — the user's actual AWS bearer token
+- `AWS_REGION_NAME=us-east-1`
+
+## Config
+
+See [`config.yaml`](config.yaml) for the LiteLLM proxy config — a Bedrock wildcard passthrough (`bedrock/*`) with master-key authentication. It also enables the shared request/response JSONL logging callback (`callback.file_logger_instance`).
+
+## Pricing
+
+Pricing used by `agent stats` is **live-scraped** from AWS's public Bedrock pricing page, cached for 7 days. If the scrape fails (page unreachable, or AWS changes the page's markup), it silently falls back to the stale cache, or to unknown/`$0` cost if no cache exists yet.

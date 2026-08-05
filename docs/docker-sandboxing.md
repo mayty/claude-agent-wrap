@@ -16,6 +16,7 @@ Every agent starts from `claude-agent`, built from [ops/Dockerfile](../ops/Docke
 | `wl-clipboard`, `xclip`, `imagemagick` | WSLg clipboard passthrough |
 | `curl`, `git`, `jq`, `file`, `ca-certificates` | Common utilities the agent may need |
 | `WORKDIR /workspace` | Default working directory inside the container |
+| `git config --system --add safe.directory /workspace` | Lets git operate on `/workspace` despite the UID/GID remapping described in [Build Args](#build-args) |
 | `ENTRYPOINT ["claude"]` | The container runs Claude Code by default |
 
 ## When to customize
@@ -54,9 +55,22 @@ The resulting image is tagged `claude-agent-<name>` and `agent run` will pick it
 
 If the base `claude-agent` image hasn't been built yet on this host, run `agent rebuild --full` once — it builds the base first, then the project image.
 
+`agent rebuild` always passes `--no-cache` to `docker build` — there is no Docker layer caching, so every `RUN` step re-executes on every rebuild.
+
+## Validating `Dockerfile.agent`
+
+Always run the validator after creating or editing `Dockerfile.agent`, before running `agent rebuild`:
+
+```bash
+/opt/agent-wrap/validate-dockerfile-agent              # validates ./Dockerfile.agent
+/opt/agent-wrap/validate-dockerfile-agent path/to/file  # validates specific file
+```
+
+It uses the `hadolint`/`crane` tools baked into the base image to catch mistakes `docker build` alone won't — most importantly, base images that don't contain the expected user. Exit codes: `0` pass (warnings allowed), `1` errors, `2` file missing. Fix any errors before rebuilding. See [dockerfile-agent-guide.md](../ops/dockerfile-agent-guide.md) for the full validator contract.
+
 ### Example
 
-See this project's own [Dockerfile.agent](../Dockerfile.agent), which installs the Python toolchain and `make` needed for development and testing on top of the base image.
+See this project's own [Dockerfile.agent](../Dockerfile.agent), which installs the Python toolchain and `make` needed for development and testing, then copies `pyproject.toml` and installs this package itself in dev mode on top of the base image.
 
 ## Recognized Directives
 

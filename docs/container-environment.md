@@ -17,25 +17,32 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 
 The active provider injects additional vars via its `get_agent_env()`, plus the connectivity flags its sidecar(s) supply to the agent's `docker run`. See the provider's README:
 
-- [litellm-bedrock](../agent_wrap/providers/litellm_bedrock/README.md)
-- [litellm-dashscope](../agent_wrap/providers/litellm_dashscope/README.md)
-- [litellm-deepseek](../agent_wrap/providers/litellm_deepseek/README.md)
+- [litellm-bedrock](../agent_wrap/domain/providers/litellm_bedrock/README.md)
+- [litellm-dashscope](../agent_wrap/domain/providers/litellm_dashscope/README.md)
+- [litellm-deepseek](../agent_wrap/domain/providers/litellm_deepseek/README.md)
+
+Separately from `get_agent_env()`, the LiteLLM sidecar layer itself (`agent_wrap/domain/sidecars/litellm.py`) appends `ANTHROPIC_CUSTOM_HEADERS` (carrying the `x-agent-wrap-log-prefix` header used for per-project log routing) to the agent container's env. It also sets two vars on the **sidecar** container (never the agent): `AGENT_WRAP_PROVIDER`, which routes that sidecar's records into its own subtree of the shared request/response log, and `AGENT_WRAP_SIDECAR_PORT`, the port the sidecar resolved at start time — recorded so later launches on the same provider adopt it instead of scanning again. None of the three is declared by a provider's own `get_agent_env()`; they're injected by the common sidecar wiring that every LiteLLM-based provider goes through.
+
+When the optional Telegram sidecar is active, it similarly injects `TELEGRAM_SIDECAR_URL` (and `TELEGRAM_SIDECAR_TOKEN`, when available) into the agent container. See [Telegram Notifications](telegram-notifications.md).
 
 ## Host-forwarded (conditional)
 
 | Var | When forwarded | Effect |
 | --- | --- | --- |
-| `CLAUDE_CODE_ENABLE_AUTO_MODE` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Allows the use of Claude Code's [auto mode](https://code.claude.com/docs/en/auto-mode-config), an LLM-based permission classifier that auto-approves commands instead of prompting. This only matters on backends that **don't** speak the Anthropic protocol — i.e. the default `litellm-bedrock` provider, where auto mode is unavailable unless this var is set. The `litellm-dashscope` and `litellm-deepseek` providers use the Anthropic interface, which makes auto mode available by default, so the var is a no-op there. |
 | `ENABLE_PROMPT_CACHING_1H` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Opts Claude Code into 1-hour prompt cache TTLs instead of the default 5-minute window, which can lower cost on long-running sessions. |
 
 ```sh
-# Allow auto mode (LLM permission classifier) on Bedrock
-CLAUDE_CODE_ENABLE_AUTO_MODE=1 agent run
-
 # Opt into 1-hour prompt caching
 ENABLE_PROMPT_CACHING_1H=1 agent run
 ```
 
 ## WSLg (conditional)
 
-On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. See [Clipboard / WSLg](wslg-clipboard.md).
+On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host shell; `XDG_RUNTIME_DIR` is set to `/mnt/wslg/runtime-dir`. The same `/mnt/wslg`-directory check that gates these vars also gates the `wl-paste-shim` mount described in [Volume Mounts](volume-mounts.md) — both fire together. See [Clipboard / WSLg](wslg-clipboard.md).
+
+## Injected settings (not env vars)
+
+Two entries are written into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch, both idempotently and both skipped if the file holds malformed JSON:
+
+- **`statusLine`** — points at `/opt/agent-wrap/statusline.py`, the bundled two-line status line. It shows the model and remaining context on one line, and today's token usage plus an available-update notice on the other.
+- **Telegram hooks** — three entries pointing at `/opt/agent-wrap/telegram-notify.sh`, added only once the Telegram secrets are set. See [Telegram Notifications](telegram-notifications.md).

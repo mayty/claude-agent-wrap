@@ -1,9 +1,9 @@
 # This file has been created with the assistance of an AI tool.
 # agent-wrap QA targets.
-# Strict targets (for CI): lintcheck format-check test typecheck markdown-check check-executables
+# Strict targets (for CI): lintcheck format-check test typecheck markdown-check arch-check check-executables
 # Fix targets (for dev):    lint, format
 
-.PHONY: test lint lintcheck format format-check typecheck markdown-check check-executables gen-completion completion-check check
+.PHONY: test lint lintcheck format format-check typecheck markdown-check arch-check check-executables check
 
 # Files that MUST be executable. Hardcoded on purpose: deriving the list from
 # git's recorded modes would be circular — a dropped bit flips git to 100644
@@ -31,13 +31,8 @@ typecheck:
 markdown-check:
 	python3 scripts/validate-markdown-links.py
 
-# Regenerate the git-tracked bash completion data from command-module USAGE.
-gen-completion:
-	python3 scripts/gen-bash-completion.py
-
-# Fail if the committed completion data is stale (drift guard for `make check`).
-completion-check:
-	python3 scripts/gen-bash-completion.py --check
+arch-check:
+	python3 scripts/validate-architecture.py
 
 # Fail if any required executable lost its executable bit. Checks BOTH the
 # working-tree filesystem bit (so PATH invocation works locally) AND git's
@@ -62,4 +57,4 @@ check-executables:
 		exit 1; \
 	fi
 
-check: lintcheck format-check test typecheck markdown-check check-executables completion-check
+check: lintcheck format-check test typecheck markdown-check arch-check check-executables

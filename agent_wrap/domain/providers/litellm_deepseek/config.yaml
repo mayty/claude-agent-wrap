@@ -1,0 +1,25 @@
+# This file has been created with the assistance of an AI tool.
+#
+# LiteLLM proxy config for the agent-wrap shared sidecar.
+#
+# DeepSeek passthrough. The proxy authenticates the inbound
+# request against ${LITELLM_MASTER_KEY} and uses its own 
+# DEEPSEEK_API_KEY env var to reach DeepSeek upstream.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+# Log every request/response to a JSONL file (mounted from the host by the
+# provider lifecycle). See litellm_runtime/callback.py.
+litellm_settings:
+  callbacks: callback.file_logger_instance
+
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "anthropic/*"
+      api_base: https://api.deepseek.com/anthropic
+      api_key: os.environ/DEEPSEEK_API_KEY
+    model_info:  # Model pricing info not mapped on LiteLLM side, so pass 0 to avoid tracebacks
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0

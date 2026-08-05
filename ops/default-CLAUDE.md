@@ -5,9 +5,9 @@
 
 You are running inside a Docker container managed by the `agent-wrap` tooling. Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
 
-Within the Claude home directory (`$HOME/.claude/`), most paths are shared across all projects. A specific set are overlaid with per-project mounts from `$(pwd)/.claude/<subdir>/` on the host — `sessions`, `session-state`, `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`, and the files `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`. Content you write under those paths is visible only within this project.
+Within the Claude home directory (`$HOME/.claude/`), most paths are shared across all projects. A specific set are overlaid with per-project mounts from `$(pwd)/.claude/<subdir>/` on the host — `sessions`, `memory`, `session-state`, `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`, and the files `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`. Content you write under those paths is visible only within this project.
 
-The wrapper's own source is mounted read-only at `/opt/agent-wrap/`. Consult these files as the source of truth if guidance below is ambiguous.
+The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Dockerfile` (the base image), `default-CLAUDE.md` (this file), `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, and `wl-paste-shim`. Consult those when guidance below is ambiguous. The wrapper's Python source is **not** mounted — it stays on the host.
 
 **Important:** You always run as a non-root user and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 
