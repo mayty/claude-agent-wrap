@@ -4,7 +4,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Final
 
-from agent_wrap.lib.daytime import local_utc_offset_hours
+from agent_wrap.lib.daytime import local_utc_offset_hours, utc_offset_hours_for_tz
 
 # Minimum sys.argv length for a valid CLI invocation (program name + verb).
 MIN_ARGS = 2
@@ -77,18 +77,21 @@ HOURS_PER_DAY = 24
 
 def _parsed_day_start_hours() -> int:
     raw = os.environ.get("AGENT_DAY_START_UTC")
-    if not raw:
-        return -local_utc_offset_hours()
-    value = int(raw)  # raises ValueError on malformed input -- let it propagate
-    if abs(value) >= HOURS_PER_DAY:
-        msg = f"AGENT_DAY_START_UTC must satisfy -24 < value < 24, got {value!r}"
-        raise ValueError(msg)
-    return value
+    if raw:
+        value = int(raw)  # raises ValueError on malformed input -- let it propagate
+        if abs(value) >= HOURS_PER_DAY:
+            msg = f"AGENT_DAY_START_UTC must satisfy -24 < value < 24, got {value!r}"
+            raise ValueError(msg)
+        return value
+    tz_name = os.environ.get("AGENT_TIMEZONE")
+    if tz_name:
+        return -utc_offset_hours_for_tz(tz_name)  # raises on an unknown zone -- let it propagate
+    return -local_utc_offset_hours()
 
 
 # Hours past UTC midnight at which a stats "day" begins (may be negative, but
-# must satisfy -24 < value < 24). Defaults to the host's local midnight;
-# override with AGENT_DAY_START_UTC.
+# must satisfy -24 < value < 24). Defaults to the host's local midnight, or
+# AGENT_TIMEZONE's midnight if set; override either with AGENT_DAY_START_UTC.
 DAY_START_HOURS = _parsed_day_start_hours()
 
 # Recognised usage-source tags stamped onto records by the callback.

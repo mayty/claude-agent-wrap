@@ -16,11 +16,13 @@ top-right segment instead shows the five-hour subscription rate-limit window as
 a bar: "Usage (resets at HH:MM): [bar]". Bar color is a linear extrapolation of
 current usage to the window's reset time — green (>=10% headroom projected),
 yellow (<10%), red (projected or actual overshoot). The label itself turns red
-once the limit is actually hit.
+once the limit is actually hit. The reset time is shown in `AGENT_TIMEZONE`
+when set (falling back to the container's own local time otherwise).
 """
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -31,8 +33,10 @@ import subprocess
 import sys
 import termios
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 CACHE = Path.home() / ".cache" / "claude-latest-version"
 REFRESH_AFTER_SECONDS = 6 * 3600
@@ -137,11 +141,8 @@ def context_segment(data: dict[str, Any]) -> str:
         color = YELLOW
     else:
         color = GREEN
-    session_id = data.get('session_id')
-    if session_id:
-        suffix = f" · {session_id}"
-    else:
-        suffix = ""
+    session_id = data.get("session_id")
+    suffix = f" · {session_id}" if session_id else ""
     return f"{color}{used:.0f}% context{RESET}{suffix}"
 
 
@@ -206,6 +207,15 @@ def _render_bar(used_pct: float, color: str) -> str:
     return f"{BAR_BG}{color}{chars}{RESET}"
 
 
+def _reset_time_str(resets_at: float) -> str:
+    """Format *resets_at* as HH:MM in AGENT_TIMEZONE, falling back to local time."""
+    tz_name = os.environ.get("AGENT_TIMEZONE")
+    if tz_name:
+        with contextlib.suppress(Exception):  # statusline must never crash the parent
+            return datetime.fromtimestamp(resets_at, tz=ZoneInfo(tz_name)).strftime("%H:%M")
+    return time.strftime("%H:%M", time.localtime(resets_at))
+
+
 def rate_limit_segment(data: dict[str, Any]) -> str:
     rate_limits_data = data.get("rate_limits")
     if not rate_limits_data:
@@ -220,7 +230,7 @@ def rate_limit_segment(data: dict[str, Any]) -> str:
     if resets_at is None:
         return f"{RED}NO `resets_at` DATA{RESET}"
 
-    reset_local = time.strftime("%H:%M", time.localtime(resets_at))
+    reset_local = _reset_time_str(resets_at)
     window_start = resets_at - RATE_LIMIT_WINDOW_SECONDS
     elapsed_fraction = min(max(time.time() - window_start, 1.0) / RATE_LIMIT_WINDOW_SECONDS, 1.0)
     projected = used / elapsed_fraction  # linear extrapolation to the reset point

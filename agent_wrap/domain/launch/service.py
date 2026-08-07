@@ -261,7 +261,7 @@ class LaunchService:
             "-e",
             f"HOME={claude_home}",
         ]
-        for flag in ("ENABLE_PROMPT_CACHING_1H",):
+        for flag in ("ENABLE_PROMPT_CACHING_1H", "AGENT_TIMEZONE"):
             flag_value = os.environ.get(flag, None)
             if flag_value is None:
                 continue

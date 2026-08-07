@@ -66,6 +66,7 @@ def _report(
     queued: list[str] | None = None,
     day_start_hours: int = -3,
     day_start_overridden: bool = True,
+    day_start_timezone: str | None = None,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -104,6 +105,7 @@ def _report(
             host_network_effective=False,
             day_start_hours=day_start_hours,
             day_start_overridden=day_start_overridden,
+            day_start_timezone=day_start_timezone,
         ),
         storage=StorageRow(logs_bytes=1_033_465_471, projects_registered=24, projects_stale=2),
     )
@@ -409,6 +411,16 @@ def test_day_boundary_drops_the_sign_at_zero(
     out = _stdout(display_mock_service)
     assert "0h UTC" in out
     assert "+0h" not in out
+
+
+def test_day_boundary_notes_agent_timezone_when_that_is_the_source(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        day_start_hours=-2, day_start_overridden=False, day_start_timezone="Europe/Warsaw"
+    )
+    run([])
+    assert "-2h UTC (AGENT_TIMEZONE=Europe/Warsaw)" in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("inspect_mock")

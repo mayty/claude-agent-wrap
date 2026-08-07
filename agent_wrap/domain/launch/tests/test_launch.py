@@ -299,6 +299,22 @@ def test_build_env_args_prompt_caching_set(
     assert "ENABLE_PROMPT_CACHING_1H=1" in result
 
 
+def test_build_env_args_timezone_unset(
+    monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
+) -> None:
+    monkeypatch.delenv("AGENT_TIMEZONE", raising=False)
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
+    assert not any(arg.startswith("AGENT_TIMEZONE=") for arg in result)
+
+
+def test_build_env_args_timezone_set(
+    monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
+) -> None:
+    monkeypatch.setenv("AGENT_TIMEZONE", "Europe/Warsaw")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
+    assert "AGENT_TIMEZONE=Europe/Warsaw" in result
+
+
 def test_build_volume_mounts_basic(tmp_path: Path, launch_svc: LaunchService) -> None:
     global_config = tmp_path / "config"
     global_config.mkdir()

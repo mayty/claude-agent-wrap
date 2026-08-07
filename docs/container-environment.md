@@ -36,6 +36,7 @@ When the optional Telegram sidecar is active, it similarly injects `TELEGRAM_SID
 | Var | When forwarded | Effect |
 | --- | --- | --- |
 | `ENABLE_PROMPT_CACHING_1H` | Only when set in the host shell — forwarded verbatim (including `0`/empty) so you can both allow and explicitly disallow it. | Opts Claude Code into 1-hour prompt cache TTLs instead of the default 5-minute window, which can lower cost on long-running sessions. |
+| `AGENT_TIMEZONE` | Only when set in the host shell. | An IANA zone name (e.g. `Europe/Warsaw`) the bundled statusline reads to show the `litellm-anthropic-sub` subscription "resets at HH:MM" time in that zone instead of the container's own local time. Also used host-side for the stats day boundary — see [`AGENT_TIMEZONE`](configuration.md#agent_timezone-display-timezone). |
 
 ```sh
 # Opt into 1-hour prompt caching

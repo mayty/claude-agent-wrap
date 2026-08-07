@@ -37,6 +37,7 @@ from agent_wrap.domain.status.constants import (
     DAY_START_ENV,
     DOCKER_UNREACHABLE,
     HOST_NETWORK_ENV,
+    TIMEZONE_ENV,
 )
 from agent_wrap.domain.status.models import (
     AgentRow,
@@ -208,6 +209,8 @@ class InspectService:
         silently ignored off WSL, which otherwise looks like the setting not working.
         """
         requested = is_truthy_env(os.environ.get(HOST_NETWORK_ENV, ""))
+        day_start_overridden = bool(os.environ.get(DAY_START_ENV))
+        day_start_timezone = None if day_start_overridden else os.environ.get(TIMEZONE_ENV) or None
         image_present = docker_up and docker_utils.image_exists(BASE_IMAGE_NAME)
         version: str | None = None
         latest_version: str | None = None
@@ -225,7 +228,8 @@ class InspectService:
             host_network_requested=requested,
             host_network_effective=requested and docker_utils.is_wsl(),
             day_start_hours=DAY_START_HOURS,
-            day_start_overridden=bool(os.environ.get(DAY_START_ENV)),
+            day_start_overridden=day_start_overridden,
+            day_start_timezone=day_start_timezone,
         )
 
     def _storage_row(self) -> StorageRow:
