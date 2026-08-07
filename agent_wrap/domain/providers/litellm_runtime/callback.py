@@ -426,6 +426,7 @@ def _resolve_thinking_reasoning_conflict(data: dict[str, Any]) -> dict[str, Any]
 
 try:
     # litellm is only installed inside the sidecar container, not the dev env.
+    import litellm  # pyrefly: ignore[missing-import]
     from litellm.integrations.custom_logger import CustomLogger  # pyrefly: ignore[missing-import]
 
     class FileLogger(CustomLogger):
@@ -438,8 +439,50 @@ try:
             data: dict[str, Any],
             call_type: str,  # noqa: ARG002
         ) -> dict[str, Any]:
-            """Resolve provider-specific parameter conflicts before the upstream call."""
+            """
+            Resolve provider-specific parameter conflicts before the upstream call.
+
+            Not called on LiteLLM's /anthropic/* passthrough route, which the
+            litellm-anthropic-sub provider uses. That is harmless rather than an
+            oversight: the conflict resolved here is rejected by DeepSeek's
+            Anthropic-compatible API, not by Anthropic's own.
+            """
             return _resolve_thinking_reasoning_conflict(data)
+
+        async def async_post_call_failure_hook(
+            self,
+            request_data: dict[str, Any],
+            original_exception: Exception,
+            user_api_key_dict,  # noqa: ARG002  # pyrefly: ignore [implicit-any-parameter]
+            traceback_str: str | None = None,  # noqa: ARG002
+        ) -> None:
+            """
+            Record failures raised on LiteLLM's passthrough routes.
+
+            The router-based routes report failures via ``async_log_failure_event``,
+            but a non-2xx on a passthrough route (``/anthropic/*``) raises an
+            HTTPException that LiteLLM surfaces through ``post_call_failure_hook``
+            instead. Without this hook, upstream errors on that route would be
+            absent from ``messages.jsonl`` entirely — silently, which is the worst
+            way for a request log to be wrong.
+
+            ``request_data`` carries the same ``litellm_params`` /
+            ``proxy_server_request`` shape ``build_record`` reads elsewhere.
+            """
+            record = build_record(
+                request_data,
+                None,
+                status="failure",
+                exc=original_exception,
+            )
+            try:
+                await _write_record_async(record, request_data)
+            except Exception as e:  # noqa: BLE001 - logging is best-effort
+                print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
+            try:
+                _write_metadata(record, request_data)
+            except Exception as e:  # noqa: BLE001 - logging is best-effort
+                print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
 
         async def async_log_success_event(
             self,
@@ -457,6 +500,28 @@ try:
             )
             await _write_record_async(record, kwargs)
             _write_metadata(record, kwargs)
+
+        async def async_log_stream_event(
+            self,
+            kwargs,  # pyrefly: ignore [implicit-any-parameter]
+            response_obj,  # pyrefly: ignore [implicit-any-parameter]
+            start_time,  # pyrefly: ignore [implicit-any-parameter]
+            end_time,  # pyrefly: ignore [implicit-any-parameter]
+        ) -> None:
+            """
+            Record a streaming call that LiteLLM routed away from the success hook.
+
+            LiteLLM's CustomLogger dispatch calls this instead of
+            ``async_log_success_event`` when ``stream`` is true and
+            ``model_call_details`` has no ``async_complete_streaming_response``. The
+            base-class implementation is a bare ``pass``, so any request taking that
+            branch would be dropped from the log without a trace.
+
+            Both routes we use populate that key before dispatching, so this is a
+            safety net for a branch we do not expect to hit — not dead code, given
+            how quietly the alternative fails.
+            """
+            await self.async_log_success_event(kwargs, response_obj, start_time, end_time)
 
         async def async_log_failure_event(
             self,
@@ -484,6 +549,33 @@ try:
                 print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
 
     file_logger_instance = FileLogger()
+
+    # Register for SUCCESS logging here rather than from config.yaml, because no
+    # config key can do it:
+    #
+    #   - `litellm_settings: callbacks:` only populates litellm.callbacks. That is
+    #     the list post_call_failure_hook iterates, so config alone gets us failures
+    #     and nothing else.
+    #   - Successes are dispatched by Logging.async_success_handler, which reads
+    #     litellm._async_success_callback. On the router path function_setup() copies
+    #     litellm.callbacks into that list; the /anthropic/* passthrough route never
+    #     calls function_setup, so it stays empty and every success is dropped.
+    #   - `litellm_settings: success_callback:` does NOT reach that list either: it
+    #     goes through add_litellm_success_callback, which only routes to the async
+    #     list when _is_async_callable(cb) is true. That resolves cb.__call__, and a
+    #     CustomLogger *instance* has none — so it lands in the sync success_callback
+    #     list, which is then skipped for passthrough anyway (success_handler excludes
+    #     call_type == "pass_through_endpoint", and the sync gate filters out every
+    #     CustomLogger instance).
+    #
+    # add_litellm_async_success_callback appends directly with no such gate.
+    #
+    # Safe to run on every load even though LiteLLM's get_instance_fn re-execs this
+    # module (spec_from_file_location + exec_module, never registered in sys.modules)
+    # and so mints a *distinct* instance each time: _add_custom_logger_to_list dedups
+    # by class name plus public scalar attrs, and FileLogger is stateless, so repeat
+    # registrations of a different object are still skipped.
+    litellm.logging_callback_manager.add_litellm_async_success_callback(file_logger_instance)
 except ImportError:
     # litellm isn't installed in this interpreter (e.g. running the repo's unit
     # tests). build_record stays importable; the callback instance is absent.

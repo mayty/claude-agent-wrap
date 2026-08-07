@@ -55,7 +55,7 @@ Subclass `Provider` (`agent_wrap/domain/providers/base.py`) and override:
 | `name` (class attr) | The `AGENT_PROVIDER` value. Must be a lowercase slug (`[a-z0-9-]+`): it becomes the sidecar's container name and the `<provider>` log-path segment, which `litellm_runtime/callback.py` validates. |
 | `image` (class attr) | Pinned container image (tag + digest) |
 | `master_key_prefix` (class attr) | Prefix for the auto-generated master key, per provider (e.g. `sk-aw-` for Bedrock, `sk-ds-` for DashScope/DeepSeek) |
-| `secret_description` (class attr) | Human-readable description of the upstream credential. Drives `required_secrets()`, which returns `[("api_key", secret_description)]` — leave empty for an upstream needing no secret. |
+| `secret_description` (class attr) | Human-readable description of the upstream credential. Drives `required_secrets()`, which returns `[("api_key", secret_description)]` — leave empty for an upstream needing no secret, or when the credential the agent needs is one it already holds itself (e.g. an existing OAuth login) rather than a string this provider could store. |
 | `get_sidecar_env(secrets)` | Env vars for the sidecar container. *secrets* is keyed by the names `required_secrets()` declared, so read the upstream key from `secrets["api_key"]`. |
 | `get_agent_env(master_key, base_url)` | Env vars for the agent container. *base_url* already carries the container name and the resolved port — never hard-code either. |
 | `on_started(master_key)` / `on_stopping(master_key)` (optional) | Run once when the sidecar starts/stops — e.g. approve/un-approve the master key in `.claude.json`. Default no-op. |

@@ -7,16 +7,22 @@ These vars are set by the wrapper on every `docker run`, regardless of provider 
 
 | Var | Value |
 | --- | --- |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `1` |
 | `AGENT_INSTANCE_ID` | `<agent-name>-<uuid>` — also the value of the `agent-wrap.instance-id` Docker label; the container itself is named `claude-agent-<agent-name>-<uuid>` |
 | `AGENT_NAME` | from `# agent-name:` or sanitized project dir |
 | `HOME` | `/home/<agent-user>` (default `/home/ubuntu`) |
 | `TERM`, `COLORTERM` | forwarded from host shell, defaulting to `xterm-256color` / `truecolor` if unset |
 
+## Provider-dependent vars
+
+| Var | When set | Effect |
+| --- | --- | --- |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` / `DISABLE_AUTOUPDATER` | `_build_env_args` picks one of the two, mutually exclusive, based on `Provider.disable_nonessential_traffic` (default `True`) | Every provider except `litellm-anthropic-sub` gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which disables Datadog telemetry and feature-flag evaluation against Anthropic's backend. `litellm-anthropic-sub` opts out (`disable_nonessential_traffic = False`) because its users rely on that same evaluation for `/usage` and other Anthropic-backed feature checks; `_build_env_args` sets `DISABLE_AUTOUPDATER=1` for it instead, to keep the baked-in CLI from trying to self-update. |
+
 ## Provider-injected vars
 
 The active provider injects additional vars via its `get_agent_env()`, plus the connectivity flags its sidecar(s) supply to the agent's `docker run`. See the provider's README:
 
+- [litellm-anthropic-sub](../agent_wrap/domain/providers/litellm_anthropic_sub/README.md)
 - [litellm-bedrock](../agent_wrap/domain/providers/litellm_bedrock/README.md)
 - [litellm-dashscope](../agent_wrap/domain/providers/litellm_dashscope/README.md)
 - [litellm-deepseek](../agent_wrap/domain/providers/litellm_deepseek/README.md)

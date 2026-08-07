@@ -242,12 +242,25 @@ def test_build_wslg_args_present(
 
 
 def test_build_env_args_basic(launch_svc: LaunchService) -> None:
-    result = launch_svc._build_env_args("myagent", "myagent-uuid", "/home/ubuntu")
+    result = launch_svc._build_env_args(
+        "myagent", "myagent-uuid", "/home/ubuntu", disable_nonessential_traffic=True
+    )
     assert "-e" in result
     assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in result
+    assert not any(arg.startswith("DISABLE_AUTOUPDATER=") for arg in result)
     assert "AGENT_NAME=myagent" in result
     assert "AGENT_INSTANCE_ID=myagent-uuid" in result
     assert "HOME=/home/ubuntu" in result
+
+
+def test_build_env_args_nonessential_traffic_disabled_sets_autoupdater(
+    launch_svc: LaunchService,
+) -> None:
+    result = launch_svc._build_env_args(
+        "myagent", "myagent-uuid", "/home/ubuntu", disable_nonessential_traffic=False
+    )
+    assert not any(arg.startswith("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=") for arg in result)
+    assert "DISABLE_AUTOUPDATER=1" in result
 
 
 def test_build_env_args_term_defaults(
@@ -255,7 +268,7 @@ def test_build_env_args_term_defaults(
 ) -> None:
     monkeypatch.delenv("TERM", raising=False)
     monkeypatch.delenv("COLORTERM", raising=False)
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert "TERM=xterm-256color" in result
     assert "COLORTERM=truecolor" in result
 
@@ -265,7 +278,7 @@ def test_build_env_args_term_from_env(
 ) -> None:
     monkeypatch.setenv("TERM", "screen")
     monkeypatch.setenv("COLORTERM", "16color")
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert "TERM=screen" in result
     assert "COLORTERM=16color" in result
 
@@ -274,7 +287,7 @@ def test_build_env_args_prompt_caching_unset(
     monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
 ) -> None:
     monkeypatch.delenv("ENABLE_PROMPT_CACHING_1H", raising=False)
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert not any(arg.startswith("ENABLE_PROMPT_CACHING_1H=") for arg in result)
 
 
@@ -282,7 +295,7 @@ def test_build_env_args_prompt_caching_set(
     monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
 ) -> None:
     monkeypatch.setenv("ENABLE_PROMPT_CACHING_1H", "1")
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert "ENABLE_PROMPT_CACHING_1H=1" in result
 
 

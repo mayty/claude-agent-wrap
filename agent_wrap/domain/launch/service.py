@@ -113,6 +113,7 @@ class LaunchService:
             sidecars, per_sidecar_secrets, telegram_available = self._assemble_sidecars(
                 agent_name, instance_id, headless=headless
             )
+            provider = self._provider_service.get_provider()
         except ProviderNotFoundError as e:
             self._display.error(str(e))
             return 1
@@ -143,7 +144,12 @@ class LaunchService:
                 *docker_utils.get_tty_args(),
                 *docker_utils.get_user_args(),
                 *self._build_volume_mounts(claude_home),
-                *self._build_env_args(agent_name, instance_id, claude_home),
+                *self._build_env_args(
+                    agent_name,
+                    instance_id,
+                    claude_home,
+                    disable_nonessential_traffic=provider.disable_nonessential_traffic,
+                ),
                 *self._build_agent_labels(instance_id),
                 *self._build_wslg_args(),
                 *provider_run_args,
@@ -231,11 +237,19 @@ class LaunchService:
         agent_name: str,
         instance_id: str,
         claude_home: str,
+        *,
+        disable_nonessential_traffic: bool,
     ) -> list[str]:
         """Build -e flags for the docker run command."""
+        disabler_flag = (
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+            if disable_nonessential_traffic
+            else "DISABLE_AUTOUPDATER"
+        )
+
         args = [
             "-e",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            f"{disabler_flag}=1",
             "-e",
             f"AGENT_NAME={agent_name}",
             "-e",

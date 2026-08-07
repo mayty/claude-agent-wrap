@@ -5,6 +5,12 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.9.0](releases/0.9.0.md) — 2026-08-07
+
+Adds a `litellm-anthropic-sub` provider that routes Claude Code through Anthropic's own
+API (via subscription),
+authenticated once via an in-container `/login` rather than a stored secret.
+
 ## [0.8.0](releases/0.8.0.md) — 2026-08-05
 
 Adds `agent secrets` for managing encrypted sidecar credentials, `agent cleanup`

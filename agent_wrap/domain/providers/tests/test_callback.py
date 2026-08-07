@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
 import tempfile
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +18,7 @@ import pytest
 _RUNTIME_DIR = Path(__file__).parent.parent / "litellm_runtime"
 
 
-def _import_runtime_module(name: str):
+def _import_runtime_module(name: str) -> Any:
     """
     Import a module from the (non-package) litellm_runtime/ directory.
 
@@ -789,3 +791,172 @@ def test_resolve_conflict_only_modifies_effort_in_output_config() -> None:
     assert result["max_tokens"] == 512
     assert result["temperature"] == 0.7
     assert result["thinking"] == {"type": "disabled"}
+
+
+def _load_callback_with_stub_litellm(tmp_path: Path) -> Any:
+    """
+    Re-import callback.py with a stub ``litellm`` so ``FileLogger`` is defined.
+
+    The real ``litellm`` is only installed inside the sidecar container, so in the
+    dev env ``callback.py`` takes its ImportError branch and ``FileLogger`` never
+    exists. Supplying a minimal ``CustomLogger`` base lets the hooks be exercised
+    for real rather than asserted about indirectly. The log root is redirected to
+    *tmp_path* so nothing touches /var/log.
+    """
+    litellm_mod = types.ModuleType("litellm")
+    integrations = types.ModuleType("litellm.integrations")
+    custom_logger = types.ModuleType("litellm.integrations.custom_logger")
+
+    class _CustomLogger:
+        pass
+
+    class _RecordingCallbackManager:
+        """Records what callback.py registers, so the wiring can be asserted."""
+
+        def __init__(self) -> None:
+            self.async_success: list[Any] = []
+
+        def add_litellm_async_success_callback(self, callback: Any) -> None:
+            self.async_success.append(callback)
+
+    custom_logger.CustomLogger = _CustomLogger  # pyrefly: ignore [missing-attribute]
+    litellm_mod.logging_callback_manager = _RecordingCallbackManager()  # pyrefly: ignore [missing-attribute]
+    saved = {
+        name: sys.modules.get(name)
+        for name in ("litellm", "litellm.integrations", "litellm.integrations.custom_logger")
+    }
+    sys.modules["litellm"] = litellm_mod
+    sys.modules["litellm.integrations"] = integrations
+    sys.modules["litellm.integrations.custom_logger"] = custom_logger
+    mod: Any
+    try:
+        mod = _import_runtime_module("callback")
+    finally:
+        for name, original in saved.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
+        # Restore the module-under-test that the rest of this file shares.
+        sys.modules["callback"] = _callback
+
+    def _log_dir(kwargs: dict[str, Any]) -> Path:
+        return tmp_path / _callback._get_session_id(kwargs)
+
+    mod._get_log_dir = _log_dir
+    # Expose the stub manager so tests can assert what got registered.
+    mod._test_callback_manager = litellm_mod.logging_callback_manager
+    return mod
+
+
+def test_post_call_failure_hook_writes_a_failure_record(tmp_path: Path) -> None:
+    """
+    A non-2xx on LiteLLM's /anthropic/* passthrough route arrives here, not at
+    async_log_failure_event. Without this hook those errors — including the 429s
+    Anthropic returns for unrecognized traffic — would be missing from
+    messages.jsonl entirely.
+    """
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    request_data = {
+        "model": "claude-sonnet-5",
+        "litellm_params": {
+            "proxy_server_request": {
+                "url": "/anthropic/v1/messages",
+                "method": "POST",
+                "headers": {"x-claude-code-session-id": "sess-fail"},
+                "body": {"model": "claude-sonnet-5"},
+            }
+        },
+    }
+
+    asyncio.run(
+        mod.file_logger_instance.async_post_call_failure_hook(
+            request_data=request_data,
+            original_exception=RuntimeError("429 Too Many Requests"),
+            user_api_key_dict=None,
+        )
+    )
+
+    log_file = tmp_path / "sess-fail" / "messages.jsonl"
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["status"] == "failure"
+    assert record["error"] == "429 Too Many Requests"
+    assert record["model"] == "claude-sonnet-5"
+    assert record["request"]["url"] == "/anthropic/v1/messages"
+
+
+def test_post_call_failure_hook_counts_the_record_in_metadata(tmp_path: Path) -> None:
+    """meta.json must count passthrough failures like any other logged call."""
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    request_data = {
+        "model": "claude-sonnet-5",
+        "litellm_params": {
+            "proxy_server_request": {
+                "headers": {"x-claude-code-session-id": "sess-meta"},
+            }
+        },
+    }
+
+    asyncio.run(
+        mod.file_logger_instance.async_post_call_failure_hook(
+            request_data=request_data,
+            original_exception=RuntimeError("boom"),
+            user_api_key_dict=None,
+        )
+    )
+
+    meta = json.loads((tmp_path / "sess-meta" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["count"] == 1
+    assert meta["models"] == ["claude-sonnet-5"]
+
+
+def test_log_stream_event_writes_a_success_record(tmp_path: Path) -> None:
+    """
+    LiteLLM routes streaming calls here instead of async_log_success_event when
+    model_call_details lacks async_complete_streaming_response. The base-class hook
+    is a bare ``pass``, so an unimplemented override would drop those calls from the
+    log silently.
+    """
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    kwargs = {
+        "model": "claude-sonnet-5",
+        "litellm_params": {
+            "proxy_server_request": {
+                "url": "/anthropic/v1/messages",
+                "headers": {"x-claude-code-session-id": "sess-stream"},
+            }
+        },
+    }
+
+    asyncio.run(
+        mod.file_logger_instance.async_log_stream_event(
+            kwargs=kwargs,
+            response_obj={"usage": {"input_tokens": 11, "output_tokens": 22}},
+            start_time=datetime(2026, 8, 7, 13, 0, 0, tzinfo=timezone.utc),
+            end_time=datetime(2026, 8, 7, 13, 0, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    log_file = tmp_path / "sess-stream" / "messages.jsonl"
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["status"] == "success"
+    assert record["model"] == "claude-sonnet-5"
+    # Usage must survive: agent stats reads it for token accounting.
+    assert record["response"]["usage"]["input_tokens"] == 11
+
+
+def test_import_registers_logger_for_async_success(tmp_path: Path) -> None:
+    """
+    Successes are dispatched from litellm._async_success_callback, and callback.py must
+    register itself there at import time.
+
+    No config key can do this. `litellm_settings: callbacks:` only fills
+    litellm.callbacks (failures only), and `success_callback:` routes through
+    _is_async_callable — which is False for a CustomLogger instance, because it has no
+    __call__ — so it lands in the sync list that passthrough requests skip. Losing this
+    registration silently drops every successful request from the log while failures keep
+    appearing, which reads as "working" rather than as broken logging.
+    """
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    registered = mod._test_callback_manager.async_success
+    assert registered == [mod.file_logger_instance]
