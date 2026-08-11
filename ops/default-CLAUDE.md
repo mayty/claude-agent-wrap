@@ -3,9 +3,11 @@
 
 ## Environment
 
-You are running inside a Docker container managed by the `agent-wrap` tooling. Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
+You are running inside a Docker container managed by the `agent-wrap` tooling. Filesystem changes inside the container are discarded when it exits — only `/workspace`, the Claude home directory, and the two mounts named below persist.
 
 Within the Claude home directory (`$HOME/.claude/`), most paths are shared across all projects. A specific set are overlaid with per-project mounts from `$(pwd)/.claude/<subdir>/` on the host — `sessions`, `memory`, `session-state`, `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`, and the files `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`. Content you write under those paths is visible only within this project.
+
+Two per-project mounts sit outside that directory: your session scratchpad (under `/tmp/claude-<uid>/`, from host `.claude/claude-tmp/`) and the MCP server logs (`~/.cache/claude-cli-nodejs/-workspace/`, from host `.claude/mcp-logs/`). The scratchpad therefore survives the container — files you leave there are still present if this session is later resumed. Everything else under `/tmp` and `~/.cache` is discarded.
 
 The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Dockerfile` (the base image), `default-CLAUDE.md` (this file), `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, and `wl-paste-shim`. Consult those when guidance below is ambiguous. The wrapper's Python source is **not** mounted — it stays on the host.
 

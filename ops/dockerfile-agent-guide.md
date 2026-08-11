@@ -19,7 +19,7 @@ Set a literal name in the `# agent-name:` directive (lowercase, matching `[a-z0-
 ## Directives
 
 - **`# agent-name: <name>`** (required) — names the image `claude-agent-<name>`.
-- **`# agent-user: <username>`** — sets the container username (default `ubuntu`).
+- **`# agent-user: <username>`** — sets the container username (default `ubuntu`). Such an image must also `mkdir -p /home/<username>/.cache/claude-cli-nodejs` and `chown` it to that user, or the MCP log bind mount will land on `root`-owned parent directories the agent cannot write.
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens.
 - **`EXPOSE <port>`** — publishes ports on `127.0.0.1`.
 

@@ -35,6 +35,32 @@ The following subdirectories and files are mapped to the same path on both sides
 - **Directories**: `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`
 - **Files**: `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`
 
+Two further per-project mounts land **outside** the Claude home directory:
+
+| Host | Container |
+| --- | --- |
+| `$(pwd)/.claude/claude-tmp` | `/tmp/claude-<uid>` |
+| `$(pwd)/.claude/mcp-logs` | `/home/<user>/.cache/claude-cli-nodejs/-workspace` |
+
+`claude-tmp` carries Claude Code's per-session temp tree — `<session-uuid>/scratchpad/` (where the
+agent is told to put all temporary files) and `<session-uuid>/tasks/` (background-command output
+buffers, plus symlinks to subagent transcripts). Without it, a resumed session's transcript refers
+to scratchpad paths that no longer exist. `scratchpad/` and `tasks/` sit under a session UUID minted
+at runtime, so they cannot be given separate bind mounts; the tree is mounted as one unit.
+
+`<uid>` is the container's *effective* UID — `0` under rootless Docker, your host UID otherwise —
+matching the `--user` flag described in [Notes](#notes).
+
+`mcp-logs` carries each MCP server's stderr log, so a failing MCP server can be diagnosed after the
+container exits. The base image pre-creates `~/.cache/claude-cli-nodejs` owned by the agent user:
+Docker materializes missing bind-mount *parents* as `root:root`, which would otherwise leave the
+agent unable to write anything else under `~/.cache`. A `Dockerfile.agent` that sets a custom
+`# agent-user:` must pre-create that path itself — see
+[Docker Sandboxing](docker-sandboxing.md#recognized-directives).
+
+Neither mount is garbage-collected. Per-session directories accumulate under
+`$(pwd)/.claude/claude-tmp/`; prune them yourself if they grow.
+
 On launch the wrapper also creates `$(pwd)/.claude/litellm-logs` as a **symlink** (not a bind mount) pointing at this project's slice of the LiteLLM request logs under `<wrap-dir>/litellm-logs/<project_hash>/`, so the `agent logs` viewer reads them through the project's own `.claude/`. That store is shared across projects *and* providers — every provider's sidecar mounts it, and records land under `<project_hash>/<provider>/`.
 
 ## Read-only tool mounts
@@ -56,6 +82,20 @@ On WSL2 hosts with WSLg (detected when `/mnt/wslg` is a directory), three additi
 | `<wrap-dir>/ops/wl-paste-shim` | `/usr/local/bin/wl-paste` (read-only) |
 
 See [WSLg Clipboard](wslg-clipboard.md) for details.
+
+## Deliberately not mounted
+
+These paths are container-local and vanish on exit. That is intentional:
+
+| Path | Contents | Why not |
+| --- | --- | --- |
+| `~/.cache/claude-latest-version` | version-check cache | cheap to rebuild; nothing to preserve |
+| `~/.npm` | npm cache | project dependencies belong in the project's own manifest |
+| `~/.config`, `~/.local/share/applications` | mimeapps, URL handler | desktop integration the container never uses |
+| `/tmp` generally | node compile cache, X11 socket | ephemeral by design |
+
+Everything under `/home/<user>/.claude` persists already — via the global `.claude_config/.claude`
+mount if it is not one of the per-project overlays above.
 
 ## Notes
 

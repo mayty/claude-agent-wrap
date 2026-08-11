@@ -25,6 +25,7 @@ from agent_wrap.constants import (
 )
 from agent_wrap.domain.launch.constants import (
     EXPECTED_QUEUE_DEPTH,
+    EXTERNAL_STATE_MOUNTS,
     HEADLESS_FLAGS,
     STATE_MOUNTS,
 )
@@ -143,7 +144,7 @@ class LaunchService:
                 "--rm",
                 *docker_utils.get_tty_args(),
                 *docker_utils.get_user_args(),
-                *self._build_volume_mounts(claude_home),
+                *self._build_volume_mounts(claude_home, docker_utils.get_container_uid()),
                 *self._build_env_args(
                     agent_name,
                     instance_id,
@@ -268,8 +269,13 @@ class LaunchService:
             args.extend(["-e", f"{flag}={flag_value}"])
         return args
 
-    def _build_volume_mounts(self, claude_home: str) -> list[str]:
-        """Build all -v mount flags for the docker run command."""
+    def _build_volume_mounts(self, claude_home: str, container_uid: int) -> list[str]:
+        """
+        Build all -v mount flags for the docker run command.
+
+        ``container_uid`` is passed in rather than resolved here so this stays free
+        of Docker daemon round-trips.
+        """
         mounts: list[str] = []
         cwd = Path.cwd()
 
@@ -289,6 +295,10 @@ class LaunchService:
 
         for name in STATE_FILES:
             mounts.extend(["-v", f"{cwd}/.claude/{name}:{claude_home}/.claude/{name}"])
+
+        for name, dest in EXTERNAL_STATE_MOUNTS.items():
+            target = dest.format(uid=container_uid, home=claude_home)
+            mounts.extend(["-v", f"{cwd}/.claude/{name}:{target}"])
 
         mounts.extend(["-v", f"{OPS_DIR}:{AGENT_WRAP_MOUNT}:ro"])
 
@@ -490,7 +500,7 @@ class LaunchService:
     def _prepare_config(self, *, telegram_available: bool) -> None:
         cwd = Path.cwd()
         self._config.prepare_global_config(telegram_available=telegram_available)
-        self._config.prepare_project_dirs(cwd, tuple(STATE_MOUNTS.keys()), STATE_FILES)
+        self._config.prepare_project_dirs(cwd, (*STATE_MOUNTS, *EXTERNAL_STATE_MOUNTS), STATE_FILES)
         self._config.link_litellm_logs(cwd)
         self._config.record_project()
 

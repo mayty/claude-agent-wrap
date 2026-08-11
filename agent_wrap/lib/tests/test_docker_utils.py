@@ -11,6 +11,7 @@ import pytest
 from agent_wrap.lib.docker_utils import (
     daemon_reachable,
     docker_run,
+    get_container_uid,
     get_tty_args,
     get_user_args,
     host_network_build_args,
@@ -26,7 +27,17 @@ from agent_wrap.lib.docker_utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import pytest_mock
+
+
+@pytest.fixture(autouse=True)
+def clear_rootless_cache() -> Iterator[None]:
+    """``is_rootless`` is cached, so drop it around every case that mocks docker."""
+    is_rootless.cache_clear()
+    yield
+    is_rootless.cache_clear()
 
 
 def test_docker_run_returns_tuple(mocker: pytest_mock.MockFixture) -> None:
@@ -236,6 +247,17 @@ def test_user_args_returns_uid_gid_when_not_rootless(mocker: pytest_mock.MockFix
     mocker.patch("os.getuid", return_value=1000)
     mocker.patch("os.getgid", return_value=1000)
     assert get_user_args() == ["--user", "1000:1000"]
+
+
+def test_container_uid_zero_when_rootless(mocker: pytest_mock.MockFixture) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=True, autospec=True)
+    assert get_container_uid() == 0
+
+
+def test_container_uid_is_host_uid_when_not_rootless(mocker: pytest_mock.MockFixture) -> None:
+    mocker.patch("agent_wrap.lib.docker_utils.is_rootless", return_value=False, autospec=True)
+    mocker.patch("os.getuid", return_value=1000)
+    assert get_container_uid() == 1000
 
 
 def test_tty_args_interactive_when_stdin_is_tty(mocker: pytest_mock.MockFixture) -> None:

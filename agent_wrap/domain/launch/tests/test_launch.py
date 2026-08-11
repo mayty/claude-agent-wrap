@@ -322,12 +322,39 @@ def test_build_volume_mounts_basic(tmp_path: Path, launch_svc: LaunchService) ->
     cwd.mkdir()
     tool = tmp_path / "tool"
     tool.mkdir()
-    result = launch_svc._build_volume_mounts("/home/ubuntu")
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000)
     assert any(":/home/ubuntu/.claude.json" in v for v in result)
     assert any(":/home/ubuntu/.claude" in v for v in result)
     assert any(":/workspace" in v for v in result)
     assert any(":/home/ubuntu/.claude/projects/-workspace" in v for v in result)
     assert any(":/opt/agent-wrap:ro" in v for v in result)
+
+
+def test_build_volume_mounts_includes_session_temp_tree(launch_svc: LaunchService) -> None:
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000)
+    assert any(v.endswith("/.claude/claude-tmp:/tmp/claude-1000") for v in result)
+
+
+def test_build_volume_mounts_includes_mcp_logs(launch_svc: LaunchService) -> None:
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000)
+    assert any(
+        v.endswith("/.claude/mcp-logs:/home/ubuntu/.cache/claude-cli-nodejs/-workspace")
+        for v in result
+    )
+
+
+def test_build_volume_mounts_session_temp_tree_follows_uid(launch_svc: LaunchService) -> None:
+    """Rootless launches run as UID 0, so the temp tree lives at /tmp/claude-0."""
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 0)
+    assert any(v.endswith("/.claude/claude-tmp:/tmp/claude-0") for v in result)
+
+
+def test_build_volume_mounts_honors_custom_claude_home(launch_svc: LaunchService) -> None:
+    result = launch_svc._build_volume_mounts("/home/dev", 1000)
+    assert any(
+        v.endswith("/.claude/mcp-logs:/home/dev/.cache/claude-cli-nodejs/-workspace")
+        for v in result
+    )
 
 
 def test_parse_directives_no_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:

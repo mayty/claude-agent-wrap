@@ -9,7 +9,10 @@ the [release notes style guide](releases/styleguide.md).
 
 Adds a `litellm-anthropic-sub` provider that routes Claude Code through Anthropic's own
 API (via subscription),
-authenticated once via an in-container `/login` rather than a stored secret.
+authenticated once via an in-container `/login` rather than a stored secret, plus an
+`AGENT_TIMEZONE` setting for the `agent stats` day boundary and the statusline reset time.
+Per-project state now covers Claude Code's session scratchpad and MCP server logs, so scratch
+files survive into a resumed session. Requires one `agent rebuild` after upgrading.
 
 ## [0.8.0](releases/0.8.0.md) — 2026-08-05
 

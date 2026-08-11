@@ -218,7 +218,17 @@ def test_prepare_global_config_without_telegram(svc: ConfigService, tmp_path: Pa
     assert "hooks" not in settings
 
 
-_STATE_DIRS = ("sessions", "session-state", "daemon", "jobs", "plans", "todos", "tasks")
+_STATE_DIRS = (
+    "sessions",
+    "session-state",
+    "daemon",
+    "jobs",
+    "plans",
+    "todos",
+    "tasks",
+    "claude-tmp",
+    "mcp-logs",
+)
 
 
 @pytest.mark.parametrize("subdir", _STATE_DIRS)
