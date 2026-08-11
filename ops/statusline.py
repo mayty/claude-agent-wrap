@@ -17,7 +17,10 @@ a bar: "Usage (resets at HH:MM): [bar]". Bar color is a linear extrapolation of
 current usage to the window's reset time — green (>=10% headroom projected),
 yellow (<10%), red (projected or actual overshoot). The label itself turns red
 once the limit is actually hit. The reset time is shown in `AGENT_TIMEZONE`
-when set (falling back to the container's own local time otherwise).
+when set (falling back to the container's own local time otherwise). Until the
+session's first API response the rate-limit payload is absent; the segment then
+shows a dim "send a message to see limits" hint, as it does for any unusable
+payload.
 """
 
 from __future__ import annotations
@@ -217,18 +220,15 @@ def _reset_time_str(resets_at: float) -> str:
 
 
 def rate_limit_segment(data: dict[str, Any]) -> str:
-    rate_limits_data = data.get("rate_limits")
-    if not rate_limits_data:
-        return f"{RED}NO RATE LIMITS DATA{RESET}"
-    five_hour_data = rate_limits_data.get("five_hour")
-    if not five_hour_data:
-        return f"{RED}NO FIVE HOUR DATA{RESET}"
-    used = five_hour_data.get("used_percentage")
-    if used is None:
-        return f"{RED}NO `used_percentage` DATA{RESET}"
-    resets_at = five_hour_data.get("resets_at")
-    if resets_at is None:
-        return f"{RED}NO `resets_at` DATA{RESET}"
+    # Claude Code only populates `rate_limits` once the session has had an API
+    # response, so an absent, partial, or non-numeric payload means "nothing to
+    # show yet" -- never an exception, which would blank the whole statusline.
+    five_hour = (data.get("rate_limits") or {}).get("five_hour") or {}
+    try:
+        used = float(five_hour["used_percentage"])
+        resets_at = float(five_hour["resets_at"])
+    except (KeyError, TypeError, ValueError):
+        return f"{DIM}send a message to see limits{RESET}"
 
     reset_local = _reset_time_str(resets_at)
     window_start = resets_at - RATE_LIMIT_WINDOW_SECONDS
