@@ -935,6 +935,9 @@ function captionEl(r, displayIdx) {
   if (isClassifierRequest(r)) {
     cap.appendChild(el("span", "auto-badge", "auto"));
   }
+  if (isStatusSummaryRequest(r)) {
+    cap.appendChild(el("span", "status-badge", "status"));
+  }
   cap.appendChild(el("span", "when", fmtTs(recStart(r))));
   return cap;
 }
@@ -1014,11 +1017,49 @@ function renderClassifierTurn(r, displayIdx) {
   return turn;
 }
 
+// Compact rendering for status-summary requests — the produced caption instead
+// of the whole conversation the call re-sends. Clicking opens the full detail.
+function renderStatusSummaryTurn(r, displayIdx) {
+  const turn = el("div", "turn");
+  // These calls come from subagents, so they need the same role/sub dataset
+  // attributes renderTurn sets or the tab filter would drop them.
+  if (r.agent_id) {
+    turn.dataset.role = "sub";
+    turn.dataset.sub = r.agent_id;
+  } else {
+    turn.dataset.role = "main";
+  }
+  turn.appendChild(captionEl(r, displayIdx));
+
+  const parsed = parseStatusSummary(r);
+  const block = el("div", "status-block");
+  if (parsed.summary) {
+    block.appendChild(el("div", "status-summary", parsed.summary));
+  } else {
+    block.appendChild(el("div", "status-summary empty", r.error ? "(failed)" : "(no summary)"));
+  }
+  if (parsed.previous) {
+    block.appendChild(el("div", "status-prev", "prev: " + parsed.previous));
+  }
+  turn.appendChild(block);
+
+  // Unlike the classifier turn, keep the cost/context line: these calls are pure
+  // display overhead, so what they cost is the interesting part.
+  const info = infoLine(r);
+  if (info) turn.appendChild(info);
+
+  turn.onclick = () => openModal(r, displayIdx);
+  return turn;
+}
+
 // One turn: the latest user message as a right-aligned bubble and the response
 // (or error) as a left-aligned bubble below it. Clicking opens the full detail.
 function renderTurn(r, displayIdx) {
   if (isClassifierRequest(r)) {
     return renderClassifierTurn(r, displayIdx);
+  }
+  if (isStatusSummaryRequest(r)) {
+    return renderStatusSummaryTurn(r, displayIdx);
   }
 
   const turn = el("div", "turn");
@@ -1406,6 +1447,50 @@ function parseClassifierResult(r) {
     }
   }
   return { allowed: !isYes, severity: null, category: null, reason: reason, unparseable: false };
+}
+
+// Claude Code periodically asks for a 3-5 word gerund describing the agent's last
+// action, purely to caption the CLI spinner; the answer never re-enters the
+// session. Unlike the classifier there is no structural tell — the call carries
+// the full conversation, the full tool list and an ordinary max_tokens — so this
+// keys on the prompt's opening line, with the word count matched loosely so a
+// future "4-6 words" rewrite still hits.
+//
+// The prompt is far longer than the log's string-hashing threshold, so it only
+// matches once /api/strings has resolved; tick() re-renders the stream when a
+// pending hash arrives, so a live session corrects itself within a poll.
+const STATUS_SUMMARY_RE = /^Describe your most recent action in \d+-\d+ words/;
+
+// The prompt is appended as the trailing text of the last user message: the whole
+// content when no tool results are pending, otherwise one text block after them.
+// Returns the prompt text, or null.
+function statusSummaryPrompt(r) {
+  const last = lastUserMessage(r.messages || []);
+  if (!last) return null;
+  const content = last.content;
+  let text = null;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content) && content.length) {
+    const tail = content[content.length - 1];
+    if (tail && tail.type === "text" && typeof tail.text === "string") text = tail.text;
+  }
+  if (typeof text !== "string") return null;
+  const trimmed = text.trim();
+  return STATUS_SUMMARY_RE.test(trimmed) ? trimmed : null;
+}
+
+// Does a record look like a status-summary request?
+function isStatusSummaryRequest(r) {
+  return statusSummaryPrompt(r) !== null;
+}
+
+// The caption the model produced, plus the previous one the prompt told it not to
+// repeat ('Previous: "…" — say something NEW.'). Either may be null.
+function parseStatusSummary(r) {
+  const prev = /^Previous:\s*"([\s\S]*?)"/m.exec(statusSummaryPrompt(r) || "");
+  const summary = extractText((r.response || {}).content);
+  return { summary: summary ? summary.trim() : null, previous: prev ? prev[1] : null };
 }
 
 // Last match of a global regex in text, or null. Resets lastIndex so the same

@@ -5,6 +5,7 @@
   --user: #313244; --assistant: #1e3a3a; --system: #3a2e1e;
   --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8; --thinking: #2a3a1e;
   --auto-badge: #cba6f7; --allowed: #a6e3a1; --blocked: #f38ba8;
+  --status-badge: #94e2d5;
 }
 * { box-sizing: border-box; }
 /* Slim, translucent scrollbars everywhere (chat column, session list, modal),
@@ -241,6 +242,20 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .classifier-block .classifier-result .sev { color: var(--muted); font-weight: 400; }
 .classifier-block .classifier-reason { color: var(--muted); font-size: 12px;
                                        margin-top: 4px; }
+
+/* --- Status-summary requests (the CLI spinner caption) --- */
+
+/* Badge in the turn caption line */
+.caption .status-badge { color: var(--status-badge); font-size: 10px; font-weight: 600;
+                         text-transform: uppercase; margin-left: 2px; }
+
+/* Compact block replacing the usual chat bubbles */
+.status-block { border: 1px solid var(--border); border-radius: 8px;
+                padding: 8px 14px; margin: 6px 0 4px; background: var(--panel); }
+.status-block .status-summary { font-size: 13px; font-weight: 600; }
+.status-block .status-summary.empty { color: var(--muted); font-weight: 400; }
+/* The previous caption the prompt asked the model not to repeat */
+.status-block .status-prev { color: var(--muted); font-size: 12px; margin-top: 4px; }
 
 /* Loading hash spinner */
 .loading-hash {
