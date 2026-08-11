@@ -12,6 +12,7 @@ import pytest
 from agent_wrap.constants import STATE_FILES
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.launch.constants import EXTERNAL_STATE_MOUNTS, STATE_MOUNTS
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
@@ -218,17 +219,10 @@ def test_prepare_global_config_without_telegram(svc: ConfigService, tmp_path: Pa
     assert "hooks" not in settings
 
 
-_STATE_DIRS = (
-    "sessions",
-    "session-state",
-    "daemon",
-    "jobs",
-    "plans",
-    "todos",
-    "tasks",
-    "claude-tmp",
-    "mcp-logs",
-)
+# Derived from the production mount tables rather than hand-copied: the previous
+# literal had silently drifted out of date, so every directory added to a mount table
+# went untested.
+_STATE_DIRS = (*STATE_MOUNTS, *EXTERNAL_STATE_MOUNTS)
 
 
 @pytest.mark.parametrize("subdir", _STATE_DIRS)
@@ -251,6 +245,35 @@ def test_prepare_project_dirs_creates_state_files(
     assert (project_dir / ".claude" / filename).exists()
 
 
+def test_prepare_project_dirs_creates_nested_instance_dirs(
+    svc: ConfigService, tmp_path: Path
+) -> None:
+    """Per-container state is passed in as instance-relative paths."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    svc.prepare_project_dirs(project_dir, ["instances/agent-abc/daemon"], [])
+
+    assert (project_dir / ".claude" / "instances" / "agent-abc" / "daemon").is_dir()
+
+
+def test_prepare_project_dirs_creates_nested_file_without_sibling_dir(
+    svc: ConfigService, tmp_path: Path
+) -> None:
+    """
+    A nested state file must not depend on a state *dir* having built its parent.
+
+    INSTANCE_STATE_MOUNTS and INSTANCE_STATE_FILES read as independent tables, so
+    emptying the former must not turn every launch into a FileNotFoundError here.
+    """
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    svc.prepare_project_dirs(project_dir, [], ["instances/agent-abc/daemon.lock"])
+
+    assert (project_dir / ".claude" / "instances" / "agent-abc" / "daemon.lock").is_file()
+
+
 def test_prepare_project_dirs_creates_gitignore(svc: ConfigService, tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -265,9 +288,6 @@ def test_prepare_project_dirs_idempotent(svc: ConfigService, tmp_path: Path) -> 
     project_dir.mkdir()
     svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)
     svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)  # should not raise
-
-
-_STATE_DIRS_WITH_MEMORY = (*_STATE_DIRS, "memory")
 
 
 def test_prepare_project_dirs_migrates_old_memory_files(svc: ConfigService, tmp_path: Path) -> None:
@@ -285,7 +305,7 @@ def test_prepare_project_dirs_migrates_old_memory_files(svc: ConfigService, tmp_
     (old_memory_dir / "MEMORY.md").write_text("old index")
     (old_memory_dir / "some-fact.md").write_text("old fact")
 
-    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)
 
     # Files should be moved to the new location.
     assert (new_memory_dir / "MEMORY.md").read_text() == "old index"
@@ -310,7 +330,7 @@ def test_prepare_project_dirs_migration_skips_existing_destination_files(
     (old_memory_dir / "old-fact.md").write_text("old version")
     (new_memory_dir / "old-fact.md").write_text("newer version")
 
-    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)
 
     # Destination file should not be overwritten.
     assert (new_memory_dir / "old-fact.md").read_text() == "newer version"
@@ -330,8 +350,8 @@ def test_prepare_project_dirs_migration_idempotent(svc: ConfigService, tmp_path:
     new_memory_dir.mkdir(parents=True)
     (old_memory_dir / "fact.md").write_text("fact")
 
-    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
-    svc.prepare_project_dirs(project_dir, _STATE_DIRS_WITH_MEMORY, STATE_FILES)
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)
+    svc.prepare_project_dirs(project_dir, _STATE_DIRS, STATE_FILES)
 
     assert (new_memory_dir / "fact.md").read_text() == "fact"
     assert list(old_memory_dir.iterdir()) == []

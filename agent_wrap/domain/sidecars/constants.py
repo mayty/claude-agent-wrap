@@ -3,9 +3,6 @@
 
 from agent_wrap.constants import CONTAINER_NAME_PREFIX, TELEGRAM_SIDECAR_NAME
 
-#: Docker label carrying an agent's instance id — the flock registry's key.
-INSTANCE_ID_LABEL = "agent-wrap.instance-id"
-
 #: Container path the project directory is bind-mounted at, and so the mount entry
 #: whose source recovers an agent's cwd.
 WORKSPACE_MOUNT_DEST = "/workspace"

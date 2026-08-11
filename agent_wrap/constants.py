@@ -109,13 +109,12 @@ SCAN_PARALLEL_MIN_FILES = 64
 # In-container mount point for the agent-wrap ops directory.
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
-# Per-project state files mounted into the agent container.
-STATE_FILES = (
-    "daemon.lock",
-    "daemon.log",
-    "daemon.status.json",
-    "history.jsonl",
-)
+# Per-project state files mounted into the agent container. Only append-only files
+# belong here: a single-file bind mount pins the inode, so any writer that replaces
+# the file via rename() -- or unlinks it -- fails with EBUSY. Claude Code's PID-keyed
+# daemon state is per-container instead; see INSTANCE_STATE_FILES in
+# ``agent_wrap/domain/launch/constants.py``.
+STATE_FILES = ("history.jsonl",)
 
 # ── display / sidecars ────────────────────────────────────────────────────────
 
@@ -127,6 +126,9 @@ DIVIDER: Final = "__div__"
 ROLE_LABEL = "agent-wrap.role"
 #: Docker label value identifying agent containers.
 ROLE_VALUE = BASE_IMAGE_NAME
+#: Docker label carrying an agent's instance id — the flock registry's key, and the
+#: key the stale per-instance state sweep matches live containers on.
+INSTANCE_ID_LABEL = "agent-wrap.instance-id"
 
 LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"

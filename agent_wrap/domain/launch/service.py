@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +16,7 @@ from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     AGENT_WRAP_MOUNT,
     GLOBAL_CONFIG_DIR,
+    INSTANCE_ID_LABEL,
     OPS_DIR,
     ROLE_LABEL,
     ROLE_VALUE,
@@ -27,6 +30,10 @@ from agent_wrap.domain.launch.constants import (
     EXPECTED_QUEUE_DEPTH,
     EXTERNAL_STATE_MOUNTS,
     HEADLESS_FLAGS,
+    INSTANCE_DIR_NAME,
+    INSTANCE_STATE_FILES,
+    INSTANCE_STATE_MOUNTS,
+    INSTANCE_SWEEP_GRACE_SECONDS,
     STATE_MOUNTS,
 )
 from agent_wrap.domain.launch.models import (
@@ -144,7 +151,9 @@ class LaunchService:
                 "--rm",
                 *docker_utils.get_tty_args(),
                 *docker_utils.get_user_args(),
-                *self._build_volume_mounts(claude_home, docker_utils.get_container_uid()),
+                *self._build_volume_mounts(
+                    claude_home, docker_utils.get_container_uid(), instance_id
+                ),
                 *self._build_env_args(
                     agent_name,
                     instance_id,
@@ -165,6 +174,7 @@ class LaunchService:
             return result.returncode
         finally:
             self._release_sidecars(sidecars, tracker, instance_id, running_handles)
+            self._remove_instance_state(Path.cwd(), instance_id)
 
     # Instance helpers (shared utility methods)
 
@@ -269,15 +279,20 @@ class LaunchService:
             args.extend(["-e", f"{flag}={flag_value}"])
         return args
 
-    def _build_volume_mounts(self, claude_home: str, container_uid: int) -> list[str]:
+    def _build_volume_mounts(
+        self, claude_home: str, container_uid: int, instance_id: str
+    ) -> list[str]:
         """
         Build all -v mount flags for the docker run command.
 
         ``container_uid`` is passed in rather than resolved here so this stays free
-        of Docker daemon round-trips.
+        of Docker daemon round-trips. ``instance_id`` roots the per-container state
+        subtree, which is deliberately *not* shared with concurrent agents in the
+        same project — see INSTANCE_STATE_MOUNTS.
         """
         mounts: list[str] = []
         cwd = Path.cwd()
+        instance_dir = f"{cwd}/.claude/{INSTANCE_DIR_NAME}/{instance_id}"
 
         mounts.extend(
             [
@@ -296,6 +311,12 @@ class LaunchService:
         for name in STATE_FILES:
             mounts.extend(["-v", f"{cwd}/.claude/{name}:{claude_home}/.claude/{name}"])
 
+        for name, dest in INSTANCE_STATE_MOUNTS.items():
+            mounts.extend(["-v", f"{instance_dir}/{name}:{claude_home}/.claude/{dest}"])
+
+        for name in INSTANCE_STATE_FILES:
+            mounts.extend(["-v", f"{instance_dir}/{name}:{claude_home}/.claude/{name}"])
+
         for name, dest in EXTERNAL_STATE_MOUNTS.items():
             target = dest.format(uid=container_uid, home=claude_home)
             mounts.extend(["-v", f"{cwd}/.claude/{name}:{target}"])
@@ -312,10 +333,47 @@ class LaunchService:
             "--label",
             f"{ROLE_LABEL}={ROLE_VALUE}",
             "--label",
-            f"agent-wrap.instance-id={instance_id}",
+            f"{INSTANCE_ID_LABEL}={instance_id}",
             "--name",
             f"claude-agent-{instance_id}",
         ]
+
+    def _remove_instance_state(self, cwd: Path, instance_id: str) -> None:
+        """Drop this container's private daemon/session state on the way out."""
+        shutil.rmtree(cwd / ".claude" / INSTANCE_DIR_NAME / instance_id, ignore_errors=True)
+
+    def _sweep_stale_instance_state(self, cwd: Path) -> None:
+        """
+        Remove per-instance state belonging to agents that are gone.
+
+        A clean exit removes its own directory; ``docker kill`` or a crashed launcher
+        does not. A stale directory must satisfy *both* guards before it is deleted,
+        because either one alone deletes live state: liveness alone would take out an
+        agent that has created its directory but not yet started its container, and
+        age alone would take out a long-running agent. Deleting a live agent's daemon
+        state is exactly the collision this layout exists to prevent, so the sweep
+        errs toward leaving junk behind.
+
+        Skipped entirely when Docker is unreachable: ``list_container_names`` reports
+        "nothing matched" and "docker is unavailable" identically, and the second must
+        never read as "every agent is gone".
+        """
+        instances_dir = cwd / ".claude" / INSTANCE_DIR_NAME
+        if not instances_dir.is_dir() or not docker_utils.daemon_reachable():
+            return
+
+        names = docker_utils.list_container_names(f"label={ROLE_LABEL}={ROLE_VALUE}")
+        lines, _rc = docker_utils.inspect_containers(
+            names, f'{{{{index .Config.Labels "{INSTANCE_ID_LABEL}"}}}}'
+        )
+        live = {line.strip() for line in lines if line.strip()}
+
+        cutoff = time.time() - INSTANCE_SWEEP_GRACE_SECONDS
+        for entry in instances_dir.iterdir():
+            if not entry.is_dir() or entry.name in live:
+                continue
+            if entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
 
     def _sidecar_lock_timeout(self, sidecars: list[Sidecar], queue_depth: int) -> float:
         """
@@ -497,10 +555,17 @@ class LaunchService:
                 return value
         return EXPECTED_QUEUE_DEPTH
 
-    def _prepare_config(self, *, telegram_available: bool) -> None:
+    def _prepare_config(self, *, instance_id: str, telegram_available: bool) -> None:
         cwd = Path.cwd()
         self._config.prepare_global_config(telegram_available=telegram_available)
         self._config.prepare_project_dirs(cwd, (*STATE_MOUNTS, *EXTERNAL_STATE_MOUNTS), STATE_FILES)
+        self._sweep_stale_instance_state(cwd)
+        instance_root = f"{INSTANCE_DIR_NAME}/{instance_id}"
+        self._config.prepare_project_dirs(
+            cwd,
+            [f"{instance_root}/{name}" for name in INSTANCE_STATE_MOUNTS],
+            [f"{instance_root}/{name}" for name in INSTANCE_STATE_FILES],
+        )
         self._config.link_litellm_logs(cwd)
         self._config.record_project()
 
@@ -528,7 +593,7 @@ class LaunchService:
             instance_id=instance_id,
             timeout=timeout,
         ):
-            self._prepare_config(telegram_available=telegram_available)
+            self._prepare_config(instance_id=instance_id, telegram_available=telegram_available)
             for sidecar in sidecars:
                 run_args += sidecar.ensure(
                     use_host_net=use_host_net,

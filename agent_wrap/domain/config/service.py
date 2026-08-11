@@ -176,7 +176,13 @@ class ConfigService:
         Create per-project .claude/ directories and files.
 
         Pre-creating these as the host user prevents Docker from materializing
-        them as root when the bind-mount targets don't yet exist.
+        them as root when the bind-mount targets don't yet exist -- and, for a
+        file source, from creating a *directory* where a file was meant.
+
+        Both arguments accept nested, `/`-separated paths (per-container state
+        arrives as ``instances/<id>/...``); missing parents are created for
+        files as well as directories, so neither list depends on the other
+        having built the intervening directories first.
         """
         claude_dir = project_dir / ".claude"
         for subdir in state_dirs:
@@ -184,6 +190,7 @@ class ConfigService:
 
         for name in state_files:
             path = claude_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():
                 path.touch()
 

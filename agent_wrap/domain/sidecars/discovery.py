@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 
 from agent_wrap.constants import (
     CONTAINER_NAME_PREFIX,
+    INSTANCE_ID_LABEL,
     LITELLM_IMAGE,
     RUNNING_STATUS,
     SIDECAR_PORT_ENV,
@@ -38,7 +39,6 @@ from agent_wrap.domain.sidecars.constants import (
     AGENT_FIELD_COUNT,
     INSPECT_FIELD_SEP,
     INSPECTABLE_ENV_KEYS,
-    INSTANCE_ID_LABEL,
     LITELLM_ROLE,
     SIDECAR_FIELD_COUNT,
     TELEGRAM_CONTAINER_NAME,
