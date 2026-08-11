@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ _string_hasher = sys.modules["string_hasher"]
 
 get_response_content_str = _helpers.get_response_content_str
 json_safe = _helpers.json_safe
+REDACTED_VALUE = _helpers.REDACTED_VALUE
 StringHasher = _string_hasher.StringHasher
 
 
@@ -229,6 +231,71 @@ def test_json_safe_empty_containers() -> None:
     assert json_safe([]) == []
     assert json_safe(()) == []
     assert json_safe(set()) == []
+
+
+def test_json_safe_non_dict_mapping_serialized_as_object() -> None:
+    """
+    A Mapping that isn't a dict serializes as an object, not str().
+
+    LiteLLM's /anthropic/* passthrough route puts a Starlette ``Headers`` mapping in
+    proxy_server_request["headers"]; when that hit the str() fallback the whole
+    header set became one opaque blob and the logs viewer lost the
+    x-claude-code-agent-id it splits subagent threads on.
+    """
+
+    class FakeHeaders(Mapping[str, str]):
+        """Minimal stand-in for Starlette's Headers: a Mapping that is not a dict."""
+
+        def __init__(self, data: dict[str, str]) -> None:
+            self._data = data
+
+        def __getitem__(self, key: str) -> str:
+            return self._data[key]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self._data)
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+    headers = FakeHeaders({"accept": "application/json", "x-claude-code-agent-id": "a52736f97"})
+    assert json_safe({"headers": headers}) == {
+        "headers": {"accept": "application/json", "x-claude-code-agent-id": "a52736f97"}
+    }
+
+
+def test_json_safe_redacts_credential_keys() -> None:
+    """Credential-bearing keys are replaced, and matched case-insensitively."""
+    result = json_safe({"Authorization": "Bearer sk-ant-oat01-secret", "accept": "text/plain"})
+    assert result == {"Authorization": REDACTED_VALUE, "accept": "text/plain"}
+
+
+def test_json_safe_redacts_nested_credential_keys() -> None:
+    """
+    Redaction reaches nested headers, not just the top-level ones.
+
+    LiteLLM's router routes repeat the client's headers inside
+    ``body.secret_fields.raw_headers``, so the master key is inline there too.
+    """
+    record = {"body": {"secret_fields": {"raw_headers": {"authorization": "Bearer sk-aw-key"}}}}
+    result = json_safe(record)
+    assert result["body"]["secret_fields"]["raw_headers"]["authorization"] == REDACTED_VALUE
+
+
+def test_json_safe_redacted_credential_is_not_interned(tmp_path: Path) -> None:
+    """A long credential is replaced outright, never interned into strings.jsonl."""
+    hasher = StringHasher()
+    result = json_safe({"authorization": "Bearer " + "s" * 200}, _hasher=hasher)
+    assert result == {"authorization": REDACTED_VALUE}
+    hasher.flush(tmp_path)
+    assert not (tmp_path / "strings.jsonl").exists()
+
+
+def test_json_safe_does_not_mutate_source_mapping() -> None:
+    """Serialization builds new containers; the caller's live structure is untouched."""
+    headers = {"authorization": "Bearer sk-ant-oat01-secret"}
+    json_safe({"headers": headers})
+    assert headers == {"authorization": "Bearer sk-ant-oat01-secret"}
 
 
 def test_get_response_content_str_message_content() -> None:

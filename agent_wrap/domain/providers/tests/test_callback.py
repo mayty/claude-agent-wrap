@@ -9,6 +9,7 @@ import json
 import sys
 import tempfile
 import types
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -243,6 +244,57 @@ def test_build_record_drops_proxy_server_request_cycle() -> None:
     # The rest of the record is intact
     assert record["request"]["url"] == "http://example.com"
     assert record["request"]["body"]["messages"][0]["content"] == "hello"
+
+
+def test_build_record_keeps_passthrough_headers_readable() -> None:
+    """
+    A Mapping from the /anthropic/* passthrough route survives as a real object.
+
+    The logs viewer reads x-claude-code-agent-id out of request.headers to split
+    subagent threads from the main one, so a header set flattened to a string
+    collapses every subagent into the main tab. Credentials are redacted on the
+    way through.
+    """
+
+    class FakeHeaders(Mapping[str, str]):
+        def __init__(self, data: dict[str, str]) -> None:
+            self._data = data
+
+        def __getitem__(self, key: str) -> str:
+            return self._data[key]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self._data)
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+    headers = FakeHeaders(
+        {
+            "authorization": "Bearer sk-ant-oat01-" + "s" * 100,
+            "x-claude-code-session-id": "test-session",
+            "x-claude-code-agent-id": "a52736f97cfe0ad52",
+        }
+    )
+    kwargs = {
+        "model": "m",
+        "litellm_params": {
+            "proxy_server_request": {
+                "url": "http://example.com",
+                "method": "POST",
+                "headers": headers,
+                "body": {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            }
+        },
+    }
+
+    record = build_record(kwargs, {}, status="success")
+
+    recorded = record["request"]["headers"]
+    assert recorded["x-claude-code-agent-id"] == "a52736f97cfe0ad52"
+    assert recorded["authorization"] == "<redacted>"
+    # The live structure LiteLLM still holds must keep its real credential.
+    assert headers["authorization"].startswith("Bearer sk-ant-oat01-")
 
 
 def test_build_record_handles_shared_references() -> None:
