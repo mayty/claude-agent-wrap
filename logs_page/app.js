@@ -977,31 +977,31 @@ function renderClassifierTurn(r, displayIdx) {
   // Evaluated command
   const cmd = extractEvaluatedCommand(r);
   if (cmd) {
-    // Extract tool name from the first word (e.g. "Bash", "Read", "Write")
-    const firstSpace = cmd.indexOf(" ");
-    const tool = firstSpace !== -1 ? cmd.slice(0, firstSpace).trim() : "";
-    const body = firstSpace !== -1 ? cmd.slice(firstSpace + 1).trim() : cmd;
-
     const cmdBox = el("div", "block-tool_use");
-    cmdBox.appendChild(el("div", "block-label", "eval · " + tool));
-    const pre = Object.assign(el("pre"), { textContent: body });
+    cmdBox.appendChild(el("div", "block-label", "eval · " + cmd.tool));
+    const pre = Object.assign(el("pre"), { textContent: cmd.body });
     cmdBox.appendChild(pre);
     addCopyButton(cmdBox, pre);
     block.appendChild(cmdBox);
   }
 
-  // Result
+  // Result: the verdict, trailed by the 0-100 severity score and the matched
+  // rule when the classifier reported them (records predating the score show
+  // the verdict alone).
   const parsed = parseClassifierResult(r);
   const resultEl = el("div", "classifier-result");
   if (parsed.unparseable) {
     resultEl.textContent = "? Unparseable";
     resultEl.className = "classifier-result blocked";
-  } else if (parsed.allowed) {
-    resultEl.textContent = "✓ Allowed";
-    resultEl.className = "classifier-result allowed";
   } else {
-    resultEl.textContent = "✗ Blocked";
-    resultEl.className = "classifier-result blocked";
+    resultEl.textContent = parsed.allowed ? "✓ Allowed" : "✗ Blocked";
+    resultEl.className = "classifier-result " + (parsed.allowed ? "allowed" : "blocked");
+    const trailing = [];
+    if (parsed.severity != null) trailing.push(String(parsed.severity));
+    if (parsed.category) trailing.push(parsed.category);
+    if (trailing.length) {
+      resultEl.appendChild(el("span", "sev", " · " + trailing.join(" · ")));
+    }
   }
   block.appendChild(resultEl);
 
@@ -1254,52 +1254,107 @@ function looksTerminal(r) {
   return !!resp.content;
 }
 
-// Does a record look like an auto classifier request?
-function isClassifierRequest(r) {
-  // Check 1: system prompt defines block output rules
-  const sysText = extractText(r.system);
-  if (!sysText || sysText.indexOf("<block>no</block>") === -1 || sysText.indexOf("<block>yes</block>") === -1) {
-    return false;
-  }
-  // Check 2: user messages contain a <transcript>...</transcript> block group
-  const msgs = r.messages || [];
-  for (let i = 0; i < msgs.length; i++) {
-    const mt = extractText(msgs[i].content);
-    if (mt.indexOf("<transcript>") !== -1 && mt.indexOf("</transcript>") !== -1) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Extract the evaluated command from a classifier request's transcript.
-// Walks the content blocks of the transcript message to find the </transcript>
-// block, then returns the previous block's text.
-function extractEvaluatedCommand(r) {
+// Locate the transcript a classifier request wraps the reviewed action in.
+// Claude Code emits the two markers as content blocks of their own, so this
+// looks for text blocks trimming to exactly "<transcript>" and "</transcript>"
+// within one message. Both markers are shorter than the log's string-hashing
+// threshold, so they are always stored literally — this works before
+// strings.jsonl has resolved. Returns { content, open, close } or null.
+function transcriptBlocks(r) {
   const msgs = r.messages || [];
   for (let i = 0; i < msgs.length; i++) {
     const content = msgs[i].content;
     if (!Array.isArray(content)) continue;
+    let open = -1;
+    let close = -1;
     for (let j = 0; j < content.length; j++) {
       const block = content[j];
-      if (block && block.type === "text" && typeof block.text === "string" && block.text.indexOf("</transcript>") !== -1) {
-        if (j > 0) {
-          const prev = content[j - 1];
-          if (prev && prev.type === "text" && typeof prev.text === "string") {
-            return prev.text.trim();
-          }
-        }
-        return null;
+      if (!block || block.type !== "text" || typeof block.text !== "string") continue;
+      const marker = block.text.trim();
+      if (marker === "<transcript>" && open === -1) {
+        open = j;
+      } else if (marker === "</transcript>") {
+        close = j;
+        break;
       }
     }
+    if (open !== -1 && close > open) return { content, open, close };
   }
   return null;
 }
 
-// Parse the classifier result from a record's response, mirroring Claude
-// Code's FIo / oJa functions.  Combines thinking blocks and content text
-// because the <block> tag can appear in either (DeepSeek puts it inside
-// thinking, Anthropic puts it in content).
+// Does a record look like an auto classifier request?
+//
+// Keyed on request structure rather than prompt wording, so the special display
+// survives Claude Code's periodic rewrites of the classifier prompt: a
+// classifier call frames the reviewed action in <transcript> markers and never
+// carries tool definitions, while every main-agent and subagent call does. The
+// tools check is what keeps an ordinary turn that merely quotes "</transcript>"
+// in its text from being mistaken for one.
+function isClassifierRequest(r) {
+  if (Array.isArray(r.tools) && r.tools.length) return false;
+  return transcriptBlocks(r) !== null;
+}
+
+// Extract the action under review from a classifier request's transcript, as
+// { tool, body }, or null.
+//
+// The action is always the transcript's last entry. The block before
+// </transcript> is the newest prompt-cache chunk and may hold several entries,
+// so the newer JSONL format ({"Bash":"…"}, {"Edit":{…}}) reads the last line;
+// the retired plain-text format ("Bash <cmd>") reads the whole block, since its
+// commands can span lines. Which one applies is decided by whether that last
+// line parses as a single-key JSON object.
+function extractEvaluatedCommand(r) {
+  const found = transcriptBlocks(r);
+  if (!found) return null;
+  const block = found.content[found.close - 1];
+  if (!block || block.type !== "text" || typeof block.text !== "string") return null;
+  const text = block.text;
+
+  // Walk back over harness-inserted {"meta": …} lines: they annotate the entry
+  // below them and never count as the action.
+  const lines = text.split("\n").filter((line) => line.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const entry = parseTranscriptEntry(lines[i]);
+    if (!entry) break;
+    if (entry.tool !== "meta") return entry;
+  }
+
+  // Legacy plain-text format: first word is the tool, the rest is the body.
+  const trimmed = text.trim();
+  const firstSpace = trimmed.indexOf(" ");
+  if (firstSpace === -1) return { tool: "", body: trimmed };
+  return { tool: trimmed.slice(0, firstSpace).trim(), body: trimmed.slice(firstSpace + 1).trim() };
+}
+
+// Parse one JSONL transcript entry — {"<Tool>": <input>} — into { tool, body },
+// or null when the line is not a single-key JSON object.
+function parseTranscriptEntry(line) {
+  let obj;
+  try { obj = JSON.parse(line); } catch (e) { return null; }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1) return null;
+  const value = obj[keys[0]];
+  return { tool: keys[0], body: typeof value === "string" ? value : prettyToolInput(value) };
+}
+
+// The classifier grades an action 0-100; its prompt puts the allow/block
+// boundary at exactly 50 ("below 50 means allow, above 50 means block").
+const SEVERITY_BLOCK_THRESHOLD = 50;
+
+// Parse the classifier result from a record's response.  Combines thinking
+// blocks and content text because the verdict can appear in either (DeepSeek
+// puts it inside thinking, Anthropic puts it in content).
+//
+// Current classifier calls answer <severity>N</severity>, optionally followed
+// by <category>Rule Name</category> when a block rule matched.  The first
+// stage stops on "</severity>", so the closing tag is often missing, and the
+// second stage prefixes a <thinking> section that can quote tags of its own —
+// hence the verdict is read from outside that section.  Records predating the
+// switch answered <block>yes|no</block> plus <reason>; that path is kept so
+// older sessions still render.
 function parseClassifierResult(r) {
   const resp = r.response || {};
   const parts = [];
@@ -1314,8 +1369,23 @@ function parseClassifierResult(r) {
   const contentText = extractText(resp.content);
   if (contentText) parts.push(contentText);
   const fullText = parts.join("\n");
+  const verdictText = fullText.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "");
 
-  // Mirror FIo: match <block>yes or <block>no
+  const sevRe = /<severity>\s*(\d{1,3})/gi;
+  const sev = lastMatch(sevRe, verdictText) || lastMatch(sevRe, fullText);
+  if (sev) {
+    const severity = parseInt(sev[1], 10);
+    const cat = /<category>([\s\S]*?)<\/category>/i.exec(verdictText);
+    return {
+      allowed: severity < SEVERITY_BLOCK_THRESHOLD,
+      severity: severity,
+      category: cat ? cat[1].trim() : null,
+      reason: null,
+      unparseable: false,
+    };
+  }
+
+  // Retired format: match <block>yes or <block>no
   const blockRe = /<block>(yes|no)\b(<\/block>)?/gi;
   const matches = [];
   let m;
@@ -1323,10 +1393,10 @@ function parseClassifierResult(r) {
     matches.push(m);
   }
   if (matches.length === 0) {
-    return { allowed: false, reason: null, unparseable: true };
+    return { allowed: false, severity: null, category: null, reason: null, unparseable: true };
   }
   const isYes = matches[0][1].toLowerCase() === "yes";
-  // Mirror oJa: extract reason (only for blocked)
+  // Extract reason (only for blocked)
   let reason = null;
   if (isYes) {
     const reasonRe = /<reason>([\s\S]*?)<\/reason>/g;
@@ -1335,7 +1405,17 @@ function parseClassifierResult(r) {
       reason = rm[1].trim();
     }
   }
-  return { allowed: !isYes, reason: reason, unparseable: false };
+  return { allowed: !isYes, severity: null, category: null, reason: reason, unparseable: false };
+}
+
+// Last match of a global regex in text, or null. Resets lastIndex so the same
+// regex object can be reused across calls.
+function lastMatch(re, text) {
+  re.lastIndex = 0;
+  let found = null;
+  let m;
+  while ((m = re.exec(text)) !== null) found = m;
+  return found;
 }
 
 // Partition the time-ordered records into the main stream and per-agent-id

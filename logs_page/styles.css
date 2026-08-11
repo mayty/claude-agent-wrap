@@ -237,6 +237,8 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .classifier-block .classifier-result { font-size: 13px; font-weight: 600; }
 .classifier-block .classifier-result.allowed { color: var(--allowed); }
 .classifier-block .classifier-result.blocked { color: var(--blocked); }
+/* Severity score / matched rule trailing the verdict, kept visually secondary */
+.classifier-block .classifier-result .sev { color: var(--muted); font-weight: 400; }
 .classifier-block .classifier-reason { color: var(--muted); font-size: 12px;
                                        margin-top: 4px; }
 
