@@ -145,15 +145,27 @@ passthrough route header forwarding is inherent (`_forward_headers=True`). The
 `model_list` entry likewise no longer routes this provider's traffic — it exists only
 because LiteLLM wants a non-empty list to boot.
 
-### Request logging is registered in two different places
+### Request logging is registered in three different places
 
 Failures and successes reach the callback by different routes, and only one of them can
 be configured in YAML:
 
 | Half | LiteLLM list | Consumed by | Registered by |
 | --- | --- | --- | --- |
-| failures | `litellm.callbacks` | `post_call_failure_hook` | `callbacks:` in `config.yaml` |
+| failures (non-streaming) | `litellm.callbacks` | `post_call_failure_hook` | `callbacks:` in `config.yaml` |
+| failures (streaming) | `litellm._async_failure_callback` | `Logging.async_failure_handler` | `add_litellm_async_failure_callback` in [`callback.py`](../litellm_runtime/callback.py) |
 | successes | `litellm._async_success_callback` | `Logging.async_success_handler` | `add_litellm_async_success_callback` in [`callback.py`](../litellm_runtime/callback.py) |
+
+The failure half needed splitting in two. `callbacks:` in `config.yaml` does populate
+`litellm.callbacks`, so `post_call_failure_hook` fires — but measured against the on-disk
+logs it only ever produced records for **non-streaming** requests. Streaming calls showed
+thousands of success records against a single failure record, while non-streaming calls
+logged failures normally. Since every real conversation turn streams, upstream errors —
+Anthropic's `529 overloaded_error` in particular — were missing from exactly the requests
+that matter, and the user saw the request vanish from the session timeline rather than
+fail. Registering `_async_failure_callback` closes that half; both hooks funnel through
+one writer that dedups on `litellm_call_id`, so the overlap on non-streaming failures
+still yields one record.
 
 On the router (`/v1/messages`) path LiteLLM's `function_setup()` copies
 `litellm.callbacks` into the per-event lists, so the `callbacks:` key alone was enough.
@@ -203,11 +215,13 @@ and fails silently in both:
 
 4. Confirm **successes** appear in `messages.jsonl`, not just failures. They reach the
    callback only via `litellm._async_success_callback` — see
-   [Request logging is registered in two different places](#request-logging-is-registered-in-two-different-places).
+   [Request logging is registered in three different places](#request-logging-is-registered-in-three-different-places).
    Checking that requests 200 is *not* sufficient: a past regression had every request
    succeeding while nothing but failures was logged.
-5. Confirm **failures** still appear. On the passthrough route a non-2xx reaches the
-   callback via `async_post_call_failure_hook`, not `async_log_failure_event`.
+5. Confirm **failures** still appear — on a **streaming** request, not just a
+   non-streaming one. The two shapes reach the callback by different lists
+   (`async_post_call_failure_hook` vs `async_log_failure_event`), and a past regression
+   had non-streaming failures logging normally while every streaming failure was dropped.
 6. Confirm there is exactly **one** record per request. `callback.py` is re-exec'd by
    LiteLLM's `get_instance_fn` (a fresh module, never cached in `sys.modules`), so a
    distinct `FileLogger` is registered per load; only `_add_custom_logger_to_list`'s

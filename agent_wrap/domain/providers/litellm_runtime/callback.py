@@ -21,6 +21,8 @@ import json
 import os
 import re
 import sys
+from collections import deque
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -64,13 +66,63 @@ _PROVIDER_RE = re.compile(r"^[a-z0-9-]+$")
 _DEFAULT_PROJECT_HASH = "unknown-project"
 _DEFAULT_PROVIDER = "unknown-provider"
 
+# Where the incoming request headers can be found, most authoritative first.
+#
+# The two failure paths reach this module with differently-shaped dicts, and both
+# must agree on which project/session directory a record belongs to — a record
+# filed under "unknown-project" is written to disk but invisible in the viewer,
+# which is the exact failure mode this callback exists to prevent.
+#
+#   - post_call_failure_hook gets the proxy's request_payload, which copies every
+#     key of LiteLLM's kwargs (so "litellm_params" is present).
+#   - log_failure_event gets the logging object's model_call_details, whose
+#     "litellm_params" is the *same dict object* the passthrough handler built
+#     (it is passed straight to Logging.update_environment_variables).
+#
+# The first path below therefore covers both today; the rest are cheap insurance
+# against LiteLLM moving the headers, since the symptom would otherwise be silent.
+# Failure ids already written, so the two failure hooks cannot double-record the
+# same upstream error. Bounded so a long-lived sidecar cannot grow them without
+# limit; see _claim_failure for why this is module-level rather than instance state.
+_SEEN_FAILURE_LIMIT = 512
+_SEEN_FAILURE_IDS: set[str] = set()
+_SEEN_FAILURE_ORDER: deque[str] = deque(maxlen=_SEEN_FAILURE_LIMIT)
+
+_HEADER_PATHS: tuple[tuple[str, ...], ...] = (
+    ("litellm_params", "proxy_server_request", "headers"),
+    ("proxy_server_request", "headers"),
+    ("litellm_params", "metadata", "headers"),
+)
+
+
+def _dig(root: Any, path: tuple[str, ...]) -> Any:
+    """Walk *path* through nested mappings, returning None if any hop is missing."""
+    node = root
+    for key in path:
+        if not isinstance(node, Mapping):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _get_request_headers(kwargs: dict[str, Any]) -> Mapping[str, Any]:
+    """
+    Return the incoming HTTP headers, whichever shape LiteLLM handed us.
+
+    Starlette's ``Headers`` is a ``Mapping`` with case-insensitive lookup, and the
+    passthrough route stores that object directly rather than a dict copy — so the
+    result is used only via ``.get()`` and never mutated.
+    """
+    for path in _HEADER_PATHS:
+        headers = _dig(kwargs, path)
+        if isinstance(headers, Mapping):
+            return headers
+    return {}
+
 
 def _get_session_id(kwargs: dict[str, Any]) -> str:
-    """Extract the Claude Code session ID from the proxy server request headers."""
-    litellm_params = kwargs.get("litellm_params") or {}
-    proxy_request = litellm_params.get("proxy_server_request") or {}
-    headers = proxy_request.get("headers") or {}
-    return headers.get("x-claude-code-session-id", "unknown-session")
+    """Extract the Claude Code session ID from the incoming request headers."""
+    return _get_request_headers(kwargs).get("x-claude-code-session-id", "unknown-session")
 
 
 def _get_project_hash(kwargs: dict[str, Any]) -> str:
@@ -79,13 +131,11 @@ def _get_project_hash(kwargs: dict[str, Any]) -> str:
 
     The wrapper injects this via ANTHROPIC_CUSTOM_HEADERS. Anything that isn't
     pure lowercase hex (missing header, '/'-bearing, absolute, traversal) falls
-    back to a fixed default so a malformed value can never escape the mount.
+    back to a fixed default so a malformed value can never escape the mount. That
+    check guards every candidate location in _HEADER_PATHS, not just the first.
     """
-    litellm_params = kwargs.get("litellm_params") or {}
-    proxy_request = litellm_params.get("proxy_server_request") or {}
-    headers = proxy_request.get("headers") or {}
-    raw = headers.get("x-agent-wrap-log-prefix", "")
-    return raw if _HASH_RE.match(raw) else _DEFAULT_PROJECT_HASH
+    raw = _get_request_headers(kwargs).get("x-agent-wrap-log-prefix", "")
+    return raw if isinstance(raw, str) and _HASH_RE.match(raw) else _DEFAULT_PROJECT_HASH
 
 
 def _get_provider() -> str:
@@ -376,6 +426,74 @@ async def _write_record_async(record: LogRecord, kwargs: dict[str, Any]) -> None
     await asyncio.to_thread(_append)
 
 
+def _claim_failure(call_id: Any) -> bool:
+    """
+    Return True if this failure is ours to record, False if a sibling hook has it.
+
+    A single upstream error can reach this module twice — once through
+    ``async_post_call_failure_hook`` (the proxy's passthrough handler) and once
+    through ``async_log_failure_event`` (the ``_async_failure_callback`` list) —
+    and ``litellm_call_id`` is the one identifier both paths carry.
+
+    The bookkeeping is module-level rather than instance state on purpose:
+    LiteLLM's ``get_instance_fn`` re-execs this file per load and mints a distinct
+    ``FileLogger`` each time (see the registration note at the bottom of this
+    file), so an instance attribute would not be shared between them.
+
+    A missing or non-string id records anyway. A duplicate row is a far better
+    failure mode than another silently dropped request, which is the bug this
+    whole path exists to fix.
+
+    No lock: callbacks run on the proxy's event loop and there is no await
+    between the membership test and the insert, so the check-then-set is atomic
+    with respect to other coroutines.
+    """
+    if not isinstance(call_id, str) or not call_id:
+        return True
+    if call_id in _SEEN_FAILURE_IDS:
+        return False
+    # deque(maxlen=...) evicts silently on append; drop the same id from the set
+    # so the two structures cannot drift apart over a long-lived sidecar.
+    if len(_SEEN_FAILURE_ORDER) == _SEEN_FAILURE_ORDER.maxlen:
+        _SEEN_FAILURE_IDS.discard(_SEEN_FAILURE_ORDER[0])
+    _SEEN_FAILURE_ORDER.append(call_id)
+    _SEEN_FAILURE_IDS.add(call_id)
+    return True
+
+
+async def _record_failure(
+    kwargs: dict[str, Any],
+    response_obj: Any = None,
+    exc: Any = None,
+    start_time: Any = None,
+    end_time: Any = None,
+) -> None:
+    """
+    Build and persist one failure record.  Never raises.
+
+    Shared by both failure hooks so they cannot drift in how a failure is shaped,
+    deduplicated, or filed.
+    """
+    if not _claim_failure(kwargs.get("litellm_call_id")):
+        return
+    record = build_record(
+        kwargs,
+        response_obj,
+        status="failure",
+        exc=exc,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    try:
+        await _write_record_async(record, kwargs)
+    except Exception as e:  # noqa: BLE001 - logging is best-effort
+        print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
+    try:
+        _write_metadata(record, kwargs)
+    except Exception as e:  # noqa: BLE001 - logging is best-effort
+        print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
+
+
 def _write_metadata(record: LogRecord, kwargs: dict[str, Any]) -> None:
     """Update ``meta.json`` from *record*.  Never raises."""
     log_dir = _get_log_dir(kwargs)
@@ -466,23 +584,16 @@ try:
             absent from ``messages.jsonl`` entirely — silently, which is the worst
             way for a request log to be wrong.
 
+            This hook alone proved insufficient: measured against the on-disk logs
+            it reliably caught non-streaming failures while streaming ones — which
+            is all of Claude Code's conversation traffic — went unrecorded. Both
+            lists are registered now; ``_claim_failure`` keeps the overlap from
+            double-recording.
+
             ``request_data`` carries the same ``litellm_params`` /
             ``proxy_server_request`` shape ``build_record`` reads elsewhere.
             """
-            record = build_record(
-                request_data,
-                None,
-                status="failure",
-                exc=original_exception,
-            )
-            try:
-                await _write_record_async(record, request_data)
-            except Exception as e:  # noqa: BLE001 - logging is best-effort
-                print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
-            try:
-                _write_metadata(record, request_data)
-            except Exception as e:  # noqa: BLE001 - logging is best-effort
-                print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
+            await _record_failure(request_data, exc=original_exception)
 
         async def async_log_success_event(
             self,
@@ -530,23 +641,21 @@ try:
             start_time,  # pyrefly: ignore [implicit-any-parameter]
             end_time,  # pyrefly: ignore [implicit-any-parameter]
         ) -> None:
-            record = build_record(
+            """
+            Record a failure dispatched through ``litellm._async_failure_callback``.
+
+            Reached on the router routes, and — since the registration at the
+            bottom of this file — on the ``/anthropic/*`` passthrough route too,
+            where it is what finally captures streaming upstream errors such as
+            Anthropic's 529 ``overloaded_error``.
+            """
+            await _record_failure(
                 kwargs,
                 response_obj,
-                status="failure",
                 exc=kwargs.get("exception"),
                 start_time=start_time,
                 end_time=end_time,
             )
-            try:
-                await _write_record_async(record, kwargs)
-            except Exception as e:  # noqa: BLE001 - logging is best-effort
-                print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
-            try:
-                _write_metadata(record, kwargs)
-
-            except Exception as e:  # noqa: BLE001 - logging is best-effort
-                print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
 
     file_logger_instance = FileLogger()
 
@@ -576,6 +685,26 @@ try:
     # by class name plus public scalar attrs, and FileLogger is stateless, so repeat
     # registrations of a different object are still skipped.
     litellm.logging_callback_manager.add_litellm_async_success_callback(file_logger_instance)
+
+    # Failures need the same treatment, for the same reason and one more.
+    #
+    # `litellm_settings: callbacks:` populates litellm.callbacks, which is the list
+    # post_call_failure_hook iterates — so config alone did give us *a* failure path.
+    # But a census of the on-disk logs showed it only ever fired for non-streaming
+    # requests: streaming calls had thousands of success records against a single
+    # failure record, while non-streaming calls recorded failures normally. Since
+    # every real conversation turn streams, upstream errors — 529 overloaded_error
+    # in particular — were missing from precisely the requests that matter.
+    #
+    # Failures dispatched by Logging.async_failure_handler read
+    # litellm._async_failure_callback, which the passthrough route leaves empty for
+    # the same reason as the success list: function_setup() never runs, so nothing
+    # copies litellm.callbacks into it. add_litellm_async_failure_callback appends
+    # there directly.
+    #
+    # Both hooks now feed _record_failure, which dedups on litellm_call_id so a
+    # failure seen twice is still logged once.
+    litellm.logging_callback_manager.add_litellm_async_failure_callback(file_logger_instance)
 except ImportError:
     # litellm isn't installed in this interpreter (e.g. running the repo's unit
     # tests). build_record stays importable; the callback instance is absent.

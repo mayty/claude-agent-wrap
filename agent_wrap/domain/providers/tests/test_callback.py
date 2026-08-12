@@ -42,10 +42,13 @@ _callback = _import_runtime_module("callback")
 _helpers = sys.modules["helpers"]
 _string_hasher = sys.modules["string_hasher"]
 
+_claim_failure = _callback._claim_failure
 _get_log_dir = _callback._get_log_dir
 _get_project_hash = _callback._get_project_hash
 _get_provider = _callback._get_provider
+_get_request_headers = _callback._get_request_headers
 _get_session_id = _callback._get_session_id
+_record_failure = _callback._record_failure
 _resolve_thinking_reasoning_conflict = _callback._resolve_thinking_reasoning_conflict
 build_record = _callback.build_record
 extract_session_alias = _callback.extract_session_alias
@@ -611,6 +614,61 @@ def test_get_project_hash_rejects_non_hex_and_traversal(bad: str) -> None:
     assert _get_project_hash(_hash_kwargs(bad)) == "unknown-project"
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param(
+            {"proxy_server_request": {"headers": {"x-agent-wrap-log-prefix": "0123456789abcdef"}}},
+            id="top-level-proxy-server-request",
+        ),
+        pytest.param(
+            {
+                "litellm_params": {
+                    "metadata": {"headers": {"x-agent-wrap-log-prefix": "0123456789abcdef"}}
+                }
+            },
+            id="litellm-params-metadata",
+        ),
+    ],
+)
+def test_get_project_hash_reads_fallback_header_locations(kwargs: dict[str, Any]) -> None:
+    """
+    Resolve the real hash from every known header location, not just the primary.
+
+    A record filed under unknown-project is written to disk but invisible in the
+    viewer — the same silent-drop failure this callback exists to prevent.
+    """
+    assert _get_project_hash(kwargs) == "0123456789abcdef"
+
+
+def test_get_session_id_reads_fallback_header_location() -> None:
+    kwargs = {"litellm_params": {"metadata": {"headers": {"x-claude-code-session-id": "sess-9"}}}}
+    assert _get_session_id(kwargs) == "sess-9"
+
+
+def test_get_request_headers_prefers_primary_over_fallback() -> None:
+    kwargs = {
+        "litellm_params": {
+            "proxy_server_request": {"headers": {"x-claude-code-session-id": "primary"}},
+            "metadata": {"headers": {"x-claude-code-session-id": "fallback"}},
+        }
+    }
+    assert _get_session_id(kwargs) == "primary"
+
+
+def test_get_request_headers_empty_when_no_location_matches() -> None:
+    assert (
+        _get_request_headers({"litellm_params": {"proxy_server_request": {"headers": None}}}) == {}
+    )
+
+
+@pytest.mark.parametrize("bad", ["ABCDEF", "../../etc", "/abs/path", "a/b", ".."])
+def test_get_project_hash_validates_fallback_locations_too(bad: str) -> None:
+    """The traversal guard must cover every candidate location, not only the first."""
+    kwargs = {"litellm_params": {"metadata": {"headers": {"x-agent-wrap-log-prefix": bad}}}}
+    assert _get_project_hash(kwargs) == "unknown-project"
+
+
 def test_get_provider_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_WRAP_PROVIDER", "litellm-bedrock")
     assert _get_provider() == "litellm-bedrock"
@@ -867,9 +925,13 @@ def _load_callback_with_stub_litellm(tmp_path: Path) -> Any:
 
         def __init__(self) -> None:
             self.async_success: list[Any] = []
+            self.async_failure: list[Any] = []
 
         def add_litellm_async_success_callback(self, callback: Any) -> None:
             self.async_success.append(callback)
+
+        def add_litellm_async_failure_callback(self, callback: Any) -> None:
+            self.async_failure.append(callback)
 
     custom_logger.CustomLogger = _CustomLogger  # pyrefly: ignore [missing-attribute]
     litellm_mod.logging_callback_manager = _RecordingCallbackManager()  # pyrefly: ignore [missing-attribute]
@@ -1012,3 +1074,138 @@ def test_import_registers_logger_for_async_success(tmp_path: Path) -> None:
     mod = _load_callback_with_stub_litellm(tmp_path)
     registered = mod._test_callback_manager.async_success
     assert registered == [mod.file_logger_instance]
+
+
+@pytest.fixture
+def failure_dedup_reset() -> Iterator[None]:
+    """Isolate the module-level failure dedup bookkeeping between tests."""
+    _callback._SEEN_FAILURE_IDS.clear()
+    _callback._SEEN_FAILURE_ORDER.clear()
+    yield
+    _callback._SEEN_FAILURE_IDS.clear()
+    _callback._SEEN_FAILURE_ORDER.clear()
+
+
+@pytest.mark.usefixtures("failure_dedup_reset")
+def test_claim_failure_blocks_a_repeat_of_the_same_call_id() -> None:
+    assert _claim_failure("call-1") is True
+    assert _claim_failure("call-1") is False
+
+
+@pytest.mark.usefixtures("failure_dedup_reset")
+def test_claim_failure_allows_distinct_call_ids() -> None:
+    assert _claim_failure("call-1") is True
+    assert _claim_failure("call-2") is True
+
+
+@pytest.mark.usefixtures("failure_dedup_reset")
+@pytest.mark.parametrize("unusable", [None, "", 123, {}])
+def test_claim_failure_records_when_call_id_unusable(unusable: Any) -> None:
+    """A duplicate row beats a dropped request — dropping is the bug being fixed."""
+    assert _claim_failure(unusable) is True
+    assert _claim_failure(unusable) is True
+
+
+@pytest.mark.usefixtures("failure_dedup_reset")
+def test_claim_failure_evicts_oldest_beyond_the_limit() -> None:
+    """The set and the deque must not drift apart over a long-lived sidecar."""
+    limit = _callback._SEEN_FAILURE_LIMIT
+    for i in range(limit):
+        assert _claim_failure(f"call-{i}") is True
+    assert _claim_failure("call-0") is False
+
+    # One more id evicts the oldest, which becomes claimable again.
+    assert _claim_failure("overflow") is True
+    assert _claim_failure("call-0") is True
+    assert len(_callback._SEEN_FAILURE_IDS) == limit
+    assert len(_callback._SEEN_FAILURE_ORDER) == limit
+
+
+def _failure_kwargs(
+    session: str, call_id: str | None, model: str = "claude-opus-5"
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "litellm_params": {
+            "proxy_server_request": {
+                "url": "/anthropic/v1/messages",
+                "method": "POST",
+                "headers": {"x-claude-code-session-id": session},
+                "body": {"model": model, "stream": True},
+            }
+        },
+    }
+    if call_id is not None:
+        kwargs["litellm_call_id"] = call_id
+    return kwargs
+
+
+def _logged_records(tmp_path: Path, session: str) -> list[dict[str, Any]]:
+    log_file = tmp_path / session / "messages.jsonl"
+    if not log_file.exists():
+        return []
+    return [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line]
+
+
+def test_failure_callback_is_registered_on_the_async_failure_list(tmp_path: Path) -> None:
+    """
+    Streaming upstream errors (Anthropic's 529 overloaded_error) are dispatched
+    through litellm._async_failure_callback, which the /anthropic/* passthrough
+    route leaves empty because function_setup() never runs. Losing this
+    registration silently drops every streaming failure while non-streaming ones
+    keep appearing — which reads as "logging works" rather than as broken.
+    """
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    assert mod._test_callback_manager.async_failure == [mod.file_logger_instance]
+
+
+def test_log_failure_event_writes_a_failure_record(tmp_path: Path) -> None:
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    kwargs = _failure_kwargs("sess-stream", "call-stream")
+    kwargs["exception"] = RuntimeError("529 Overloaded")
+
+    asyncio.run(mod.file_logger_instance.async_log_failure_event(kwargs, None, None, None))
+
+    records = _logged_records(tmp_path, "sess-stream")
+    assert len(records) == 1
+    assert records[0]["status"] == "failure"
+    assert records[0]["error"] == "529 Overloaded"
+    assert records[0]["model"] == "claude-opus-5"
+
+
+def test_both_failure_paths_record_the_same_call_id_once(tmp_path: Path) -> None:
+    """Both lists are registered, so one upstream error can arrive twice."""
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    kwargs = _failure_kwargs("sess-dedup", "call-shared")
+    kwargs["exception"] = RuntimeError("529 Overloaded")
+
+    asyncio.run(
+        mod.file_logger_instance.async_post_call_failure_hook(
+            request_data=kwargs,
+            original_exception=RuntimeError("529 Overloaded"),
+            user_api_key_dict=None,
+        )
+    )
+    asyncio.run(mod.file_logger_instance.async_log_failure_event(kwargs, None, None, None))
+
+    assert len(_logged_records(tmp_path, "sess-dedup")) == 1
+
+
+def test_both_failure_paths_record_distinct_call_ids_separately(tmp_path: Path) -> None:
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    for call_id in ("call-a", "call-b"):
+        kwargs = _failure_kwargs("sess-distinct", call_id)
+        kwargs["exception"] = RuntimeError("529 Overloaded")
+        asyncio.run(mod.file_logger_instance.async_log_failure_event(kwargs, None, None, None))
+
+    assert len(_logged_records(tmp_path, "sess-distinct")) == 2
+
+
+def test_failure_without_call_id_is_still_recorded(tmp_path: Path) -> None:
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    for _ in range(2):
+        kwargs = _failure_kwargs("sess-no-id", None)
+        kwargs["exception"] = RuntimeError("529 Overloaded")
+        asyncio.run(mod.file_logger_instance.async_log_failure_event(kwargs, None, None, None))
+
+    assert len(_logged_records(tmp_path, "sess-no-id")) == 2
