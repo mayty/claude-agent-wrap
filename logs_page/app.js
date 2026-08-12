@@ -8,6 +8,11 @@ let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
               listPoll: null, projectsFp: null, sessionsFp: null,
               rawReqs: [], pendingHashes: null };
 
+// Stand-in text for a hash:<sha256> pointer whose original string has not been
+// fetched yet. replaceLoadingPlaceholders() swaps it for a spinner on an exact
+// match, so anything rendering it must keep it alone in its own text node.
+const LOADING_PLACEHOLDER = "➳ Loading…";
+
 function hasPendingHashes() {
   return state.pendingHashes !== null && state.pendingHashes.size > 0;
 }
@@ -92,7 +97,7 @@ function resolveRecord(r, strings) {
       if (/^hash:[a-f0-9]{64}$/.test(v)) {
         if (state.pendingHashes === null) state.pendingHashes = new Set();
         state.pendingHashes.add(v);
-        return "➳ Loading…";
+        return LOADING_PLACEHOLDER;
       }
       return v;
     }
@@ -234,7 +239,7 @@ function el(tag, cls, text) {
 // Uses exact-match so JSON-stringified tool inputs (where the placeholder is
 // embedded in a larger string) are left alone.
 function replaceLoadingPlaceholders(container) {
-  const placeholder = "➳ Loading…";
+  const placeholder = LOADING_PLACEHOLDER;
   const walker = document.createTreeWalker(
     container,
     NodeFilter.SHOW_TEXT,
@@ -899,6 +904,397 @@ function respTimingLine(r) {
   return line;
 }
 
+// ---------------------------------------------------------------------------
+// Tool definitions
+//
+// A request's `tools` array has a predictable shape, so it gets a structured
+// view rather than a JSON dump: one collapsed row per tool (name, one-line
+// description, param count) expanding to the full description and a parameter
+// table. There is no raw-JSON fallback, so every field the renderer does not
+// model is surfaced as "other fields" instead of being dropped.
+// ---------------------------------------------------------------------------
+
+const isPlainObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
+
+// How many tool-name pills fit in the section's summary before the rest are
+// counted off as "+N more".
+const TOOL_PILL_LIMIT = 12;
+// Longest one-line description snippet shown on a collapsed row.
+const SNIPPET_MAX = 140;
+// Deepest nesting of object-valued parameters that still gets its own table.
+const PARAM_DEPTH_CAP = 3;
+// MCP tool names arrive namespaced as mcp__<server>__<tool>.
+const MCP_NAME_RE = /^mcp__(.+?)__(.+)$/;
+// JSON Schema validation keywords rendered as a compact constraint line.
+const CONSTRAINT_KEYS = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+                         "minLength", "maxLength", "minItems", "maxItems",
+                         "pattern", "format"];
+// Schema keys the structured view accounts for. Everything else (e.g. $defs)
+// surfaces as "other schema keys". `additionalProperties: false` and `$schema`
+// are deliberately silent: they are boilerplate on every Claude Code tool and
+// say nothing a log reader needs — an *unusual* additionalProperties still
+// shows up, via schemaConstraints().
+const SCHEMA_CONSUMED = ["type", "properties", "required", "$schema", "title",
+                         "additionalProperties", "propertyNames", ...CONSTRAINT_KEYS];
+// The same, per property. `properties`/`required` are re-added per property when
+// its own nested table is rendered, so hitting PARAM_DEPTH_CAP reports a
+// sub-schema rather than hiding it.
+const PROP_CONSUMED = ["description", "enum", "default", "items", "anyOf", "oneOf",
+                       "const", "$ref",
+                       ...SCHEMA_CONSUMED.filter((k) => k !== "properties" && k !== "required")];
+
+// Reduce one entry of a `tools` array to {name, type, description, deferred,
+// schema, extras}, accepting the encodings that reach the logs: Anthropic's
+// inline `input_schema`, OpenAI's nested `function`, Bedrock Converse's
+// `toolSpec`, and server tools that carry a `type` and no schema at all.
+function toolSpec(tool) {
+  if (!isPlainObj(tool)) {
+    return { name: null, type: null, description: null, deferred: false,
+             schema: null, extras: tool };
+  }
+
+  // Unwrap to the object that actually carries name/description, noting where
+  // its schema lives.
+  let src = tool;
+  let schemaKeys = ["input_schema"];
+  if (isPlainObj(tool.function)) {
+    src = tool.function;
+    schemaKeys = ["parameters", "input_schema"];
+  } else if (isPlainObj(tool.toolSpec)) {
+    src = tool.toolSpec;
+    schemaKeys = ["inputSchema", "input_schema"];
+  }
+
+  let schema = null;
+  for (const k of schemaKeys) {
+    if (isPlainObj(src[k])) { schema = src[k]; break; }
+  }
+  // Bedrock wraps the JSON Schema one level deeper, in {json: {...}}.
+  if (schema && isPlainObj(schema.json) && !isPlainObj(schema.properties)) {
+    schema = schema.json;
+  }
+
+  const consumed = new Set(["name", "description", "type", "defer_loading", ...schemaKeys]);
+  const extras = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (!consumed.has(k)) extras[k] = v;
+  }
+  // A nested encoding can also carry keys on the wrapper (e.g. a cache_control
+  // sitting beside .function).
+  if (src !== tool) {
+    for (const [k, v] of Object.entries(tool)) {
+      if (!["type", "function", "toolSpec", "defer_loading"].includes(k)) extras[k] = v;
+    }
+  }
+
+  return {
+    name: typeof src.name === "string" ? src.name : null,
+    type: typeof tool.type === "string" ? tool.type : null,
+    description: typeof src.description === "string" ? src.description : null,
+    // Claude Code marks tools whose schema the model loads on demand (ToolSearch).
+    deferred: tool.defer_loading === true || src.defer_loading === true,
+    schema,
+    extras,
+  };
+}
+
+// The sub-schema whose `properties` describe a parameter's inner shape, as
+// {schema, key} where `key` is the property key that carried it: the property
+// itself ("self") when it is an object, an array's item schema, a map's value
+// schema, or the first object-shaped member of an anyOf/oneOf union. Null when
+// there is none.
+function childSchema(prop) {
+  if (isPlainObj(prop.properties)) return { schema: prop, key: "self" };
+  if (isPlainObj(prop.items) && isPlainObj(prop.items.properties)) {
+    return { schema: prop.items, key: "items" };
+  }
+  const ap = prop.additionalProperties;
+  if (isPlainObj(ap) && isPlainObj(ap.properties)) {
+    return { schema: ap, key: "additionalProperties" };
+  }
+  for (const key of ["anyOf", "oneOf"]) {
+    if (!Array.isArray(prop[key])) continue;
+    for (const alt of prop[key]) {
+      if (isPlainObj(alt) && isPlainObj(alt.properties)) return { schema: alt, key };
+    }
+  }
+  return null;
+}
+
+// A short type label for one property: "string", "string[]", "string | null",
+// "enum", a $ref's basename, and so on. "any" when the schema says nothing.
+function schemaTypeLabel(prop) {
+  if (!isPlainObj(prop)) return "any";
+  if (typeof prop.$ref === "string") return prop.$ref.split("/").pop() || "ref";
+  if ("const" in prop) return "const " + compactJSON(prop.const);
+  const t = prop.type;
+  if (Array.isArray(t) && t.length) return t.join(" | ");
+  if (typeof t === "string") {
+    if (t !== "array") return t;
+    return isPlainObj(prop.items) ? schemaTypeLabel(prop.items) + "[]" : "array";
+  }
+  const union = Array.isArray(prop.anyOf) ? prop.anyOf
+    : (Array.isArray(prop.oneOf) ? prop.oneOf : null);
+  if (union && union.length) {
+    const parts = union.map(schemaTypeLabel).filter((s) => s !== "any");
+    if (parts.length) return [...new Set(parts)].join(" | ");
+  }
+  if (Array.isArray(prop.enum)) return "enum";
+  if (isPlainObj(prop.properties)) return "object";
+  return "any";
+}
+
+// Flatten one schema's `properties` into display rows, recursing into
+// object-valued properties up to PARAM_DEPTH_CAP.
+function schemaParams(schema, depth) {
+  if (!isPlainObj(schema) || !isPlainObj(schema.properties)) return [];
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const rows = [];
+  for (const [name, raw] of Object.entries(schema.properties)) {
+    const prop = isPlainObj(raw) ? raw : {};
+    const child = childSchema(prop);
+    const recurse = child !== null && depth < PARAM_DEPTH_CAP;
+    const consumed = new Set(PROP_CONSUMED);
+    if (recurse) {
+      consumed.add("properties");
+      consumed.add("required");
+    } else if (child !== null && child.key !== "self") {
+      // Past PARAM_DEPTH_CAP: report the sub-schema rather than hide it.
+      consumed.delete(child.key);
+    }
+    const extras = {};
+    for (const [k, v] of Object.entries(prop)) {
+      if (!consumed.has(k)) extras[k] = v;
+    }
+    rows.push({
+      name,
+      required: required.includes(name),
+      type: schemaTypeLabel(prop),
+      description: typeof prop.description === "string" ? prop.description : null,
+      enumValues: Array.isArray(prop.enum) ? prop.enum : null,
+      def: "default" in prop ? prop.default : undefined,
+      constraints: schemaConstraints(prop),
+      extras,
+      children: recurse ? schemaParams(child.schema, depth + 1) : [],
+    });
+  }
+  return rows;
+}
+
+// Schema keys outside SCHEMA_CONSUMED, as an object (empty when there are none).
+function schemaExtras(schema) {
+  if (!isPlainObj(schema)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (!SCHEMA_CONSUMED.includes(k)) out[k] = v;
+  }
+  return out;
+}
+
+// One bound pair as a single phrase: "1–4 items", "length ≥1", "≤10". Bounds at
+// the JS safe-integer limit are dropped: schema generators pin every integer
+// param to that range, so they say nothing about the tool.
+function boundPhrase(min, max, prefix, suffix) {
+  const real = (v) => v !== undefined && Math.abs(v) !== Number.MAX_SAFE_INTEGER;
+  const lo = real(min) ? compactJSON(min) : null;
+  const hi = real(max) ? compactJSON(max) : null;
+  if (lo !== null && hi !== null) return prefix + lo + "–" + hi + suffix;
+  if (lo !== null) return prefix + "≥" + lo + suffix;
+  if (hi !== null) return prefix + "≤" + hi + suffix;
+  return null;
+}
+
+// The validation keywords of one schema node (a whole tool schema or a single
+// property) as short display strings, e.g. ["1–4 items", "matches /^a$/"].
+function schemaConstraints(node) {
+  if (!isPlainObj(node)) return [];
+  const out = [];
+  const bounds = [
+    boundPhrase(node.minimum, node.maximum, "", ""),
+    boundPhrase(node.exclusiveMinimum, node.exclusiveMaximum, "", ""),
+    boundPhrase(node.minLength, node.maxLength, "length ", ""),
+    boundPhrase(node.minItems, node.maxItems, "", " items"),
+  ];
+  // An exclusive bound is strict, so its ≥/≤ has to become >/<.
+  if (bounds[1]) bounds[1] = bounds[1].replace("≥", ">").replace("≤", "<");
+  for (const b of bounds) {
+    if (b) out.push(b);
+  }
+  if (typeof node.pattern === "string") out.push("matches /" + node.pattern + "/");
+  if (typeof node.format === "string") out.push("format " + node.format);
+  if (isPlainObj(node.propertyNames) && node.propertyNames.type) {
+    out.push("keys " + schemaTypeLabel(node.propertyNames));
+  }
+  // Only the unusual cases are worth saying out loud; see SCHEMA_CONSUMED. A map
+  // whose values are objects says it with its own nested table (childSchema), so
+  // nothing is added here for that case.
+  const ap = node.additionalProperties;
+  if (ap === true) {
+    out.push("additionalProperties: true");
+  } else if (isPlainObj(ap) && !isPlainObj(ap.properties)) {
+    out.push("values " + schemaTypeLabel(ap));
+  }
+  return out;
+}
+
+function compactJSON(v) {
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+
+// A one-line gist of `text` for a collapsed row. Returns the loading
+// placeholder untouched so it still becomes a spinner.
+function descSnippet(text) {
+  if (typeof text !== "string") return "";
+  const trimmed = text.trim();
+  if (trimmed === LOADING_PLACEHOLDER) return trimmed;
+  const line = (trimmed.split("\n").find((l) => l.trim()) || "").trim();
+  if (line.length <= SNIPPET_MAX) return line;
+  return line.slice(0, SNIPPET_MAX - 1).trimEnd() + "…";
+}
+
+function countLines(text) {
+  return typeof text === "string" ? text.trim().split("\n").length : 0;
+}
+
+// "mcp__jira__jira_search" → "jira_search"; any other name unchanged.
+function shortToolName(name) {
+  if (typeof name !== "string" || !name) return "(unnamed)";
+  const m = MCP_NAME_RE.exec(name);
+  return m ? m[2] : name;
+}
+
+// Show keys the structured view does not model, so an unfamiliar shape is
+// visible rather than silently dropped.
+function appendExtras(extras, parent, label) {
+  if (extras == null) return;
+  if (isPlainObj(extras) && !Object.keys(extras).length) return;
+  parent.appendChild(el("div", "block-label", label));
+  parent.appendChild(Object.assign(el("pre"), { textContent: asText(extras) }));
+}
+
+// The full description, behind a nested toggle because tool descriptions run to
+// hundreds of lines. Adds nothing when the row's snippet already showed the
+// whole text — which includes an unresolved description's placeholder.
+function appendToolDescription(desc, parent) {
+  if (typeof desc !== "string") return;
+  const text = desc.trim();
+  if (!text || text === descSnippet(text)) return;
+  const lines = countLines(text);
+  const d = el("details", "tool-desc");
+  d.appendChild(el("summary", null,
+    lines > 1 ? `full description (${lines} lines)` : "full description"));
+  d.appendChild(Object.assign(el("pre"), { textContent: text }));
+  parent.appendChild(d);
+}
+
+// A parameter table: name (with a * when required), type, then description,
+// enum values, default, any nested table, and unmodelled schema keys. Each
+// description sits alone in its own element so the placeholder rule holds.
+function renderParams(params) {
+  const grid = el("div", "params");
+  for (const p of params) {
+    const name = el("div", "p-name");
+    name.appendChild(el("span", null, p.name));
+    if (p.required) name.appendChild(el("span", "req", "*"));
+    grid.appendChild(name);
+    grid.appendChild(el("div", "p-type", p.type));
+
+    const cell = el("div", "p-cell");
+    if (p.description) cell.appendChild(el("div", "p-desc", p.description));
+    if (p.enumValues && p.enumValues.length) {
+      const chips = el("div", "p-enum");
+      for (const v of p.enumValues) chips.appendChild(el("span", "badge", compactJSON(v)));
+      cell.appendChild(chips);
+    }
+    const meta = el("div", "p-meta");
+    if (p.def !== undefined) {
+      meta.appendChild(el("span", null, "default: "));
+      // The value gets its own text node: a hashed default resolves to the
+      // loading placeholder, which only becomes a spinner when it stands alone.
+      meta.appendChild(el("span", null, compactJSON(p.def)));
+    }
+    if (p.constraints.length) {
+      meta.appendChild(el("span", null,
+        (p.def !== undefined ? " · " : "") + p.constraints.join(" · ")));
+    }
+    if (meta.children.length) cell.appendChild(meta);
+    if (p.children.length) cell.appendChild(renderParams(p.children));
+    appendExtras(p.extras, cell, "other schema keys");
+    grid.appendChild(cell);
+  }
+  return grid;
+}
+
+// One collapsed tool row plus its expanded body.
+function renderToolRow(spec) {
+  const row = el("details", "tool");
+  const sum = el("summary");
+
+  const nameEl = el("span", "tool-name");
+  const mcp = typeof spec.name === "string" ? MCP_NAME_RE.exec(spec.name) : null;
+  if (mcp) {
+    nameEl.appendChild(el("span", "tool-ns", mcp[1]));
+    nameEl.appendChild(el("span", null, mcp[2]));
+  } else {
+    nameEl.textContent = spec.name || "(unnamed)";
+  }
+  sum.appendChild(nameEl);
+  if (spec.deferred) sum.appendChild(el("span", "badge tool-flag", "deferred"));
+  if (spec.description) {
+    sum.appendChild(el("span", "tool-snip", descSnippet(spec.description)));
+  }
+
+  const params = schemaParams(spec.schema, 0);
+  if (params.length) {
+    sum.appendChild(el("span", "tool-nparams",
+      `${params.length} param${params.length === 1 ? "" : "s"}`));
+  } else if (spec.type) {
+    // A server-side tool has no schema of its own; its type is the useful fact.
+    sum.appendChild(el("span", "badge tool-type", spec.type));
+  }
+  row.appendChild(sum);
+
+  const body = el("div", "tool-body");
+  appendToolDescription(spec.description, body);
+  if (params.length) {
+    body.appendChild(el("div", "block-label", "parameters"));
+    body.appendChild(renderParams(params));
+  } else {
+    body.appendChild(el("div", "meta", "(no parameters)"));
+  }
+  const notes = schemaConstraints(spec.schema);
+  if (notes.length) body.appendChild(el("div", "meta", notes.join(" · ")));
+  appendExtras(schemaExtras(spec.schema), body, "other schema keys");
+  appendExtras(spec.extras, body, "other fields");
+  row.appendChild(body);
+  return row;
+}
+
+// The whole "N tools" section: a summary naming the first few tools, then one
+// row per tool in the array's own (meaningful) order.
+function renderToolsSection(tools) {
+  const specs = tools.map(toolSpec);
+  const section = el("details", "toolsdef");
+
+  const sum = el("summary");
+  sum.appendChild(el("span", "tools-count",
+    `${specs.length} tool${specs.length === 1 ? "" : "s"}`));
+  const pills = el("span", "tool-pills");
+  for (const spec of specs.slice(0, TOOL_PILL_LIMIT)) {
+    pills.appendChild(el("span", "tool-pill", shortToolName(spec.name)));
+  }
+  if (specs.length > TOOL_PILL_LIMIT) {
+    pills.appendChild(el("span", "meta", `+${specs.length - TOOL_PILL_LIMIT} more`));
+  }
+  sum.appendChild(pills);
+  section.appendChild(sum);
+
+  const list = el("div", "tool-list");
+  for (const spec of specs) list.appendChild(renderToolRow(spec));
+  section.appendChild(list);
+  return section;
+}
+
 // The full detail body for one record: error box, system prompt, tool
 // definitions, the complete message thread, and the response. Shown in the
 // modal opened from a turn.
@@ -911,10 +1307,7 @@ function renderFullDetail(r) {
   }
   if (r.system) body.appendChild(msgEl("system", r.system));
   if (Array.isArray(r.tools) && r.tools.length) {
-    const td = el("details", "toolsdef");
-    td.appendChild(el("summary", null, `${r.tools.length} tool definition(s)`));
-    td.appendChild(Object.assign(el("pre"), { textContent: asText(r.tools) }));
-    body.appendChild(td);
+    body.appendChild(renderToolsSection(r.tools));
   }
   for (const m of (r.messages || [])) {
     body.appendChild(msgEl(m.role || "user", m.content));
