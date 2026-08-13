@@ -6,9 +6,9 @@ Claude Code statusline.
 Layout (two rows, right segment flush to the terminal edge):
 
     {model} ({effort+thinking})            Today: ↑{in} ↓{out} | {cost}
-    {used%} context                        {update_available}
+    {used%} context · {session_id}         {update_available}
 
-Colors on context %: green <10, yellow 10-19, red >=20 or >200k tokens.
+Colors on context %: green <15, yellow 15-24, red >=25.
 When usage.json is missing or stale (>30 min): yellow fallback shown.
 
 When `ANTHROPIC_BASE_URL` indicates the `litellm-anthropic-sub` provider, the

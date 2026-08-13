@@ -2,8 +2,8 @@
 # LiteLLM Anthropic Sub Provider
 
 Routes Claude Code through Anthropic's own API via its own LiteLLM sidecar — but,
-unlike every other provider here, to spend an **Anthropic Team Premium subscription
-seat** rather than per-token API credits.
+unlike every other provider here, to spend a **claude.ai subscription** rather than
+per-token API credits.
 
 ## Lifecycle
 
@@ -37,7 +37,7 @@ This provider declares no secret and sets no `ANTHROPIC_API_KEY` /
 then keeps using whatever credential it already has active (its own claude.ai login)
 and sends it upstream itself. Setting either credential env var here would override
 that active login with a Console API key, which bills API credits instead of the
-subscription seat — the one thing this provider exists to avoid.
+subscription — the one thing this provider exists to avoid.
 
 The sidecar's own master key still exists (every LiteLLM sidecar has one, minted at
 cold start), but it authenticates the loopback hop between the agent and the sidecar,
@@ -234,11 +234,11 @@ filters out every `CustomLogger`). Hence the in-code registration.
 
 ## Pricing
 
-`agent stats` always reports `$0.00` for this provider's rows — truthfully: a Team
-Premium seat has no marginal per-token cost, so there is no rate table here to keep in
-sync with Anthropic's list prices. Token counts are still tracked. To see actual seat
-consumption, use `/usage` inside Claude Code or the Team seat usage view on claude.ai —
-not `agent stats`.
+`agent stats` always reports `$0.00` for this provider's rows — truthfully: a
+subscription has no marginal per-token cost, so there is no rate table here to keep in
+sync with Anthropic's list prices. Token counts are still tracked. To see actual
+subscription consumption, use `/usage` inside Claude Code or your usage view on
+claude.ai — not `agent stats`.
 
 ## Pinned dependency
 

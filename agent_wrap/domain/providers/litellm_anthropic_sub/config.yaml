@@ -5,7 +5,7 @@
 # Anthropic first-party passthrough. Unlike every other provider's config, this
 # one carries no api_key: the point of this provider is to forward the agent's
 # own claude.ai subscription OAuth token through untouched, so it spends the
-# Team Premium seat allowance instead of API credits. Adding an api_key here
+# subscription's allowance instead of API credits. Adding an api_key here
 # would be sent upstream as x-api-key and defeat that.
 #
 # Agent traffic reaches this sidecar on the /anthropic/* passthrough route (see
@@ -41,7 +41,7 @@ model_list:
       model: "anthropic/*"
       api_base: https://api.anthropic.com
       # No api_key, deliberately: it would be sent as x-api-key and move
-      # billing off the subscription seat. This is the whole point.
+      # billing off the subscription. This is the whole point.
     model_info:
       input_cost_per_token: 0.0
       output_cost_per_token: 0.0

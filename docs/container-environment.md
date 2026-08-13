@@ -51,5 +51,5 @@ On WSL2+WSLg hosts, `DISPLAY` and `WAYLAND_DISPLAY` are forwarded from the host 
 
 Two entries are written into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch, both idempotently and both skipped if the file holds malformed JSON:
 
-- **`statusLine`** — points at `/opt/agent-wrap/statusline.py`, the bundled two-line status line. It shows the model and remaining context on one line, and today's token usage plus an available-update notice on the other.
+- **`statusLine`** — points at `/opt/agent-wrap/statusline.py`, the bundled two-line status line. It shows the model on one line and the remaining context plus the session id on the other, against today's token usage and an available-update notice on the right. Under `litellm-anthropic-sub` the token-usage segment is replaced by the five-hour subscription rate-limit window, whose reset time honours [`AGENT_TIMEZONE`](#host-forwarded-conditional).
 - **Telegram hooks** — three entries pointing at `/opt/agent-wrap/telegram-notify.sh`, added only once the Telegram secrets are set. See [Telegram Notifications](telegram-notifications.md).

@@ -2,14 +2,14 @@
 """
 LiteLLM Anthropic Sub provider — routes Claude Code through Anthropic's own API.
 
-Unlike every other provider here, this one exists to spend a subscription seat
-(Anthropic Team Premium), not to bill per-token API credits. That inverts the
+Unlike every other provider here, this one exists to spend a claude.ai
+subscription, not to bill per-token API credits. That inverts the
 usual design in a few load-bearing ways:
 
 - **No `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `get_agent_env`.** Either
   one replaces the active credential Claude Code already holds from its own
   claude.ai login (an OAuth token, `sk-ant-oat...`) and moves billing off the
-  subscription seat onto API credits instead — exactly what this provider must
+  subscription onto API credits instead — exactly what this provider must
   not do. Only `ANTHROPIC_BASE_URL` is set, per Anthropic's documented gateway
   pattern (code.claude.com/docs/en/llm-gateway): Claude Code keeps using its own
   login and forwards it as `Authorization: Bearer sk-ant-oat...` plus
@@ -55,8 +55,8 @@ usual design in a few load-bearing ways:
   `DISABLE_AUTOUPDATER=1` in its place, so the CLI baked into the image still
   never tries to self-update.
 
-- **`compute_cost` is overridden directly, always returning `0.0`.** A Team
-  Premium seat has no marginal per-token cost, so there is no rate table to
+- **`compute_cost` is overridden directly, always returning `0.0`.** A
+  subscription has no marginal per-token cost, so there is no rate table to
   maintain, and no dollar figure here would be truthful. Returning `0.0`
   (rather than `None`) matters because `stats/scan.py` only flags a bucket as
   `cost_unknown` when `compute_cost` returns `None` — `0.0` reports a truthful,

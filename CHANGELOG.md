@@ -5,17 +5,12 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.9.0](releases/0.9.0.md) — 2026-08-07
+## [0.9.0](releases/0.9.0.md) — 2026-08-13
 
-Adds a `litellm-anthropic-sub` provider that routes Claude Code through Anthropic's own
-API (via subscription),
-authenticated once via an in-container `/login` rather than a stored secret, plus an
-`AGENT_TIMEZONE` setting for the `agent stats` day boundary and the statusline reset time.
-Per-project state now covers Claude Code's session scratchpad and MCP server logs, so scratch
-files survive into a resumed session. Claude Code's background daemon and live-session registry
-move from per-project to per-container mounts, fixing `& <prompt>` background jobs and letting two
-agents share a project directory without clobbering each other. Requires one `agent rebuild` after
-upgrading.
+Adds a `litellm-anthropic-sub` provider that spends a claude.ai subscription rather than
+API credits, authenticated by a one-time in-container `/login`. Also a round
+of `agent logs` viewer improvements, an `AGENT_TIMEZONE` setting, and a session scratchpad
+that survives into a resumed session. Requires one `agent rebuild --full` after upgrading.
 
 ## [0.8.0](releases/0.8.0.md) — 2026-08-05
 

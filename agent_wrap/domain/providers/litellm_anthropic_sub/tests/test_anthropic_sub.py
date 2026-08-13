@@ -100,7 +100,7 @@ def test_anthropic_sub_get_agent_env_sets_no_credential_var(
     """
     Each of these would override Claude Code's active claude.ai login, replacing the
     forwarded subscription OAuth token with a different credential and moving billing
-    off the Team Premium seat.
+    off the subscription.
     """
     env = anthropic_sub.get_agent_env("sk-aw-ant-abc123", "http://proxy:4000")
     assert credential_var not in env
