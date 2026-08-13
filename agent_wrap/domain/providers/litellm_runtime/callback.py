@@ -23,7 +23,7 @@ import re
 import sys
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -294,7 +294,14 @@ def build_record(  # noqa: PLR0913, PLR0917
     record: LogRecord = {
         "timing": {
             "start": _epoch(logging_object.get("startTime"), start_time),
-            "completionStart": _epoch(logging_object.get("completionStartTime"), start_time),
+            # No datetime fallback on a failure: the call produced no first token, so
+            # inheriting the call's start would report a 0s time-to-first-token in the
+            # viewer instead of omitting the figure. A real streamed-then-errored call
+            # still keeps whatever completionStartTime the logging object recorded.
+            "completionStart": _epoch(
+                logging_object.get("completionStartTime"),
+                start_time if status == "success" else None,
+            ),
             "end": _epoch(logging_object.get("endTime"), end_time),
         },
         "status": status,
@@ -473,16 +480,26 @@ async def _record_failure(
 
     Shared by both failure hooks so they cannot drift in how a failure is shaped,
     deduplicated, or filed.
+
+    Falls back to "now" for the timing bounds a caller did not supply.
+    ``async_post_call_failure_hook`` is handed no ``datetime`` bounds at all, and on
+    the ``/anthropic/*`` passthrough route the ``standard_logging_object`` carries no
+    timestamps either, so without this the record lands with an all-null ``timing``
+    — which drops it out of the viewer's chronological order and leaves ``meta.json``
+    without a ``last_ts``. The hook fires on the failure itself, so "now" is accurate
+    to within milliseconds; a real timestamp still wins, because ``_epoch`` only
+    consults these bounds when the logging object has none.
     """
     if not _claim_failure(kwargs.get("litellm_call_id")):
         return
+    now = datetime.now(tz=timezone.utc)
     record = build_record(
         kwargs,
         response_obj,
         status="failure",
         exc=exc,
-        start_time=start_time,
-        end_time=end_time,
+        start_time=start_time or now,
+        end_time=end_time or now,
     )
     try:
         await _write_record_async(record, kwargs)

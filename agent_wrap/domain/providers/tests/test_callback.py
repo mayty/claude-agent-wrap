@@ -1209,3 +1209,81 @@ def test_failure_without_call_id_is_still_recorded(tmp_path: Path) -> None:
         asyncio.run(mod.file_logger_instance.async_log_failure_event(kwargs, None, None, None))
 
     assert len(_logged_records(tmp_path, "sess-no-id")) == 2
+
+
+def test_build_record_failure_leaves_completion_start_none() -> None:
+    """
+    A failed call produced no first token, so completionStart must not inherit the
+    call's start — the viewer would otherwise report a 0s time-to-first-token.
+    """
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=timezone.utc)
+    record = build_record({}, None, status="failure", start_time=start, end_time=end)
+    assert record["timing"] == {
+        "start": start.timestamp(),
+        "completionStart": None,
+        "end": end.timestamp(),
+    }
+
+
+def test_build_record_failure_keeps_a_real_completion_start() -> None:
+    """A call that streamed tokens and then errored still reports its first token."""
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    kwargs = {"standard_logging_object": {"completionStartTime": 1780916982.5}}
+    record = build_record(kwargs, None, status="failure", start_time=start)
+    assert record["timing"]["completionStart"] == 1780916982.5
+
+
+def test_post_call_failure_hook_timestamps_the_record(tmp_path: Path) -> None:
+    """
+    The passthrough hook is handed no datetime bounds and the passthrough route's
+    standard_logging_object has no timestamps, so _record_failure supplies "now".
+    Without it the record sorts out of chronological order in the logs viewer and
+    meta.json never gets a last_ts.
+    """
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    before = datetime.now(tz=timezone.utc).timestamp()
+
+    asyncio.run(
+        mod.file_logger_instance.async_post_call_failure_hook(
+            request_data=_failure_kwargs("sess-ts", "call-ts"),
+            original_exception=RuntimeError("429 rate_limit_error"),
+            user_api_key_dict=None,
+        )
+    )
+
+    after = datetime.now(tz=timezone.utc).timestamp()
+    timing = _logged_records(tmp_path, "sess-ts")[0]["timing"]
+    assert before <= timing["start"] <= after
+    assert before <= timing["end"] <= after
+    assert timing["completionStart"] is None
+
+
+def test_post_call_failure_hook_records_last_ts_in_metadata(tmp_path: Path) -> None:
+    """_write_metadata only sets last_ts from a non-null timing.end."""
+    mod = _load_callback_with_stub_litellm(tmp_path)
+
+    asyncio.run(
+        mod.file_logger_instance.async_post_call_failure_hook(
+            request_data=_failure_kwargs("sess-lastts", "call-lastts"),
+            original_exception=RuntimeError("429 rate_limit_error"),
+            user_api_key_dict=None,
+        )
+    )
+
+    meta = json.loads((tmp_path / "sess-lastts" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["last_ts"] is not None
+
+
+def test_log_failure_event_prefers_real_timestamps_over_now(tmp_path: Path) -> None:
+    """The synthesized fallback must not displace timing LiteLLM actually reported."""
+    mod = _load_callback_with_stub_litellm(tmp_path)
+    kwargs = _failure_kwargs("sess-real-ts", "call-real-ts")
+    kwargs["exception"] = RuntimeError("529 Overloaded")
+    kwargs["standard_logging_object"] = {"startTime": 1780916982.12, "endTime": 1780916985.0}
+
+    asyncio.run(mod.file_logger_instance.async_log_failure_event(kwargs, None, None, None))
+
+    timing = _logged_records(tmp_path, "sess-real-ts")[0]["timing"]
+    assert timing["start"] == 1780916982.12
+    assert timing["end"] == 1780916985.0

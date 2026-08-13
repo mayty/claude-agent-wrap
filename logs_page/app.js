@@ -1313,8 +1313,43 @@ function renderFullDetail(r) {
     body.appendChild(msgEl(m.role || "user", m.content));
   }
   renderResponse(r.response, body);
+  const notice = finishReasonNotice(r);
+  if (notice) body.appendChild(notice);
   replaceLoadingPlaceholders(body);
   return body;
+}
+
+// Abnormal `finish_reason` values, mapped to the notice shown under the reply. A
+// reply that ends this way is cut short mid-sentence — or missing entirely — but
+// still arrives as status "success", so nothing else in the view distinguishes it
+// from a complete one. The normal terminations ("stop", "tool_calls") are absent
+// on purpose: they cover ~98% of traffic and saying so would be noise.
+const FINISH_REASON_NOTICES = {
+  content_filter: "The response was terminated due to content filtering",
+  length: "The response was truncated: it reached the max_tokens limit",
+};
+
+// Claude Code's probe calls ("quota", "count") ask for max_tokens: 1, so "length"
+// is the only reason they can possibly report — the model was never given room to
+// stop on its own. Flagging those would bury the handful of real truncations under
+// one notice per session start. A reply is only meaningfully truncated when its cap
+// allowed more than the token it produced.
+function isMeaningfulFinishReason(r) {
+  if (r.finish_reason !== "length") return true;
+  return r.max_tokens == null || r.max_tokens > 1;
+}
+
+// A red notice explaining why a reply stopped early, or null when it ended normally.
+// Appended under the response wherever one is rendered, since the reply itself is
+// where the truncation is visible and the explanation belongs next to it.
+function finishReasonNotice(r) {
+  const text = FINISH_REASON_NOTICES[r.finish_reason];
+  if (!text || !isMeaningfulFinishReason(r)) return null;
+  // The cap is the actionable part of a truncation — it says whose limit was hit.
+  const cap = r.finish_reason === "length" && r.max_tokens != null
+    ? ` (${r.max_tokens.toLocaleString()})`
+    : "";
+  return el("div", "finish-notice", `⚠ ${text}${cap}`);
 }
 
 // A short "#N · model · status · ts" caption line shared by a turn and its modal.
@@ -1405,6 +1440,11 @@ function renderClassifierTurn(r, displayIdx) {
     block.appendChild(el("div", "classifier-reason", parsed.reason));
   }
 
+  // A cut-off verdict is why parseClassifierResult would report "? Unparseable",
+  // so the cause belongs next to it rather than being left to guess at.
+  const notice = finishReasonNotice(r);
+  if (notice) block.appendChild(notice);
+
   turn.appendChild(block);
   turn.onclick = () => openModal(r, displayIdx);
   return turn;
@@ -1434,6 +1474,10 @@ function renderStatusSummaryTurn(r, displayIdx) {
   if (parsed.previous) {
     block.appendChild(el("div", "status-prev", "prev: " + parsed.previous));
   }
+  // These captions carry a small max_tokens, so they are where a real `length`
+  // truncation actually shows up.
+  const notice = finishReasonNotice(r);
+  if (notice) block.appendChild(notice);
   turn.appendChild(block);
 
   // Unlike the classifier turn, keep the cost/context line: these calls are pure
@@ -1485,6 +1529,10 @@ function renderTurn(r, displayIdx) {
   }
   applySectionHeights(respBubble);
   decorateSections(respBubble);
+  // Appended after the two calls above, which wrap loose `pre`s in copyable
+  // sections — the notice is commentary on the reply, not part of it.
+  const notice = finishReasonNotice(r);
+  if (notice) respBubble.appendChild(notice);
   // The timing line sits above the response bubble; the context/output/cost
   // info line sits below it. Both are left-aligned.
   const rt = respTimingLine(r);

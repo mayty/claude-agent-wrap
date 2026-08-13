@@ -320,6 +320,17 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 /* The previous caption the prompt asked the model not to repeat */
 .status-block .status-prev { color: var(--muted); font-size: 12px; margin-top: 4px; }
 
+/* --- Abnormal finish_reason (filtered / truncated replies) --- */
+
+/* Notice sitting under the reply, inside the response bubble. A reply cut short by
+   the provider still arrives as status "success", so the bubble is the one place a
+   reader is certain to look. Same treatment as .err-box / .bubble.error, since it
+   reports the same class of thing: output the user did not get. */
+.finish-notice { background: rgba(243,139,168,.12); border: 1px solid var(--err);
+                 color: var(--err); border-radius: 6px; padding: 6px 10px;
+                 margin-top: 8px; font-size: 12px; font-weight: 600;
+                 line-height: 1.4; }
+
 /* Loading hash spinner */
 .loading-hash {
   display: inline-flex; align-items: center; gap: 6px;
