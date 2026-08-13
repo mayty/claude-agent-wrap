@@ -6,6 +6,9 @@
   --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8; --thinking: #2a3a1e;
   --auto-badge: #cba6f7; --allowed: #a6e3a1; --blocked: #f38ba8;
   --status-badge: #94e2d5;
+  /* Deliberately the muted grey rather than a colour of its own: the quota probe is
+     an expected event, and the badge exists to explain a record, not draw the eye. */
+  --probe-badge: #6c7086;
 }
 * { box-sizing: border-box; }
 /* Slim, translucent scrollbars everywhere (chat column, session list, modal),
@@ -319,6 +322,21 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .status-block .status-summary.empty { color: var(--muted); font-weight: 400; }
 /* The previous caption the prompt asked the model not to repeat */
 .status-block .status-prev { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* --- Session-start quota probe --- */
+
+/* Badge in the turn caption line */
+.caption .probe-badge { color: var(--probe-badge); font-size: 10px; font-weight: 600;
+                        text-transform: uppercase; margin-left: 2px; }
+
+/* Compact block replacing the usual chat bubbles. Unlike .status-block this one is
+   never the interesting part of a session, so it stays entirely in the muted grey —
+   no panel fill, no emphasis — and only an unexpected outcome adds a <pre>. */
+.probe-block { border: 1px dashed var(--border); border-radius: 8px;
+               padding: 6px 14px; margin: 6px 0 4px; }
+.probe-block .probe-note { color: var(--muted); font-size: 12px; }
+.probe-block pre { color: var(--err); font-size: 12px; margin: 6px 0 0;
+                   white-space: pre-wrap; word-break: break-word; }
 
 /* --- Abnormal finish_reason (filtered / truncated replies) --- */
 

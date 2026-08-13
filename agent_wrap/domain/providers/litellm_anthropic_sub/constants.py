@@ -28,4 +28,9 @@ MASTER_KEY_HEADER = "x-litellm-api-key"
 #: but Claude Code's auto-approval classifier carries no such block and relies purely
 #: on the header plus billing block — so every classifier call failed. The passthrough
 #: route forwards headers and body verbatim, so neither rewrite applies.
+#:
+#: One request it cannot rescue: Claude Code's session-start quota probe sends no system
+#: array at all, so the marker it lacks was never in the body to forward. It 429s on
+#: every session start, harmlessly — see the provider README's "Known benign failure"
+#: section before treating that record as a fault.
 PASSTHROUGH_PREFIX = "/anthropic"

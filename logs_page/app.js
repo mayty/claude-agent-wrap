@@ -1357,7 +1357,10 @@ function captionEl(r, displayIdx) {
   const cap = el("div", "caption");
   cap.appendChild(el("span", "idx", `#${displayIdx}`));
   cap.appendChild(el("span", null, (r.model || "").split("/").pop()));
-  if (r.status && r.status !== "success") {
+  // A quota probe's 429 is its normal outcome, so it carries the muted `probe` badge
+  // below in place of the red status. A probe that failed some other way keeps it.
+  const mutedProbe = isQuotaProbeRequest(r) && isExpectedQuotaProbeOutcome(r);
+  if (r.status && r.status !== "success" && !mutedProbe) {
     cap.appendChild(el("span", "fail", `· ${r.status}`));
   }
   if (isClassifierRequest(r)) {
@@ -1365,6 +1368,9 @@ function captionEl(r, displayIdx) {
   }
   if (isStatusSummaryRequest(r)) {
     cap.appendChild(el("span", "status-badge", "status"));
+  }
+  if (isQuotaProbeRequest(r)) {
+    cap.appendChild(el("span", "probe-badge", "probe"));
   }
   cap.appendChild(el("span", "when", fmtTs(recStart(r))));
   return cap;
@@ -1489,6 +1495,32 @@ function renderStatusSummaryTurn(r, displayIdx) {
   return turn;
 }
 
+// Compact rendering for the session-start quota probe — one line saying what it is,
+// instead of a "quota" user bubble above a red error bubble. Clicking opens the full
+// detail, so the raw 429 is one click away rather than gone.
+function renderQuotaProbeTurn(r, displayIdx) {
+  const turn = el("div", "turn");
+  turn.dataset.role = r.agent_id ? "sub" : "main";
+  if (r.agent_id) turn.dataset.sub = r.agent_id;
+  turn.appendChild(captionEl(r, displayIdx));
+
+  const block = el("div", "probe-block");
+  if (isExpectedQuotaProbeOutcome(r)) {
+    block.appendChild(el("div", "probe-note",
+      "session-start quota probe — rejected by Anthropic's first-party gate (expected)"));
+  } else {
+    // Not the 429 this probe always gets: show what it was instead. The probe reuses
+    // whatever model is selected, so a stale model id surfaces here as a 404.
+    block.appendChild(el("div", "probe-note", "session-start quota probe — unexpected failure"));
+    const pre = Object.assign(el("pre"), { textContent: asText(r.error) });
+    block.appendChild(pre);
+  }
+  turn.appendChild(block);
+
+  turn.onclick = () => openModal(r, displayIdx);
+  return turn;
+}
+
 // One turn: the latest user message as a right-aligned bubble and the response
 // (or error) as a left-aligned bubble below it. Clicking opens the full detail.
 function renderTurn(r, displayIdx) {
@@ -1497,6 +1529,9 @@ function renderTurn(r, displayIdx) {
   }
   if (isStatusSummaryRequest(r)) {
     return renderStatusSummaryTurn(r, displayIdx);
+  }
+  if (isQuotaProbeRequest(r)) {
+    return renderQuotaProbeTurn(r, displayIdx);
   }
 
   const turn = el("div", "turn");
@@ -1924,6 +1959,49 @@ function statusSummaryPrompt(r) {
 // Does a record look like a status-summary request?
 function isStatusSummaryRequest(r) {
   return statusSummaryPrompt(r) !== null;
+}
+
+// Claude Code opens every session with one throwaway request whose only purpose is to
+// read the `anthropic-ratelimit-unified-*` response headers: a single `max_tokens: 1`
+// message with the literal content "quota", issued with no retries.
+//
+// Under the anthropic-sub provider it fails every time. It is the only request shape
+// that carries no `system` block at all, so it reaches Anthropic without the
+// `x-anthropic-billing-header` block and without the "You are Claude Code, ..." identity
+// block, and Anthropic's subscription-OAuth gate answers traffic it cannot identify as
+// first-party with an opaque `429 rate_limit_error / "message":"Error"`. The request's
+// headers arrive intact; the missing marker is in the body, and the passthrough route
+// has no hook that could add one — so the sidecar cannot fix this.
+//
+// Claude Code discards that error (its gateway-mode path ignores a 429 carrying no
+// `anthropic-ratelimit-unified-status` header), so nothing is actually broken. It is
+// drawn as an expected event rather than a red failure because it is record #1 of every
+// session, where it reads as a session that began broken and buries the real failures
+// below it.
+//
+// All four conditions are required: a one-token request that carries a system prompt, or
+// more than one message, is somebody's real call and stays a normal turn.
+function isQuotaProbeRequest(r) {
+  if (r.max_tokens !== 1 || r.system) return false;
+  const msgs = r.messages || [];
+  if (msgs.length !== 1) return false;
+  const only = msgs[0];
+  if (!only || (only.role || "user") !== "user") return false;
+  return only.content === "quota";
+}
+
+// The one failure a quota probe is expected to hit. Anything else it reports — a 404 on
+// a stale model id, say — is a real fault that must stay visible, so the muting is
+// scoped to this outcome rather than applied to every probe.
+const PROBE_EXPECTED_ERROR_RE = /"type"\s*:\s*"rate_limit_error"/;
+
+// Did a quota probe end the way it always ends? A success counts: the probe working is
+// no reason to shout either. Until /api/strings resolves, a hashed error reads as
+// unexpected and the turn shows red; tick() re-renders when the strings arrive, so a
+// live session corrects itself within a poll.
+function isExpectedQuotaProbeOutcome(r) {
+  if (r.status === "success") return true;
+  return PROBE_EXPECTED_ERROR_RE.test(asText(r.error));
 }
 
 // The caption the model produced, plus the previous one the prompt told it not to

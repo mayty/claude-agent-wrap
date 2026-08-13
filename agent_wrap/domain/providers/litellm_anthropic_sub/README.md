@@ -82,6 +82,56 @@ also removes the previous dependence on LiteLLM's `clean_headers` /
 `ANTHROPIC_API_KEY` is in the sidecar env, and the client's `Authorization` header is
 merged through untouched.
 
+## Known benign failure: the session-start quota probe
+
+Every session's request log opens with one failed `POST /anthropic/v1/messages`. It is
+expected, it is not quota exhaustion, and it cannot be fixed here — so before debugging
+it, read this.
+
+Claude Code's `checkQuotaStatus()` fires one throwaway request at startup whose only
+purpose is to read the `anthropic-ratelimit-unified-*` **response** headers. It is issued
+with `maxRetries: 0`, which is why exactly one appears:
+
+```json
+{"model": "claude-opus-5", "max_tokens": 1,
+ "messages": [{"role": "user", "content": "quota"}]}
+```
+
+Note what is missing: there is no `system` array at all. This is the only request shape
+Claude Code sends without one, so it carries neither marker described in
+[Why the passthrough route](#why-the-passthrough-route) — no `x-anthropic-billing-header`
+block and no `"You are Claude Code, …"` identity block. Its *headers* arrive intact
+(`anthropic-beta` still lists `claude-code-20250219,oauth-2025-04-20,…`, plus `x-app: cli`
+and the forwarded `Authorization`), which is exactly the point: headers alone do not
+satisfy Anthropic's subscription-OAuth gate, so it answers with the same opaque
+`429 rate_limit_error` / `"message":"Error"`.
+
+**The passthrough cannot rescue this one.** It forwards the body verbatim, and the marker
+this request lacks was never in the body to begin with. Nor can the sidecar add one:
+`async_pre_call_hook` is never called on the `/anthropic/*` route (see
+[`litellm_runtime/callback.py`](../litellm_runtime/callback.py)), and synthesizing a
+billing block to pass a first-party check is not something to do on purpose.
+
+**Nothing is broken by it.** Claude Code's `extractQuotaStatusFromError` returns early in
+gateway mode unless the 429 carries an `anthropic-ratelimit-unified-status` header; this
+one does not, so the error is discarded and the account is never marked rate-limited. The
+only visible effects are cosmetic:
+
+- the statusline's rate-limit bar shows its "send a message to see limits" fallback
+  ([`ops/statusline.py`](../../../../ops/statusline.py)) until the first real turn
+  populates `rate_limits` from a successful response's headers;
+- the log keeps an honest `failure` record, which the viewer draws with a muted `probe`
+  badge and one explanatory line instead of a red error bubble
+  (`isQuotaProbeRequest` in [`logs_page/app.js`](../../../../logs_page/app.js)). Only the
+  drawing is muted — `meta.json` counts, `agent stats` and the on-disk record are
+  untouched, and a probe that fails any *other* way (a 404 from a stale model id, say)
+  still renders red.
+
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` does suppress the probe outright — it is the
+first guard in `checkQuotaStatus()`. That is not a trade worth making here: it is the flag
+this provider deliberately leaves off, and it also disables the feature-flag evaluation
+`/usage` depends on (see [Non-essential traffic stays on](#non-essential-traffic-stays-on)).
+
 ## Credentials
 
 There is no encrypted secret to set for this provider — `agent secrets check
