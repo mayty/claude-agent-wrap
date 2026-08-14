@@ -41,8 +41,8 @@ PORT_SCAN_LIMIT = 50
 
 # Pinned sidecar Docker images (tag + digest)
 LITELLM_IMAGE = (
-    "ghcr.io/berriai/litellm:v1.83.14-stable"
-    "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
+    "ghcr.io/berriai/litellm:v1.96.2"
+    "@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63"
 )
 TELEGRAM_IMAGE = (
     "mayty/claude-agent-wrap-telegram:0.2.0"

@@ -40,8 +40,8 @@ _SIDECAR = SidecarRow(
     port=48620,
     exit_code=0,
     image=(
-        "ghcr.io/berriai/litellm:v1.83.14-stable"
-        "@sha256:c81eb79cd4333c6cfe374c0ec929110fd23f0ee5f7fd198855a6fbddc77b83ba"
+        "ghcr.io/berriai/litellm:v1.96.2"
+        "@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63"
     ),
     stale_image=False,
     networks=["agent-wrap-net"],
@@ -228,7 +228,7 @@ def test_sidecar_image_drops_the_registry_and_digest(display_mock_service: Mock)
     """A digest-pinned reference is ~110 chars and would wrap the row."""
     run([])
     out = _stdout(display_mock_service)
-    assert "litellm:v1.83.14-stable" in out
+    assert "litellm:v1.96.2" in out
     assert "sha256" not in out
     assert "ghcr.io" not in out
 

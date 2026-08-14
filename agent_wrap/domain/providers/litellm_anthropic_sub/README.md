@@ -16,7 +16,7 @@ to prompt about in the first place.
 
 | Item | Value |
 | --- | --- |
-| Image | `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79...` |
+| Image | `ghcr.io/berriai/litellm:v1.96.2@sha256:154e23bb...` |
 | Master key prefix | `sk-aw-ant-` |
 | Sidecar container | `agent-wrap-litellm-anthropic-sub` |
 | Agent base URL | `http://agent-wrap-litellm-anthropic-sub:<port>/anthropic` |

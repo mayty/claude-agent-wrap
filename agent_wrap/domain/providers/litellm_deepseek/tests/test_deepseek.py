@@ -1,17 +1,17 @@
 # This file has been created with the assistance of an AI tool.
-"""Tests for the litellm-deepseek provider pricing cache."""
+"""Tests for the litellm-deepseek provider."""
 
 from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent_wrap.domain.providers import litellm_deepseek as provider_module
 from agent_wrap.domain.providers.litellm_deepseek.provider import _DeepSeekPricing
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest_mock
 
 # A page with the header row (MODEL + two models) and the three price rows the
@@ -61,3 +61,19 @@ def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_
     assert "deepseek-v4-pro" in prices
     assert prices["deepseek-v4-flash"]["cr"] == 0.05
     http_get.assert_called_once()
+
+
+def test_deepseek_config_targets_the_anthropic_compatible_upstream():
+    """
+    DeepSeek is reached through its Anthropic-compatible endpoint, not its OpenAI one, so
+    Claude Code's own `/v1/messages` traffic needs no translation beyond LiteLLM's.
+    """
+    config_path = Path(provider_module.__file__).parent / "config.yaml"
+    lines = [
+        line
+        for line in config_path.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("#")
+    ]
+    text = "\n".join(lines)
+    assert 'model: "anthropic/*"' in text
+    assert "api_base: https://api.deepseek.com/anthropic" in text

@@ -11,7 +11,7 @@ The sidecar lifecycle is common to all LiteLLM providers — see [`providers/REA
 
 | Item | Value |
 | --- | --- |
-| Image | `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79...` |
+| Image | `ghcr.io/berriai/litellm:v1.96.2@sha256:154e23bb...` |
 | Master key prefix | `sk-ds-` |
 | Sidecar container | `agent-wrap-litellm-deepseek` |
 | Agent base URL | `http://agent-wrap-litellm-deepseek:<port>` |
