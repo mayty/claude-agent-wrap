@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from datetime import date
@@ -36,5 +37,13 @@ def local_utc_offset_hours() -> int:
     """Return the host's current local UTC offset, rounded to the nearest whole hour."""
     now_utc = datetime.now(tz=timezone.utc)
     offset = now_utc.astimezone().utcoffset()
+    assert offset is not None
+    return round(offset.total_seconds() / 3600)
+
+
+def utc_offset_hours_for_tz(tz_name: str) -> int:
+    """Return the named IANA zone's current UTC offset, rounded to the nearest whole hour."""
+    now_utc = datetime.now(tz=timezone.utc)
+    offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
     assert offset is not None
     return round(offset.total_seconds() / 3600)

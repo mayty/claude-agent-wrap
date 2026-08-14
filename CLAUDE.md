@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Docker-based wrapper for running Claude Code CLI through multiple AI providers via a plugin system (AWS Bedrock, Alibaba Cloud DashScope, or DeepSeek). Model traffic is routed through a per-provider LiteLLM sidecar, so agents on different providers run concurrently. See `docs/` for full documentation.
+A Docker-based wrapper for running Claude Code CLI through multiple AI providers via a plugin system (Anthropic first-party, AWS Bedrock, Alibaba Cloud DashScope, or DeepSeek). Model traffic is routed through a per-provider LiteLLM sidecar, so agents on different providers run concurrently. See `docs/` for full documentation.
 
 ## Documentation guide
 

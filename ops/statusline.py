@@ -6,14 +6,26 @@ Claude Code statusline.
 Layout (two rows, right segment flush to the terminal edge):
 
     {model} ({effort+thinking})            Today: ↑{in} ↓{out} | {cost}
-    {used%} context                        {update_available}
+    {used%} context · {session_id}         {update_available}
 
-Colors on context %: green <10, yellow 10-19, red >=20 or >200k tokens.
+Colors on context %: green <15, yellow 15-24, red >=25.
 When usage.json is missing or stale (>30 min): yellow fallback shown.
+
+When `ANTHROPIC_BASE_URL` indicates the `litellm-anthropic-sub` provider, the
+top-right segment instead shows the five-hour subscription rate-limit window as
+a bar: "Usage (resets at HH:MM): [bar]". Bar color is a linear extrapolation of
+current usage to the window's reset time — green (>=10% headroom projected),
+yellow (<10%), red (projected or actual overshoot). The label itself turns red
+once the limit is actually hit. The reset time is shown in `AGENT_TIMEZONE`
+when set (falling back to the container's own local time otherwise). Until the
+session's first API response the rate-limit payload is absent; the segment then
+shows a dim "send a message to see limits" hint, as it does for any unusable
+payload.
 """
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -24,8 +36,10 @@ import subprocess
 import sys
 import termios
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 CACHE = Path.home() / ".cache" / "claude-latest-version"
 REFRESH_AFTER_SECONDS = 6 * 3600
@@ -48,6 +62,18 @@ RESET = "\033[0m"
 CONTEXT_RED_THRESHOLD = 25
 CONTEXT_YELLOW_THRESHOLD = 15
 TOKEN_UNIT_SCALE = 1000
+
+ANTHROPIC_SUB_MARKER = "litellm-anthropic-sub"
+
+RATE_LIMIT_WINDOW_SECONDS = 5 * 3600  # the "five_hour" session window
+RATE_LIMIT_FULL_PCT = 100.0
+RATE_LIMIT_WARN_GAP_PCT = 10.0  # yellow once projected usage is within this of the limit
+RATE_LIMIT_BAR_WIDTH = 10
+
+BLOCK_CHARS = " ▏▎▍▌▋▊▉█"  # index i = i eighths filled (U+258F..U+2588, plus space for 0)
+EIGHTHS_PER_CHAR = 8
+
+BAR_BG = "\033[100m"  # bright-black bg so the full bar track reads as one shape at any fill level
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
@@ -110,16 +136,17 @@ def latest_version(current: str) -> str | None:
 def context_segment(data: dict[str, Any]) -> str:
     cw = data.get("context_window") or {}
     used = cw.get("used_percentage")
-    exceeds_200k = bool(data.get("exceeds_200k_tokens"))
     if used is None:
         return f"{DIM}context —{RESET}"
-    if used >= CONTEXT_RED_THRESHOLD or exceeds_200k:
+    if used >= CONTEXT_RED_THRESHOLD:
         color = RED
     elif used >= CONTEXT_YELLOW_THRESHOLD:
         color = YELLOW
     else:
         color = GREEN
-    return f"{color}{used:.0f}% context{RESET}"
+    session_id = data.get("session_id")
+    suffix = f" · {session_id}" if session_id else ""
+    return f"{color}{used:.0f}% context{RESET}{suffix}"
 
 
 def model_segment(data: dict[str, Any]) -> str:
@@ -167,6 +194,61 @@ def usage_segment() -> str:
     return f"Today: ↑{in_fmt} ↓{out_fmt} | {cost}"
 
 
+def _is_anthropic_sub_active() -> bool:
+    return ANTHROPIC_SUB_MARKER in os.environ.get("ANTHROPIC_BASE_URL", "")
+
+
+def _render_bar(used_pct: float, color: str) -> str:
+    clamped = max(0.0, min(used_pct, RATE_LIMIT_FULL_PCT))
+    total_eighths = RATE_LIMIT_BAR_WIDTH * EIGHTHS_PER_CHAR
+    filled = round(clamped / RATE_LIMIT_FULL_PCT * total_eighths)
+    full_chars, remainder = divmod(filled, EIGHTHS_PER_CHAR)
+    chars = BLOCK_CHARS[-1] * full_chars
+    if full_chars < RATE_LIMIT_BAR_WIDTH:
+        chars += BLOCK_CHARS[remainder]
+        chars += BLOCK_CHARS[0] * (RATE_LIMIT_BAR_WIDTH - full_chars - 1)
+    return f"{BAR_BG}{color}{chars}{RESET}"
+
+
+def _reset_time_str(resets_at: float) -> str:
+    """Format *resets_at* as HH:MM in AGENT_TIMEZONE, falling back to local time."""
+    tz_name = os.environ.get("AGENT_TIMEZONE")
+    if tz_name:
+        with contextlib.suppress(Exception):  # statusline must never crash the parent
+            return datetime.fromtimestamp(resets_at, tz=ZoneInfo(tz_name)).strftime("%H:%M")
+    return time.strftime("%H:%M", time.localtime(resets_at))
+
+
+def rate_limit_segment(data: dict[str, Any]) -> str:
+    # Claude Code only populates `rate_limits` once the session has had an API
+    # response, so an absent, partial, or non-numeric payload means "nothing to
+    # show yet" -- never an exception, which would blank the whole statusline.
+    five_hour = (data.get("rate_limits") or {}).get("five_hour") or {}
+    try:
+        used = float(five_hour["used_percentage"])
+        resets_at = float(five_hour["resets_at"])
+    except (KeyError, TypeError, ValueError):
+        return f"{DIM}send a message to see limits{RESET}"
+
+    reset_local = _reset_time_str(resets_at)
+    window_start = resets_at - RATE_LIMIT_WINDOW_SECONDS
+    elapsed_fraction = min(max(time.time() - window_start, 1.0) / RATE_LIMIT_WINDOW_SECONDS, 1.0)
+    projected = used / elapsed_fraction  # linear extrapolation to the reset point
+
+    limit_hit = used >= RATE_LIMIT_FULL_PCT
+    if limit_hit or projected >= RATE_LIMIT_FULL_PCT:
+        bar_color = RED
+    elif projected >= RATE_LIMIT_FULL_PCT - RATE_LIMIT_WARN_GAP_PCT:
+        bar_color = YELLOW
+    else:
+        bar_color = GREEN
+
+    label = f"Usage (resets at {reset_local}):"
+    if limit_hit:
+        label = f"{RED}{label}{RESET}"
+    return f"{label} {_render_bar(used, bar_color)}"
+
+
 def update_segment(data: dict[str, Any]) -> str:
     version = data.get("version") or ""
     if not version:
@@ -182,7 +264,8 @@ def main() -> None:
         return
 
     cols = max(20, terminal_cols() - WIDTH_MARGIN)
-    line1 = right_align(model_segment(data), usage_segment(), cols)
+    right1 = rate_limit_segment(data) if _is_anthropic_sub_active() else usage_segment()
+    line1 = right_align(model_segment(data), right1, cols)
     line2 = right_align(context_segment(data), update_segment(data), cols)
     if os.environ.get("STATUSLINE_DEBUG"):
         sys.stderr.write(f"[statusline] cols={cols}\n")

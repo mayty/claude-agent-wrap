@@ -1,7 +1,8 @@
+# This file has been edited with the assistance of an AI tool.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.domain.logs.normalize import (
     extract_alias,
@@ -226,3 +227,70 @@ def test_extract_alias_none_for_freeform_and_missing():
     assert extract_alias(_naming_record("hi there")) is None
     assert extract_alias(_naming_record('{"name": ""}')) is None
     assert extract_alias(cast("LogRecord", {"response": {}})) is None
+
+
+def _record_with_choice(choice: dict[str, Any]) -> LogRecord:
+    """Build a record whose response carries *choice* as its only choice."""
+    return cast(
+        "LogRecord",
+        {
+            "timing": {"start": None, "completionStart": None, "end": None},
+            "status": "success",
+            "model": "m",
+            "request": {},
+            "response": {"choices": [choice]},
+            "error": None,
+        },
+    )
+
+
+def test_normalize_extracts_finish_reason():
+    rec = _record_with_choice(
+        {
+            "message": {"role": "assistant", "content": "cut off —"},
+            "finish_reason": "content_filter",
+        }
+    )
+    assert normalize_record_unresolved(rec)["finish_reason"] == "content_filter"
+
+
+def test_normalize_extracts_finish_reason_without_a_message():
+    """The reason is a sibling of `message`, so it survives `message` being absent."""
+    out = normalize_record_unresolved(_record_with_choice({"finish_reason": "length"}))
+    assert out["finish_reason"] == "length"
+    assert out["response"] == {}
+
+
+def test_normalize_finish_reason_is_none_when_absent():
+    rec = _record_with_choice({"message": {"role": "assistant", "content": "hi"}})
+    assert normalize_record_unresolved(rec)["finish_reason"] is None
+    assert normalize_record_unresolved(_raw_record())["finish_reason"] is None
+
+
+def test_normalize_finish_reason_is_none_without_choices_or_response():
+    no_choices = cast("LogRecord", {"response": {"usage": {}}})
+    assert normalize_record_unresolved(no_choices)["finish_reason"] is None
+    assert normalize_record_unresolved(cast("LogRecord", {}))["finish_reason"] is None
+
+
+def test_normalize_finish_reason_ignores_a_non_string_value():
+    """A malformed reason is dropped rather than handed to the viewer to render."""
+    rec = _record_with_choice({"message": {"content": "hi"}, "finish_reason": {"why": "stop"}})
+    assert normalize_record_unresolved(rec)["finish_reason"] is None
+
+
+def test_normalize_extracts_max_tokens():
+    """The viewer needs the cap to tell a real truncation from a max_tokens:1 probe."""
+    rec = _raw_record()
+    rec["request"]["body"]["data"]["max_tokens"] = 64000
+    assert normalize_record_unresolved(rec)["max_tokens"] == 64000
+
+
+def test_normalize_max_tokens_is_none_when_absent_or_malformed():
+    assert normalize_record_unresolved(_raw_record())["max_tokens"] is None
+    rec = _raw_record()
+    rec["request"]["body"]["data"]["max_tokens"] = "64000"
+    assert normalize_record_unresolved(rec)["max_tokens"] is None
+    # bool is an int subclass, so True would otherwise be reported as a cap of 1.
+    rec["request"]["body"]["data"]["max_tokens"] = True
+    assert normalize_record_unresolved(rec)["max_tokens"] is None

@@ -103,6 +103,14 @@ class NormalizedRecordBase(TypedDict):
     response: dict[str, Any]
     usage: dict[str, Any]
     error: str | None
+    #: Why the model stopped generating, verbatim from the provider (``stop``,
+    #: ``tool_calls``, ``length``, ``content_filter``, …), or None when absent.
+    #: Kept unfiltered so the viewer alone decides which values it calls out.
+    finish_reason: str | None
+    #: The request's own ``max_tokens`` cap. Needed to read ``finish_reason ==
+    #: "length"``: Claude Code's probe calls ask for a single token, so hitting the
+    #: cap is the only outcome available to them and says nothing about the reply.
+    max_tokens: int | None
 
 
 class NormalizedRecord(NormalizedRecordBase, total=False):
@@ -145,6 +153,7 @@ class ExtractedFields(NamedTuple):
     agent_id: str | None
     reply: dict[str, Any]
     usage: dict[str, Any]
+    finish_reason: str | None
 
 
 class ProviderSessionRead(NamedTuple):

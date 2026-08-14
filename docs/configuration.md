@@ -80,6 +80,21 @@ AGENT_DAY_START_UTC=4 agent stats
 
 Unlike `AGENT_EXPECTED_QUEUE_DEPTH`, a malformed value here is a hard error rather than a silent fallback — an unnoticed typo would otherwise corrupt every day bucket. It must parse as an integer and satisfy `-24 < value < 24`; anything else raises at startup.
 
+## `AGENT_TIMEZONE` (display timezone)
+
+Names an IANA zone (e.g. `Europe/Warsaw`, `America/New_York`) used wherever the wrapper would otherwise fall back to ambient system time:
+
+- **Stats day boundary.** When `AGENT_DAY_START_UTC` is unset, `DAY_START_HOURS` defaults to `AGENT_TIMEZONE`'s current UTC offset instead of the host's local offset. `AGENT_DAY_START_UTC` still wins when both are set — it's a more specific override.
+- **Statusline reset time.** The `litellm-anthropic-sub` statusline's "resets at HH:MM" is shown in `AGENT_TIMEZONE` instead of the agent container's own local time (typically UTC, since nothing sets `TZ` in the image). Forwarded into the container the same way as [`ENABLE_PROMPT_CACHING_1H`](container-environment.md#host-forwarded-conditional) — only when set on the host.
+
+```sh
+AGENT_TIMEZONE=Europe/Warsaw agent run
+```
+
+An unknown zone name is a hard error on the host-side day-boundary path, same philosophy as `AGENT_DAY_START_UTC` above — it raises at startup rather than silently falling back. The in-container statusline, which must never crash the prompt, instead ignores an unknown zone name and falls back to the container's local time.
+
+The [logs viewer](shell-commands.md#agent-logs) is unaffected — it renders timestamps in the browser's own local timezone.
+
 ## `AGENT_LOG_DEBUG` (verbose logs-viewer daemon logging)
 
 Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`) enables verbose per-tick/per-step logging in the `agent logs` background viewer daemon. Unset, only always-visible lines print (including a "completed in Ns" line that always prints once an operation's elapsed time exceeds its threshold, even without this flag).

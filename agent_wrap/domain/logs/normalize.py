@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 def _extract_record_fields(
     rec: LogRecord,
 ) -> ExtractedFields:
-    """Extract (data, agent_id, reply, usage) from a raw or resolved record."""
+    """Extract (data, agent_id, reply, usage, finish_reason) from one record."""
     psr = rec.get("request")
     data: dict[str, Any] = {}
     agent_id: str | None = None
@@ -35,14 +35,22 @@ def _extract_record_fields(
     response = rec.get("response")
     reply: dict[str, Any] = {}
     usage: dict[str, Any] = {}
+    # A sibling of choices[0]["message"], not a child of it — which is why it was
+    # dropped here before, leaving a filtered or truncated reply looking like an
+    # ordinary one in the viewer.
+    finish_reason: str | None = None
     if isinstance(response, dict):
         choices = response.get("choices")
         if isinstance(choices, list) and choices:
             first = choices[0]
-            if isinstance(first, dict) and isinstance(first.get("message"), dict):
-                reply = first["message"]
+            if isinstance(first, dict):
+                if isinstance(first.get("message"), dict):
+                    reply = first["message"]
+                raw_reason = first.get("finish_reason")
+                if isinstance(raw_reason, str):
+                    finish_reason = raw_reason
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-    return ExtractedFields(data, agent_id, reply, usage)
+    return ExtractedFields(data, agent_id, reply, usage, finish_reason)
 
 
 def normalize_record_unresolved(rec: LogRecord) -> NormalizedRecordBase:
@@ -53,7 +61,14 @@ def normalize_record_unresolved(rec: LogRecord) -> NormalizedRecordBase:
 
     Pure (no I/O) so it can be unit-tested directly.
     """
-    data, agent_id, reply, usage = _extract_record_fields(rec)
+    data, agent_id, reply, usage, finish_reason = _extract_record_fields(rec)
+    raw_max_tokens = data.get("max_tokens")
+    # bool is an int subclass, and a stray True here would render as a cap of 1.
+    max_tokens = (
+        raw_max_tokens
+        if isinstance(raw_max_tokens, int) and not isinstance(raw_max_tokens, bool)
+        else None
+    )
 
     return {
         "timing": rec.get("timing"),
@@ -66,6 +81,8 @@ def normalize_record_unresolved(rec: LogRecord) -> NormalizedRecordBase:
         "response": reply,
         "usage": usage,
         "error": rec.get("error"),
+        "finish_reason": finish_reason,
+        "max_tokens": max_tokens,
     }
 
 

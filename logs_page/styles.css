@@ -5,6 +5,10 @@
   --user: #313244; --assistant: #1e3a3a; --system: #3a2e1e;
   --tool: #2e1e3a; --result: #1e2a3a; --err: #f38ba8; --thinking: #2a3a1e;
   --auto-badge: #cba6f7; --allowed: #a6e3a1; --blocked: #f38ba8;
+  --status-badge: #94e2d5;
+  /* Deliberately the muted grey rather than a colour of its own: the quota probe is
+     an expected event, and the badge exists to explain a record, not draw the eye. */
+  --probe-badge: #6c7086;
 }
 * { box-sizing: border-box; }
 /* Slim, translucent scrollbars everywhere (chat column, session list, modal),
@@ -133,8 +137,71 @@ pre::-webkit-scrollbar-corner { background: transparent; }
          border-top: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; }
 .modal-body > .info-line:first-child { padding: 8px 14px; margin: 0; font-size: 12px;
                                        border-bottom: 1px solid var(--border); }
-.toolsdef summary { cursor: pointer; color: var(--muted); font-size: 12px;
-                    margin: 8px 0; }
+
+/* --- Tool definitions --- */
+
+/* Flex on a <summary> drops its display:list-item, and with it the disclosure
+   triangle — so every summary here draws its own. */
+.toolsdef > summary, .tool > summary, .tool-desc > summary { list-style: none; }
+.toolsdef > summary::-webkit-details-marker,
+.tool > summary::-webkit-details-marker,
+.tool-desc > summary::-webkit-details-marker { display: none; }
+.toolsdef > summary::before, .tool > summary::before, .tool-desc > summary::before {
+  content: "▸"; color: var(--muted); font-size: 9px; flex: none; }
+.toolsdef[open] > summary::before, .tool[open] > summary::before,
+.tool-desc[open] > summary::before { content: "▾"; }
+
+/* The section header: "N tools" followed by a wrapping row of name pills. */
+.toolsdef > summary { cursor: pointer; color: var(--muted); font-size: 12px;
+                      margin: 8px 0; display: flex; align-items: baseline;
+                      gap: 8px; flex-wrap: wrap; }
+.tools-count { color: var(--fg); font-weight: 600; flex: none; }
+.tool-pills { display: flex; gap: 4px; flex-wrap: wrap; }
+.tool-pill { background: var(--border); color: var(--fg); border-radius: 4px;
+             padding: 1px 6px; font-size: 10px;
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* One tool: a thin card whose summary stays a single scannable line. */
+.tool-list { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+.tool { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+.tool > summary { cursor: pointer; padding: 5px 9px; display: flex; gap: 8px;
+                  align-items: baseline; }
+.tool[open] { background: var(--tool); }
+.tool[open] > summary { border-bottom: 1px solid var(--border); }
+.tool-name { color: var(--accent); font-weight: 600; flex: none;
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.tool-ns { color: var(--muted); font-weight: 400; }
+.tool-ns::after { content: "·"; margin: 0 3px; }
+/* Takes the slack in the row and ellipsises rather than wrapping. */
+.tool-snip { color: var(--muted); font-size: 12px; flex: 1 1 auto; min-width: 0;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-nparams { color: var(--muted); font-size: 11px; margin-left: auto;
+                flex: none; white-space: nowrap; }
+.tool > summary .badge { flex: none; margin-right: 0; }
+.tool > summary .tool-type { margin-left: auto; }
+.tool-flag { color: var(--muted); text-transform: uppercase;
+             letter-spacing: .04em; }
+.tool-body { padding: 7px 9px 9px; }
+.tool-body > .block-label { margin-top: 8px; }
+.tool-body > :first-child { margin-top: 0; }
+.tool-desc > summary { cursor: pointer; color: var(--muted); font-size: 11px;
+                       margin-bottom: 4px; display: flex; gap: 6px;
+                       align-items: baseline; }
+
+/* Parameter table: name · type · everything else. */
+.params { display: grid; grid-template-columns: max-content max-content 1fr;
+          gap: 3px 10px; align-items: baseline; font-size: 12px; }
+.p-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--fg); }
+.p-name .req { color: var(--err); margin-left: 2px; }
+.p-type { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--accent);
+          font-size: 11px; opacity: .85; }
+.p-desc { color: var(--muted); overflow-wrap: anywhere; }
+.p-enum { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 2px; }
+.p-enum .badge { margin-right: 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.p-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+/* A nested object's own table, set off from its parent row. */
+.p-cell > .params { margin: 4px 0 2px; padding-left: 9px;
+                    border-left: 1px solid var(--border); }
 .err-box { background: rgba(243,139,168,.12); border: 1px solid var(--err);
            color: var(--err); border-radius: 6px; padding: 8px 11px; margin: 8px 0; }
 .hint { color: var(--muted); padding: 40px; text-align: center; }
@@ -237,8 +304,50 @@ pre::-webkit-scrollbar-corner { background: transparent; }
 .classifier-block .classifier-result { font-size: 13px; font-weight: 600; }
 .classifier-block .classifier-result.allowed { color: var(--allowed); }
 .classifier-block .classifier-result.blocked { color: var(--blocked); }
+/* Severity score / matched rule trailing the verdict, kept visually secondary */
+.classifier-block .classifier-result .sev { color: var(--muted); font-weight: 400; }
 .classifier-block .classifier-reason { color: var(--muted); font-size: 12px;
                                        margin-top: 4px; }
+
+/* --- Status-summary requests (the CLI spinner caption) --- */
+
+/* Badge in the turn caption line */
+.caption .status-badge { color: var(--status-badge); font-size: 10px; font-weight: 600;
+                         text-transform: uppercase; margin-left: 2px; }
+
+/* Compact block replacing the usual chat bubbles */
+.status-block { border: 1px solid var(--border); border-radius: 8px;
+                padding: 8px 14px; margin: 6px 0 4px; background: var(--panel); }
+.status-block .status-summary { font-size: 13px; font-weight: 600; }
+.status-block .status-summary.empty { color: var(--muted); font-weight: 400; }
+/* The previous caption the prompt asked the model not to repeat */
+.status-block .status-prev { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* --- Session-start quota probe --- */
+
+/* Badge in the turn caption line */
+.caption .probe-badge { color: var(--probe-badge); font-size: 10px; font-weight: 600;
+                        text-transform: uppercase; margin-left: 2px; }
+
+/* Compact block replacing the usual chat bubbles. Unlike .status-block this one is
+   never the interesting part of a session, so it stays entirely in the muted grey —
+   no panel fill, no emphasis — and only an unexpected outcome adds a <pre>. */
+.probe-block { border: 1px dashed var(--border); border-radius: 8px;
+               padding: 6px 14px; margin: 6px 0 4px; }
+.probe-block .probe-note { color: var(--muted); font-size: 12px; }
+.probe-block pre { color: var(--err); font-size: 12px; margin: 6px 0 0;
+                   white-space: pre-wrap; word-break: break-word; }
+
+/* --- Abnormal finish_reason (filtered / truncated replies) --- */
+
+/* Notice sitting under the reply, inside the response bubble. A reply cut short by
+   the provider still arrives as status "success", so the bubble is the one place a
+   reader is certain to look. Same treatment as .err-box / .bubble.error, since it
+   reports the same class of thing: output the user did not get. */
+.finish-notice { background: rgba(243,139,168,.12); border: 1px solid var(--err);
+                 color: var(--err); border-radius: 6px; padding: 6px 10px;
+                 margin-top: 8px; font-size: 12px; font-weight: 600;
+                 line-height: 1.4; }
 
 /* Loading hash spinner */
 .loading-hash {

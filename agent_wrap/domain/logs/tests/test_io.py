@@ -1,3 +1,4 @@
+# This file has been edited with the assistance of an AI tool.
 from __future__ import annotations
 
 import json
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
 
     import pytest_mock
     from pytest_mock import MockerFixture
+
+    from agent_wrap.domain.logs.models import ReadSessionResult
 
 
 @pytest.fixture
@@ -997,3 +1000,96 @@ def _naming_record(content: str) -> Any:
             "error": None,
         },
     )
+
+
+def _untimed_rec(**extra: Any) -> dict[str, Any]:
+    """Build a record with an all-null timing, as failures were once written."""
+    return {
+        "timing": {"start": None, "completionStart": None, "end": None},
+        "response": {},
+        "status": "failure",
+        **extra,
+    }
+
+
+def _models(data: ReadSessionResult) -> list[str | None]:
+    """Return the records' models, which these tests use as position labels."""
+    return [r["model"] for r in data["reqs"]]
+
+
+def test_read_session_keeps_an_untimed_record_where_it_was_appended(
+    tmp_path: Path, pricing_svc: PricingService
+):
+    """A timing-less failure stays put instead of being hoisted to the top."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            _ts_rec("2026-06-05T12:00:00+00:00", model="first"),
+            _untimed_rec(model="failed-here"),
+            _ts_rec("2026-06-05T12:00:02+00:00", model="last"),
+        ],
+    )
+    data = read_session(project, "s1", pricing=pricing_svc)
+    assert _models(data) == ["first", "failed-here", "last"]
+
+
+def test_read_session_keeps_a_leading_untimed_record_first(
+    tmp_path: Path, pricing_svc: PricingService
+):
+    """The session-start quota probe is genuinely first, so it stays first."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            _untimed_rec(model="probe"),
+            _ts_rec("2026-06-05T12:00:00+00:00", model="conversation"),
+        ],
+    )
+    data = read_session(project, "s1", pricing=pricing_svc)
+    assert _models(data) == ["probe", "conversation"]
+
+
+def test_read_session_keeps_a_trailing_untimed_record_last(
+    tmp_path: Path, pricing_svc: PricingService
+):
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            _ts_rec("2026-06-05T12:00:00+00:00", model="conversation"),
+            _untimed_rec(model="ended-here"),
+        ],
+    )
+    data = read_session(project, "s1", pricing=pricing_svc)
+    assert _models(data) == ["conversation", "ended-here"]
+
+
+def test_read_session_merges_two_providers_chronologically(
+    tmp_path: Path, pricing_svc: PricingService
+):
+    """Interleaving two provider dirs by timestamp is unchanged by the new sort."""
+    project = tmp_path / "proj"
+    _write_session(
+        project,
+        "litellm-bedrock",
+        "s1",
+        [
+            _ts_rec("2026-06-05T12:00:00+00:00", model="bedrock-early"),
+            _ts_rec("2026-06-05T12:00:04+00:00", model="bedrock-late"),
+        ],
+    )
+    _write_session(
+        project,
+        "litellm-deepseek",
+        "s1",
+        [_ts_rec("2026-06-05T12:00:02+00:00", model="deepseek-middle")],
+    )
+    data = read_session(project, "s1", pricing=pricing_svc)
+    assert _models(data) == ["bedrock-early", "deepseek-middle", "bedrock-late"]

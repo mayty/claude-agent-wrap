@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,22 @@ from string_hasher import StringHasher  # noqa: E402  # pyrefly: ignore [missing
 # Global cache of hashers per session to enable cross-request deduplication
 # and prevent concurrent flushes from writing duplicate mappings.
 _SESSION_HASHERS: dict[str, StringHasher] = {}
+
+#: Mapping keys whose value is a live credential and must never reach the log.
+#: LiteLLM hands the callback the client's headers in more than one place — the
+#: top-level ``proxy_server_request.headers``, and (on the router routes) again
+#: inside ``body.secret_fields.raw_headers`` — so redaction happens here, at the
+#: single serialization boundary every record passes through, rather than at each
+#: call site. Compared lowercased.
+REDACTED_HEADERS = frozenset(
+    {
+        "authorization",
+        "x-litellm-api-key",
+        "x-api-key",
+        "api-key",
+    }
+)
+REDACTED_VALUE = "<redacted>"
 
 
 def get_session_hasher(session_id: str, log_dir: Path) -> StringHasher:
@@ -50,6 +67,14 @@ def json_safe(  # noqa: PLR0911
     Unknown leaf types fall back to ``str()``. If ``_hasher`` is provided,
     string values meeting the length threshold are replaced with
     ``"hash:<sha256_hex>"``.
+
+    Every mapping is serialized as an object, not just ``dict``: LiteLLM's
+    ``/anthropic/*`` passthrough route puts a Starlette ``Headers`` mapping in
+    ``proxy_server_request["headers"]``, which used to hit the ``str()`` fallback
+    and collapse the whole header set into one opaque ``"Headers({...})"`` blob —
+    losing the ``x-claude-code-agent-id`` the logs viewer needs to separate
+    subagent threads. Values under a :data:`REDACTED_HEADERS` key are replaced
+    with :data:`REDACTED_VALUE`.
     """
     if visited is None:
         visited = set()
@@ -67,8 +92,15 @@ def json_safe(  # noqa: PLR0911
         return _hasher.hash_string(obj) if _hasher else obj
 
     # Handle containers
-    if isinstance(obj, dict):
-        return {str(k): json_safe(v, _hasher, copy(visited)) for k, v in obj.items()}
+    if isinstance(obj, Mapping):
+        return {
+            str(k): (
+                REDACTED_VALUE
+                if str(k).lower() in REDACTED_HEADERS
+                else json_safe(v, _hasher, copy(visited))
+            )
+            for k, v in obj.items()
+        }
     if isinstance(obj, (list, tuple, set)):
         return [json_safe(v, _hasher, copy(visited)) for v in obj]
 
