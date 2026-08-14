@@ -147,6 +147,13 @@ and the forwarded `Authorization`), which is exactly the point: headers alone do
 satisfy Anthropic's subscription-OAuth gate, so it answers with the same opaque
 `429 rate_limit_error` / `"message":"Error"`.
 
+That body is not what lands in the log. Since the `v1.96.2` logging change described
+[above](#why-the-upstream-accept-encoding-is-pinned), the worker that records the failure
+holds only the status by then, so the record reads `429: Upstream passthrough request
+failed with status 429` — no `rate_limit_error` type and no upstream `request_id`. Do not
+go looking for them; the status is all the sidecar has to give, and it is what the viewer
+matches on.
+
 **The passthrough cannot rescue this one.** It forwards the body verbatim, and the marker
 this request lacks was never in the body to begin with. Nor can the sidecar add one:
 `async_pre_call_hook` is never called on the `/anthropic/*` route (see

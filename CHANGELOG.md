@@ -5,7 +5,7 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.9.0](releases/0.9.0.md) — 2026-08-13
+## [0.9.0](releases/0.9.0.md) — 2026-08-14
 
 Adds a `litellm-anthropic-sub` provider that spends a claude.ai subscription rather than
 API credits, authenticated by a one-time in-container `/login`. Also a round
