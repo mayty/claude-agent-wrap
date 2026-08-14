@@ -34,6 +34,12 @@ RUN curl -fsSL -o /usr/local/bin/hadolint \
     && chmod 0755 /usr/local/bin/crane \
     && rm -f /tmp/crane.tar.gz
 
+# Pre-create the parents of the MCP log bind mount. Docker materializes missing
+# mount parents as root:root, which would leave the agent user unable to write
+# anything else under ~/.cache (e.g. the version-check cache).
+RUN mkdir -p /home/ubuntu/.cache/claude-cli-nodejs \
+    && chown -R ubuntu:ubuntu /home/ubuntu/.cache
+
 WORKDIR /workspace
 RUN git config --system --add safe.directory /workspace
 

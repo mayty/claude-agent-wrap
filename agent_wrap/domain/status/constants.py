@@ -5,6 +5,10 @@
 #: see why `agent stats` buckets days the way it does.
 DAY_START_ENV = "AGENT_DAY_START_UTC"
 
+#: Env var naming an IANA zone used as the day-boundary fallback when DAY_START_ENV is
+#: unset. Its presence is reported for the same reason as DAY_START_ENV above.
+TIMEZONE_ENV = "AGENT_TIMEZONE"
+
 #: Env var requesting the WSL host-network workaround. Honored only on WSL, so it is
 #: reported as requested-vs-effective rather than as a single flag.
 HOST_NETWORK_ENV = "AGENT_USE_HOST_NETWORK"

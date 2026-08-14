@@ -4,7 +4,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Final
 
-from agent_wrap.lib.daytime import local_utc_offset_hours
+from agent_wrap.lib.daytime import local_utc_offset_hours, utc_offset_hours_for_tz
 
 # Minimum sys.argv length for a valid CLI invocation (program name + verb).
 MIN_ARGS = 2
@@ -77,18 +77,21 @@ HOURS_PER_DAY = 24
 
 def _parsed_day_start_hours() -> int:
     raw = os.environ.get("AGENT_DAY_START_UTC")
-    if not raw:
-        return -local_utc_offset_hours()
-    value = int(raw)  # raises ValueError on malformed input -- let it propagate
-    if abs(value) >= HOURS_PER_DAY:
-        msg = f"AGENT_DAY_START_UTC must satisfy -24 < value < 24, got {value!r}"
-        raise ValueError(msg)
-    return value
+    if raw:
+        value = int(raw)  # raises ValueError on malformed input -- let it propagate
+        if abs(value) >= HOURS_PER_DAY:
+            msg = f"AGENT_DAY_START_UTC must satisfy -24 < value < 24, got {value!r}"
+            raise ValueError(msg)
+        return value
+    tz_name = os.environ.get("AGENT_TIMEZONE")
+    if tz_name:
+        return -utc_offset_hours_for_tz(tz_name)  # raises on an unknown zone -- let it propagate
+    return -local_utc_offset_hours()
 
 
 # Hours past UTC midnight at which a stats "day" begins (may be negative, but
-# must satisfy -24 < value < 24). Defaults to the host's local midnight;
-# override with AGENT_DAY_START_UTC.
+# must satisfy -24 < value < 24). Defaults to the host's local midnight, or
+# AGENT_TIMEZONE's midnight if set; override either with AGENT_DAY_START_UTC.
 DAY_START_HOURS = _parsed_day_start_hours()
 
 # Recognised usage-source tags stamped onto records by the callback.
@@ -106,13 +109,12 @@ SCAN_PARALLEL_MIN_FILES = 64
 # In-container mount point for the agent-wrap ops directory.
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
-# Per-project state files mounted into the agent container.
-STATE_FILES = (
-    "daemon.lock",
-    "daemon.log",
-    "daemon.status.json",
-    "history.jsonl",
-)
+# Per-project state files mounted into the agent container. Only append-only files
+# belong here: a single-file bind mount pins the inode, so any writer that replaces
+# the file via rename() -- or unlinks it -- fails with EBUSY. Claude Code's PID-keyed
+# daemon state is per-container instead; see INSTANCE_STATE_FILES in
+# ``agent_wrap/domain/launch/constants.py``.
+STATE_FILES = ("history.jsonl",)
 
 # ── display / sidecars ────────────────────────────────────────────────────────
 
@@ -124,6 +126,9 @@ DIVIDER: Final = "__div__"
 ROLE_LABEL = "agent-wrap.role"
 #: Docker label value identifying agent containers.
 ROLE_VALUE = BASE_IMAGE_NAME
+#: Docker label carrying an agent's instance id — the flock registry's key, and the
+#: key the stale per-instance state sweep matches live containers on.
+INSTANCE_ID_LABEL = "agent-wrap.instance-id"
 
 LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"

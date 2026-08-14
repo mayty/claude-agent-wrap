@@ -130,6 +130,10 @@ class EnvironmentRow:
     day_start_hours: int
     #: Whether that came from AGENT_DAY_START_UTC rather than the host's local offset.
     day_start_overridden: bool
+    #: AGENT_TIMEZONE's value when it's the effective source of day_start_hours (i.e.
+    #: AGENT_DAY_START_UTC is unset); None otherwise, including when it's set but
+    #: shadowed by AGENT_DAY_START_UTC.
+    day_start_timezone: str | None
 
 
 @dataclass(frozen=True)

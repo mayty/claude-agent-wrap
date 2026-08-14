@@ -31,6 +31,7 @@ Two rules make this safe:
 
 | Provider | Description | README |
 | --- | --- | --- |
+| `litellm-anthropic-sub` | Anthropic first-party via LiteLLM sidecar (subscription OAuth, no API key) | [README](../agent_wrap/domain/providers/litellm_anthropic_sub/README.md) |
 | `litellm-bedrock` | AWS Bedrock via LiteLLM sidecar (default) | [README](../agent_wrap/domain/providers/litellm_bedrock/README.md) |
 | `litellm-dashscope` | Alibaba Cloud DashScope via LiteLLM sidecar | [README](../agent_wrap/domain/providers/litellm_dashscope/README.md) |
 | `litellm-deepseek` | DeepSeek via LiteLLM sidecar (Anthropic-compatible endpoint) | [README](../agent_wrap/domain/providers/litellm_deepseek/README.md) |
@@ -47,6 +48,7 @@ A subclass sets `name`, `secret_description`, and usually `master_key_prefix`, t
 
 Every built-in provider fronts the upstream API with its own `agent-wrap-<provider>` sidecar container. Auth, traffic routing, and network topology details are specific to each provider's implementation — see its README:
 
+- [`litellm_anthropic_sub/README.md`](../agent_wrap/domain/providers/litellm_anthropic_sub/README.md)
 - [`litellm_bedrock/README.md`](../agent_wrap/domain/providers/litellm_bedrock/README.md) — sidecar lifecycle, auth boundary, networking
 - [`litellm_dashscope/README.md`](../agent_wrap/domain/providers/litellm_dashscope/README.md)
 - [`litellm_deepseek/README.md`](../agent_wrap/domain/providers/litellm_deepseek/README.md)

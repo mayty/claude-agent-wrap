@@ -5,10 +5,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
 
-from agent_wrap.lib.daytime import get_day, local_utc_offset_hours
+from agent_wrap.lib.daytime import get_day, local_utc_offset_hours, utc_offset_hours_for_tz
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -73,3 +74,20 @@ def test_local_utc_offset_hours_rounds_to_nearest_hour(mocker: MockerFixture) ->
 def test_local_utc_offset_hours_negative_offset(mocker: MockerFixture) -> None:
     _mock_now(mocker, timedelta(hours=-8))
     assert local_utc_offset_hours() == -8
+
+
+# Fixed-offset `Etc/GMT±N` zones (POSIX-inverted: `Etc/GMT-5` is UTC+5) never observe
+# DST, so these are stable regardless of when the suite runs.
+
+
+def test_utc_offset_hours_for_tz_positive_offset() -> None:
+    assert utc_offset_hours_for_tz("Etc/GMT-5") == 5
+
+
+def test_utc_offset_hours_for_tz_negative_offset() -> None:
+    assert utc_offset_hours_for_tz("Etc/GMT+3") == -3
+
+
+def test_utc_offset_hours_for_tz_unknown_zone_raises() -> None:
+    with pytest.raises(ZoneInfoNotFoundError, match="not-a-real-zone"):
+        utc_offset_hours_for_tz("not-a-real-zone")

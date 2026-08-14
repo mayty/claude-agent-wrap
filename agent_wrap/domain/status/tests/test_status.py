@@ -311,6 +311,26 @@ def test_day_start_override_is_reported(
     assert service.build_report().environment.day_start_overridden is True
 
 
+def test_day_start_timezone_is_reported_when_unshadowed(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_DAY_START_UTC", raising=False)
+    monkeypatch.setenv("AGENT_TIMEZONE", "Europe/Warsaw")
+    env = service.build_report().environment
+    assert env.day_start_timezone == "Europe/Warsaw"
+    assert env.day_start_overridden is False
+
+
+def test_day_start_timezone_is_suppressed_when_day_start_utc_also_set(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_DAY_START_UTC", "-3")
+    monkeypatch.setenv("AGENT_TIMEZONE", "Europe/Warsaw")
+    env = service.build_report().environment
+    assert env.day_start_timezone is None
+    assert env.day_start_overridden is True
+
+
 def test_storage_row_counts_registry_entries(service: InspectService) -> None:
     storage = service.build_report().storage
     assert storage.projects_registered == 2

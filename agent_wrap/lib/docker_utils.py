@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 
 from agent_wrap.lib.utils import is_truthy_env
@@ -78,8 +79,15 @@ def docker_run(
     return stdout, result.returncode
 
 
+@cache
 def is_rootless() -> bool:
-    """Check if Docker is running in rootless mode."""
+    """
+    Check if Docker is running in rootless mode.
+
+    Cached: this shells out to ``docker info`` (10 s timeout) and the answer is
+    constant for the process lifetime. Tests that patch ``docker_run`` must call
+    ``is_rootless.cache_clear()`` so no value leaks between cases.
+    """
     stdout, _ = docker_run("info", timeout=10)
     return "rootless" in stdout.lower()
 
@@ -274,6 +282,19 @@ def get_user_args() -> list[str]:
     if is_rootless():
         return ["--user", "0:0"]
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
+
+
+def get_container_uid() -> int:
+    """
+    UID the agent container actually runs as.
+
+    Mirrors the branch in ``get_user_args`` so the two stay one decision. Needed
+    because Claude Code derives its per-session temp dir from the effective UID
+    (``/tmp/claude-<uid>``), which the wrapper has to bind-mount by exact path.
+    """
+    if is_rootless():
+        return 0
+    return os.getuid()
 
 
 def get_tty_args() -> list[str]:

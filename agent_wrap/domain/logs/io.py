@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -629,6 +630,33 @@ def read_strings(
     return "".join(parts)
 
 
+def _append_order_keys(records: list[NormalizedRecord]) -> list[float]:
+    """
+    Chronological sort keys for one provider's records, in file order.
+
+    A record with no ``timing.start`` inherits the last start seen instead of
+    sorting as 0. Historically every failure was written with an all-null
+    ``timing`` (see ``_record_failure`` in the sidecar callback), so keying on
+    ``start or 0`` hoisted them to the top of the stream — the session-start quota
+    probe's 429 appeared above the conversation it preceded by milliseconds, and a
+    mid-session failure appeared to have happened before the session began.
+
+    ``messages.jsonl`` is append-only, so a record's file position is its true
+    position; carrying the previous start forward reproduces it. Records written
+    since failures gained timestamps do not rely on this. Leading timing-less
+    records keep the 0.0 key and stay first, which is where they were appended.
+    """
+    keys: list[float] = []
+    last = 0.0
+    for rec in records:
+        timing = rec["timing"]
+        start = timing.get("start") if timing else None
+        if isinstance(start, (int, float)):
+            last = float(start)
+        keys.append(last)
+    return keys
+
+
 def read_session(
     project: Path | list[Path],
     session_id: str,
@@ -652,7 +680,10 @@ def read_session(
     the same shape as one entry from :func:`list_sessions` (or ``None`` when no
     records exist).
     """
-    all_records: list[NormalizedRecord] = []
+    # (sort key, record) pairs. The key comes from _append_order_keys, which needs
+    # one provider's records in file order, so it is computed per provider dir and
+    # the merge happens afterwards.
+    keyed: list[tuple[float, NormalizedRecord]] = []
     combined_meta: CombinedSessionMeta | None = None
 
     for logs_dir in _aslogs_dirs(project):
@@ -664,7 +695,7 @@ def read_session(
             records, entry, _strings = _read_provider_session(
                 provider_dir / session_id, provider_dir.name, session_id, pricing
             )
-            all_records.extend(records)
+            keyed.extend(zip(_append_order_keys(records), records, strict=True))
             if entry is not None:
                 if combined_meta is None:
                     combined_meta = {
@@ -680,5 +711,8 @@ def read_session(
                 else:
                     _merge_session_meta(combined_meta, entry)
 
-    all_records.sort(key=lambda r: (r["timing"] or {}).get("start") or 0)  # pyrefly: ignore [implicit-any-lambda]
+    # Stable, so records sharing a key stay in the order their provider dirs were
+    # read — the same cross-provider tie-breaking the previous sort had.
+    keyed.sort(key=itemgetter(0))
+    all_records = [rec for _key, rec in keyed]
     return {"reqs": all_records[from_index:], "session_meta": combined_meta}

@@ -326,6 +326,8 @@ class Details:
         day = f"{hours:+d}h UTC" if hours else "0h UTC"
         if environment.day_start_overridden:
             day += " (AGENT_DAY_START_UTC)"
+        elif environment.day_start_timezone:
+            day += f" (AGENT_TIMEZONE={environment.day_start_timezone})"
         return day
 
     @staticmethod

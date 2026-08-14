@@ -36,6 +36,11 @@ def test_discovers_dashscope(svc: ProviderService):
     assert "litellm-dashscope" in registry
 
 
+def test_discovers_anthropic_sub(svc: ProviderService):
+    registry = svc.discover_providers()
+    assert "litellm-anthropic-sub" in registry
+
+
 def test_default_is_bedrock(svc: ProviderService):
     p = svc.get_provider()
     assert p.name == "litellm-bedrock"
@@ -64,3 +69,14 @@ def test_every_provider_has_a_distinct_container_name(svc: ProviderService):
     names = [svc.get_provider(name).container_name for name in svc.discover_providers()]
     assert len(set(names)) == len(names)
     assert all(_CONTAINER_NAME_RE.match(name) for name in names)
+
+
+def test_only_anthropic_sub_disables_nonessential_traffic_opt_out(svc: ProviderService):
+    """
+    litellm-anthropic-sub is the only provider with a real Anthropic-linked session, so
+    it's the only one that needs feature-flag evaluation (and /usage) to keep working.
+    """
+    for name in svc.discover_providers():
+        provider = svc.get_provider(name)
+        expected = name != "litellm-anthropic-sub"
+        assert provider.disable_nonessential_traffic is expected, name

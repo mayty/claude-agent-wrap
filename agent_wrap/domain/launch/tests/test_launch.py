@@ -4,16 +4,26 @@
 from __future__ import annotations
 
 import io
+import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import call as mocker_call
 
 import pytest
 
+from agent_wrap.constants import STATE_FILES
 from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.launch.constants import (
+    EXTERNAL_STATE_MOUNTS,
+    INSTANCE_STATE_FILES,
+    INSTANCE_STATE_MOUNTS,
+    INSTANCE_SWEEP_GRACE_SECONDS,
+    STATE_MOUNTS,
+)
 from agent_wrap.domain.launch.service import LaunchService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
@@ -242,12 +252,25 @@ def test_build_wslg_args_present(
 
 
 def test_build_env_args_basic(launch_svc: LaunchService) -> None:
-    result = launch_svc._build_env_args("myagent", "myagent-uuid", "/home/ubuntu")
+    result = launch_svc._build_env_args(
+        "myagent", "myagent-uuid", "/home/ubuntu", disable_nonessential_traffic=True
+    )
     assert "-e" in result
     assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in result
+    assert not any(arg.startswith("DISABLE_AUTOUPDATER=") for arg in result)
     assert "AGENT_NAME=myagent" in result
     assert "AGENT_INSTANCE_ID=myagent-uuid" in result
     assert "HOME=/home/ubuntu" in result
+
+
+def test_build_env_args_nonessential_traffic_disabled_sets_autoupdater(
+    launch_svc: LaunchService,
+) -> None:
+    result = launch_svc._build_env_args(
+        "myagent", "myagent-uuid", "/home/ubuntu", disable_nonessential_traffic=False
+    )
+    assert not any(arg.startswith("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=") for arg in result)
+    assert "DISABLE_AUTOUPDATER=1" in result
 
 
 def test_build_env_args_term_defaults(
@@ -255,7 +278,7 @@ def test_build_env_args_term_defaults(
 ) -> None:
     monkeypatch.delenv("TERM", raising=False)
     monkeypatch.delenv("COLORTERM", raising=False)
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert "TERM=xterm-256color" in result
     assert "COLORTERM=truecolor" in result
 
@@ -265,7 +288,7 @@ def test_build_env_args_term_from_env(
 ) -> None:
     monkeypatch.setenv("TERM", "screen")
     monkeypatch.setenv("COLORTERM", "16color")
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert "TERM=screen" in result
     assert "COLORTERM=16color" in result
 
@@ -274,7 +297,7 @@ def test_build_env_args_prompt_caching_unset(
     monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
 ) -> None:
     monkeypatch.delenv("ENABLE_PROMPT_CACHING_1H", raising=False)
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert not any(arg.startswith("ENABLE_PROMPT_CACHING_1H=") for arg in result)
 
 
@@ -282,8 +305,24 @@ def test_build_env_args_prompt_caching_set(
     monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
 ) -> None:
     monkeypatch.setenv("ENABLE_PROMPT_CACHING_1H", "1")
-    result = launch_svc._build_env_args("a", "b", "/h")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
     assert "ENABLE_PROMPT_CACHING_1H=1" in result
+
+
+def test_build_env_args_timezone_unset(
+    monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
+) -> None:
+    monkeypatch.delenv("AGENT_TIMEZONE", raising=False)
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
+    assert not any(arg.startswith("AGENT_TIMEZONE=") for arg in result)
+
+
+def test_build_env_args_timezone_set(
+    monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
+) -> None:
+    monkeypatch.setenv("AGENT_TIMEZONE", "Europe/Warsaw")
+    result = launch_svc._build_env_args("a", "b", "/h", disable_nonessential_traffic=True)
+    assert "AGENT_TIMEZONE=Europe/Warsaw" in result
 
 
 def test_build_volume_mounts_basic(tmp_path: Path, launch_svc: LaunchService) -> None:
@@ -293,12 +332,92 @@ def test_build_volume_mounts_basic(tmp_path: Path, launch_svc: LaunchService) ->
     cwd.mkdir()
     tool = tmp_path / "tool"
     tool.mkdir()
-    result = launch_svc._build_volume_mounts("/home/ubuntu")
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
     assert any(":/home/ubuntu/.claude.json" in v for v in result)
     assert any(":/home/ubuntu/.claude" in v for v in result)
     assert any(":/workspace" in v for v in result)
     assert any(":/home/ubuntu/.claude/projects/-workspace" in v for v in result)
     assert any(":/opt/agent-wrap:ro" in v for v in result)
+
+
+def test_build_volume_mounts_includes_session_temp_tree(launch_svc: LaunchService) -> None:
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
+    assert any(v.endswith("/.claude/claude-tmp:/tmp/claude-1000") for v in result)
+
+
+def test_build_volume_mounts_includes_mcp_logs(launch_svc: LaunchService) -> None:
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
+    assert any(
+        v.endswith("/.claude/mcp-logs:/home/ubuntu/.cache/claude-cli-nodejs/-workspace")
+        for v in result
+    )
+
+
+def test_build_volume_mounts_session_temp_tree_follows_uid(launch_svc: LaunchService) -> None:
+    """Rootless launches run as UID 0, so the temp tree lives at /tmp/claude-0."""
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 0, "agent-abc")
+    assert any(v.endswith("/.claude/claude-tmp:/tmp/claude-0") for v in result)
+
+
+def test_build_volume_mounts_honors_custom_claude_home(launch_svc: LaunchService) -> None:
+    result = launch_svc._build_volume_mounts("/home/dev", 1000, "agent-abc")
+    assert any(
+        v.endswith("/.claude/mcp-logs:/home/dev/.cache/claude-cli-nodejs/-workspace")
+        for v in result
+    )
+
+
+def test_build_volume_mounts_shares_history_per_project(launch_svc: LaunchService) -> None:
+    """history.jsonl is append-only, so concurrent agents may share one file."""
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
+    assert any(
+        v.endswith("/.claude/history.jsonl:/home/ubuntu/.claude/history.jsonl") for v in result
+    )
+
+
+@pytest.mark.parametrize("filename", INSTANCE_STATE_FILES)
+def test_build_volume_mounts_isolates_daemon_files_per_instance(
+    launch_svc: LaunchService, filename: str
+) -> None:
+    """Claude Code keys daemon state by PID, and every container's claude is PID 1."""
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
+    assert any(
+        v.endswith(f"/.claude/instances/agent-abc/{filename}:/home/ubuntu/.claude/{filename}")
+        for v in result
+    )
+
+
+@pytest.mark.parametrize(("name", "dest"), sorted(INSTANCE_STATE_MOUNTS.items()))
+def test_build_volume_mounts_isolates_daemon_dirs_per_instance(
+    launch_svc: LaunchService, name: str, dest: str
+) -> None:
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
+    assert any(
+        v.endswith(f"/.claude/instances/agent-abc/{name}:/home/ubuntu/.claude/{dest}")
+        for v in result
+    )
+
+
+@pytest.mark.parametrize("name", [*INSTANCE_STATE_FILES, *INSTANCE_STATE_MOUNTS])
+def test_build_volume_mounts_never_shares_instance_state_per_project(
+    launch_svc: LaunchService, name: str
+) -> None:
+    """
+    The project-level source must be gone, not merely joined by an instance mount.
+
+    Two agents in one directory sharing these is the collision this layout prevents.
+    """
+    result = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-abc")
+    assert not any(f"/.claude/{name}:" in v for v in result)
+
+
+def test_build_volume_mounts_separates_two_instances(launch_svc: LaunchService) -> None:
+    first = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-one")
+    second = launch_svc._build_volume_mounts("/home/ubuntu", 1000, "agent-two")
+    daemon_lock = "/home/ubuntu/.claude/daemon.lock"
+    assert [v for v in first if v.endswith(daemon_lock)] != [
+        v for v in second if v.endswith(daemon_lock)
+    ]
 
 
 def test_parse_directives_no_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:
@@ -612,3 +731,201 @@ def test_release_tolerates_missing_handles(
     for sc in two_sidecars:
         tracker.clear_running.assert_any_call(None, sc.container_name, "inst-1")
         sc.release.assert_called_once_with()
+
+
+def _make_instance_dir(cwd: Path, instance_id: str, *, age_seconds: float = 0.0) -> Path:
+    """Create a populated instance directory, optionally back-dated past the grace period."""
+    entry = cwd / ".claude" / "instances" / instance_id
+    (entry / "daemon").mkdir(parents=True)
+    (entry / "daemon.lock").write_text("{}")
+    if age_seconds:
+        stamp = time.time() - age_seconds
+        os.utime(entry, (stamp, stamp))
+    return entry
+
+
+def test_remove_instance_state_drops_only_that_instance(
+    launch_svc: LaunchService, tmp_path: Path
+) -> None:
+    mine = _make_instance_dir(tmp_path, "agent-one")
+    theirs = _make_instance_dir(tmp_path, "agent-two")
+
+    launch_svc._remove_instance_state(tmp_path, "agent-one")
+
+    assert not mine.exists()
+    assert theirs.exists()
+
+
+def test_remove_instance_state_tolerates_missing_dir(
+    launch_svc: LaunchService, tmp_path: Path
+) -> None:
+    """Teardown runs even when the launch failed before the directory was created."""
+    launch_svc._remove_instance_state(tmp_path, "never-created")
+
+
+def test_sweep_collects_dead_and_aged_instance(
+    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    stale = _make_instance_dir(tmp_path, "agent-dead", age_seconds=INSTANCE_SWEEP_GRACE_SECONDS * 2)
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
+        autospec=True,
+        return_value=True,
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.list_container_names",
+        autospec=True,
+        return_value=["claude-agent-live"],
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.inspect_containers",
+        autospec=True,
+        return_value=(["agent-live"], 0),
+    )
+
+    launch_svc._sweep_stale_instance_state(tmp_path)
+
+    assert not stale.exists()
+
+
+def test_sweep_keeps_running_agents_state(
+    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """A long-running agent's directory is old, so only liveness protects it."""
+    live = _make_instance_dir(tmp_path, "agent-live", age_seconds=INSTANCE_SWEEP_GRACE_SECONDS * 2)
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
+        autospec=True,
+        return_value=True,
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.list_container_names",
+        autospec=True,
+        return_value=["claude-agent-live"],
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.inspect_containers",
+        autospec=True,
+        return_value=(["agent-live"], 0),
+    )
+
+    launch_svc._sweep_stale_instance_state(tmp_path)
+
+    assert live.exists()
+
+
+def test_sweep_keeps_young_instance_without_container(
+    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """A concurrent launcher has its directory before `docker run` starts its container."""
+    starting = _make_instance_dir(tmp_path, "agent-starting")
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
+        autospec=True,
+        return_value=True,
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.list_container_names",
+        autospec=True,
+        return_value=[],
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.inspect_containers",
+        autospec=True,
+        return_value=([], 0),
+    )
+
+    launch_svc._sweep_stale_instance_state(tmp_path)
+
+    assert starting.exists()
+
+
+def test_sweep_skipped_when_docker_unreachable(
+    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """An empty container list means "docker is down" as often as "nothing runs"."""
+    stale = _make_instance_dir(tmp_path, "agent-dead", age_seconds=INSTANCE_SWEEP_GRACE_SECONDS * 2)
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
+        autospec=True,
+        return_value=False,
+    )
+    listing = mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.list_container_names",
+        autospec=True,
+        return_value=[],
+    )
+
+    launch_svc._sweep_stale_instance_state(tmp_path)
+
+    assert stale.exists()
+    listing.assert_not_called()
+
+
+def test_sweep_tolerates_absent_instances_dir(
+    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    reachable = mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
+        autospec=True,
+        return_value=True,
+    )
+
+    launch_svc._sweep_stale_instance_state(tmp_path)
+
+    reachable.assert_not_called()
+
+
+def test_prepare_config_precreates_every_project_mount_source(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    """
+    Every host-side mount source must exist, as the right kind of node, before docker run.
+
+    Docker materializes a missing bind-mount source itself, as root — and as a
+    *directory* even where a file was intended, which would hand Claude Code a
+    directory named `daemon.lock` on a mountpoint it cannot remove from inside the
+    container. This ties `_build_volume_mounts` to `_prepare_config` so that adding a
+    mount without pre-creating its source fails here rather than at runtime.
+    """
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    mocker.patch.object(Path, "cwd", return_value=project_dir)
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
+        autospec=True,
+        return_value=False,
+    )
+    launch_svc._config = ConfigService(display_service=mocker.Mock(spec=DisplayService))
+    instance_id = "agent-abc"
+
+    launch_svc._prepare_config(instance_id=instance_id, telegram_available=False)
+
+    claude_dir = project_dir / ".claude"
+    expect_file = {
+        *STATE_FILES,
+        *(f"instances/{instance_id}/{name}" for name in INSTANCE_STATE_FILES),
+    }
+    checked = 0
+    for spec in launch_svc._build_volume_mounts("/home/ubuntu", 1000, instance_id):
+        source = Path(spec.rsplit(":", 1)[0])
+        if spec == "-v" or not source.is_relative_to(claude_dir):
+            continue
+        checked += 1
+        rel = source.relative_to(claude_dir).as_posix()
+        if rel in expect_file:
+            assert source.is_file(), f"mount source {rel} was not pre-created as a file"
+        else:
+            assert source.is_dir(), f"mount source {rel} was not pre-created as a directory"
+
+    # Guards the loop itself: a filter that matched nothing would pass vacuously.
+    assert checked == sum(
+        len(table)
+        for table in (
+            STATE_MOUNTS,
+            STATE_FILES,
+            EXTERNAL_STATE_MOUNTS,
+            INSTANCE_STATE_MOUNTS,
+            INSTANCE_STATE_FILES,
+        )
+    )

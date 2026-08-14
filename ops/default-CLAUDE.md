@@ -3,9 +3,13 @@
 
 ## Environment
 
-You are running inside a Docker container managed by the `agent-wrap` tooling. Filesystem changes inside the container are discarded when it exits — only `/workspace` and the Claude home directory persist.
+You are running inside a Docker container managed by the `agent-wrap` tooling. Filesystem changes inside the container are discarded when it exits — only `/workspace`, the Claude home directory, and the two mounts named below persist.
 
-Within the Claude home directory (`$HOME/.claude/`), most paths are shared across all projects. A specific set are overlaid with per-project mounts from `$(pwd)/.claude/<subdir>/` on the host — `sessions`, `memory`, `session-state`, `daemon`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`, and the files `daemon.lock`, `daemon.log`, `daemon.status.json`, `history.jsonl`. Content you write under those paths is visible only within this project.
+Within the Claude home directory (`$HOME/.claude/`), most paths are shared across all projects. A specific set are overlaid with per-project mounts from `$(pwd)/.claude/<subdir>/` on the host — `sessions`, `memory`, `jobs`, `plans`, `todos`, `tasks`, `shell-snapshots`, `session-env`, `file-history`, `paste-cache`, `image-cache`, and the file `history.jsonl`. Content you write under those paths is visible only within this project.
+
+A smaller set is private to **this container** rather than to the project, mounted from `$(pwd)/.claude/instances/$AGENT_INSTANCE_ID/` on the host — `daemon`, `session-state` (at `$HOME/.claude/sessions`), and the files `daemon.lock`, `daemon.log`, `daemon.status.json`. These hold the background daemon and live-session registry, which Claude Code keys by PID; every container runs its agent as PID 1, so sharing them between concurrent agents would make each read the others' PIDs as its own. The host directory is deleted when this container exits.
+
+Two per-project mounts sit outside that directory: your session scratchpad (under `/tmp/claude-<uid>/`, from host `.claude/claude-tmp/`) and the MCP server logs (`~/.cache/claude-cli-nodejs/-workspace/`, from host `.claude/mcp-logs/`). The scratchpad therefore survives the container — files you leave there are still present if this session is later resumed. Everything else under `/tmp` and `~/.cache` is discarded.
 
 The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Dockerfile` (the base image), `default-CLAUDE.md` (this file), `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, and `wl-paste-shim`. Consult those when guidance below is ambiguous. The wrapper's Python source is **not** mounted — it stays on the host.
 

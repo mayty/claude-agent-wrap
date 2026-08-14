@@ -73,6 +73,12 @@ class Provider(ABC):
     #: Subclasses override this; the key name ``"api_key"`` is fixed. Left empty by
     #: a provider that needs no upstream secret at all (e.g. a local model).
     secret_description: ClassVar[str] = ""
+    #: Whether the launcher injects CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 into the
+    #: agent container for this provider. That flag also disables Claude Code's
+    #: feature-flag evaluation against Anthropic's backend, which gates Remote Control
+    #: and other Anthropic-backed features — a provider whose users need those to keep
+    #: working overrides this to False.
+    disable_nonessential_traffic: ClassVar[bool] = True
 
     # ------------------------------------------------------------------
     # Shared defaults (rarely overridden)

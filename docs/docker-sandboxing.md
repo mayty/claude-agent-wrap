@@ -77,7 +77,7 @@ See this project's own [Dockerfile.agent](../Dockerfile.agent), which installs t
 `Dockerfile.agent` supports a few wrapper-specific comment directives in addition to normal Dockerfile syntax:
 
 - **`# agent-name: <name>`** (required) — names the image `claude-agent-<name>`. Must match `[a-z0-9_.-]+` (Docker image names are lowercase).
-- **`# agent-user: <username>`** — sets the in-container username (default `ubuntu`). The wrapper reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`. Only useful if the base image has been customized to run as a different user.
+- **`# agent-user: <username>`** — sets the in-container username (default `ubuntu`). The wrapper reroutes the global config mounts to `/home/<username>/.claude.json` and `/home/<username>/.claude/`. Only useful if the base image has been customized to run as a different user. Such an image must also create `/home/<username>/.cache/claude-cli-nodejs` owned by that user — Docker materializes missing bind-mount parents as `root:root`, which would leave the agent unable to write under `~/.cache`. The base image does this for `ubuntu` already; see [Volume Mounts](volume-mounts.md#per-project-state).
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each line is whitespace-split into tokens. Example:
   ```dockerfile
   # agent-run-args: --device /dev/fuse

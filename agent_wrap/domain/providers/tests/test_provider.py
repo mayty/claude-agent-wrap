@@ -96,6 +96,12 @@ def test_provider_without_a_secret_description_declares_no_secrets(tmp_path: Pat
     assert p._sidecar_config()["required_secrets"] == []
 
 
+def test_disable_nonessential_traffic_defaults_true(tmp_path: Path) -> None:
+    """Every provider disables non-essential traffic unless it opts out."""
+    p = ConcreteTestProvider(state_dir=tmp_path)
+    assert p.disable_nonessential_traffic is True
+
+
 def test_sidecar_env_reads_secrets_by_declared_name(tmp_path: Path) -> None:
     """The secrets dict is keyed by the names required_secrets() declared."""
     p = ConcreteTestProvider(state_dir=tmp_path)

@@ -1,0 +1,47 @@
+# This file has been edited with the assistance of an AI tool.
+#
+# LiteLLM proxy config for the agent-wrap shared sidecar.
+#
+# Anthropic first-party passthrough. Unlike every other provider's config, this
+# one carries no api_key: the point of this provider is to forward the agent's
+# own claude.ai subscription OAuth token through untouched, so it spends the
+# subscription's allowance instead of API credits. Adding an api_key here
+# would be sent upstream as x-api-key and defeat that.
+#
+# Agent traffic reaches this sidecar on the /anthropic/* passthrough route (see
+# PASSTHROUGH_PREFIX in constants.py), which forwards headers and body verbatim.
+# The model_list below therefore does not route this provider's requests; it
+# exists only because LiteLLM wants a non-empty list to boot.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Kept for the /v1/messages route, which the agent no longer uses but which
+  # stays reachable. On the /anthropic/* passthrough route header forwarding is
+  # inherent (_forward_headers=True), so the Authorization: Bearer sk-ant-oat...
+  # subscription token reaches Anthropic regardless of this setting.
+  forward_client_headers_to_llm_api: true
+
+# Log every request/response to a JSONL file (mounted from the host by the
+# provider lifecycle). See litellm_runtime/callback.py.
+#
+# This key registers the logger in litellm.callbacks, which is the list
+# post_call_failure_hook iterates — so it is what records FAILURES.
+#
+# SUCCESS logging is deliberately NOT configured here. It needs the logger in
+# litellm._async_success_callback, and no config key puts a CustomLogger instance
+# there (`success_callback:` looks like it would, but routes to the sync list
+# instead — see the comment beside add_litellm_async_success_callback in
+# callback.py). callback.py registers itself for successes at import time.
+litellm_settings:
+  callbacks: callback.file_logger_instance
+
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "anthropic/*"
+      api_base: https://api.anthropic.com
+      # No api_key, deliberately: it would be sent as x-api-key and move
+      # billing off the subscription. This is the whole point.
+    model_info:
+      input_cost_per_token: 0.0
+      output_cost_per_token: 0.0
