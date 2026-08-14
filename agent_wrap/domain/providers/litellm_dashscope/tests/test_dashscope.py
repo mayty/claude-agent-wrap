@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.providers import litellm_dashscope as provider_module
 from agent_wrap.domain.providers.key_approval import _api_key_approval_id
 from agent_wrap.domain.providers.litellm_dashscope.provider import DashscopeProvider
 from agent_wrap.domain.providers.service import ProviderService
@@ -19,8 +21,6 @@ from agent_wrap.domain.sidecars.service import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest_mock
 
 
@@ -173,3 +173,19 @@ def test_load_claude_json_missing_file(
     )
     result = dashscope._load_claude_json()
     assert result == {}
+
+
+def test_dashscope_config_targets_the_anthropic_compatible_upstream():
+    """
+    DashScope is reached through Model Studio's Anthropic-compatible endpoint. The
+    international (`-intl`) host is deliberate: the mainland host rejects these keys.
+    """
+    config_path = Path(provider_module.__file__).parent / "config.yaml"
+    lines = [
+        line
+        for line in config_path.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("#")
+    ]
+    text = "\n".join(lines)
+    assert 'model: "anthropic/*"' in text
+    assert "api_base: https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages" in text

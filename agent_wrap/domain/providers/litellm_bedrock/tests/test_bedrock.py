@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.providers import litellm_bedrock as provider_module
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_bedrock.constants import DEFAULT_REGION_LABEL
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
@@ -23,8 +25,6 @@ from agent_wrap.domain.sidecars.service import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest_mock
 
 
@@ -191,3 +191,19 @@ def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_
     assert prices["claude-opus-4-8"]["in"] == 3.0
     assert "claude-sonnet-4-5" not in prices
     assert http_get.call_count == 2
+
+
+def test_bedrock_config_routes_every_model_through_the_bedrock_wildcard():
+    """
+    The `bedrock/*` wildcard is what lets `/bedrock/model/<id>/invoke*` resolve for any
+    model ID — including inference profiles like `us.anthropic.claude-opus-4-7` — without
+    enumerating each one. Narrowing it to named models would 404 every unlisted profile.
+    """
+    config_path = Path(provider_module.__file__).parent / "config.yaml"
+    lines = [
+        line
+        for line in config_path.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("#")
+    ]
+    text = "\n".join(lines)
+    assert 'model: "bedrock/*"' in text

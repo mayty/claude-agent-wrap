@@ -31,6 +31,14 @@ usual design in a few load-bearing ways:
   Anthropic's OAuth gate uses to recognize first-party Claude Code traffic. See
   `PASSTHROUGH_PREFIX` in `constants.py` for the full failure mode.
 
+- **`ANTHROPIC_CUSTOM_HEADERS` pins the upstream `Accept-Encoding` to gzip.** Claude
+  Code asks for `br`/`zstd` too, the passthrough forwards that ask to Anthropic
+  verbatim, and LiteLLM's httpx cannot decode either — it falls back to identity
+  *silently*, so the agent gets compressed bytes labelled `application/json` and the
+  request's usage record is lost to a `UnicodeDecodeError`. See
+  `ACCEPT_ENCODING_OVERRIDE_HEADER` in `constants.py` for the full chain and for why
+  the override has to travel under LiteLLM's `x-pass-` prefix.
+
 - **`secret_description` is empty.** The credential is the agent's own claude.ai
   login (via `/login` inside the container), not a pasteable string this
   provider could store or prompt for. A non-empty description would make a
@@ -71,6 +79,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_anthropic_sub.constants import (
+    ACCEPT_ENCODING_OVERRIDE_HEADER,
+    ACCEPT_ENCODING_OVERRIDE_VALUE,
     MASTER_KEY_HEADER,
     PASSTHROUGH_PREFIX,
 )
@@ -93,9 +103,19 @@ class AnthropicSubProvider(Provider):
         # constants.py. Claude Code appends "/v1/messages" to ANTHROPIC_BASE_URL,
         # so this resolves to the verbatim-forwarding /anthropic/v1/messages
         # route rather than LiteLLM's translating /v1/messages one.
+        #
+        # ANTHROPIC_CUSTOM_HEADERS separates entries on newlines. The sidecar layer
+        # appends a third one (x-agent-wrap-log-prefix) to whatever is set here the
+        # same way — see sidecars/litellm.py.
+        custom_headers = "\n".join(
+            (
+                f"{MASTER_KEY_HEADER}: {master_key}",
+                f"{ACCEPT_ENCODING_OVERRIDE_HEADER}: {ACCEPT_ENCODING_OVERRIDE_VALUE}",
+            )
+        )
         return {
             "ANTHROPIC_BASE_URL": f"{base_url}{PASSTHROUGH_PREFIX}",
-            "ANTHROPIC_CUSTOM_HEADERS": f"{MASTER_KEY_HEADER}: {master_key}",
+            "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
         }
 
     def compute_cost(

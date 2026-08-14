@@ -1509,8 +1509,9 @@ function renderQuotaProbeTurn(r, displayIdx) {
     block.appendChild(el("div", "probe-note",
       "session-start quota probe — rejected by Anthropic's first-party gate (expected)"));
   } else {
-    // Not the 429 this probe always gets: show what it was instead. The probe reuses
-    // whatever model is selected, so a stale model id surfaces here as a 404.
+    // Not the 429 this probe always gets: show what it was instead. Expect little more
+    // than a status — the sidecar's passthrough logging keeps no upstream body — so the
+    // 404 a stale model id earns arrives without naming the model.
     block.appendChild(el("div", "probe-note", "session-start quota probe — unexpected failure"));
     const pre = Object.assign(el("pre"), { textContent: asText(r.error) });
     block.appendChild(pre);
@@ -1993,12 +1994,14 @@ function isQuotaProbeRequest(r) {
 // The one failure a quota probe is expected to hit. Anything else it reports — a 404 on
 // a stale model id, say — is a real fault that must stay visible, so the muting is
 // scoped to this outcome rather than applied to every probe.
-const PROBE_EXPECTED_ERROR_RE = /"type"\s*:\s*"rate_limit_error"/;
+//
+// The status is the whole message: the sidecar logs `str(exc)`, and LiteLLM's passthrough
+// logging runs on a worker that catches the exception with nothing but the status left, so
+// Anthropic's `rate_limit_error` body never reaches the record.
+const PROBE_EXPECTED_ERROR_RE = /^429: Upstream passthrough request failed/;
 
 // Did a quota probe end the way it always ends? A success counts: the probe working is
-// no reason to shout either. Until /api/strings resolves, a hashed error reads as
-// unexpected and the turn shows red; tick() re-renders when the strings arrive, so a
-// live session corrects itself within a poll.
+// no reason to shout either.
 function isExpectedQuotaProbeOutcome(r) {
   if (r.status === "success") return true;
   return PROBE_EXPECTED_ERROR_RE.test(asText(r.error));

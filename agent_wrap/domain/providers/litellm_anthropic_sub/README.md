@@ -16,7 +16,7 @@ to prompt about in the first place.
 
 | Item | Value |
 | --- | --- |
-| Image | `ghcr.io/berriai/litellm:v1.83.14-stable@sha256:c81eb79...` |
+| Image | `ghcr.io/berriai/litellm:v1.96.2@sha256:154e23bb...` |
 | Master key prefix | `sk-aw-ant-` |
 | Sidecar container | `agent-wrap-litellm-anthropic-sub` |
 | Agent base URL | `http://agent-wrap-litellm-anthropic-sub:<port>/anthropic` |
@@ -82,6 +82,47 @@ also removes the previous dependence on LiteLLM's `clean_headers` /
 `ANTHROPIC_API_KEY` is in the sidecar env, and the client's `Authorization` header is
 merged through untouched.
 
+## Why the upstream Accept-Encoding is pinned
+
+Verbatim header forwarding cuts both ways. Claude Code advertises
+`accept-encoding: gzip, deflate, br, zstd`, and because the passthrough forwards the
+client's headers untouched, Anthropic sees that same list and may answer with `br` or
+`zstd`. LiteLLM cannot read either: it pins httpx but ships neither `brotli` nor
+`zstandard`, and httpx removes those two from `SUPPORTED_DECODERS` when the optional
+packages are absent. The part that makes this expensive to diagnose is that
+`Response._get_content_decoder()` does not raise on an encoding it has no decoder for —
+it `continue`s past it and falls back to `IdentityDecoder`, so the compressed bytes are
+handed on as if they were plaintext.
+
+Both halves of the hop then break, in ways that look unrelated:
+
+- **The agent** gets those compressed bytes with `content-encoding` stripped off — the
+  passthrough always strips it — i.e. binary labelled `application/json`.
+- **The sidecar** loses the request's usage record. Its success logging calls
+  `transform_response()`, which does `raw_response.json()` and raises
+  `AnthropicError: Unable to get json response - 'utf-8' codec can't decode byte 0x..`.
+  On the pinned version that logging runs in a bare `asyncio.create_task`, so it surfaces
+  as a `Task exception was never retrieved` traceback and nothing else.
+
+`x-pass-accept-encoding: gzip` restricts the upstream hop to the one encoding httpx
+decodes unaided. The agent notices nothing either way, since `content-encoding` never
+reaches it.
+
+The `x-pass-` prefix is the mechanism, not decoration: LiteLLM's
+`forward_headers_from_request()` merges the client's headers first
+(`{**request_headers, **custom_headers}`) and only *then* assigns the de-prefixed
+`x-pass-` ones, so this entry wins over the `accept-encoding` Claude Code sent. A plain
+`accept-encoding` entry would lose that merge — and would be Claude Code's own HTTP
+layer's header to overwrite on the agent→sidecar hop regardless. Anthropic also receives
+the still-prefixed `x-pass-accept-encoding` alongside the real one and ignores it, as it
+does any unknown `x-*` header.
+
+This is not fixed by moving to a newer LiteLLM: as of `v1.96.2` the forwarding, the
+missing decoders and the unguarded `raw_response.json()` are all unchanged. What *does*
+change there is that passthrough logging moved onto a worker that catches the exception,
+so the traceback becomes one logged error — the corrupt response and the missing usage
+record remain.
+
 ## Known benign failure: the session-start quota probe
 
 Every session's request log opens with one failed `POST /anthropic/v1/messages`. It is
@@ -105,6 +146,13 @@ block and no `"You are Claude Code, …"` identity block. Its *headers* arrive i
 and the forwarded `Authorization`), which is exactly the point: headers alone do not
 satisfy Anthropic's subscription-OAuth gate, so it answers with the same opaque
 `429 rate_limit_error` / `"message":"Error"`.
+
+That body is not what lands in the log. Since the `v1.96.2` logging change described
+[above](#why-the-upstream-accept-encoding-is-pinned), the worker that records the failure
+holds only the status by then, so the record reads `429: Upstream passthrough request
+failed with status 429` — no `rate_limit_error` type and no upstream `request_id`. Do not
+go looking for them; the status is all the sidecar has to give, and it is what the viewer
+matches on.
 
 **The passthrough cannot rescue this one.** It forwards the body verbatim, and the marker
 this request lacks was never in the body to begin with. Nor can the sidecar add one:
@@ -172,9 +220,16 @@ Agent container (injected by `get_agent_env`):
 - `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm-anthropic-sub:<port>/anthropic`
   (the `/anthropic` suffix selects the passthrough route — see
   [Why the passthrough route](#why-the-passthrough-route))
-- `ANTHROPIC_CUSTOM_HEADERS` — `x-litellm-api-key: <master key>`, so the sidecar's
-  master key reaches the proxy without occupying the `Authorization` header, which
-  must stay free for the forwarded subscription token
+- `ANTHROPIC_CUSTOM_HEADERS` — two newline-separated entries:
+  - `x-litellm-api-key: <master key>`, so the sidecar's master key reaches the proxy
+    without occupying the `Authorization` header, which must stay free for the
+    forwarded subscription token
+  - `x-pass-accept-encoding: gzip`, which pins the *upstream* Accept-Encoding to
+    something LiteLLM can decode — see
+    [Why the upstream Accept-Encoding is pinned](#why-the-upstream-accept-encoding-is-pinned)
+
+  The sidecar layer appends a third entry (`x-agent-wrap-log-prefix`) to this value at
+  launch; see [`providers/README.md`](../README.md).
 
 Agent container (injected by `LaunchService._build_env_args`, not `get_agent_env`,
 because this provider sets `disable_nonessential_traffic = False`):
@@ -260,19 +315,27 @@ classifier request:
    `claude-code-20250219` and `request.body.system[0]` still starts with
    `x-anthropic-billing-header:`.
 
+Then re-check the Accept-Encoding override, which rides a second undocumented internal:
+
+4. Confirm `forward_headers_from_request()` still applies `x-pass-`-prefixed headers
+   *after* merging the client's own, and that `accept-encoding` is still absent from its
+   `_PASS_THROUGH_PROTECTED_HEADERS` set — if either changes, the override stops winning
+   and non-streaming replies start failing to decode again. See
+   [Why the upstream Accept-Encoding is pinned](#why-the-upstream-accept-encoding-is-pinned).
+
 Then re-check request logging, which depends on LiteLLM internals in two separate places
 and fails silently in both:
 
-4. Confirm **successes** appear in `messages.jsonl`, not just failures. They reach the
+5. Confirm **successes** appear in `messages.jsonl`, not just failures. They reach the
    callback only via `litellm._async_success_callback` — see
    [Request logging is registered in three different places](#request-logging-is-registered-in-three-different-places).
    Checking that requests 200 is *not* sufficient: a past regression had every request
    succeeding while nothing but failures was logged.
-5. Confirm **failures** still appear — on a **streaming** request, not just a
+6. Confirm **failures** still appear — on a **streaming** request, not just a
    non-streaming one. The two shapes reach the callback by different lists
    (`async_post_call_failure_hook` vs `async_log_failure_event`), and a past regression
    had non-streaming failures logging normally while every streaming failure was dropped.
-6. Confirm there is exactly **one** record per request. `callback.py` is re-exec'd by
+7. Confirm there is exactly **one** record per request. `callback.py` is re-exec'd by
    LiteLLM's `get_instance_fn` (a fresh module, never cached in `sys.modules`), so a
    distinct `FileLogger` is registered per load; only `_add_custom_logger_to_list`'s
    class-name dedup plus `should_run_logging` keep that from double-logging. Duplicate
