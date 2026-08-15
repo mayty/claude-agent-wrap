@@ -39,6 +39,7 @@ from agent_wrap.domain.stats.models import (
     DirResult,
     Group,
     GroupResult,
+    HourBuckets,
     OrphanedResult,
     ProjectRow,
     StatsReport,
@@ -98,8 +99,8 @@ class StatsService:
             from_iso=day_key,
             until_iso=day_key,
         )
-        by_day, _by_source = fold_raw_to_buckets(records, self._pricing)
-        price_buckets(by_day, self._pricing)
+        by_day_hour, _by_source = fold_raw_to_buckets(records, self._pricing)
+        by_day = price_buckets(by_day_hour, self._pricing)
 
         combined = self._pricing.new_bucket()
         for bucket in by_day.get(day_key, {}).values():
@@ -422,9 +423,13 @@ class StatsService:
                     last_ts = ts
                 all_records.extend(records)
 
-            by_day, by_source = fold_raw_to_buckets(all_records, self._pricing)
-            price_buckets(by_day, self._pricing, refresh_pricing_data=refresh_pricing_data)
-            price_buckets(by_source, self._pricing, refresh_pricing_data=refresh_pricing_data)
+            by_day_hour, by_source_hour = fold_raw_to_buckets(all_records, self._pricing)
+            by_day = price_buckets(
+                by_day_hour, self._pricing, refresh_pricing_data=refresh_pricing_data
+            )
+            by_source = price_buckets(
+                by_source_hour, self._pricing, refresh_pricing_data=refresh_pricing_data
+            )
             cache[logs_dir] = DirResult(sessions, last_ts, by_day, by_source)
         return cache
 
@@ -697,8 +702,12 @@ class StatsService:
         )
 
         # Price while local, then merge — never the other way round.
-        price_buckets(local_by_day, self._pricing, refresh_pricing_data=refresh_pricing_data)
-        price_buckets(local_by_source, self._pricing, refresh_pricing_data=refresh_pricing_data)
+        local_by_day = price_buckets(
+            local_by_day, self._pricing, refresh_pricing_data=refresh_pricing_data
+        )
+        local_by_source = price_buckets(
+            local_by_source, self._pricing, refresh_pricing_data=refresh_pricing_data
+        )
 
         total = self._pricing.new_bucket()
         for day, by_model in local_by_day.items():
@@ -731,8 +740,8 @@ class StatsService:
         hours. Returned buckets carry no cost; the caller prices them.
         """
         archive = read_archive(AGENT_LAUNCHES_DIR / ORPHANED_ARCHIVE_FILENAME)
-        by_day: dict[str, dict[str, Bucket]] = {}
-        by_source_totals: dict[str, dict[str, Bucket]] = {}
+        by_day: HourBuckets = {}
+        by_source_totals: HourBuckets = {}
         last_ts: datetime | None = None
 
         for date_key, by_hour in archive.items():
@@ -746,10 +755,10 @@ class StatsService:
                 for model, by_source in by_model.items():
                     for source, leaf in by_source.items():
                         bucket = self._bucket_from_leaf(leaf)
-                        by_day.setdefault(day_key, {}).setdefault(
+                        by_day.setdefault(day_key, {}).setdefault(hour_key, {}).setdefault(
                             model, self._pricing.new_bucket()
                         ).merge(bucket)
-                        by_source_totals.setdefault(source, {}).setdefault(
+                        by_source_totals.setdefault(source, {}).setdefault(hour_key, {}).setdefault(
                             model, self._pricing.new_bucket()
                         ).merge(bucket)
 

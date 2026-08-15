@@ -445,10 +445,10 @@ def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
     fake_provider.compute_cost.return_value = 0.005
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
 
-    cost = svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage)
+    cost = svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage, hour=0)
     assert cost == 0.005
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, refresh_pricing_data=False
+        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=False
     )
 
 
@@ -458,9 +458,9 @@ def test_compute_cost_display_name_is_normalized(svc: PricingService) -> None:
     fake_provider.compute_cost.return_value = 0.0
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
 
-    svc.compute_cost("litellm-bedrock", "Claude Opus 4.7", usage=usage)
+    svc.compute_cost("litellm-bedrock", "Claude Opus 4.7", usage=usage, hour=0)
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, refresh_pricing_data=False
+        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=False
     )
 
 
@@ -468,7 +468,9 @@ def test_compute_cost_unknown_provider_returns_none(
     svc: PricingService, provider_mock: Mock
 ) -> None:
     provider_mock.get_provider.side_effect = ValueError("no such provider")
-    assert svc.compute_cost("unknown-provider", "claude-opus-4-7", usage=_zero_usage()) is None
+    assert (
+        svc.compute_cost("unknown-provider", "claude-opus-4-7", usage=_zero_usage(), hour=0) is None
+    )
 
 
 def test_compute_cost_slash_prefixed_model(svc: PricingService) -> None:
@@ -478,9 +480,9 @@ def test_compute_cost_slash_prefixed_model(svc: PricingService) -> None:
     fake_provider.compute_cost.return_value = 0.0
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
 
-    svc.compute_cost("litellm-bedrock", "bedrock/claude-opus-4-7", usage=usage)
+    svc.compute_cost("litellm-bedrock", "bedrock/claude-opus-4-7", usage=usage, hour=0)
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, refresh_pricing_data=False
+        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=False
     )
 
 
@@ -491,7 +493,9 @@ def test_compute_cost_refresh_forces_delegation(svc: PricingService) -> None:
     fake_provider.compute_cost.return_value = 0.0
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]
 
-    svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage, refresh_pricing_data=True)
+    svc.compute_cost(
+        "litellm-bedrock", "claude-opus-4-7", usage=usage, hour=0, refresh_pricing_data=True
+    )
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, refresh_pricing_data=True
+        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=True
     )

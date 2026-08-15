@@ -247,6 +247,6 @@ def test_anthropic_sub_compute_cost_is_always_zero(anthropic_sub: AnthropicSubPr
             "ephemeral_1h_input_tokens": 500_000,
         },
     }
-    cost = anthropic_sub.compute_cost(model, usage)
+    cost = anthropic_sub.compute_cost(model, usage, hour=0)
     assert cost == 0.0
     assert cost is not None

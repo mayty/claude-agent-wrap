@@ -354,6 +354,7 @@ class Provider(ABC):
         model: str,
         usage: TokenUsage,
         *,
+        hour: int | None,  # noqa: ARG002
         refresh_pricing_data: bool = False,
     ) -> float | None:
         """
@@ -363,6 +364,10 @@ class Provider(ABC):
         ``_get_tiered_pricing()`` or ``_get_pricing()``, strips context-length
         suffixes from *model*, prefix-matches against pricing keys, selects the
         appropriate tier, and computes the cost.
+
+        *hour* is the UTC hour the usage belongs to (the half-open interval
+        ``[hour, hour+1)``), or None when unknown. The flat default ignores it; a
+        provider with time-of-day pricing overrides this method to consume it.
 
         Subclasses can override this method to add custom logic (e.g., time-of-day
         multipliers).  *model* arrives already-normalized by ``PricingService``

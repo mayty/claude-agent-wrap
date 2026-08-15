@@ -173,11 +173,17 @@ class ArchiveLeaf(TypedDict):
 type ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
 
 
+# Buckets keyed outer → hour → model, produced before pricing collapses the hour
+# axis. The outer key is a stats day (by_day) or a usage source (by_source); the
+# hour key is a zero-padded UTC hour ("00"-"23") or "?" for an unknown time.
+HourBuckets = dict[str, dict[str, dict[str, "Bucket"]]]
+
+
 # Archived usage materialized into priceable buckets, before it is merged into
 # the shared stats totals. *last_ts* is the newest in-window archived hour.
 class ArchivedBuckets(NamedTuple):
-    by_day: dict[str, dict[str, Bucket]]
-    by_source: dict[str, dict[str, Bucket]]
+    by_day: HourBuckets
+    by_source: HourBuckets
     last_ts: datetime | None
 
 

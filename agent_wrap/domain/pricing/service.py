@@ -152,10 +152,16 @@ class PricingService:
         model: str,
         *,
         usage: TokenUsage,
+        hour: int | None,
         refresh_pricing_data: bool = False,
     ) -> float | None:
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
+
+        *hour* is the UTC hour the usage belongs to — the half-open interval
+        ``[hour, hour+1)`` — and may be None when the record's timestamp is
+        unknown.  Providers that price by time-of-day use it; flat-rate providers
+        ignore it.
 
         Normalizes *model* (Claude display names → canonical keys) then delegates
         to the provider's ``compute_cost`` method.  Callers must extract usage
@@ -175,7 +181,9 @@ class PricingService:
             # Provider lookup is best-effort — any failure (unknown provider,
             # misconfiguration, etc.) should silently fall back to unknown cost.
             return None
-        return p.compute_cost(normalized, usage, refresh_pricing_data=refresh_pricing_data)
+        return p.compute_cost(
+            normalized, usage, hour=hour, refresh_pricing_data=refresh_pricing_data
+        )
 
     # ------------------------------------------------------------------
     # Usage extraction
