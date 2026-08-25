@@ -22,6 +22,10 @@ from agent_wrap.constants import (
     LITELLM_LOGS_DIRNAME,
     OPS_DIR,
     PROJECT_REGISTRY_FILENAME,
+    SPELLCHECK_CHECKER,
+    SPELLCHECK_ENABLED_OVERRIDE,
+    SPELLCHECK_LANG,
+    SPELLCHECK_LANG_OVERRIDE,
     TOOL_DIR,
 )
 from agent_wrap.domain.config.project_registry import ProjectRegistry
@@ -75,6 +79,57 @@ class ConfigService:
             "type": "command",
             "command": "/opt/agent-wrap/statusline.py",
         }
+        atomic_write_json(settings_path, data)
+
+    def _ensure_spellcheck(self, settings_path: Path) -> None:
+        """
+        Idempotently configure Claude Code's prompt spell checking.
+
+        The feature only reads this tier -- a ``spellcheck`` block in a project's
+        ``.claude/settings.json`` is ignored outright -- so the wrapper-global user
+        settings are the only place it can be turned on from.
+
+        With no block present, one is written: on, ``hunspell``, and the dictionary list
+        in force. With a block already there, the file wins and it is left alone, except
+        that an explicitly set ``AGENT_SPELLCHECK`` / ``AGENT_SPELLCHECK_LANG`` overrides
+        the corresponding key on every launch -- otherwise the env vars would be inert
+        the moment a previous launch had written the block. Keys the user added by hand
+        (``color``, a different ``checker``) are always preserved, and the file is
+        rewritten only when a value actually changed.
+
+        If the file is empty or missing, creates it with {}.
+        If the JSON is malformed, does nothing.
+        """
+        if not settings_path.exists() or settings_path.stat().st_size == 0:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text("{}\n")
+
+        data = _load_json(settings_path)
+        if data is None:
+            return  # malformed JSON -- don't clobber
+
+        block = data.get("spellcheck")
+        if block is None:
+            data["spellcheck"] = {
+                "enabled": SPELLCHECK_ENABLED_OVERRIDE is not False,
+                "checker": SPELLCHECK_CHECKER,
+                "language": SPELLCHECK_LANG,
+            }
+            atomic_write_json(settings_path, data)
+            return
+
+        if not isinstance(block, dict):
+            return  # someone's hand-written value, of a shape we won't second-guess
+
+        updated = dict(block)
+        if SPELLCHECK_ENABLED_OVERRIDE is not None:
+            updated["enabled"] = SPELLCHECK_ENABLED_OVERRIDE
+        if SPELLCHECK_LANG_OVERRIDE is not None:
+            updated["language"] = SPELLCHECK_LANG_OVERRIDE
+        if updated == block:
+            return
+
+        data["spellcheck"] = updated
         atomic_write_json(settings_path, data)
 
     def _ensure_telegram_hooks(self, settings_path: Path) -> None:
@@ -138,7 +193,7 @@ class ConfigService:
         Prepare the global config directory for agent launch.
 
         Creates the directory structure, secures config files, injects
-        statusline and telegram hooks, and copies default-CLAUDE.md.
+        statusline, spell checking and telegram hooks, and copies default-CLAUDE.md.
         """
         global_config_dir = GLOBAL_CONFIG_DIR
         claude_dir = global_config_dir / ".claude"
@@ -157,6 +212,7 @@ class ConfigService:
 
         settings_path = claude_dir / "settings.json"
         self._ensure_statusline(settings_path)
+        self._ensure_spellcheck(settings_path)
 
         if telegram_available:
             self._ensure_telegram_hooks(settings_path)

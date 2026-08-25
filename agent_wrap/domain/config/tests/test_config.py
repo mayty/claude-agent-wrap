@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import agent_wrap.domain.config.service as config_mod
 from agent_wrap.constants import STATE_FILES
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
@@ -17,6 +18,8 @@ from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest_mock
 
 
 @pytest.fixture
@@ -145,6 +148,102 @@ def test_telegram_hooks_skips_malformed_json(svc: ConfigService, tmp_path: Path)
     assert settings.read_text() == "{bad json"
 
 
+def test_spellcheck_injects_block(svc: ConfigService, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    svc._ensure_spellcheck(settings)
+    block = json.loads(settings.read_text())["spellcheck"]
+    assert block["enabled"] is True
+    assert block["checker"] == "hunspell"
+    assert block["language"] == "en_US,ru_RU"
+
+
+def test_spellcheck_creates_file_if_missing(svc: ConfigService, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    svc._ensure_spellcheck(settings)
+    assert "spellcheck" in json.loads(settings.read_text())
+
+
+def test_spellcheck_idempotent(svc: ConfigService, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    svc._ensure_spellcheck(settings)
+    first = json.loads(settings.read_text())
+    svc._ensure_spellcheck(settings)
+    assert json.loads(settings.read_text()) == first
+
+
+def test_spellcheck_leaves_existing_block_alone(svc: ConfigService, tmp_path: Path) -> None:
+    # With neither env var set, whatever is in the file wins -- including "off".
+    custom = {"spellcheck": {"enabled": False, "language": "fr_FR"}}
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(custom))
+    svc._ensure_spellcheck(settings)
+    assert json.loads(settings.read_text()) == custom
+
+
+def test_spellcheck_disabled_by_env_on_injection(
+    svc: ConfigService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch.object(config_mod, "SPELLCHECK_ENABLED_OVERRIDE", new=False)
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    svc._ensure_spellcheck(settings)
+    assert json.loads(settings.read_text())["spellcheck"]["enabled"] is False
+
+
+def test_spellcheck_env_overrides_existing_enabled(
+    svc: ConfigService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    # An explicit AGENT_SPELLCHECK must not be inert once a block already exists,
+    # which is the whole point of it being an override rather than a seed.
+    mocker.patch.object(config_mod, "SPELLCHECK_ENABLED_OVERRIDE", new=False)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"spellcheck": {"enabled": True, "language": "en_US"}}))
+    svc._ensure_spellcheck(settings)
+    block = json.loads(settings.read_text())["spellcheck"]
+    assert block["enabled"] is False
+    assert block["language"] == "en_US"
+
+
+def test_spellcheck_env_overrides_language_preserving_user_keys(
+    svc: ConfigService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    mocker.patch.object(config_mod, "SPELLCHECK_LANG_OVERRIDE", "de_DE")
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"spellcheck": {"enabled": True, "language": "en_US", "color": "magenta"}})
+    )
+    svc._ensure_spellcheck(settings)
+    block = json.loads(settings.read_text())["spellcheck"]
+    assert block["language"] == "de_DE"
+    assert block["color"] == "magenta"
+    assert block["enabled"] is True
+
+
+def test_spellcheck_preserves_other_keys(svc: ConfigService, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"theme": "dark"}))
+    svc._ensure_spellcheck(settings)
+    data = json.loads(settings.read_text())
+    assert data["theme"] == "dark"
+    assert "spellcheck" in data
+
+
+def test_spellcheck_skips_non_dict_block(svc: ConfigService, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"spellcheck": "yes please"}))
+    svc._ensure_spellcheck(settings)
+    assert json.loads(settings.read_text())["spellcheck"] == "yes please"
+
+
+def test_spellcheck_skips_malformed_json(svc: ConfigService, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("{bad json")
+    svc._ensure_spellcheck(settings)
+    assert settings.read_text() == "{bad json"
+
+
 def test_ensure_claude_md_copies_when_missing(svc: ConfigService, tmp_path: Path) -> None:
     (tmp_path / ".claude").mkdir()
     (tmp_path / "ops").mkdir()
@@ -217,6 +316,13 @@ def test_prepare_global_config_without_telegram(svc: ConfigService, tmp_path: Pa
     svc.prepare_global_config(telegram_available=False)
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert "hooks" not in settings
+
+
+def test_prepare_global_config_enables_spellcheck(svc: ConfigService, tmp_path: Path) -> None:
+    svc.prepare_global_config(telegram_available=False)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert settings["spellcheck"]["enabled"] is True
+    assert settings["spellcheck"]["checker"] == "hunspell"
 
 
 # Derived from the production mount tables rather than hand-copied: the previous

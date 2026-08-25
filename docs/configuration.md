@@ -102,3 +102,40 @@ Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`)
 ```sh
 AGENT_LOG_DEBUG=1 agent logs
 ```
+
+## `AGENT_SPELLCHECK` (prompt spell checking)
+
+Claude Code can underline misspelled words in the prompt input as you type, but it ships no spell checker of its own — it drives an external one. The wrapper supplies that: `hunspell` and the configured dictionaries are installed in the base image, and a `spellcheck` block is injected into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch (see [Injected settings](container-environment.md#injected-settings-not-env-vars)).
+
+Spell checking is **on by default**. Set `AGENT_SPELLCHECK=0` (or `false`/`no`) to turn it off:
+
+```sh
+AGENT_SPELLCHECK=0 agent run
+```
+
+The env var is an override, not a seed. Unset, whatever the settings file holds wins — so an `"enabled": false` you edited in by hand survives every later launch. Set explicitly, it rewrites `spellcheck.enabled` on every launch, which is what keeps `AGENT_SPELLCHECK=0` working after a previous launch has already written the block. An empty value (`AGENT_SPELLCHECK=`) counts as unset.
+
+The block must live in this tier: Claude Code reads `spellcheck` from user, flag and managed settings only, and ignores it outright in a project's `.claude/settings.json` or `.claude/settings.local.json`.
+
+## `AGENT_SPELLCHECK_LANG` (dictionaries)
+
+A comma-separated list of hunspell dictionaries, default `en_US,ru_RU`. hunspell loads them all and accepts a word found in **any** of them, which is what lets a prompt mix English and Russian without every word of one language being underlined.
+
+```sh
+# One rebuild to install the dictionaries, then every launch uses them.
+AGENT_SPELLCHECK_LANG=en_GB,de_DE agent rebuild --full
+AGENT_SPELLCHECK_LANG=en_GB,de_DE agent run
+```
+
+The same value does two jobs, and that is deliberate:
+
+- **At build time** it is passed to `ops/Dockerfile` as the `SPELLCHECK_LANG` build arg, which installs one dictionary package per entry. Changing the list therefore needs an `agent rebuild --full`.
+- **At launch time** it is written into `spellcheck.language`, with the same override-vs-seed semantics as `AGENT_SPELLCHECK` above.
+
+Deriving both from one variable is what keeps them in sync. A `language` naming a dictionary that was never installed makes hunspell fail to start, and spell checking then stays off for the whole session with only a debug-log line to say why.
+
+Package names are inconsistent upstream, so the build tries `hunspell-<lang>-<region>` first and falls back to `hunspell-<lang>`: `en_US` → `hunspell-en-us`, `de_DE` → `hunspell-de-de`, but `ru_RU` → `hunspell-ru` and `fr_FR` → `hunspell-fr`. If neither package exists the build fails loudly rather than producing an image where spell checking is silently dead.
+
+Entries are validated host-side against `^[A-Za-z]{2,3}(_[A-Za-z]{2,})?$`, and the joined list against Claude Code's 64-character cap. A malformed value raises at startup rather than falling back to the default — same philosophy as `AGENT_DAY_START_UTC` above, and for the same reason: a silent fallback would install one set of dictionaries and configure another.
+
+One trade-off comes with loading several dictionaries: a typo that happens to be a valid word in one of the other languages is not flagged.
