@@ -8,7 +8,6 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.constants import DAY_START_HOURS, LITELLM_LOGS_DIRNAME
-from agent_wrap.domain.stats.archive import archive_time_keys
 from agent_wrap.domain.stats.constants import UNKNOWN_TIME_KEY
 from agent_wrap.domain.stats.cost import usage_source
 from agent_wrap.domain.stats.format_utils import day_in_range
@@ -16,6 +15,7 @@ from agent_wrap.domain.stats.models import (
     AccumulatedRecord,
     DirResult,
     HourBuckets,
+    HourKey,
     RawFileResult,
     RawRecord,
     ScanProjectResult,
@@ -246,9 +246,9 @@ def fold_raw_to_buckets(
     Fold raw worker records into hour-keyed Bucket dicts using *pricing*.
 
     Normalizes model names and constructs Buckets via ``pricing.new_bucket()``,
-    so all pricing-domain work stays in the master process. The raw UTC hour is
-    preserved on the bucket key so ``price_buckets`` can price each hour at its
-    own rate before collapsing the axis.
+    so all pricing-domain work stays in the master process. The raw UTC weekday
+    and hour are preserved on the bucket key so ``price_buckets`` can price each
+    hour at its own rate before collapsing the axis.
 
     Returns ``(by_day, by_source)`` where *by_day* is
     ``{day: {hour: {model: Bucket}}}`` and *by_source* is
@@ -261,7 +261,9 @@ def fold_raw_to_buckets(
         provider, _, model = rec.display_model.partition("/")
         norm_model = pricing.normalize_model(model) or model
         norm_display = f"{provider}/{norm_model}"
-        hour_key = archive_time_keys(rec.ts)[1]
+        hour_key = (
+            HourKey(rec.ts.weekday(), rec.ts.hour) if rec.ts is not None else HourKey(None, None)
+        )
         by_day[rec.day_key][hour_key][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
         by_source[rec.source][hour_key][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
     return (
@@ -289,17 +291,17 @@ def price_buckets(
     refresh_pricing_data: bool = False,
 ) -> dict[str, dict[str, Bucket]]:
     """
-    Price every Bucket in *buckets*, then collapse the hour axis.
+    Price every Bucket in *buckets*, then collapse the hour/weekday axis.
 
-    Each ``(outer_key, hour, model)`` bucket is priced at its own UTC hour, then
-    merged into the ``{outer_key: {model: Bucket}}`` shape the rest of the stats
-    pipeline consumes. Pricing before collapsing is what keeps a day's usage from
-    being priced at a single representative hour.
+    Each ``(outer_key, (weekday, hour), model)`` bucket is priced at its own UTC
+    weekday and hour, then merged into the ``{outer_key: {model: Bucket}}`` shape
+    the rest of the stats pipeline consumes. Pricing before collapsing is what
+    keeps a day's usage from being priced at a single representative instant.
     """
     collapsed: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
     for outer_key, by_hour in buckets.items():
         for hour_key, by_model in by_hour.items():
-            hour = None if hour_key == UNKNOWN_TIME_KEY else int(hour_key)
+            weekday, hour = hour_key
             for display_model, bucket in by_model.items():
                 provider, _, model = display_model.partition("/")
                 usage: TokenUsage = {
@@ -317,6 +319,7 @@ def price_buckets(
                     model,
                     usage=usage,
                     hour=hour,
+                    weekday=weekday,
                     refresh_pricing_data=refresh_pricing_data,
                 )
                 if cost is None:

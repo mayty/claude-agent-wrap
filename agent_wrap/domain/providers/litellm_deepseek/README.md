@@ -45,3 +45,5 @@ See [`config.yaml`](config.yaml) for the LiteLLM proxy config — model-pattern 
 ## Pricing
 
 Pricing used by `agent stats` is **live-scraped** from DeepSeek's public pricing page, cached for 7 days. If the scrape fails (page unreachable, or DeepSeek changes the page's markup), it silently falls back to the stale cache, or to unknown/`$0` cost if no cache exists yet.
+
+The scraped rates are DeepSeek's **peak-hour** rates; the page's peak-hours footnote is cached alongside them. Peak rates apply Monday through Friday (UTC) during the peak hours; off-peak usage — weekdays outside those hours, plus all of Saturday and Sunday — is billed at exactly half.

@@ -40,6 +40,7 @@ from agent_wrap.domain.stats.models import (
     Group,
     GroupResult,
     HourBuckets,
+    HourKey,
     OrphanedResult,
     ProjectRow,
     StatsReport,
@@ -745,13 +746,14 @@ class StatsService:
         last_ts: datetime | None = None
 
         for date_key, by_hour in archive.items():
-            for hour_key, by_model in by_hour.items():
-                dt = self._archived_hour_dt(date_key, hour_key)
+            for raw_hour, by_model in by_hour.items():
+                dt = self._archived_hour_dt(date_key, raw_hour)
                 day_key = get_day(dt, DAY_START_HOURS).isoformat() if dt else UNKNOWN_TIME_KEY
                 if not day_in_range(day_key, from_iso, until_iso):
                     continue
                 if dt is not None and (last_ts is None or dt > last_ts):
                     last_ts = dt
+                hour_key = HourKey(dt.weekday(), dt.hour) if dt is not None else HourKey(None, None)
                 for model, by_source in by_model.items():
                     for source, leaf in by_source.items():
                         bucket = self._bucket_from_leaf(leaf)

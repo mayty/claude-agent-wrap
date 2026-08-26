@@ -355,6 +355,7 @@ class Provider(ABC):
         usage: TokenUsage,
         *,
         hour: int | None,  # noqa: ARG002
+        weekday: int | None = None,  # noqa: ARG002
         refresh_pricing_data: bool = False,
     ) -> float | None:
         """
@@ -366,8 +367,10 @@ class Provider(ABC):
         appropriate tier, and computes the cost.
 
         *hour* is the UTC hour the usage belongs to (the half-open interval
-        ``[hour, hour+1)``), or None when unknown. The flat default ignores it; a
-        provider with time-of-day pricing overrides this method to consume it.
+        ``[hour, hour+1)``), or None when unknown. *weekday* is the UTC weekday
+        (``datetime.weekday()``: 0=Monday ... 6=Sunday), or None when unknown. The
+        flat default ignores both; a provider with time-of-day pricing overrides
+        this method to consume them.
 
         Subclasses can override this method to add custom logic (e.g., time-of-day
         multipliers).  *model* arrives already-normalized by ``PricingService``

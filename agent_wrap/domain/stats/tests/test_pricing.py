@@ -245,6 +245,8 @@ def test_price_buckets_prices_per_hour_and_collapses() -> None:
     assert collapsed["2026-07-20"][model].msgs == 2
     hours = {call.kwargs["hour"] for call in pricing.compute_cost.call_args_list}
     assert hours == {6, 10}
+    weekdays = {call.kwargs["weekday"] for call in pricing.compute_cost.call_args_list}
+    assert weekdays == {0}  # both records fall on 2026-07-20 (a Monday)
 
 
 def test_aggregate_projects_merges_marked_group(

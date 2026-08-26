@@ -173,10 +173,20 @@ class ArchiveLeaf(TypedDict):
 type ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
 
 
+# The pre-collapse bucket key carrying the UTC instant a bucket's usage falls into.
+# Weekday uses ``datetime.weekday()`` (0=Monday ... 6=Sunday); hour is the UTC hour
+# (0-23). Both are None for records with no timestamp, so providers with
+# time-of-day pricing can charge the conservative peak rate when the instant is
+# unknown.
+class HourKey(NamedTuple):
+    weekday: int | None
+    hour: int | None
+
+
 # Buckets keyed outer → hour → model, produced before pricing collapses the hour
 # axis. The outer key is a stats day (by_day) or a usage source (by_source); the
-# hour key is a zero-padded UTC hour ("00"-"23") or "?" for an unknown time.
-HourBuckets = dict[str, dict[str, dict[str, "Bucket"]]]
+# inner key is an :class:`HourKey` so both weekday and UTC hour survive to pricing.
+HourBuckets = dict[str, dict[HourKey, dict[str, "Bucket"]]]
 
 
 # Archived usage materialized into priceable buckets, before it is merged into

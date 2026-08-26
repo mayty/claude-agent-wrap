@@ -448,7 +448,7 @@ def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
     cost = svc.compute_cost("litellm-bedrock", "claude-opus-4-7", usage=usage, hour=0)
     assert cost == 0.005
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=False
+        "claude-opus-4-7", usage, hour=0, weekday=None, refresh_pricing_data=False
     )
 
 
@@ -460,7 +460,7 @@ def test_compute_cost_display_name_is_normalized(svc: PricingService) -> None:
 
     svc.compute_cost("litellm-bedrock", "Claude Opus 4.7", usage=usage, hour=0)
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=False
+        "claude-opus-4-7", usage, hour=0, weekday=None, refresh_pricing_data=False
     )
 
 
@@ -482,7 +482,7 @@ def test_compute_cost_slash_prefixed_model(svc: PricingService) -> None:
 
     svc.compute_cost("litellm-bedrock", "bedrock/claude-opus-4-7", usage=usage, hour=0)
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=False
+        "claude-opus-4-7", usage, hour=0, weekday=None, refresh_pricing_data=False
     )
 
 
@@ -497,5 +497,5 @@ def test_compute_cost_refresh_forces_delegation(svc: PricingService) -> None:
         "litellm-bedrock", "claude-opus-4-7", usage=usage, hour=0, refresh_pricing_data=True
     )
     fake_provider.compute_cost.assert_called_once_with(
-        "claude-opus-4-7", usage, hour=0, refresh_pricing_data=True
+        "claude-opus-4-7", usage, hour=0, weekday=None, refresh_pricing_data=True
     )

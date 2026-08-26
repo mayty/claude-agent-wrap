@@ -137,7 +137,8 @@ def enrich_with_costs(
         timing = normalized.get("timing") or {}
         ts = epoch_to_dt(timing.get("start"))
         hour = ts.hour if ts is not None else None
-        cost = pricing.compute_cost(provider, model, usage=norm_usage, hour=hour)
+        weekday = ts.weekday() if ts is not None else None
+        cost = pricing.compute_cost(provider, model, usage=norm_usage, hour=hour, weekday=weekday)
 
     return {
         "context_tokens": in_t,
