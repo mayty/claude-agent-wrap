@@ -12,7 +12,8 @@ the [release notes style guide](releases/styleguide.md).
 start. It also adds spell checking, per-project startup scripts, a launch-directory check,
 automatic image rebuilds, image reclaim in `agent cleanup`, and a new home for the project
 Dockerfile. A project Dockerfile must now inherit from `claude-agent`. The first `agent run`
-rebuilds both images by itself.
+rebuilds both images by itself. The `litellm-deepseek` provider now honours DeepSeek's
+peak and off-peak hours, and its default model mapping is updated.
 
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14
 
