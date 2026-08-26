@@ -1,10 +1,12 @@
 # This file has been edited with the assistance of an AI tool.
 import os
+import re
 from enum import Enum, auto
 from pathlib import Path
 from typing import Final
 
 from agent_wrap.lib.daytime import local_utc_offset_hours, utc_offset_hours_for_tz
+from agent_wrap.lib.utils import is_truthy_env
 
 # Minimum sys.argv length for a valid CLI invocation (program name + verb).
 MIN_ARGS = 2
@@ -115,6 +117,94 @@ AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 # daemon state is per-container instead; see INSTANCE_STATE_FILES in
 # ``agent_wrap/domain/launch/constants.py``.
 STATE_FILES = ("history.jsonl",)
+
+# ── spell checking ───────────────────────────────────────────────────────────
+
+# Env var gating Claude Code's prompt spell checking. Unset means on; an explicitly
+# falsy value turns it off. Explicit beats the settings file either way -- see
+# ``ConfigService._ensure_spellcheck``.
+SPELLCHECK_ENV = "AGENT_SPELLCHECK"
+
+# Env var carrying the dictionary list, and the `docker build --build-arg` that hands the
+# same value to ops/Dockerfile. One var feeds both because the two must agree: a
+# ``language`` naming a dictionary that was never installed makes hunspell fail to start,
+# which silently disables spell checking for the whole session.
+SPELLCHECK_LANG_ENV = "AGENT_SPELLCHECK_LANG"
+SPELLCHECK_BUILD_ARG = "SPELLCHECK_LANG"
+
+# The checker written into the settings block. Pinned rather than left on Claude Code's
+# "auto": auto prefers aspell when it is present, and aspell's --lang takes a single
+# dictionary, so a comma-separated list would quietly stop working.
+SPELLCHECK_CHECKER = "hunspell"
+
+# Dictionaries loaded together. hunspell accepts a word found in any of them, which is
+# what makes a mixed English/Russian prompt check cleanly.
+DEFAULT_SPELLCHECK_LANG = "en_US,ru_RU"
+
+# One dictionary name. Deliberately stricter than Claude Code's own validator: the value
+# is interpolated into a `docker build` shell step and into apt package names.
+SPELLCHECK_LANG_RE = re.compile(r"^[A-Za-z]{2,3}(_[A-Za-z]{2,})?$")
+
+# Claude Code drops a `language` longer than this, leaving no dictionary in force.
+SPELLCHECK_LANG_MAX_LEN = 64
+
+
+def _parsed_spellcheck_enabled() -> bool | None:
+    """
+    Tri-state AGENT_SPELLCHECK: None when unset, else its truthiness.
+
+    An empty value counts as unset, matching every other AGENT_* flag here -- exporting
+    the var with no value reads as clearing it, not as asking for it to be off.
+    """
+    raw = os.environ.get(SPELLCHECK_ENV, "")
+    if not raw:
+        return None
+    return is_truthy_env(raw)
+
+
+def _parsed_spellcheck_lang() -> str | None:
+    """
+    Normalise AGENT_SPELLCHECK_LANG to a comma-separated list, or None when unset.
+
+    Raises on a malformed value rather than falling back to the default -- the same
+    philosophy as AGENT_DAY_START_UTC above. Silently substituting the default would
+    install one set of dictionaries and configure another, and the mismatch surfaces
+    only as spell checking being mysteriously off.
+    """
+    raw = os.environ.get(SPELLCHECK_LANG_ENV, "")
+    if not raw.strip():
+        return None
+    langs = [entry.strip() for entry in raw.split(",") if entry.strip()]
+    if not langs:
+        msg = f"{SPELLCHECK_LANG_ENV} must name at least one dictionary, got {raw!r}"
+        raise ValueError(msg)
+    for lang in langs:
+        if not SPELLCHECK_LANG_RE.match(lang):
+            msg = (
+                f"{SPELLCHECK_LANG_ENV} entry {lang!r} is not a dictionary name "
+                f"(expected e.g. 'en_US' or 'ru')"
+            )
+            raise ValueError(msg)
+    joined = ",".join(langs)
+    if len(joined) > SPELLCHECK_LANG_MAX_LEN:
+        msg = (
+            f"{SPELLCHECK_LANG_ENV} must be at most {SPELLCHECK_LANG_MAX_LEN} characters "
+            f"once joined (Claude Code drops longer values), got {len(joined)}"
+        )
+        raise ValueError(msg)
+    return joined
+
+
+#: None when AGENT_SPELLCHECK is unset, else the state it asks for. An explicit value
+#: overrides whatever the settings file holds, on every launch.
+SPELLCHECK_ENABLED_OVERRIDE = _parsed_spellcheck_enabled()
+
+#: None when AGENT_SPELLCHECK_LANG is unset, else the normalised list it asks for.
+SPELLCHECK_LANG_OVERRIDE = _parsed_spellcheck_lang()
+
+#: The dictionary list in force -- what the image installs and what a freshly injected
+#: settings block names.
+SPELLCHECK_LANG = SPELLCHECK_LANG_OVERRIDE or DEFAULT_SPELLCHECK_LANG
 
 # ── display / sidecars ────────────────────────────────────────────────────────
 

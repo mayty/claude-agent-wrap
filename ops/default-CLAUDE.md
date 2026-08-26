@@ -15,6 +15,8 @@ The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Do
 
 **Important:** You always run as a non-root user and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
 
+**Spell checking:** the prompt input's spell checking is wrapper-managed — `hunspell` and its dictionaries are preinstalled and the `spellcheck` block in the global `settings.json` is written on every launch, configured host-side by `AGENT_SPELLCHECK` and `AGENT_SPELLCHECK_LANG`. Do not install a spell checker or edit that block; changing the dictionary list requires a host-side `agent rebuild --full`.
+
 **Clipboard:** on WSL2 + WSLg hosts the wrapper auto-mounts display sockets and forwards `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`. Claude Code's `Ctrl+V` for Windows-clipboard images works out of the box — do not add clipboard packages or WSLg mounts to a `Dockerfile.agent`.
 
 ## Installing dependencies

@@ -237,6 +237,19 @@ def test_docker_build_splices_host_network(
     assert argv[argv.index("--network") + 1] == "host"
 
 
+def test_docker_build_splices_spellcheck_lang(
+    build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    # The dictionary list must reach the image build, or the language written into
+    # settings.json names a dictionary that was never installed.
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    mock_run.return_value.returncode = 0
+    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    argv = mock_run.call_args[0][0]
+    assert "SPELLCHECK_LANG=en_US,ru_RU" in argv
+    assert argv[argv.index("SPELLCHECK_LANG=en_US,ru_RU") - 1] == "--build-arg"
+
+
 def test_docker_build_no_host_network_by_default(
     build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:

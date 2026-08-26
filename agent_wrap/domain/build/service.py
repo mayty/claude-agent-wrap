@@ -9,7 +9,13 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.constants import BASE_IMAGE_NAME, OPS_DIR, TOOL_DIR
+from agent_wrap.constants import (
+    BASE_IMAGE_NAME,
+    OPS_DIR,
+    SPELLCHECK_BUILD_ARG,
+    SPELLCHECK_LANG,
+    TOOL_DIR,
+)
 from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
 from agent_wrap.lib.docker_utils import host_network_build_args, image_exists
 
@@ -32,7 +38,14 @@ class BuildService:
         return self._do_rebuild(full=full)
 
     def _docker_build(self, dockerfile: Path, image: str, context: Path, uid: str, gid: str) -> int:
-        """Run a docker build and return the exit code."""
+        """
+        Run a docker build and return the exit code.
+
+        ``SPELLCHECK_LANG`` goes to both builds, like the UID/GID pair: a
+        ``Dockerfile.agent`` that declares no such ARG draws the same harmless
+        "build-args were not consumed" warning it already draws for those two, and one
+        that does declare it gets a hook for installing further dictionaries.
+        """
         result = subprocess.run(
             [
                 "docker",
@@ -43,6 +56,8 @@ class BuildService:
                 f"HOST_UID={uid}",
                 "--build-arg",
                 f"HOST_GID={gid}",
+                "--build-arg",
+                f"{SPELLCHECK_BUILD_ARG}={SPELLCHECK_LANG}",
                 "-f",
                 str(dockerfile),
                 "-t",
