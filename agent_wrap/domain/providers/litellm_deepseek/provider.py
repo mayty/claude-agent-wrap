@@ -233,11 +233,11 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         return {
             "ANTHROPIC_API_KEY": master_key,
             "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+            "ANTHROPIC_MODEL": "deepseek-v4-flash-vision-exp[1m]",
             "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash[1m]",
-            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash-vision-exp[1m]",
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
 
