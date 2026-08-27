@@ -1,4 +1,5 @@
 # agent-name: agent-wrap
+# agent-enable-startup: 120
 # This file has been created with the assistance of an AI tool.
 
 FROM claude-agent
