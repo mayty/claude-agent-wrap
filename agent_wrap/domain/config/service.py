@@ -270,7 +270,7 @@ class ConfigService:
 
     def prepare_declared_mounts(self, run_args: list[str], project_dir: Path) -> None:
         """
-        Pre-create the host side of every mount a ``Dockerfile.agent`` declares.
+        Pre-create the host side of every mount a project Dockerfile declares.
 
         Same rationale as :meth:`prepare_project_dirs`, applied to the mounts an image
         author asked for via ``agent-run-args``: whatever docker has to materialize
@@ -303,7 +303,7 @@ class ConfigService:
         if missing:
             listed = "\n".join(f"  {spec.source} -> {spec.target}" for spec in missing)
             msg = (
-                "Error: Dockerfile.agent declares read-only mounts whose host source"
+                "Error: the project Dockerfile declares read-only mounts whose host source"
                 " does not exist:\n"
                 f"{listed}\n"
                 "Create each path on the host, or drop ':ro' to have it created automatically."
@@ -355,7 +355,7 @@ class ConfigService:
             else:
                 path.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            msg = f"Error: cannot create host mount path '{path}' from Dockerfile.agent: {e}"
+            msg = f"Error: cannot create host mount path '{path}' from the project Dockerfile: {e}"
             raise HostMountError(msg) from e
 
     def link_litellm_logs(self, project_dir: Path) -> None:

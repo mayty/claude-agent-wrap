@@ -1,11 +1,21 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
-# `Dockerfile.agent` Customization Guide
+# Project Customization Guide (`.claude-agent-wrap/`)
 
-`Dockerfile.agent` carries directives that `agent-wrap` reads to customize the runtime. Use it instead of asking the user to change their shell invocation or installing dependencies ad-hoc inside the running container.
+Per-project `agent-wrap` assets live in `.claude-agent-wrap/` at the project root:
 
-## Creating a new `Dockerfile.agent`
+```text
+.claude-agent-wrap/
+├── Dockerfile     # directives + image customization (optional)
+└── startup.sh     # host-side pre-launch script (optional)
+```
 
-If none exists, create one at the project root:
+`.claude-agent-wrap/Dockerfile` carries directives that `agent-wrap` reads to customize the runtime. Use it instead of asking the user to change their shell invocation or installing dependencies ad-hoc inside the running container. The directory is checked into the project — it is not state.
+
+**Deprecated location:** a project may still carry `./Dockerfile.agent`. It works, with a warning on every launch; migrate it with `mkdir -p .claude-agent-wrap && git mv Dockerfile.agent .claude-agent-wrap/Dockerfile`. Never create both — the wrapper refuses to run. `# agent-enable-startup:` is rejected outright in the legacy location.
+
+## Creating a new `.claude-agent-wrap/Dockerfile`
+
+If none exists, create one (the build context is the project root, not this directory):
 
 ```dockerfile
 # agent-name: <host-project-directory-name>
@@ -21,6 +31,7 @@ Set a literal name in the `# agent-name:` directive (lowercase, matching `[a-z0-
 - **`# agent-name: <name>`** (required) — names the image `claude-agent-<name>`.
 - **`# agent-user: <username>`** — sets the container username (default `ubuntu`). Such an image must also `mkdir -p /home/<username>/.cache/claude-cli-nodejs` and `chown` it to that user, or the MCP log bind mount will land on `root`-owned parent directories the agent cannot write.
 - **`# agent-run-args: <flags>`** — extra flags passed verbatim to `docker run`. Multiple lines allowed; each is whitespace-split into tokens. Mounts declared here have their host side prepared for you — see [Host mounts](#host-mounts).
+- **`# agent-enable-startup: <value>`** — runs `.claude-agent-wrap/startup.sh` on the host before launch; default off. `true`/`yes`/`on` gives a 10-second timeout, a positive number sets the timeout in seconds, `false`/`no`/`off` disables. See [Startup script](#startup-script). **New location only** — an error in a legacy `Dockerfile.agent`.
 - **`EXPOSE <port>`** — publishes ports on `127.0.0.1`.
 
 **Build args:** the wrapper always passes `HOST_UID` and `HOST_GID` to `docker build`.
@@ -32,6 +43,8 @@ These are ordinary Dockerfile `ARG`s rather than wrapper directives — declare 
 ## Security
 
 Do not add `-v /var/run/docker.sock:/var/run/docker.sock`, `--privileged`, `--pid=host`, `--network=host`, or bind-mounts of sensitive host paths (`/`, `/etc`, `~/.ssh`, cloud credential dirs) unless the user explicitly requests it. Mounting the host Docker socket grants host-root-equivalent access.
+
+`startup.sh` runs on the **host**, outside the container, with the user's own privileges. Do not create or enable one unless the user asked for host-side setup, and never put anything in it beyond what they requested.
 
 ## Host mounts
 
@@ -76,12 +89,38 @@ Add anonymous volumes via `agent-run-args` to avoid polluting the host filesyste
 The mountpoints these need inside `/workspace` are pre-created as the host user, so the project is
 not left with root-owned `node_modules/` directories after a run.
 
-## Validating `Dockerfile.agent`
+## Startup script
 
-**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `Dockerfile.agent`, before telling the user to run `agent rebuild`.** It catches mistakes that `docker build` alone won't — most importantly, base images that don't contain the expected user.
+`.claude-agent-wrap/startup.sh` runs on the host before every launch, once `# agent-enable-startup:` turns it on. Its purpose is host state the container then consumes — most commonly a Docker network the agent joins:
+
+```dockerfile
+# agent-name: myproj
+# agent-enable-startup: true
+# agent-run-args: --network myproj-net
+FROM claude-agent
+```
+
+```bash
+#!/usr/bin/env bash
+# Runs on every launch, so it must be idempotent.
+docker network inspect myproj-net >/dev/null 2>&1 || docker network create myproj-net
+```
+
+Rules to write it against:
+
+- **Idempotent**, always: it runs on every `agent run`.
+- **Fast.** The default budget is 10 seconds, and the script holds a host-global lock while it runs, so every other launching agent waits behind it. Raise the budget only when the work genuinely needs it (`# agent-enable-startup: 45`).
+- **cwd is the project root.** The interpreter comes from the shebang; with none it runs under `/bin/sh`, so write `#!/usr/bin/env bash` if you use bash features. No execute bit is needed.
+- **Non-interactive** — stdin is closed. It cannot prompt.
+- **Any failure aborts the launch**: non-zero exit, timeout, or an unusable interpreter.
+- Env it receives, on top of the host environment: `AGENT_NAME`, `AGENT_INSTANCE_ID`, `AGENT_SIDECAR_NETWORK`, and `AGENT_BINARY` (absolute path to the `agent` executable). Call only read-only verbs through `AGENT_BINARY` — `agent run` from the script deadlocks against the lock the script is holding.
+
+## Validating the project Dockerfile
+
+**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `.claude-agent-wrap/Dockerfile`, before telling the user to run `agent rebuild`.** It catches mistakes that `docker build` alone won't — most importantly, base images that don't contain the expected user. It also checks the `agent-enable-startup` value and whether the directive and `startup.sh` agree.
 
 ```sh
-/opt/agent-wrap/validate-dockerfile-agent              # validates ./Dockerfile.agent
+/opt/agent-wrap/validate-dockerfile-agent              # validates ./.claude-agent-wrap/Dockerfile
 /opt/agent-wrap/validate-dockerfile-agent path/to/file  # validates specific file
 ```
 
@@ -89,8 +128,8 @@ Exit codes: `0` pass (warnings allowed), `1` errors, `2` file missing. Fix any e
 
 ## Notes
 
-The user can launch with `agent run --base` to bypass a project's `Dockerfile.agent` and run against the base `claude-agent` image instead. Project-specific `EXPOSE`, `agent-user`, and `agent-run-args` directives are skipped in this mode.
+The user can launch with `agent run --base` to bypass a project's Dockerfile and run against the base `claude-agent` image instead. Project-specific `EXPOSE`, `agent-user`, `agent-run-args` and `agent-enable-startup` directives are all skipped in this mode, so the startup script does not run either.
 
 ## Proactive suggestions
 
-If you find that a tool isn't available in the current image but would be useful (even if not strictly required), propose adding it to `Dockerfile.agent` and let the user decide — don't add it silently or skip mentioning it.
+If you find that a tool isn't available in the current image but would be useful (even if not strictly required), propose adding it to `.claude-agent-wrap/Dockerfile` and let the user decide — don't add it silently or skip mentioning it.

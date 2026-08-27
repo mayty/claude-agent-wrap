@@ -1,10 +1,9 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Agent launch orchestration domain service."""
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -43,7 +42,13 @@ from agent_wrap.domain.launch.models import (
     LaunchPreparation,
     SidecarAssembly,
 )
-from agent_wrap.exceptions import HostMountError, ProviderNotFoundError, SecretNotFoundError
+from agent_wrap.exceptions import (
+    DockerfileDirectiveError,
+    HostMountError,
+    ProviderNotFoundError,
+    SecretNotFoundError,
+    StartupScriptError,
+)
 from agent_wrap.lib import docker_utils
 from agent_wrap.lib.priority_lock import Priority, priority_lock
 from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
@@ -51,6 +56,7 @@ from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
 if TYPE_CHECKING:
     from typing import TextIO
 
+    from agent_wrap.domain.build.models import ResolvedImage
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.display.service import DisplayService
@@ -62,6 +68,7 @@ if TYPE_CHECKING:
         SidecarTracker,
         TelegramSidecar,
     )
+    from agent_wrap.domain.startup.service import StartupService
     from agent_wrap.domain.updates.service import UpdateService
 
 
@@ -76,6 +83,7 @@ class LaunchService:
         provider_service: ProviderService,
         sidecar_service: SidecarService,
         build_service: BuildService,
+        startup_service: StartupService,
         display_service: DisplayService,
     ) -> None:
         self._config = config_service
@@ -84,12 +92,19 @@ class LaunchService:
         self._provider_service = provider_service
         self._sidecar_service = sidecar_service
         self._build_service = build_service
+        self._startup = startup_service
         self._display = display_service
 
     # Public entry point
 
-    def launch(self, *, use_base: bool, claude_args: list[str]) -> int:
-        """Full launch pipeline: update check, image resolve, sidecar setup, docker run, cleanup."""
+    def launch(self, *, use_base: bool, claude_args: list[str]) -> int:  # noqa: PLR0911
+        """
+        Full launch pipeline: update check, image resolve, sidecar setup, docker run, cleanup.
+
+        The return count is inherent: this is a linear pipeline of abort points, and each
+        one is a distinct user-facing failure that must not be collapsed into a generic
+        error.
+        """
         headless = self._is_headless(claude_args)
 
         if not headless and self._updates.check_updates():
@@ -105,13 +120,16 @@ class LaunchService:
             self._display.error(self._get_image_missing_error(resolved.image, use_base=use_base))
             return 1
 
-        agent_user, port_args, extra_run_args = self._parse_dockerfile_directives(
-            resolved.dockerfile
-        )
-
+        # Both failures here mean "the project Dockerfile asks for something we cannot
+        # give", and both abort before any sidecar work has started.
         try:
+            agent_user, port_args, extra_run_args, startup_timeout = (
+                self._parse_dockerfile_directives(resolved)
+            )
+            if startup_timeout is None and not use_base:
+                self._startup.warn_if_unused(Path.cwd(), is_legacy=resolved.is_legacy)
             self._config.prepare_declared_mounts(extra_run_args, Path.cwd())
-        except HostMountError as e:
+        except (DockerfileDirectiveError, HostMountError) as e:
             self._display.error(str(e))
             return 1
 
@@ -120,7 +138,7 @@ class LaunchService:
             agent_network, port_args
         )
         claude_home = f"/home/{agent_user}"
-        agent_name = self._resolve_agent_name(use_base=use_base, cwd=Path.cwd())
+        agent_name = resolved.agent_name or sanitize_name(Path.cwd().name) or "agent"
 
         instance_id = f"{agent_name}-{generate_uuid()}"
 
@@ -146,6 +164,8 @@ class LaunchService:
                 instance_id=instance_id,
                 telegram_available=telegram_available,
                 per_sidecar_secrets=per_sidecar_secrets,
+                startup_timeout=startup_timeout,
+                agent_name=agent_name,
             )
 
             self._display.banner(
@@ -178,6 +198,10 @@ class LaunchService:
             ]
 
             result = subprocess.run(cmd)
+        except StartupScriptError as e:
+            self._display.error(str(e))
+            return 1
+        else:
             return result.returncode
         finally:
             self._release_sidecars(sidecars, tracker, instance_id, running_handles)
@@ -199,22 +223,6 @@ class LaunchService:
         """Report whether Claude Code is launched in a mode that won't use the sidecar."""
         return any(arg in HEADLESS_FLAGS for arg in claude_args)
 
-    def _resolve_agent_name(self, *, use_base: bool, cwd: Path) -> str:
-        """Determine agent name from Dockerfile.agent or directory name."""
-        if use_base:
-            return sanitize_name(cwd.name) or "agent"
-
-        dockerfile_agent = cwd / "Dockerfile.agent"
-        if not dockerfile_agent.is_file():
-            return sanitize_name(cwd.name) or "agent"
-
-        with open(dockerfile_agent) as f:
-            for line in f:
-                if match := re.match(r"^#\s*agent-name:\s*(\S+)", line.strip()):
-                    return match.group(1)
-
-        return sanitize_name(cwd.name) or "agent"
-
     def _build_wslg_args(self) -> list[str]:
         """Build WSLg-related volume mounts and env vars."""
         if not Path("/mnt/wslg").is_dir():
@@ -234,21 +242,28 @@ class LaunchService:
             "XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir",
         ]
 
-    def _parse_dockerfile_directives(
-        self,
-        resolved_dockerfile: Path,
-    ) -> DockerfileDirectives:
-        """Parse Dockerfile.agent directives."""
+    def _parse_dockerfile_directives(self, resolved: ResolvedImage) -> DockerfileDirectives:
+        """
+        Parse the project Dockerfile's directives, if this launch resolved one.
+
+        Keyed on ``agent_name`` rather than on the Dockerfile's basename: the project
+        file and the base image's ``ops/Dockerfile`` share that basename, so a name
+        comparison would parse project directives out of the base Dockerfile.
+        """
         agent_user = "ubuntu"
         port_args: list[str] = []
         extra_run_args: list[str] = []
-        if resolved_dockerfile.name == "Dockerfile.agent":
-            info = self._build_service.parse_dockerfile_agent(resolved_dockerfile)
+        startup_timeout: float | None = None
+        if resolved.agent_name is not None:
+            info = self._build_service.parse_dockerfile_agent(
+                resolved.dockerfile, legacy=resolved.is_legacy
+            )
             agent_user = info.agent_user
             for port in info.expose_ports:
                 port_args.extend(["-p", f"127.0.0.1:{port}:{port}"])
             extra_run_args = info.extra_run_args
-        return DockerfileDirectives(agent_user, port_args, extra_run_args)
+            startup_timeout = info.startup_timeout
+        return DockerfileDirectives(agent_user, port_args, extra_run_args, startup_timeout)
 
     def _build_env_args(
         self,
@@ -440,7 +455,7 @@ class LaunchService:
 
         if agent_network:
             self._display.warning(
-                "AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already "
+                "AGENT_USE_HOST_NETWORK ignored — the project Dockerfile already "
                 "specifies --network via agent-run-args."
             )
             return HostNetworkResult(use_host_net=False, host_net_args=[], port_args=port_args)
@@ -585,6 +600,8 @@ class LaunchService:
         instance_id: str,
         telegram_available: bool,
         per_sidecar_secrets: dict[Sidecar, dict[str, str]],
+        startup_timeout: float | None,
+        agent_name: str,
     ) -> LaunchPreparation:
         use_host_net, agent_network = net
         for sidecar in sidecars:
@@ -607,9 +624,21 @@ class LaunchService:
                     agent_network=agent_network,
                     secrets=per_sidecar_secrets[sidecar],
                 )
+            # The project startup script runs as late as possible while still holding
+            # the lock, so it can create resources the container consumes (a compose
+            # network to attach to) without racing a concurrent launcher doing the same.
+            # It goes *before* registration so that the all-or-nothing invariant below
+            # covers it too -- a failing script leaves nothing registered.
+            if startup_timeout is not None:
+                self._startup.run(
+                    Path.cwd(),
+                    timeout=startup_timeout,
+                    agent_name=agent_name,
+                    instance_id=instance_id,
+                )
             # Registered together, as the last action under the lock: if any ensure()
-            # above raised, nothing is registered and teardown still runs for every
-            # sidecar this launch declared.
+            # above -- or the startup script -- raised, nothing is registered and
+            # teardown still runs for every sidecar this launch declared.
             running_handles = {
                 sidecar.container_name: tracker.register_running(
                     sidecar.container_name, instance_id

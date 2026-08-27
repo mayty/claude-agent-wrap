@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 #
-# Validates a Dockerfile.agent against the agent-wrap contract BEFORE the
+# Validates a project Dockerfile against the agent-wrap contract BEFORE the
 # user is asked to rebuild. Catches the failure modes that `docker build`
 # cannot surface on its own:
 #
 #   1. hadolint — generic Dockerfile hygiene.
 #   2. Wrapper contract checks — agent-name format, WORKDIR, agent-run-args
-#      quoting, HOST_UID/GID declarations.
+#      quoting, agent-enable-startup value, HOST_UID/GID declarations.
 #   3. Base-image user probe — uses `crane` to fetch the base image's
 #      /etc/passwd from the registry (no Docker daemon) and verifies the
 #      expected in-container user actually exists, so a successful build
 #      can't produce an image that fails at launch time.
 #
-# Usage: validate-dockerfile-agent [path/to/Dockerfile.agent]
+# Usage: validate-dockerfile-agent [path/to/Dockerfile]
+#
+# With no argument, .claude-agent-wrap/Dockerfile is validated, falling back to
+# the deprecated ./Dockerfile.agent.
 #
 # Exit codes:
 #   0 — validation passed (warnings allowed)
@@ -22,7 +25,28 @@
 
 set -uo pipefail
 
-DOCKERFILE="${1:-Dockerfile.agent}"
+ASSETS_DIR=".claude-agent-wrap"
+CURRENT_DOCKERFILE="$ASSETS_DIR/Dockerfile"
+LEGACY_DOCKERFILE="Dockerfile.agent"
+STARTUP_SCRIPT="$ASSETS_DIR/startup.sh"
+
+is_legacy=0
+if [ "$#" -gt 0 ]; then
+    DOCKERFILE="$1"
+    [ "$(basename "$DOCKERFILE")" = "$LEGACY_DOCKERFILE" ] && is_legacy=1
+elif [ -f "$CURRENT_DOCKERFILE" ] && [ -f "$LEGACY_DOCKERFILE" ]; then
+    echo "validate-dockerfile-agent: both '$CURRENT_DOCKERFILE' and legacy" >&2
+    echo "  '$LEGACY_DOCKERFILE' exist — delete '$LEGACY_DOCKERFILE'" >&2
+    exit 2
+elif [ -f "$CURRENT_DOCKERFILE" ]; then
+    DOCKERFILE="$CURRENT_DOCKERFILE"
+elif [ -f "$LEGACY_DOCKERFILE" ]; then
+    DOCKERFILE="$LEGACY_DOCKERFILE"
+    is_legacy=1
+else
+    echo "validate-dockerfile-agent: no '$CURRENT_DOCKERFILE' in $(pwd)" >&2
+    exit 2
+fi
 
 if [ ! -f "$DOCKERFILE" ]; then
     echo "validate-dockerfile-agent: '$DOCKERFILE' not found" >&2
@@ -35,6 +59,10 @@ warnings=0
 err()  { echo "ERROR: $*" >&2; errors=$((errors+1)); }
 warn() { echo "WARN:  $*" >&2; warnings=$((warnings+1)); }
 info() { echo "INFO:  $*" >&2; }
+
+if [ "$is_legacy" -eq 1 ]; then
+    warn "'$LEGACY_DOCKERFILE' is deprecated — move it to '$CURRENT_DOCKERFILE'"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Generic Dockerfile lint (hadolint)
@@ -97,6 +125,53 @@ fi
 if grep -qE '\$\{?HOST_GID\}?' "$DOCKERFILE" \
    && ! grep -qE '^ARG[[:space:]]+HOST_GID' "$DOCKERFILE"; then
     warn "HOST_GID is referenced but 'ARG HOST_GID' is not declared — the value will be empty at build time"
+fi
+
+# --- # agent-enable-startup: new location only, boolean word or positive seconds
+startup_raw=$(grep -oE '^#[[:space:]]*agent-enable-startup:[[:space:]]*\S+' "$DOCKERFILE" \
+              | head -n1 | sed -E 's/^#[[:space:]]*agent-enable-startup:[[:space:]]*//')
+startup_enabled=0
+if [ -n "$startup_raw" ]; then
+    startup_value=$(echo "$startup_raw" | tr '[:upper:]' '[:lower:]')
+    if [ "$is_legacy" -eq 1 ]; then
+        err "'# agent-enable-startup:' is only supported in '$CURRENT_DOCKERFILE' — move '$LEGACY_DOCKERFILE' there to use a startup script"
+    fi
+    case "$startup_value" in
+        true|yes|on)
+            startup_enabled=1
+            ;;
+        false|no|off)
+            ;;
+        0)
+            err "agent-enable-startup value '0' is not a timeout — write 'false' to disable startup scripts"
+            ;;
+        1)
+            startup_enabled=1
+            warn "agent-enable-startup value '1' reads as a boolean but is parsed as a 1-second timeout — write 'true' for the default budget"
+            ;;
+        *)
+            if [[ "$startup_value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                startup_enabled=1
+            else
+                err "agent-enable-startup value '$startup_raw' is not understood — use 'true'/'false' or a positive number of seconds"
+            fi
+            ;;
+    esac
+fi
+
+# --- the script and the directive must agree, or nothing happens at launch
+if [ "$startup_enabled" -eq 1 ] && [ ! -f "$STARTUP_SCRIPT" ]; then
+    warn "agent-enable-startup is on but '$STARTUP_SCRIPT' does not exist"
+fi
+if [ "$startup_enabled" -eq 0 ] && [ -f "$STARTUP_SCRIPT" ]; then
+    if [ "$is_legacy" -eq 1 ]; then
+        warn "'$STARTUP_SCRIPT' exists but startup scripts need '# agent-enable-startup: true' in '$CURRENT_DOCKERFILE' — move '$LEGACY_DOCKERFILE' there to use it"
+    else
+        warn "'$STARTUP_SCRIPT' exists but is not enabled — add '# agent-enable-startup: true' to '$DOCKERFILE'"
+    fi
+fi
+if [ -f "$STARTUP_SCRIPT" ] && ! head -c 2 "$STARTUP_SCRIPT" | grep -q '^#!'; then
+    info "'$STARTUP_SCRIPT' has no shebang; it will run under /bin/sh (add '#!/usr/bin/env bash' for bash features)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -197,6 +272,7 @@ echo
 echo "Declared agent-name:  ${name:-<unset>}"
 echo "Declared agent-user:  ${declared_user:-<unset, defaults to ubuntu>}"
 echo "Base image (FROM):    ${base_image:-<none>}"
+echo "Startup script:       $([ "$startup_enabled" -eq 1 ] && echo "enabled (${startup_raw})" || echo "disabled")"
 echo "Wrapper expects HOME=/home/${expected_user} inside the container."
 echo
 

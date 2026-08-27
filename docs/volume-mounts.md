@@ -57,7 +57,7 @@ matching the `--user` flag described in [Notes](#notes).
 `mcp-logs` carries each MCP server's stderr log, so a failing MCP server can be diagnosed after the
 container exits. The base image pre-creates `~/.cache/claude-cli-nodejs` owned by the agent user:
 Docker materializes missing bind-mount *parents* as `root:root`, which would otherwise leave the
-agent unable to write anything else under `~/.cache`. A `Dockerfile.agent` that sets a custom
+agent unable to write anything else under `~/.cache`. A project Dockerfile that sets a custom
 `# agent-user:` must pre-create that path itself — see
 [Docker Sandboxing](docker-sandboxing.md#recognized-directives).
 
@@ -117,7 +117,7 @@ On WSL2 hosts with WSLg (detected when `/mnt/wslg` is a directory), three additi
 
 See [WSLg Clipboard](wslg-clipboard.md) for details.
 
-## Declared by a `Dockerfile.agent` (conditional)
+## Declared by the project Dockerfile (conditional)
 
 `# agent-run-args:` reaches `docker run` untouched, mounts included — but the wrapper reads the
 mounts back out of it and prepares the host side first, as the host user, for the same reason it

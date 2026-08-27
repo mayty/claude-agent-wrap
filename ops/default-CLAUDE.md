@@ -13,11 +13,11 @@ Two per-project mounts sit outside that directory: your session scratchpad (unde
 
 The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Dockerfile` (the base image), `default-CLAUDE.md` (this file), `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, and `wl-paste-shim`. Consult those when guidance below is ambiguous. The wrapper's Python source is **not** mounted — it stays on the host.
 
-**Important:** You always run as a non-root user and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `Dockerfile.agent` instead.
+**Important:** You always run as a non-root user and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `.claude-agent-wrap/Dockerfile` instead.
 
 **Spell checking:** the prompt input's spell checking is wrapper-managed — `hunspell` and its dictionaries are preinstalled and the `spellcheck` block in the global `settings.json` is written on every launch, configured host-side by `AGENT_SPELLCHECK` and `AGENT_SPELLCHECK_LANG`. Do not install a spell checker or edit that block; changing the dictionary list requires a host-side `agent rebuild --full`.
 
-**Clipboard:** on WSL2 + WSLg hosts the wrapper auto-mounts display sockets and forwards `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`. Claude Code's `Ctrl+V` for Windows-clipboard images works out of the box — do not add clipboard packages or WSLg mounts to a `Dockerfile.agent`.
+**Clipboard:** on WSL2 + WSLg hosts the wrapper auto-mounts display sockets and forwards `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`. Claude Code's `Ctrl+V` for Windows-clipboard images works out of the box — do not add clipboard packages or WSLg mounts to a `.claude-agent-wrap/Dockerfile`.
 
 ## Installing dependencies
 
@@ -25,14 +25,16 @@ Do **not** install dependencies ad-hoc inside the running container (`apt-get in
 
 Instead:
 
-- **If `Dockerfile.agent` exists:** edit it — see [Per-project customization](#per-project-customization) below, then tell the user to run `agent rebuild`.
-- **If there is no `Dockerfile.agent`:** create one — see [Per-project customization](#per-project-customization) below.
+- **If `.claude-agent-wrap/Dockerfile` exists:** edit it — see [Per-project customization](#per-project-customization) below, then tell the user to run `agent rebuild`.
+- **If there is no `.claude-agent-wrap/Dockerfile`:** create one — see [Per-project customization](#per-project-customization) below. A project may still carry the deprecated `./Dockerfile.agent`; edit that in place, or offer to migrate it, but never create both — the wrapper refuses to run when both exist.
 
 Project-level dependencies that belong in the project's own manifest (`package.json`, `requirements.txt`, `go.mod`, etc.) can be installed normally — those live in `/workspace` and persist.
 
 ## Per-project customization
 
-Read [dockerfile-agent-guide.md](/opt/agent-wrap/dockerfile-agent-guide.md) when you or the user need extra tools (language runtimes, system libraries, custom ports/devices, or `docker run` flags), or when you need a tool that isn't available in the current image to work efficiently.
+Per-project wrapper assets live in `.claude-agent-wrap/` at the project root, checked into the project: `Dockerfile` (the project image and its `# agent-*` directives) and the optional `startup.sh` (a host-side script run before each launch, gated by `# agent-enable-startup:`).
+
+Read [dockerfile-agent-guide.md](/opt/agent-wrap/dockerfile-agent-guide.md) when you or the user need extra tools (language runtimes, system libraries, custom ports/devices, or `docker run` flags), when the project needs host-side setup before launch (e.g. a Docker network to attach to), or when you need a tool that isn't available in the current image to work efficiently.
 
 ## AI attribution
 

@@ -12,7 +12,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | Doc | When to read |
 | --- | --- |
 | [docs/getting-started.md](docs/getting-started.md) | Never — already handled on every `agent run` launch |
-| [docs/docker-sandboxing.md](docs/docker-sandboxing.md) | Writing/editing a `Dockerfile.agent` or its directives |
+| [docs/docker-sandboxing.md](docs/docker-sandboxing.md) | Writing/editing a `.claude-agent-wrap/Dockerfile`, its directives, or a startup script |
 | [docs/telegram-notifications.md](docs/telegram-notifications.md) | Debugging Telegram notification hooks |
 | [docs/wslg-clipboard.md](docs/wslg-clipboard.md) | Debugging clipboard passthrough on WSL2 |
 | [docs/providers.md](docs/providers.md) | Adding a new provider or switching providers |

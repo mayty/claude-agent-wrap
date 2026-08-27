@@ -1,11 +1,17 @@
 # This file has been edited with the assistance of an AI tool.
-"""Dockerfile.agent scaffolding domain service."""
+"""Project Dockerfile scaffolding domain service."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import (
+    AGENT_ASSETS_DIR,
+    AGENT_DOCKERFILE_NAME,
+    BASE_IMAGE_NAME,
+    LEGACY_AGENT_DOCKERFILE_NAME,
+)
 from agent_wrap.lib.utils import sanitize_name
 
 if TYPE_CHECKING:
@@ -13,26 +19,37 @@ if TYPE_CHECKING:
 
 
 class CreateService:
-    """Scaffolds a Dockerfile.agent with agent-name and FROM directives."""
+    """Scaffolds a project Dockerfile with agent-name and FROM directives."""
 
     def __init__(self, display_service: DisplayService) -> None:
         self._display = display_service
 
     def create(self) -> int:
-        """Scaffold a Dockerfile.agent in the current directory. Returns exit code."""
-        dst = Path.cwd() / "Dockerfile.agent"
+        """Scaffold a project Dockerfile in the current directory. Returns exit code."""
+        cwd = Path.cwd()
+        dst = cwd / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
 
         if dst.exists():
             self._display.error(f"Error: {dst} already exists")
             return 1
 
-        name = sanitize_name(Path.cwd().name)
-        if not name:
-            self._display.error(f"Error: could not derive agent-name from directory '{Path.cwd()}'")
+        legacy = cwd / LEGACY_AGENT_DOCKERFILE_NAME
+        if legacy.exists():
+            self._display.error(
+                f"Error: {legacy} already exists. Move it to "
+                f"{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME} instead of scaffolding a new one."
+            )
             return 1
 
+        name = sanitize_name(cwd.name)
+        if not name:
+            self._display.error(f"Error: could not derive agent-name from directory '{cwd}'")
+            return 1
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(
-            f"# agent-name: {name}\nFROM claude-agent\n\n# Add project-specific RUN steps here.\n"
+            f"# agent-name: {name}\nFROM {BASE_IMAGE_NAME}\n\n"
+            f"# Add project-specific RUN steps here.\n"
         )
-        self._display.success(f"Created {dst} with agent-name '{name}' (FROM claude-agent)")
+        self._display.success(f"Created {dst} with agent-name '{name}' (FROM {BASE_IMAGE_NAME})")
         return 0

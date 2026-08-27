@@ -1,4 +1,4 @@
-<!-- This file has been created with the assistance of an AI tool. -->
+<!-- This file has been edited with the assistance of an AI tool. -->
 # Getting Started
 
 ## Requirements
@@ -33,7 +33,7 @@ From any project directory, run:
 agent run [claude-code-args...]
 ```
 
-If a `Dockerfile.agent` exists in the current directory but you want to run against the base `claude-agent` image for this launch (e.g., to bypass a broken project image or compare behavior), pass `--base`:
+If a `.claude-agent-wrap/Dockerfile` exists in the current directory but you want to run against the base `claude-agent` image for this launch (e.g., to bypass a broken project image or compare behavior), pass `--base`:
 
 ```bash
 agent run --base [claude-code-args...]

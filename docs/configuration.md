@@ -1,4 +1,4 @@
-<!-- This file has been created with the assistance of an AI tool. -->
+<!-- This file has been edited with the assistance of an AI tool. -->
 # Configuration
 
 These environment variables affect wrapper behavior, not the container's environment.
@@ -43,7 +43,7 @@ Trade-offs:
 
 - The container loses network isolation from the WSL distro — services bind on the distro's interfaces, not on `docker0`.
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. Make in-container services bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
-- If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+- If the project Dockerfile already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
 - The flag also extends to any provider sidecar — when set on the **cold-start** launch, the sidecar is launched with `--network host` as well. First-launch-wins, **per provider**: subsequent launches on that provider adapt to its running mode rather than restarting it, and each provider's sidecar inherits the mode of whichever launch started it, independently of the others. To switch a running sidecar's mode, stop it and start the next launch with the desired flag value.
 - In host mode a sidecar's port is a host port, so ports are resolved at start time (scanning upward from 48620) rather than fixed. Two providers' sidecars therefore coexist without collision; the resolved port is recorded in the container and reused by later launches.
 

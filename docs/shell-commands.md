@@ -7,7 +7,7 @@
 | --- | --- |
 | `run` | Launch Claude Code in a container |
 | `rebuild` | Rebuild the project or base image |
-| `create` | Scaffold a `Dockerfile.agent` |
+| `create` | Scaffold a `.claude-agent-wrap/Dockerfile` |
 | `stats` | Aggregate token usage and cost |
 | `logs` | Browse LiteLLM request logs in a local web viewer |
 | `inspect` | Report the current state: sidecars, agents, providers, host facts |
@@ -25,7 +25,7 @@ Launches Claude Code in a Docker container against the resolved image for the cu
 
 > This command and `agent rebuild` check for wrapper updates on every invocation, except headless `agent run` invocations (`-p`/`--print`/`--bare`/`--safe-mode`). See [`AGENT_SKIP_UPDATE_CHECK`](configuration.md#agent_skip_update_check-auto-update-opt-out).
 
-- **`-b`/`--base`** — ignores any `Dockerfile.agent` in the current directory and launches the base `claude-agent` image instead. Project-specific `EXPOSE`, `agent-user`, and `agent-run-args` directives are skipped.
+- **`-b`/`--base`** — ignores any `.claude-agent-wrap/Dockerfile` in the current directory and launches the base `claude-agent` image instead. Project-specific `EXPOSE`, `agent-user`, `agent-run-args` and `agent-enable-startup` directives are skipped, so the [startup script](docker-sandboxing.md#startup-script) does not run either.
 
 TTY allocation is auto-detected: the container gets a pseudo-TTY (`docker run -it`) only when the wrapper's own stdin is a terminal. When stdin is not a terminal — for example when launched from a script or `subprocess` with `stdin=DEVNULL` or a pipe — it runs non-interactively (`docker run -i`), so `agent run` can be driven headlessly to launch fleets of agents without the `cannot attach stdin to a TTY-enabled container` error.
 

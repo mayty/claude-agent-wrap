@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Central exception classes for agent-wrap."""
 
 from __future__ import annotations
@@ -26,4 +26,12 @@ class ProviderNotFoundError(Exception):
 
 
 class HostMountError(Exception):
-    """Raised when a mount declared in ``Dockerfile.agent`` cannot be prepared on the host."""
+    """Raised when a mount declared in a project Dockerfile cannot be prepared on the host."""
+
+
+class DockerfileDirectiveError(Exception):
+    """Raised when a project Dockerfile carries a malformed or misplaced ``# agent-*`` directive."""
+
+
+class StartupScriptError(Exception):
+    """Raised when a project's startup script fails, times out, or cannot be executed."""

@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.build.service.BuildService."""
 
 from __future__ import annotations
@@ -8,10 +8,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.constants import (
+    AGENT_ASSETS_DIR,
+    AGENT_DOCKERFILE_NAME,
+    LEGACY_AGENT_DOCKERFILE_NAME,
+)
+from agent_wrap.domain.build.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS
 from agent_wrap.domain.build.models import ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.updates.service import UpdateService
+from agent_wrap.exceptions import DockerfileDirectiveError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -28,10 +35,18 @@ def build_svc(mocker: pytest_mock.MockFixture) -> BuildService:
     )
 
 
+def _write_project_dockerfile(project_dir: Path, content: str) -> Path:
+    """Write *content* to the project Dockerfile's real discovery location."""
+    path = project_dir / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return path
+
+
 def test_from_claude_agent_image_exists(
     build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: test\nFROM claude-agent\n")
     resolved = ResolvedImage(
         image="claude-agent-test",
@@ -49,7 +64,7 @@ def test_from_claude_agent_image_missing(
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
 ) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: test\nFROM claude-agent\n")
     resolved = ResolvedImage(
         image="claude-agent-test",
@@ -70,7 +85,7 @@ def test_from_custom_image(
     build_svc: BuildService,
     tmp_path: Path,
 ) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: test\nFROM ubuntu:24.04\n")
     resolved = ResolvedImage(
         image="claude-agent-test",
@@ -86,7 +101,7 @@ def test_from_custom_image(
 
 
 def test_empty_dockerfile(build_svc: BuildService, tmp_path: Path) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("")
     resolved = ResolvedImage(
         image="claude-agent-test",
@@ -103,7 +118,7 @@ def test_multistage_dockerfile_last_from_wins(
     mocker.patch(
         f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
     )
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     # First FROM is a builder, second is the real base
     dockerfile.write_text(
         "# agent-name: test\nFROM node:20 AS builder\nRUN npm install\nFROM claude-agent\n"
@@ -118,7 +133,7 @@ def test_multistage_dockerfile_last_from_wins(
 
 def test_multistage_dockerfile_last_custom_base(build_svc: BuildService, tmp_path: Path) -> None:
     """Multi-stage Dockerfile where last FROM is a custom image."""
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: test\nFROM claude-agent AS base\nFROM ubuntu:24.04\n")
     resolved = ResolvedImage(
         image="claude-agent-test",
@@ -141,11 +156,11 @@ def test_do_rebuild_resolve_image_exit(
         BuildService,
         "resolve_image",
         autospec=True,
-        side_effect=SystemExit("no Dockerfile.agent"),
+        side_effect=SystemExit("no project Dockerfile"),
     )
     rc = build_svc._do_rebuild(full=False)
     assert rc == 1
-    build_svc._display.error.assert_called_once_with("no Dockerfile.agent")  # pyrefly: ignore [missing-attribute]
+    build_svc._display.error.assert_called_once_with("no project Dockerfile")  # pyrefly: ignore [missing-attribute]
 
 
 def test_do_rebuild_full_build_fails(
@@ -154,7 +169,7 @@ def test_do_rebuild_full_build_fails(
     mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
-        dockerfile=tmp_path / "Dockerfile.agent",
+        dockerfile=tmp_path / AGENT_DOCKERFILE_NAME,
         context=tmp_path,
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
@@ -167,7 +182,7 @@ def test_do_rebuild_full_build_fails(
 def test_do_rebuild_project_build_fails(
     tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
 ) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
@@ -185,18 +200,19 @@ def test_do_rebuild_project_build_fails(
 def test_do_rebuild_check_from_line_fails(
     tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
 ) -> None:
+    dockerfile = _write_project_dockerfile(tmp_path, "# agent-name: t\nFROM claude-agent\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
         image="claude-agent-test",
-        dockerfile=tmp_path / "Dockerfile.agent",
+        dockerfile=dockerfile,
         context=tmp_path,
+        agent_name="t",
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
     mocker.patch(
         f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=False
     )
-    (tmp_path / "Dockerfile.agent").write_text("# agent-name: t\nFROM claude-agent\n")
     rc = build_svc._do_rebuild(full=False)
     assert rc == 1
     mock_run.assert_not_called()  # reason: guard clause returns early before docker build
@@ -267,7 +283,7 @@ def test_docker_build_no_host_network_by_default(
 def test_do_rebuild_project_success(
     tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
 ) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
@@ -284,7 +300,7 @@ def test_do_rebuild_project_success(
 def test_do_rebuild_full_base_then_project(
     tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
 ) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
+    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
     dockerfile.write_text("# agent-name: t\nFROM claude-agent\n")
     mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
     mock_resolve.return_value = ResolvedImage(
@@ -359,7 +375,7 @@ def test_empty_dockerfile_agent(
 
 def test_parse_nonexistent_file(build_svc: BuildService) -> None:
     with pytest.raises(FileNotFoundError):
-        build_svc.parse_dockerfile_agent(Path("/nonexistent/Dockerfile.agent"))
+        build_svc.parse_dockerfile_agent(Path("/nonexistent/Dockerfile"))
 
 
 def test_resolve_base_image(
@@ -376,10 +392,10 @@ def test_resolve_with_dockerfile_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "Dockerfile.agent").write_text("# agent-name: myproj\nFROM claude-agent\n")
+    _write_project_dockerfile(tmp_path, "# agent-name: myproj\nFROM claude-agent\n")
     result = build_svc.resolve_image(use_base=False)
     assert result.image == "claude-agent-myproj"
-    assert result.dockerfile == tmp_path / "Dockerfile.agent"
+    assert result.dockerfile == tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
     assert result.context == tmp_path
 
 
@@ -387,7 +403,7 @@ def test_resolve_base_ignores_dockerfile_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "Dockerfile.agent").write_text("# agent-name: myproj\nFROM claude-agent\n")
+    _write_project_dockerfile(tmp_path, "# agent-name: myproj\nFROM claude-agent\n")
     result = build_svc.resolve_image(use_base=True)
     assert result.image == "claude-agent"
 
@@ -396,7 +412,7 @@ def test_resolve_no_agent_name_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "Dockerfile.agent").write_text("FROM claude-agent\n")
+    _write_project_dockerfile(tmp_path, "FROM claude-agent\n")
     with pytest.raises(SystemExit, match="must contain '# agent-name:"):
         build_svc.resolve_image(use_base=False)
 
@@ -405,7 +421,7 @@ def test_resolve_invalid_agent_name_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "Dockerfile.agent").write_text("# agent-name: UPPER CASE\nFROM claude-agent\n")
+    _write_project_dockerfile(tmp_path, "# agent-name: UPPER CASE\nFROM claude-agent\n")
     with pytest.raises(SystemExit, match="must match"):
         build_svc.resolve_image(use_base=False)
 
@@ -416,3 +432,164 @@ def test_resolve_no_dockerfile_uses_base(
     monkeypatch.chdir(tmp_path)
     result = build_svc.resolve_image(use_base=False)
     assert result.image == "claude-agent"
+
+
+# --- locate_dockerfile: the single discovery point -----------------------------------
+
+
+def test_locate_prefers_the_current_location(tmp_path: Path, build_svc: BuildService) -> None:
+    current = _write_project_dockerfile(tmp_path, "# agent-name: new\n")
+
+    location = build_svc.locate_dockerfile(tmp_path)
+
+    assert location.path == current
+    assert location.is_legacy is False
+    build_svc._display.warning.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_locate_falls_back_to_the_legacy_location_with_a_warning(
+    tmp_path: Path, build_svc: BuildService
+) -> None:
+    legacy = tmp_path / LEGACY_AGENT_DOCKERFILE_NAME
+    legacy.write_text("# agent-name: old\n")
+
+    location = build_svc.locate_dockerfile(tmp_path)
+
+    assert location.path == legacy
+    assert location.is_legacy is True
+    build_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        f"'{LEGACY_AGENT_DOCKERFILE_NAME}' is deprecated -- move it to "
+        f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'."
+    )
+
+
+def test_locate_refuses_when_both_locations_exist(tmp_path: Path, build_svc: BuildService) -> None:
+    _write_project_dockerfile(tmp_path, "# agent-name: new\n")
+    (tmp_path / LEGACY_AGENT_DOCKERFILE_NAME).write_text("# agent-name: old\n")
+
+    with pytest.raises(SystemExit, match=f"Delete '{LEGACY_AGENT_DOCKERFILE_NAME}'"):
+        build_svc.locate_dockerfile(tmp_path)
+
+
+def test_locate_reports_nothing_when_the_project_declares_no_dockerfile(
+    tmp_path: Path, build_svc: BuildService
+) -> None:
+    location = build_svc.locate_dockerfile(tmp_path)
+    assert location.path is None
+    assert location.is_legacy is False
+
+
+def test_resolve_with_legacy_dockerfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    legacy = tmp_path / LEGACY_AGENT_DOCKERFILE_NAME
+    legacy.write_text("# agent-name: myproj\nFROM claude-agent\n")
+
+    result = build_svc.resolve_image(use_base=False)
+
+    assert result.image == "claude-agent-myproj"
+    assert result.dockerfile == legacy
+    assert result.agent_name == "myproj"
+    assert result.is_legacy is True
+
+
+def test_resolve_populates_agent_name_and_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_project_dockerfile(tmp_path, "# agent-name: myproj\nFROM claude-agent\n")
+
+    result = build_svc.resolve_image(use_base=False)
+
+    assert result.agent_name == "myproj"
+    assert result.is_legacy is False
+
+
+def test_resolve_base_image_carries_no_agent_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
+) -> None:
+    """``agent_name is None`` is what keeps ops/Dockerfile from being read for directives."""
+    monkeypatch.chdir(tmp_path)
+    _write_project_dockerfile(tmp_path, "# agent-name: myproj\nFROM claude-agent\n")
+
+    result = build_svc.resolve_image(use_base=True)
+
+    assert result.agent_name is None
+    assert result.dockerfile.name == AGENT_DOCKERFILE_NAME
+
+
+def test_resolve_base_skips_discovery_entirely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
+) -> None:
+    """--base must not error on a conflict it is about to ignore."""
+    monkeypatch.chdir(tmp_path)
+    _write_project_dockerfile(tmp_path, "# agent-name: new\n")
+    (tmp_path / LEGACY_AGENT_DOCKERFILE_NAME).write_text("# agent-name: old\n")
+
+    assert build_svc.resolve_image(use_base=True).image == "claude-agent"
+
+
+# --- agent-enable-startup ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("true", DEFAULT_STARTUP_TIMEOUT_SECONDS),
+        ("TRUE", DEFAULT_STARTUP_TIMEOUT_SECONDS),
+        ("yes", DEFAULT_STARTUP_TIMEOUT_SECONDS),
+        ("on", DEFAULT_STARTUP_TIMEOUT_SECONDS),
+        ("false", None),
+        ("no", None),
+        ("off", None),
+        ("30", 30.0),
+        ("2.5", 2.5),
+        ("1", 1.0),
+    ],
+)
+def test_parse_startup_value_accepted(
+    build_svc: BuildService, value: str, expected: float | None
+) -> None:
+    assert build_svc.parse_startup_value(value) == expected
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "garbage", "10s", "true-ish"])
+def test_parse_startup_value_rejected(build_svc: BuildService, value: str) -> None:
+    with pytest.raises(DockerfileDirectiveError, match="agent-enable-startup"):
+        build_svc.parse_startup_value(value)
+
+
+def test_parse_startup_directive_absent_means_off(
+    build_svc: BuildService, write_dockerfile: Callable[[str], Path]
+) -> None:
+    info = build_svc.parse_dockerfile_agent(write_dockerfile("FROM claude-agent\n"))
+    assert info.startup_timeout is None
+
+
+def test_parse_startup_directive_enabled(
+    build_svc: BuildService, write_dockerfile: Callable[[str], Path]
+) -> None:
+    dockerfile = write_dockerfile("FROM claude-agent\n#  agent-enable-startup:  45 \n")
+    info = build_svc.parse_dockerfile_agent(dockerfile)
+    assert info.startup_timeout == 45.0
+
+
+def test_parse_startup_directive_rejected_in_legacy_location(
+    build_svc: BuildService, write_legacy_dockerfile: Callable[[str], Path]
+) -> None:
+    """A project on the old path is told to migrate, not silently denied its script."""
+    dockerfile = write_legacy_dockerfile("FROM claude-agent\n# agent-enable-startup: true\n")
+    with pytest.raises(DockerfileDirectiveError, match=AGENT_DOCKERFILE_NAME):
+        build_svc.parse_dockerfile_agent(dockerfile, legacy=True)
+
+
+def test_parse_other_directives_still_work_in_legacy_location(
+    build_svc: BuildService, write_legacy_dockerfile: Callable[[str], Path]
+) -> None:
+    dockerfile = write_legacy_dockerfile(
+        "FROM claude-agent\n# agent-user: dev\n# agent-run-args: --cap-add SYS_ADMIN\n"
+    )
+    info = build_svc.parse_dockerfile_agent(dockerfile, legacy=True)
+    assert info.agent_user == "dev"
+    assert info.extra_run_args == ["--cap-add", "SYS_ADMIN"]
