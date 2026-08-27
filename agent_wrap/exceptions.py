@@ -23,3 +23,7 @@ class PortUnavailableError(RuntimeError):
 
 class ProviderNotFoundError(Exception):
     """Raised when a requested provider name is not found in the registry."""
+
+
+class HostMountError(Exception):
+    """Raised when a mount declared in ``Dockerfile.agent`` cannot be prepared on the host."""

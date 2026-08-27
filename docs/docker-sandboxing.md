@@ -83,7 +83,35 @@ See this project's own [Dockerfile.agent](../Dockerfile.agent), which installs t
   # agent-run-args: --device /dev/fuse
   # agent-run-args: --cap-add SYS_ADMIN
   ```
+  Mounts declared here get their host side prepared before launch — see
+  [Mounts declared by a `Dockerfile.agent`](#mounts-declared-by-a-dockerfileagent) below.
 - **`EXPOSE <port>`** — any standard `EXPOSE` directives cause the wrapper to publish those ports on `127.0.0.1`. A protocol suffix, if present, is stripped (`EXPOSE 8080/tcp` is published as `127.0.0.1:8080`).
+
+## Mounts declared by a `Dockerfile.agent`
+
+The flags in `# agent-run-args:` reach `docker run` exactly as written, but the wrapper reads any
+mounts out of them and prepares the host side first, as the host user. Without that, Docker
+materializes whatever is missing as `root:root` — an empty source directory the agent cannot write,
+or, worse, a root-owned mountpoint inside your project.
+
+- **Writable bind sources are created if missing.** `-v /srv/data:/data` creates `/srv/data`;
+  `-v ./scratch:/scratch` creates `<project>/scratch`, because Docker resolves a relative source
+  against the directory the launch runs from, which is the project. A source is created as a
+  *directory* — the same thing Docker would have done — so a single-file bind mount must already
+  exist on the host.
+- **A missing read-only source fails the launch.** `:ro` says the content is expected to exist, so
+  `agent run` reports the offending mount and exits 1 rather than mounting an empty directory whose
+  emptiness only surfaces much later, inside the container.
+- **Mountpoints under `/workspace` are created too.** `-v /workspace/node_modules` — the
+  shadow-volume pattern — needs a `node_modules` directory inside the `/workspace` bind mount for
+  the volume to land on; the wrapper creates it in the project as the host user. This holds for any
+  mount targeting a path below `/workspace`, whatever its kind.
+
+`-v`/`--volume`, `--mount type=bind` and `--tmpfs` are all understood. A source counts as a host
+path when it starts with `/`, `./` or `../` — Docker's own rule for telling a path from a volume
+name — so `cache:/cache` is left alone as a named volume. `~` and `$VAR` are **not** expanded (no
+shell is involved), and the wrapper warns rather than rewriting what you wrote; use an absolute path
+instead. See [Volume Mounts](volume-mounts.md#declared-by-a-dockerfileagent-conditional).
 
 ## Build Args
 

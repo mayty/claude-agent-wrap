@@ -24,6 +24,7 @@ from agent_wrap.lib.docker_utils import (
     latest_claude_version,
     list_container_names,
     parse_docker_timestamp,
+    parse_mount_specs,
 )
 
 if TYPE_CHECKING:
@@ -460,3 +461,47 @@ def test_parse_docker_timestamp_truncates_rather_than_rounds() -> None:
     parsed = parse_docker_timestamp("2026-07-30T09:39:12.999999999Z")
     assert parsed is not None
     assert parsed.microsecond == 999999
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["-v", "/srv/data:/data"], [("/srv/data", "/data", False)]),
+        (["--volume", "/srv/models:/models:ro"], [("/srv/models", "/models", True)]),
+        (["--volume=/srv/models:/models:ro,z"], [("/srv/models", "/models", True)]),
+        (["-v", "./data:/data"], [("./data", "/data", False)]),
+        (["-v", "../shared:/shared:ro"], [("../shared", "/shared", True)]),
+        (["-v", "~/.cache/hf:/cache"], [("~/.cache/hf", "/cache", False)]),
+        (["-v", "cache:/cache"], [(None, "/cache", False)]),
+        (["-v", "/workspace/node_modules"], [(None, "/workspace/node_modules", False)]),
+        (["--tmpfs", "/workspace/tmp"], [(None, "/workspace/tmp", False)]),
+        (["--tmpfs=/workspace/tmp"], [(None, "/workspace/tmp", False)]),
+        (
+            ["--mount", "type=bind,source=/srv/data,target=/data"],
+            [("/srv/data", "/data", False)],
+        ),
+        (
+            ["--mount", "type=bind,src=./data,dst=/data,readonly"],
+            [("./data", "/data", True)],
+        ),
+        (
+            ["--mount=type=bind,source=/srv/data,destination=/data,ro=true"],
+            [("/srv/data", "/data", True)],
+        ),
+        (
+            ["--mount", "type=bind,source=/srv/data,target=/data,readonly=false"],
+            [("/srv/data", "/data", False)],
+        ),
+        (["--mount", "type=volume,source=cache,target=/cache"], [(None, "/cache", False)]),
+        (["--cap-add", "SYS_ADMIN", "--device", "/dev/fuse"], []),
+        (["-v", "/a:/b:ro:extra"], []),
+        (["--mount", "type=bind,source=/srv/data"], []),
+        (["-v"], []),
+        (
+            ["--cap-add", "SYS_ADMIN", "-v", "/srv/data:/data", "-v", "/workspace/target"],
+            [("/srv/data", "/data", False), (None, "/workspace/target", False)],
+        ),
+    ],
+)
+def test_parse_mount_specs(args: list[str], expected: list[tuple[str | None, str, bool]]) -> None:
+    assert [tuple(spec) for spec in parse_mount_specs(args)] == expected

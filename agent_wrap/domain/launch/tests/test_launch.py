@@ -31,7 +31,7 @@ from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.base import Sidecar
 from agent_wrap.domain.sidecars.service import SidecarService, SidecarTracker
 from agent_wrap.domain.updates.service import UpdateService
-from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
+from agent_wrap.exceptions import HostMountError, ProviderNotFoundError, SecretNotFoundError
 
 if TYPE_CHECKING:
     from typing import TextIO
@@ -928,4 +928,64 @@ def test_prepare_config_precreates_every_project_mount_source(
             INSTANCE_STATE_MOUNTS,
             INSTANCE_STATE_FILES,
         )
+    )
+
+
+def test_launch_declared_mount_failure_aborts_before_sidecars(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        extra_run_args=["-v", "/srv/models:/models:ro"]
+    )
+    launch_svc._config.prepare_declared_mounts.side_effect = HostMountError(  # pyrefly: ignore [missing-attribute]
+        "read-only mounts whose host source does not exist"
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    launch_svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        "read-only mounts whose host source does not exist"
+    )
+    launch_svc._provider_service.get_provider.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+
+
+def test_launch_passes_declared_run_args_to_config(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent-test",
+        dockerfile=tmp_path / "Dockerfile.agent",
+        context=tmp_path,
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        extra_run_args=["-v", "/workspace/node_modules"]
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError("stop here")  # pyrefly: ignore [missing-attribute]
+
+    launch_svc.launch(use_base=False, claude_args=[])
+
+    launch_svc._config.prepare_declared_mounts.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        ["-v", "/workspace/node_modules"], tmp_path
     )

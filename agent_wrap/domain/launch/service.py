@@ -25,6 +25,7 @@ from agent_wrap.constants import (
     TELEGRAM_IMAGE,
     TELEGRAM_SIDECAR_NAME,
     TOOL_DIR,
+    WORKSPACE_MOUNT,
 )
 from agent_wrap.domain.launch.constants import (
     EXPECTED_QUEUE_DEPTH,
@@ -42,7 +43,7 @@ from agent_wrap.domain.launch.models import (
     LaunchPreparation,
     SidecarAssembly,
 )
-from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
+from agent_wrap.exceptions import HostMountError, ProviderNotFoundError, SecretNotFoundError
 from agent_wrap.lib import docker_utils
 from agent_wrap.lib.priority_lock import Priority, priority_lock
 from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
@@ -107,6 +108,12 @@ class LaunchService:
         agent_user, port_args, extra_run_args = self._parse_dockerfile_directives(
             resolved.dockerfile
         )
+
+        try:
+            self._config.prepare_declared_mounts(extra_run_args, Path.cwd())
+        except HostMountError as e:
+            self._display.error(str(e))
+            return 1
 
         agent_network = self._extract_network(extra_run_args)
         use_host_net, host_net_args, port_args = self._resolve_host_network(
@@ -301,7 +308,7 @@ class LaunchService:
                 "-v",
                 f"{GLOBAL_CONFIG_DIR}/.claude:{claude_home}/.claude",
                 "-v",
-                f"{cwd}:/workspace",
+                f"{cwd}:{WORKSPACE_MOUNT}",
             ]
         )
 

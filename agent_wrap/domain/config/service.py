@@ -27,9 +27,12 @@ from agent_wrap.constants import (
     SPELLCHECK_LANG,
     SPELLCHECK_LANG_OVERRIDE,
     TOOL_DIR,
+    WORKSPACE_MOUNT,
 )
 from agent_wrap.domain.config.project_registry import ProjectRegistry
+from agent_wrap.exceptions import HostMountError
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
+from agent_wrap.lib.docker_utils import parse_mount_specs
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
@@ -264,6 +267,96 @@ class ConfigService:
                 dst = new_memory_dir / src.name
                 if not dst.exists():
                     shutil.move(str(src), str(dst))
+
+    def prepare_declared_mounts(self, run_args: list[str], project_dir: Path) -> None:
+        """
+        Pre-create the host side of every mount a ``Dockerfile.agent`` declares.
+
+        Same rationale as :meth:`prepare_project_dirs`, applied to the mounts an image
+        author asked for via ``agent-run-args``: whatever docker has to materialize
+        itself lands as ``root:root`` and the agent cannot write it. One spec can call for
+        two *different* host paths: the bind *source*, and -- when the container-side
+        target sits under ``/workspace`` -- the mountpoint docker needs inside the bind
+        mount of the project, which is what makes an anonymous
+        ``-v /workspace/node_modules`` volume leave a root-owned directory behind. A spec
+        whose source already exists can still need that second path created.
+
+        A read-only source is never invented: an author who wrote ``:ro`` asked for
+        content that already exists, so a missing one fails the launch instead of
+        silently mounting an empty directory. Everything is reported at once, and
+        nothing is created until the whole declaration checks out.
+
+        Author-supplied tokens are passed to docker untouched, so this resolves paths
+        exactly the way docker will: absolute as written, relative against the directory
+        the launch runs from. ``~`` is left to fail on docker's side -- no shell is
+        involved to expand it -- with a warning that says so.
+        """
+        specs = parse_mount_specs(run_args)
+
+        missing = [
+            spec
+            for spec in specs
+            if spec.read_only
+            and (source := self._mount_source_path(spec.source, project_dir)) is not None
+            and not source.exists()
+        ]
+        if missing:
+            listed = "\n".join(f"  {spec.source} -> {spec.target}" for spec in missing)
+            msg = (
+                "Error: Dockerfile.agent declares read-only mounts whose host source"
+                " does not exist:\n"
+                f"{listed}\n"
+                "Create each path on the host, or drop ':ro' to have it created automatically."
+            )
+            raise HostMountError(msg)
+
+        for spec in specs:
+            if spec.source is not None and spec.source.startswith("~"):
+                self._display.warning(
+                    f"Mount source '{spec.source}' in agent-run-args is passed to docker verbatim"
+                    " — '~' is not expanded because no shell is involved. Use an absolute path."
+                )
+                continue
+            source = self._mount_source_path(spec.source, project_dir)
+            if source is not None and not source.exists():
+                self._make_mount_path(source, as_file=False)
+            self._prepare_mountpoint(spec.target, source, project_dir)
+
+    def _mount_source_path(self, source: str | None, project_dir: Path) -> Path | None:
+        """Resolve a declared bind source, or None when the spec has no usable host path."""
+        if source is None or source.startswith("~"):
+            return None
+        return (project_dir / source).resolve()
+
+    def _prepare_mountpoint(self, target: str, source: Path | None, project_dir: Path) -> None:
+        """Create the host-side mountpoint for a target nested under ``/workspace``."""
+        prefix = f"{WORKSPACE_MOUNT}/"
+        stripped = target.rstrip("/")
+        if not stripped.startswith(prefix):
+            return
+
+        root = project_dir.resolve()
+        point = (root / stripped[len(prefix) :]).resolve()
+        if not point.is_relative_to(root) or point.exists():
+            return
+        # Node type is read off the source, never guessed from the path's shape: docker
+        # refuses to mount a file onto a directory ("are you trying to mount a directory
+        # onto a file (or vice-versa)?"), so a file source needs a file here. Volumes,
+        # tmpfs and directory binds all need a directory -- as does a source the caller
+        # just created, since those are always created as directories.
+        self._make_mount_path(point, as_file=source is not None and source.is_file())
+
+    def _make_mount_path(self, path: Path, *, as_file: bool) -> None:
+        """Create *path* as the host user, translating failures into HostMountError."""
+        try:
+            if as_file:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            else:
+                path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            msg = f"Error: cannot create host mount path '{path}' from Dockerfile.agent: {e}"
+            raise HostMountError(msg) from e
 
     def link_litellm_logs(self, project_dir: Path) -> None:
         """

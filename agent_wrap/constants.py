@@ -111,6 +111,12 @@ SCAN_PARALLEL_MIN_FILES = 64
 # In-container mount point for the agent-wrap ops directory.
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 
+# In-container mount point for the project directory. Anything a Dockerfile.agent
+# mounts *below* this path needs its mountpoint pre-created on the host, or docker
+# materializes it inside the user's project as root -- see
+# ``ConfigService.prepare_declared_mounts``.
+WORKSPACE_MOUNT = "/workspace"
+
 # Per-project state files mounted into the agent container. Only append-only files
 # belong here: a single-file bind mount pins the inode, so any writer that replaces
 # the file via rename() -- or unlinks it -- fails with EBUSY. Claude Code's PID-keyed

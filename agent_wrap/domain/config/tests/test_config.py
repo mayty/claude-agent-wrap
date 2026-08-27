@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
@@ -14,11 +15,10 @@ from agent_wrap.constants import STATE_FILES
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.constants import EXTERNAL_STATE_MOUNTS, STATE_MOUNTS
+from agent_wrap.exceptions import HostMountError
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest_mock
 
 
@@ -724,3 +724,112 @@ def test_link_litellm_logs_backup_suffix_on_collision(svc: ConfigService, tmp_pa
     # The new backup gets a numeric suffix rather than clobbering the old one.
     assert (project / ".claude" / "litellm-logs-bkp-2" / "marker.txt").read_text() == "data"
     assert (project / ".claude" / "litellm-logs").is_symlink()
+
+
+def test_declared_mounts_creates_missing_absolute_source(svc: ConfigService, tmp_path: Path):
+    source = tmp_path / "srv" / "data"
+    svc.prepare_declared_mounts(["-v", f"{source}:/data"], tmp_path)
+    assert source.is_dir()
+
+
+def test_declared_mounts_resolves_relative_source_against_project(
+    svc: ConfigService, tmp_path: Path
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    svc.prepare_declared_mounts(["-v", "./scratch:/scratch"], project)
+    assert (project / "scratch").is_dir()
+
+
+def test_declared_mounts_leaves_existing_source_untouched(svc: ConfigService, tmp_path: Path):
+    source = tmp_path / "data"
+    source.mkdir()
+    (source / "keep.txt").write_text("kept")
+    svc.prepare_declared_mounts(["-v", f"{source}:/data"], tmp_path)
+    assert (source / "keep.txt").read_text() == "kept"
+
+
+def test_declared_mounts_rejects_missing_read_only_source(svc: ConfigService, tmp_path: Path):
+    missing = tmp_path / "models"
+    writable = tmp_path / "data"
+    with pytest.raises(HostMountError) as excinfo:
+        svc.prepare_declared_mounts(
+            ["-v", f"{missing}:/models:ro", "-v", f"{writable}:/data"], tmp_path
+        )
+    assert f"{missing} -> /models" in str(excinfo.value)
+    assert not missing.exists()
+    # Nothing is created until the whole declaration checks out.
+    assert not writable.exists()
+
+
+def test_declared_mounts_rejects_missing_relative_read_only_source(
+    svc: ConfigService, tmp_path: Path
+):
+    with pytest.raises(HostMountError, match=r"\./models -> /models"):
+        svc.prepare_declared_mounts(["--mount", "type=bind,src=./models,dst=/models,ro"], tmp_path)
+
+
+def test_declared_mounts_accepts_existing_read_only_source(svc: ConfigService, tmp_path: Path):
+    source = tmp_path / "models"
+    source.mkdir()
+    svc.prepare_declared_mounts(["-v", f"{source}:/models:ro"], tmp_path)
+    assert source.is_dir()
+
+
+def test_declared_mounts_creates_workspace_mountpoint_directory(svc: ConfigService, tmp_path: Path):
+    svc.prepare_declared_mounts(["-v", "/workspace/node_modules"], tmp_path)
+    assert (tmp_path / "node_modules").is_dir()
+
+
+def test_declared_mounts_creates_workspace_mountpoint_for_nested_bind(
+    svc: ConfigService, tmp_path: Path
+):
+    source = tmp_path / "shared"
+    svc.prepare_declared_mounts(["-v", f"{source}:/workspace/vendor/shared"], tmp_path)
+    assert source.is_dir()
+    assert (tmp_path / "vendor" / "shared").is_dir()
+
+
+def test_declared_mounts_creates_workspace_mountpoint_as_file_for_file_source(
+    svc: ConfigService, tmp_path: Path
+):
+    source = tmp_path / "config.toml"
+    source.write_text("x = 1\n")
+    svc.prepare_declared_mounts(["-v", f"{source}:/workspace/.tool/config.toml"], tmp_path)
+    assert (tmp_path / ".tool" / "config.toml").is_file()
+
+
+def test_declared_mounts_skips_workspace_root_target(svc: ConfigService, tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    svc.prepare_declared_mounts(["-v", f"{project}:/workspace"], project)
+    assert sorted(p.name for p in project.iterdir()) == []
+
+
+def test_declared_mounts_ignores_workspace_target_escaping_the_project(
+    svc: ConfigService, tmp_path: Path
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    svc.prepare_declared_mounts(["-v", "/workspace/../escaped"], project)
+    assert not (tmp_path / "escaped").exists()
+
+
+def test_declared_mounts_warns_and_skips_tilde_source(svc: ConfigService, tmp_path: Path):
+    svc.prepare_declared_mounts(["-v", "~/cache:/cache"], tmp_path)
+    assert not (tmp_path / "~").exists()
+    warning = svc._display.warning.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "'~' is not expanded" in warning
+
+
+def test_declared_mounts_ignores_named_volumes(svc: ConfigService, tmp_path: Path):
+    svc.prepare_declared_mounts(["-v", "cache:/cache", "--cap-add", "SYS_ADMIN"], tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_declared_mounts_reports_unwritable_source(
+    svc: ConfigService, tmp_path: Path, mocker: pytest_mock.MockFixture
+):
+    mocker.patch.object(Path, "mkdir", autospec=True, side_effect=OSError("Permission denied"))
+    with pytest.raises(HostMountError, match="Permission denied"):
+        svc.prepare_declared_mounts(["-v", f"{tmp_path / 'data'}:/data"], tmp_path)

@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
+from typing import NamedTuple
 
 from agent_wrap.lib.utils import is_truthy_env
 
@@ -309,3 +310,115 @@ def get_tty_args() -> list[str]:
     if sys.stdin.isatty():
         return ["-it"]
     return ["-i"]
+
+
+class MountSpec(NamedTuple):
+    """
+    One mount declared on a ``docker run`` command line.
+
+    ``source`` is the host side exactly as it was authored, and only when the spec
+    names a host path at all: named and anonymous volumes carry ``None``. It is left
+    unresolved on purpose -- the caller knows which directory a relative path is
+    resolved against, and nothing here rewrites what the author wrote.
+    """
+
+    source: str | None
+    target: str
+    read_only: bool
+
+
+# How docker itself tells a host path from a volume name in a short-form spec: a
+# volume name may not contain "/", so anything starting with one of these is a bind
+# source. "~" is not in the list for docker (which rejects such a spec outright); it
+# is recorded here so callers can point out that no shell is involved to expand it.
+_HOST_PATH_PREFIXES = ("/", "./", "../", "~")
+
+# Flag -> spec syntax. Every one of these also accepts a --flag=value form.
+_MOUNT_FLAGS = {
+    "-v": "short",
+    "--volume": "short",
+    "--mount": "mount",
+    "--tmpfs": "tmpfs",
+}
+
+
+class _MountSpecParser:
+    """Parsers for the individual ``docker run`` mount spec syntaxes."""
+
+    @staticmethod
+    def short_form(spec: str) -> MountSpec | None:
+        """Parse a ``-v``/``--volume`` spec: ``[src:]dst[:opts]``."""
+        source_text, _, remainder = spec.partition(":")
+        if not remainder:
+            # Anonymous volume -- container side only.
+            return MountSpec(source=None, target=spec, read_only=False)
+        target, _, opts_text = remainder.partition(":")
+        if ":" in opts_text:
+            return None  # more fields than src:dst:opts -- docker will reject it
+        source = source_text if source_text.startswith(_HOST_PATH_PREFIXES) else None
+        return MountSpec(source=source, target=target, read_only="ro" in opts_text.split(","))
+
+    @staticmethod
+    def mount_form(spec: str) -> MountSpec | None:
+        """
+        Parse a ``--mount`` spec: comma-separated ``key=value`` pairs.
+
+        Splitting on "," naively mis-reads the nested comma syntax of
+        ``volume-opt=o=addr=...``, which only ever appears on ``type=volume`` mounts --
+        those contribute no host source, so the misread costs nothing.
+        """
+        fields: dict[str, str] = {}
+        for field in spec.split(","):
+            key, _, value = field.partition("=")
+            fields[key.strip().lower()] = value.strip()
+
+        target = fields.get("target") or fields.get("destination") or fields.get("dst")
+        if not target:
+            return None
+
+        source = fields.get("source") or fields.get("src")
+        if (
+            fields.get("type", "volume") != "bind"
+            or not source
+            or not source.startswith(_HOST_PATH_PREFIXES)
+        ):
+            source = None
+
+        raw_ro = fields.get("readonly", fields.get("ro"))
+        read_only = raw_ro is not None and raw_ro.lower() not in ("false", "0")
+        return MountSpec(source=source, target=target, read_only=read_only)
+
+
+def parse_mount_specs(args: list[str]) -> list[MountSpec]:
+    """
+    Extract every mount declared in a list of ``docker run`` flags.
+
+    Recognizes ``-v``/``--volume``, ``--mount`` and ``--tmpfs``, in both the
+    ``--flag value`` and ``--flag=value`` spellings. Unparseable specs are dropped
+    rather than reported: docker is the authority on what it accepts, and this parser
+    exists only to decide which host paths to pre-create.
+    """
+    specs: list[MountSpec] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if kind := _MOUNT_FLAGS.get(arg):
+            value = args[index + 1] if index + 1 < len(args) else ""
+            index += 2
+        else:
+            name, sep, rest = arg.partition("=")
+            kind = _MOUNT_FLAGS.get(name) if sep else None
+            value = rest
+            index += 1
+        if not kind or not value:
+            continue
+
+        if kind == "short":
+            spec = _MountSpecParser.short_form(value)
+        elif kind == "mount":
+            spec = _MountSpecParser.mount_form(value)
+        else:
+            spec = MountSpec(source=None, target=value, read_only=False)
+        if spec is not None:
+            specs.append(spec)
+    return specs
