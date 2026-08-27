@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `inspect` subcommand — a read-only report of agent-wrap's state on this host."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     from agent_wrap.domain.status.models import InspectReport
 
-USAGE = "[-j|--json]"
+USAGE = "[-j|--json] [-l|--lite]"
 SUMMARY = "Show running sidecars, agents, and the rest of the current state"
 
 
@@ -29,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="as_json",
         help="Emit the report as a single JSON document instead of tables.",
+    )
+    parser.add_argument(
+        "-l",
+        "--lite",
+        action="store_true",
+        help="Skip the npm-registry version check and the logs-size walk.",
     )
     return parser
 
@@ -44,13 +50,13 @@ def run(args: list[str]) -> int:
     captured: list[InspectReport] = []
     if ns.as_json:
         # No spinner: its animation goes to stdout, which would corrupt the document.
-        captured.append(services.inspect_service.build_report())
+        captured.append(services.inspect_service.build_report(lite=ns.lite))
     else:
         dsp.spin_while(
             label=INSPECT_LABEL,
             message="collecting…",
             done_message=lambda: None,
-            work=lambda: captured.append(services.inspect_service.build_report()),
+            work=lambda: captured.append(services.inspect_service.build_report(lite=ns.lite)),
         )
     report = captured[0]
 

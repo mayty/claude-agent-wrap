@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for the `inspect` CLI command — argument parsing and service protocol."""
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from agent_wrap.domain.status.models import (
     DockerStatus,
     EnvironmentRow,
     InspectReport,
+    ProjectImageRow,
     ProviderRow,
     SidecarRow,
     StorageRow,
@@ -60,13 +61,27 @@ _AGENT = AgentRow(
 )
 
 
-def _report(
+_PROJECT = ProjectImageRow(
+    image="claude-agent-wrap",
+    dockerfile="/home/me/agent-wrap/.claude-agent-wrap/Dockerfile",
+    is_legacy=False,
+    present=True,
+    claude_version="2.0.50",
+    claude_update_available=False,
+)
+
+
+def _report(  # noqa: PLR0913
     *,
     docker_available: bool = True,
     queued: list[str] | None = None,
     day_start_hours: int = -3,
     day_start_overridden: bool = True,
     day_start_timezone: str | None = None,
+    project: ProjectImageRow | None = None,
+    lite: bool = False,
+    logs_bytes: int | None = 1_033_465_471,
+    warnings: list[str] | None = None,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -107,7 +122,10 @@ def _report(
             day_start_overridden=day_start_overridden,
             day_start_timezone=day_start_timezone,
         ),
-        storage=StorageRow(logs_bytes=1_033_465_471, projects_registered=24, projects_stale=2),
+        storage=StorageRow(logs_bytes=logs_bytes, projects_registered=24, projects_stale=2),
+        project=project,
+        lite=lite,
+        warnings=warnings or [],
     )
 
 
@@ -158,6 +176,24 @@ def test_parser_accepts_j_flag() -> None:
     assert build_parser().parse_args(["-j"]).as_json is True
 
 
+def test_parser_defaults_to_the_full_report() -> None:
+    assert build_parser().parse_args([]).lite is False
+
+
+def test_parser_accepts_lite_flag() -> None:
+    assert build_parser().parse_args(["--lite"]).lite is True
+
+
+def test_parser_accepts_l_flag() -> None:
+    """-l is the shorthand for --lite."""
+    assert build_parser().parse_args(["-l"]).lite is True
+
+
+def test_parser_combines_lite_and_json() -> None:
+    ns = build_parser().parse_args(["-j", "-l"])
+    assert (ns.as_json, ns.lite) == (True, True)
+
+
 def test_help_returns_zero() -> None:
     assert run(["--help"]) == 0
 
@@ -178,7 +214,20 @@ def test_positional_argument_rejected(capsys: pytest.CaptureFixture[str]) -> Non
 @pytest.mark.usefixtures("display_mock_service")
 def test_run_builds_the_report_once(inspect_mock: Mock) -> None:
     assert run([]) == 0
-    inspect_mock.build_report.assert_called_once_with()
+    inspect_mock.build_report.assert_called_once_with(lite=False)
+
+
+@pytest.mark.usefixtures("display_mock_service")
+def test_run_forwards_the_lite_flag(inspect_mock: Mock) -> None:
+    assert run(["--lite"]) == 0
+    inspect_mock.build_report.assert_called_once_with(lite=True)
+
+
+def test_json_run_forwards_the_lite_flag(inspect_mock: Mock, display_mock_service: Mock) -> None:
+    """The spinner-free path takes the flag too — it is a separate call site."""
+    del display_mock_service
+    assert run(["--json", "--lite"]) == 0
+    inspect_mock.build_report.assert_called_once_with(lite=True)
 
 
 @pytest.mark.usefixtures("inspect_mock")
@@ -280,6 +329,106 @@ def test_human_output_shows_base_image_version(display_mock_service: Mock) -> No
     run([])
     out = _stdout(display_mock_service)
     assert "claude-agent present (Claude Code v2.0.50)" in out
+
+
+def test_human_output_shows_the_project_image(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(project=_PROJECT)
+    run([])
+    out = _stdout(display_mock_service)
+    assert "project image" in out
+    assert "claude-agent-wrap present (Claude Code v2.0.50)" in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_omits_the_project_row_without_a_project_image(
+    display_mock_service: Mock,
+) -> None:
+    """A project that customizes nothing has nothing to say here."""
+    run([])
+    assert "project image" not in _stdout(display_mock_service)
+
+
+def test_human_output_flags_a_project_image_that_was_never_built(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        project=dataclasses.replace(_PROJECT, present=False, claude_version=None)
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent-wrap MISSING (run `agent rebuild`)" in out
+
+
+def test_human_output_flags_a_stale_project_image(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Both image rows name the same available version — there is one registry answer."""
+    report = _report(project=dataclasses.replace(_PROJECT, claude_update_available=True))
+    inspect_mock.build_report.return_value = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment, latest_claude_version="2.0.51", claude_update_available=True
+        ),
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent-wrap present (Claude Code v2.0.50) → v2.0.51 available" in out
+
+
+def test_human_output_never_claims_an_update_it_did_not_check_for(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """In lite mode the latest version is unknown, and unknown must not read as stale."""
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None, project=_PROJECT)
+    run([])
+    assert "available" not in _stdout(display_mock_service)
+
+
+def test_human_output_notes_a_legacy_project_dockerfile(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        project=dataclasses.replace(_PROJECT, is_legacy=True)
+    )
+    run([])
+    assert "deprecated Dockerfile.agent" in _stdout(display_mock_service)
+
+
+def test_human_output_marks_an_unmeasured_logs_footprint(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A blank cell beside the project count would read as zero bytes."""
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
+    run([])
+    out = _stdout(display_mock_service)
+    assert "not measured (--lite)" in out
+    assert "24 project(s) registered" in out
+
+
+def test_human_output_closes_a_lite_report_with_what_it_skipped(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
+    run([])
+    out = _stdout(display_mock_service)
+    assert "npm-registry version check" in out
+    assert "logs-size walk" in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_has_no_lite_note_in_the_full_report(display_mock_service: Mock) -> None:
+    run([])
+    assert "--lite" not in _stdout(display_mock_service)
+
+
+def test_human_output_prints_collection_warnings(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(warnings=["Error: both Dockerfiles exist"])
+    run([])
+    assert "warning: Error: both Dockerfiles exist" in _stdout(display_mock_service)
 
 
 def test_human_output_flags_an_available_update(
@@ -471,6 +620,34 @@ def test_json_output_carries_no_secret_values(display_mock_service: Mock) -> Non
         assert forbidden not in out
 
 
+def test_json_output_carries_the_lite_marker_and_nulls(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A consumer must be able to tell "not measured" from "measured as zero"."""
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
+    run(["--json", "--lite"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["lite"] is True
+    assert payload["storage"]["logs_bytes"] is None
+    assert payload["environment"]["latest_claude_version"] is None
+
+
+def test_json_output_carries_the_project_image(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(project=_PROJECT)
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["project"]["image"] == "claude-agent-wrap"
+    assert payload["project"]["claude_version"] == "2.0.50"
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_json_output_nulls_the_project_when_there_is_none(display_mock_service: Mock) -> None:
+    run(["--json"])
+    assert json.loads(_stdout(display_mock_service))["project"] is None
+
+
 def test_json_output_still_parses_when_docker_is_down(
     inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
@@ -516,6 +693,20 @@ def test_completion_offers_the_json_flag() -> None:
     assert "-j" in complete_fn(2, ["agent", "inspect", ""])
 
 
+def test_completion_offers_the_lite_flag() -> None:
+    _run_fn, complete_fn = COMMANDS["inspect"]
+    assert "--lite" in complete_fn(2, ["agent", "inspect", ""])
+    assert "-l" in complete_fn(2, ["agent", "inspect", ""])
+
+
 def test_completion_omits_an_already_used_flag() -> None:
     _run_fn, complete_fn = COMMANDS["inspect"]
     assert "--json" not in complete_fn(3, ["agent", "inspect", "--json", ""])
+
+
+def test_completion_omits_an_already_used_lite_flag() -> None:
+    """Both spellings hang off one action, so either present excludes the pair."""
+    _run_fn, complete_fn = COMMANDS["inspect"]
+    offered = complete_fn(3, ["agent", "inspect", "-l", ""])
+    assert "--lite" not in offered
+    assert "--json" in offered

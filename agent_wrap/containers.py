@@ -141,6 +141,7 @@ class Services:
             logs_service=self.logs_service,
             updates_service=self.update_service,
             config_service=self.config_service,
+            build_service=self.build_service,
         )
 
     @cached_property

@@ -155,13 +155,16 @@ The environment it receives is the host environment plus:
 | `AGENT_BINARY` | absolute path to the `agent` executable |
 
 `AGENT_BINARY` lets the script call wrapper verbs without needing `agent` on `PATH`
-(`"$AGENT_BINARY" inspect`). **Read-only verbs only:** the script runs while holding the
+(`"$AGENT_BINARY" inspect --lite`). **Read-only verbs only:** the script runs while holding the
 host-global startup lock, so `agent run` from inside it would deadlock against that same lock until
 the timeout kills it.
 
 > **Keep it fast.** That lock is shared by every launching agent on the host, and the lock-wait
 > budget does not account for script runtime — a slow script makes concurrent launches wait. That is
-> why the default budget is 10 seconds.
+> why the default budget is 10 seconds. Prefer
+> [`agent inspect --lite`](shell-commands.md#agent-inspect) over the full report here: it drops the
+> npm-registry version check and the walk over the shared logs tree, which are the two things that
+> can push `inspect` past a ten-second budget on their own.
 
 If the script exists but nothing enables it, `agent run` warns rather than silently doing nothing.
 

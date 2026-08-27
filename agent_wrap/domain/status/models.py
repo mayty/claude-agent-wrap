@@ -140,9 +140,30 @@ class EnvironmentRow:
 class StorageRow:
     """On-disk footprint and project-registry counts."""
 
-    logs_bytes: int
+    #: Total size of the shared logs tree, or None when it was not measured -- lite mode
+    #: skips the recursive walk. None is not zero, and the renderer says so.
+    logs_bytes: int | None
     projects_registered: int
     projects_stale: int
+
+
+@dataclass(frozen=True)
+class ProjectImageRow:
+    """The per-project image the cwd's Dockerfile declares, when it declares one."""
+
+    #: Tag ``agent run`` would launch, e.g. "claude-agent-agent-wrap".
+    image: str
+    #: The project Dockerfile it is built from. A string, not a Path -- see the module
+    #: docstring: anything unserialisable here breaks ``--json`` with no type error.
+    dockerfile: str
+    #: True when that Dockerfile still sits at the deprecated ``Dockerfile.agent`` path.
+    is_legacy: bool
+    present: bool
+    #: Claude Code version inside it, or None when the image is absent or unreadable.
+    claude_version: str | None
+    #: True when the npm registry reports a newer version than this image's. Always False
+    #: in lite mode, which never consults the registry.
+    claude_update_available: bool
 
 
 @dataclass(frozen=True)
@@ -159,5 +180,44 @@ class InspectReport:
     wrapper: WrapperRow
     environment: EnvironmentRow
     storage: StorageRow
+    #: The image this project's Dockerfile declares, or None when it declares none. None
+    #: is the whole answer to "does this project customize its image" -- there is no
+    #: empty-string stand-in to misread.
+    project: ProjectImageRow | None = None
+    #: Whether this report was collected in lite mode, which skips the npm-registry
+    #: version check and the logs-size walk. Carried so a consumer can tell a value that
+    #: was not measured from one measured as absent.
+    lite: bool = False
     #: Non-fatal problems encountered while collecting, e.g. a stale registry entry.
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ImagePresence:
+    """
+    Which images exist locally -- the gate the version probes wait on, and nothing else.
+
+    Separate from the rest because it is the report's one ordering constraint: reading a
+    version starts a container from the image, and ``docker run`` on an image that is not
+    there tries to *pull* it. Network presence is deliberately not part of this: it gates
+    nothing, and folding it in would make the version probes wait on an unrelated call.
+    """
+
+    base: bool
+    #: False when there is no project image to look for, as well as when it is absent.
+    project: bool
+
+
+@dataclass(frozen=True)
+class ClaudeVersions:
+    """
+    Claude Code versions read in one parallel batch. None everywhere means "not read".
+
+    Internal to the collection phase -- unlike its neighbours this never reaches
+    ``InspectReport``; the rows built from it do.
+    """
+
+    base: str | None
+    project: str | None
+    #: Latest on the npm registry. Always None in lite mode, which never asks.
+    latest: str | None

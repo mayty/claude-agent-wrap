@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 Terminal rendering for the inspect command.
 
@@ -17,6 +17,10 @@ case. A container with zero attached agents is deliberately *not* flagged — th
 legitimate transient state during teardown, not a fault. A provider whose secrets are
 not set is dim rather than yellow for the same reason: `agent run` prompts for them on
 the next launch, so it is a state to know about and not a fault to go and fix.
+
+Rows that have nothing to say are omitted rather than filled in: a project that declares
+no Dockerfile gets no ``project image`` row at all. A lite report closes with one line
+naming what it skipped, instead of marking each row the omission touched.
 """
 
 from __future__ import annotations
@@ -29,7 +33,11 @@ from agent_wrap.cli.inspect.constants import (
     DETAILS_ALIGNS,
     DETAILS_HEADERS,
     DETAILS_TITLE,
+    LEGACY_DOCKERFILE_NOTE,
+    LITE_NOTE,
     NONE_CELL,
+    NOT_MEASURED,
+    PROJECT_IMAGE_LABEL,
     SIDECAR_ALIGNS,
     SIDECAR_HEADERS,
     UNKNOWN,
@@ -45,6 +53,7 @@ if TYPE_CHECKING:
         AgentRow,
         EnvironmentRow,
         InspectReport,
+        ProjectImageRow,
         ProviderRow,
         SidecarRow,
         StorageRow,
@@ -212,10 +221,10 @@ class Details:
         # where other projects' paths are not mounted, every entry looks stale. Acting on
         # that reading deletes live logs, so this states the number and leaves the
         # decision to someone who knows where they are.
-        text = (
-            f"{display.format_bytes(storage.logs_bytes)} · "
-            f"{storage.projects_registered} project(s) registered"
+        size = (
+            NOT_MEASURED if storage.logs_bytes is None else display.format_bytes(storage.logs_bytes)
         )
+        text = f"{size} · {storage.projects_registered} project(s) registered"
         if storage.projects_stale:
             text += f", {storage.projects_stale} with no logs directory"
         return [viewer_row, Cells.row("logs storage", text)]
@@ -241,12 +250,22 @@ class Details:
         return out
 
     @staticmethod
-    def wrapper_rows(wrapper: WrapperRow, environment: EnvironmentRow) -> list[RowItem]:
-        """Report the installed revision, then the host facts behind most surprises."""
+    def wrapper_rows(
+        wrapper: WrapperRow, environment: EnvironmentRow, project: ProjectImageRow | None
+    ) -> list[RowItem]:
+        """
+        Report the installed revision, then the host facts behind most surprises.
+
+        The project image sits directly under the base image it inherits from, because the
+        two are read together: which one ``agent run`` will actually launch here, and
+        whether the Claude Code inside it has fallen behind.
+        """
         host_net, host_net_style = Details.host_network(environment)
         return [
             Cells.row("wrapper", Details.revision(wrapper)),
-            *Details.image_and_network_rows(environment),
+            Details.base_image_row(environment),
+            *Details.project_image_rows(project, environment),
+            Details.network_row(environment),
             Cells.row("host network", host_net, host_net_style),
             Cells.row("day boundary", Details.day_boundary(environment)),
         ]
@@ -266,38 +285,79 @@ class Details:
         return detail
 
     @staticmethod
-    def image_and_network_rows(environment: EnvironmentRow) -> list[RowItem]:
+    def base_image_row(environment: EnvironmentRow) -> RowItem:
         """
-        Whether the base image and the shared network exist.
+        Whether the base image exists, which Claude Code it carries, and if that is stale.
 
-        Both are yellow when absent, but only the image is actionable: docker creates the
-        network on the next launch, while a missing base image needs a rebuild.
+        Yellow when absent (a rebuild is needed) or behind the registry (an update is
+        available); plain when present and current, including when the registry was not
+        consulted at all — ``--lite`` leaves the latest version unknown, and an unknown
+        latest must never look like an update.
         """
-        if environment.base_image_present:
-            state = f"{environment.base_image} present"
-            if environment.base_image_version:
-                state += f" (Claude Code v{environment.base_image_version})"
-            if (
-                environment.claude_update_available
-                and environment.latest_claude_version is not None
-            ):
-                state += f" → v{environment.latest_claude_version} available"
-                image_row = Cells.row("base image", state, Ansi.BOLD_YELLOW)
-            else:
-                image_row = Cells.row("base image", state)
-        else:
-            image_row = Cells.row(
+        if not environment.base_image_present:
+            return Cells.row(
                 "base image",
                 f"{environment.base_image} MISSING (run `agent rebuild --full`)",
                 Ansi.BOLD_YELLOW,
             )
+        state = f"{environment.base_image} present"
+        if environment.base_image_version:
+            state += f" (Claude Code v{environment.base_image_version})"
+        if environment.claude_update_available and environment.latest_claude_version is not None:
+            state += f" → v{environment.latest_claude_version} available"
+            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
+        return Cells.row("base image", state)
+
+    @staticmethod
+    def project_image_rows(
+        project: ProjectImageRow | None, environment: EnvironmentRow
+    ) -> list[RowItem]:
+        """
+        Describe the image this project's Dockerfile declares, or nothing when it declares
+        none.
+
+        Absent from the report rather than reported as empty: a project with no
+        `.claude-agent-wrap/Dockerfile` has nothing to say here, and a row saying so would
+        be noise in every project that never customized anything. Colour follows the base
+        image above it, and for the same reasons.
+
+        The available version is read off *environment*: there is one registry answer per
+        report and both image rows are measured against it, so naming it here rather than
+        saying "newer" keeps the two rows directly comparable.
+        """
+        if project is None:
+            return []
+        if not project.present:
+            return [
+                Cells.row(
+                    PROJECT_IMAGE_LABEL,
+                    f"{project.image} MISSING (run `agent rebuild`)",
+                    Ansi.BOLD_YELLOW,
+                )
+            ]
+        state = f"{project.image} present"
+        if project.claude_version:
+            state += f" (Claude Code v{project.claude_version})"
+        style = Ansi.NONE
+        if project.claude_update_available and environment.latest_claude_version is not None:
+            state += f" → v{environment.latest_claude_version} available"
+            style = Ansi.BOLD_YELLOW
+        if project.is_legacy:
+            state += LEGACY_DOCKERFILE_NOTE
+            style = Ansi.BOLD_YELLOW
+        return [Cells.row(PROJECT_IMAGE_LABEL, state, style)]
+
+    @staticmethod
+    def network_row(environment: EnvironmentRow) -> RowItem:
+        """
+        Whether the shared sidecar network exists.
+
+        Absent is stated without alarm and without yellow: docker creates it on the next
+        launch, so unlike a missing image there is nothing for the reader to do.
+        """
         if environment.network_present:
-            network_row = Cells.row("network", f"{environment.network_name} present")
-        else:
-            network_row = Cells.row(
-                "network", f"{environment.network_name} absent (created on next launch)"
-            )
-        return [image_row, network_row]
+            return Cells.row("network", f"{environment.network_name} present")
+        return Cells.row("network", f"{environment.network_name} absent (created on next launch)")
 
     @staticmethod
     def host_network(environment: EnvironmentRow) -> tuple[str, Ansi]:
@@ -336,7 +396,7 @@ class Details:
         groups = [
             Details.logs_rows(report.viewer, report.storage, display),
             Details.secrets_rows(report.providers),
-            Details.wrapper_rows(report.wrapper, report.environment),
+            Details.wrapper_rows(report.wrapper, report.environment, report.project),
         ]
         body: list[RowItemOrDivider] = []
         for group in groups:
@@ -364,5 +424,10 @@ def render(report: InspectReport, display: DisplayService) -> list[str]:
         lines.append("")
 
     lines.extend(Details.table(report, display))
+    if report.lite:
+        # One closing line rather than a marker on each affected row: the two skipped
+        # steps are a property of the run, and naming them once keeps the tables reading
+        # the same in both modes.
+        lines.append(LITE_NOTE)
     lines.extend(f"warning: {text}" for text in report.warnings)
     return lines

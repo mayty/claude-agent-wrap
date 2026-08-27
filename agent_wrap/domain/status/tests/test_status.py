@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.constants import BASE_IMAGE_NAME
+from agent_wrap.domain.build.models import ResolvedImage
+from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.logs.models import ViewerState
 from agent_wrap.domain.logs.service import LogsService
@@ -21,7 +26,6 @@ from agent_wrap.domain.updates.models import WrapperRevision
 from agent_wrap.domain.updates.service import UpdateService
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from unittest.mock import Mock
 
     import pytest_mock
@@ -57,6 +61,23 @@ _AGENT = AgentContainer(
     image="claude-agent-wrap",
     provider="litellm-bedrock",
     sidecars=["agent-wrap-litellm-bedrock"],
+)
+
+
+#: What `resolve_image()` returns in a project that customizes its image. `agent_name`
+#: being set is the "this is a project Dockerfile" predicate the service keys on.
+_PROJECT_IMAGE = ResolvedImage(
+    image="claude-agent-proj",
+    dockerfile=Path("/proj/.claude-agent-wrap/Dockerfile"),
+    context=Path("/proj"),
+    agent_name="proj",
+)
+
+#: What it returns in a project that does not — the base image, with no agent_name.
+_BASE_IMAGE_ONLY = ResolvedImage(
+    image=BASE_IMAGE_NAME,
+    dockerfile=Path("/opt/agent-wrap/ops/Dockerfile"),
+    context=Path("/opt/agent-wrap"),
 )
 
 
@@ -141,6 +162,13 @@ def config_mock(mocker: pytest_mock.MockFixture, tmp_path: Path) -> Mock:
 
 
 @pytest.fixture
+def build_mock(mocker: pytest_mock.MockFixture) -> Mock:
+    mock = mocker.create_autospec(BuildService, instance=True)
+    mock.resolve_image.return_value = _PROJECT_IMAGE
+    return mock
+
+
+@pytest.fixture
 def service(  # noqa: PLR0913
     sidecar_mock: Mock,
     provider_mock: Mock,
@@ -148,6 +176,7 @@ def service(  # noqa: PLR0913
     logs_mock: Mock,
     updates_mock: Mock,
     config_mock: Mock,
+    build_mock: Mock,
     docker_probes: dict[str, Mock],
 ) -> InspectService:
     del docker_probes  # patches must be active for every test using this service
@@ -158,6 +187,7 @@ def service(  # noqa: PLR0913
         logs_service=logs_mock,
         updates_service=updates_mock,
         config_service=config_mock,
+        build_service=build_mock,
     )
 
 
@@ -419,3 +449,195 @@ def test_report_json_carries_no_secret_values(service: InspectService, logs_mock
     payload = json.dumps(dataclasses.asdict(service.build_report()))
     for forbidden in ("LITELLM_MASTER_KEY", "AWS_BEARER_TOKEN", "TELEGRAM_BOT_TOKEN", "sk-"):
         assert forbidden not in payload
+
+
+def test_project_row_reports_the_project_image(service: InspectService) -> None:
+    project = service.build_report().project
+    assert project is not None
+    assert project.image == "claude-agent-proj"
+    assert project.present is True
+    assert project.claude_version == "2.0.50"
+    assert project.dockerfile == "/proj/.claude-agent-wrap/Dockerfile"
+
+
+def test_project_row_is_none_without_a_project_dockerfile(
+    service: InspectService, build_mock: Mock
+) -> None:
+    """`agent_name is None` is the predicate — the basename is shared with ops/Dockerfile."""
+    build_mock.resolve_image.return_value = _BASE_IMAGE_ONLY
+    assert service.build_report().project is None
+
+
+def test_project_row_skips_probing_an_image_the_project_does_not_declare(
+    service: InspectService, build_mock: Mock, docker_probes: dict[str, Mock]
+) -> None:
+    build_mock.resolve_image.return_value = _BASE_IMAGE_ONLY
+    service.build_report()
+    probed = {call.args[0] for call in docker_probes["image_exists"].call_args_list}
+    assert probed == {BASE_IMAGE_NAME}
+
+
+def test_project_row_reports_a_project_image_that_was_never_built(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    def base_only(image: str) -> bool:
+        return image == BASE_IMAGE_NAME
+
+    docker_probes["image_exists"].side_effect = base_only
+    project = service.build_report().project
+    assert project is not None
+    assert project.present is False
+    assert project.claude_version is None
+
+
+def test_project_row_flags_an_update_from_the_shared_registry_lookup(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """One `npm view` for the whole report; both images are compared against it."""
+    docker_probes["latest_claude_version"].return_value = "2.0.51"
+    report = service.build_report()
+    assert report.project is not None
+    assert report.project.claude_update_available is True
+    assert report.environment.claude_update_available is True
+    docker_probes["latest_claude_version"].assert_called_once_with(BASE_IMAGE_NAME)
+
+
+def test_project_row_carries_the_legacy_dockerfile_flag(
+    service: InspectService, build_mock: Mock
+) -> None:
+    build_mock.resolve_image.return_value = dataclasses.replace(_PROJECT_IMAGE, is_legacy=True)
+    project = service.build_report().project
+    assert project is not None
+    assert project.is_legacy is True
+
+
+def test_unresolvable_project_dockerfile_becomes_a_warning(
+    service: InspectService, build_mock: Mock
+) -> None:
+    """Fatal to a launch, but a diagnostic is most useful precisely in that state."""
+    build_mock.resolve_image.side_effect = SystemExit("Error: both Dockerfiles exist")
+    report = service.build_report()
+    assert report.project is None
+    assert report.warnings == ["Error: both Dockerfiles exist"]
+    assert report.environment.base_image_present is True
+
+
+def test_unreadable_project_dockerfile_becomes_a_warning(
+    service: InspectService, build_mock: Mock
+) -> None:
+    build_mock.resolve_image.side_effect = OSError("Permission denied")
+    report = service.build_report()
+    assert report.project is None
+    assert "Permission denied" in report.warnings[0]
+
+
+def test_report_has_no_warnings_when_nothing_is_wrong(service: InspectService) -> None:
+    assert service.build_report().warnings == []
+
+
+def test_lite_skips_the_registry_check(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    report = service.build_report(lite=True)
+    docker_probes["latest_claude_version"].assert_not_called()
+    assert report.environment.latest_claude_version is None
+    assert report.environment.claude_update_available is False
+
+
+def test_lite_skips_the_logs_size_walk(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    report = service.build_report(lite=True)
+    docker_probes["dir_size"].assert_not_called()
+    assert report.storage.logs_bytes is None
+    assert report.storage.projects_registered == 2
+
+
+def test_lite_still_reports_both_installed_versions(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """The versions are the point of the command; only the registry check is dropped."""
+    report = service.build_report(lite=True)
+    probed = {call.args[0] for call in docker_probes["image_claude_version"].call_args_list}
+    assert probed == {BASE_IMAGE_NAME, "claude-agent-proj"}
+    assert report.environment.base_image_version == "2.0.50"
+    assert report.project is not None
+    assert report.project.claude_version == "2.0.50"
+
+
+def test_lite_keeps_the_container_listings(service: InspectService, sidecar_mock: Mock) -> None:
+    report = service.build_report(lite=True)
+    sidecar_mock.list_sidecar_containers.assert_called_once_with()
+    assert report.sidecars
+    assert report.agents
+
+
+def test_lite_is_recorded_on_the_report(service: InspectService) -> None:
+    assert service.build_report(lite=True).lite is True
+    assert service.build_report().lite is False
+
+
+def test_version_probes_never_run_against_an_absent_image(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """`docker run` on an image that is not present locally tries to *pull* it."""
+
+    def project_only(image: str) -> bool:
+        return image != BASE_IMAGE_NAME
+
+    docker_probes["image_exists"].side_effect = project_only
+    service.build_report()
+    probed = {call.args[0] for call in docker_probes["image_claude_version"].call_args_list}
+    assert probed == {"claude-agent-proj"}
+    docker_probes["latest_claude_version"].assert_not_called()
+
+
+def test_an_absent_project_image_does_not_gate_the_base_probes(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """Each version probe waits on its own image only, never on both."""
+
+    def base_only(image: str) -> bool:
+        return image == BASE_IMAGE_NAME
+
+    docker_probes["image_exists"].side_effect = base_only
+    report = service.build_report()
+    docker_probes["latest_claude_version"].assert_called_once_with(BASE_IMAGE_NAME)
+    assert report.environment.base_image_version == "2.0.50"
+
+
+def test_docker_unavailable_submits_no_probes(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["reachable"].return_value = False
+    report = service.build_report()
+    docker_probes["image_exists"].assert_not_called()
+    docker_probes["image_claude_version"].assert_not_called()
+    docker_probes["latest_claude_version"].assert_not_called()
+    assert report.environment.network_present is False
+
+
+def test_version_probes_run_concurrently(
+    service: InspectService, docker_probes: dict[str, Mock]
+) -> None:
+    """
+    Three probes, one three-party barrier: sequential execution can never clear it.
+
+    Fails closed rather than merely slowly, so collapsing the fan-out into a loop — or
+    sizing PROBE_WORKERS under the peak — breaks this test instead of quietly costing
+    wall clock nobody measures.
+    """
+    barrier = threading.Barrier(3, timeout=10)
+
+    def probe(image: str) -> str:
+        del image
+        barrier.wait()
+        return "2.0.50"
+
+    docker_probes["image_claude_version"].side_effect = probe
+    docker_probes["latest_claude_version"].side_effect = probe
+
+    report = service.build_report()
+    assert report.environment.base_image_version == "2.0.50"
+    assert report.project is not None
+    assert report.project.claude_version == "2.0.50"
