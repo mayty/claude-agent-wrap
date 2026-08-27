@@ -48,6 +48,21 @@ them first and prepares the host side as the host user — otherwise Docker crea
   never expanded** — no shell is involved — so write absolute paths.
 - Anything targeting a path under `/workspace` also gets its mountpoint created inside the project.
 
+The **container** side is yours to prepare — the wrapper cannot reach inside the image. If you mount
+to a path the image does not already contain, create it in the Dockerfile and `chown` it to the agent
+user:
+
+```dockerfile
+# agent-run-args: -v /srv/models:/opt/models
+RUN mkdir -p /opt/models && chown -R ubuntu:ubuntu /opt/models
+```
+
+Skip that and Docker materializes what is missing as `root:root`, which bites in two ways: a
+mountpoint's missing **parent** becomes a root-owned directory the agent cannot write around
+(`-v /srv/x:/opt/models/x` leaves `/opt/models` root-owned), and a **volume** mounted at a path the
+image lacks is initialized from that freshly created root-owned directory, so the volume itself is
+unwritable. For a non-default `# agent-user:`, `chown` to that user — see the directive's note above.
+
 ## Shadow build/cache directories
 
 Add anonymous volumes via `agent-run-args` to avoid polluting the host filesystem:

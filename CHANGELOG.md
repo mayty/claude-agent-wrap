@@ -5,10 +5,10 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.10.0](releases/0.10.0.md) — 2026-08-25
+## [0.10.0](releases/0.10.0.md) — 2026-08-27
 
 Adds spell checking of the prompt input, on by default and recognising English and Russian
-together. Requires one `agent rebuild --full` after upgrading.
+together. Host paths for mounts declared in a `Dockerfile.agent` are now prepared before launch. Requires one `agent rebuild --full` after upgrading.
 
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14
 
