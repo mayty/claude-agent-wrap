@@ -125,7 +125,7 @@ Rules to write it against:
 /opt/agent-wrap/validate-dockerfile-agent path/to/file  # validates specific file
 ```
 
-Exit codes: `0` pass (warnings allowed), `1` errors, `2` file missing. Fix any errors before rebuild.
+Exit codes: `0` pass (warnings allowed), `1` errors, `2` no file to validate — either none exists, or both `.claude-agent-wrap/Dockerfile` and a legacy `Dockerfile.agent` do and the ambiguity has to be resolved first. Fix any errors before rebuild.
 
 ## Notes
 

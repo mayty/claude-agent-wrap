@@ -84,7 +84,7 @@ Always run the validator after creating or editing the project Dockerfile, befor
 
 With no argument it validates `.claude-agent-wrap/Dockerfile`, falling back to a deprecated `./Dockerfile.agent`.
 
-It uses the `hadolint`/`crane` tools baked into the base image to catch mistakes `docker build` alone won't — most importantly, base images that don't contain the expected user. Exit codes: `0` pass (warnings allowed), `1` errors, `2` file missing. Fix any errors before rebuilding. See [dockerfile-agent-guide.md](../ops/dockerfile-agent-guide.md) for the full validator contract.
+It uses the `hadolint`/`crane` tools baked into the base image to catch mistakes `docker build` alone won't — most importantly, base images that don't contain the expected user. Exit codes: `0` pass (warnings allowed), `1` errors, `2` no file to validate (none present, or both the current and legacy locations are). Fix any errors before rebuilding. See [dockerfile-agent-guide.md](../ops/dockerfile-agent-guide.md) for the full validator contract.
 
 ### Example
 
