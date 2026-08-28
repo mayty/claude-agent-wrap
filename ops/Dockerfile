@@ -49,7 +49,7 @@ RUN npm install -g @anthropic-ai/claude-code --os=linux --cpu=x64
 RUN chmod -R a+rX /usr/lib/node_modules
 
 # Install hadolint (Dockerfile linter) and crane (registry client used by the
-# Dockerfile.agent validator to probe base images without a Docker daemon).
+# project Dockerfile validator to probe base images without a Docker daemon).
 RUN curl -fsSL -o /usr/local/bin/hadolint \
         https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64 \
     && chmod 0755 /usr/local/bin/hadolint \

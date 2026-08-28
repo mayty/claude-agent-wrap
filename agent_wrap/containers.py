@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Singleton service container with lazy-initialized, dependency-injected services."""
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.secrets.service import SecretsService
     from agent_wrap.domain.sidecars.service import SidecarService
+    from agent_wrap.domain.startup.service import StartupService
     from agent_wrap.domain.stats.service import StatsService
     from agent_wrap.domain.status.service import InspectService
     from agent_wrap.domain.updates.service import UpdateService
@@ -93,8 +94,16 @@ class Services:
             provider_service=self.provider_service,
             sidecar_service=self.sidecar_service,
             build_service=self.build_service,
+            startup_service=self.startup_service,
             display_service=self.display_service,
+            logs_service=self.logs_service,
         )
+
+    @cached_property
+    def startup_service(self) -> StartupService:
+        from agent_wrap.domain.startup.service import StartupService
+
+        return StartupService(display_service=self.display_service)
 
     @cached_property
     def build_service(self) -> BuildService:
@@ -133,6 +142,7 @@ class Services:
             logs_service=self.logs_service,
             updates_service=self.update_service,
             config_service=self.config_service,
+            build_service=self.build_service,
         )
 
     @cached_property

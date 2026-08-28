@@ -332,8 +332,7 @@ def test_apply_cannot_determine_branch(
     )
     rc = update_svc.apply()
     assert rc == 1
-    display_mock.error.assert_any_call("Update failed:")
-    display_mock.error.assert_any_call("could not determine current branch")
+    display_mock.error.assert_called_once_with("update failed\ncould not determine current branch")
 
 
 def test_apply_cannot_get_head(
@@ -348,8 +347,7 @@ def test_apply_cannot_get_head(
     ]
     rc = update_svc.apply("origin/main")
     assert rc == 1
-    display_mock.error.assert_any_call("Update failed:")
-    display_mock.error.assert_any_call("could not get current HEAD")
+    display_mock.error.assert_called_once_with("update failed\ncould not get current HEAD")
 
 
 def test_apply_merge_fails(
@@ -374,8 +372,7 @@ def test_apply_merge_fails(
     )
     rc = update_svc.apply("origin/main")
     assert rc == 1
-    display_mock.error.assert_any_call("Update failed:")
-    display_mock.error.assert_any_call("fatal: not possible to fast-forward")
+    display_mock.error.assert_called_once_with("update failed\nfatal: not possible to fast-forward")
     # Fast-forwards to the resolved target ref, not a raw branch pull.
     assert mock_full.call_args.args == ("merge", "--ff-only", "origin/main")
 

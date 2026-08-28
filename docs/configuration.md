@@ -1,4 +1,4 @@
-<!-- This file has been created with the assistance of an AI tool. -->
+<!-- This file has been edited with the assistance of an AI tool. -->
 # Configuration
 
 These environment variables affect wrapper behavior, not the container's environment.
@@ -43,7 +43,7 @@ Trade-offs:
 
 - The container loses network isolation from the WSL distro — services bind on the distro's interfaces, not on `docker0`.
 - `EXPOSE` port mappings become meaningless and are skipped with a warning. Make in-container services bind to `127.0.0.1` (not `0.0.0.0`) to avoid LAN exposure, since there is no longer a `127.0.0.1:port:port` translation in front of them.
-- If `Dockerfile.agent` already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
+- If the project Dockerfile already specifies `--network`/`--net` via `# agent-run-args:`, the env var is ignored with a warning (the project's explicit network choice wins).
 - The flag also extends to any provider sidecar — when set on the **cold-start** launch, the sidecar is launched with `--network host` as well. First-launch-wins, **per provider**: subsequent launches on that provider adapt to its running mode rather than restarting it, and each provider's sidecar inherits the mode of whichever launch started it, independently of the others. To switch a running sidecar's mode, stop it and start the next launch with the desired flag value.
 - In host mode a sidecar's port is a host port, so ports are resolved at start time (scanning upward from 48620) rather than fixed. Two providers' sidecars therefore coexist without collision; the resolved port is recorded in the container and reused by later launches.
 
@@ -102,6 +102,20 @@ Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`)
 ```sh
 AGENT_LOG_DEBUG=1 agent logs
 ```
+
+## `AGENT_AUTOSTART_LOGS` (logs-viewer autostart opt-out)
+
+`agent run` starts the [`agent logs`](shell-commands.md#agent-logs) background viewer for you, because that viewer is the only thing that keeps the statusline's `Today: ↑… ↓… | $…` segment up to date — without it the statusline reads `run \`agent logs\` for stats` instead. It is started as the very first step of a launch, so its initial walk of the log tree happens while the image is resolved and the LiteLLM sidecar comes up rather than after, and it is **not** stopped when the agent exits: the viewer is a host-level singleton shared by every project, and [`agent logs --stop`](shell-commands.md#agent-logs) remains the way to stop it. A viewer that is already running or already starting is adopted rather than duplicated, and a failure to start one is a warning that does not block the launch.
+
+The autostart is on by default. Set `AGENT_AUTOSTART_LOGS=0` (or `false`/`no`) to turn it off; exporting the variable with an empty value counts as leaving it unset.
+
+```sh
+AGENT_AUTOSTART_LOGS=0 agent run
+```
+
+Two launches skip the autostart regardless of this variable. A headless `agent run` (`-p`/`--print`/`--bare`/`--safe-mode`) renders no statusline, so there is no segment to feed; and under the [`litellm-anthropic-sub`](providers.md) provider the statusline shows subscription rate limits instead of token totals, so the file the viewer maintains has no reader. `agent logs` still starts the viewer on demand in both cases.
+
+[`agent inspect`](shell-commands.md#agent-inspect) reports the result as a `logs viewer autostart` row, directly under the viewer's own state: `on`, `OFF (AGENT_AUTOSTART_LOGS)` when you turned it off, or `OFF (<provider> does not use it)` when the provider is what declines it. Setting the variable to `1` under a provider that declines reads as `requested but IGNORED`, flagged in yellow — that combination does nothing, and a plain `off` would leave you guessing which of the two decided it. The report cannot account for headless launches, since that depends on one launch's arguments.
 
 ## `AGENT_SPELLCHECK` (prompt spell checking)
 

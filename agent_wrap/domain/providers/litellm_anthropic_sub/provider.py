@@ -63,6 +63,14 @@ usual design in a few load-bearing ways:
   `DISABLE_AUTOUPDATER=1` in its place, so the CLI baked into the image still
   never tries to self-update.
 
+- **`autostart_logs_viewer = False`.** `agent run` starts the `agent logs` viewer so
+  the statusline has today's token and cost totals to read, but under this provider
+  the statusline never reads them: `ops/statusline.py` detects the passthrough via
+  `ANTHROPIC_BASE_URL` and renders `rate_limit_segment` -- subscription-seat
+  consumption -- in place of `usage_segment`. Starting a background HTTP server to
+  maintain a file nothing consults would be pure waste, and `agent logs` still starts
+  it on demand for browsing request logs.
+
 - **`compute_cost` is overridden directly, always returning `0.0`.** A
   subscription has no marginal per-token cost, so there is no rate table to
   maintain, and no dollar figure here would be truthful. Returning `0.0`
@@ -94,6 +102,7 @@ class AnthropicSubProvider(Provider):
     master_key_prefix: ClassVar[str] = "sk-aw-ant-"
     secret_description: ClassVar[str] = ""
     disable_nonessential_traffic: ClassVar[bool] = False
+    autostart_logs_viewer: ClassVar[bool] = False
 
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:  # noqa: ARG002
         return {}

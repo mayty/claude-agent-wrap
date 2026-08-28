@@ -25,6 +25,11 @@ GLOBAL_CONFIG_DIR = TOOL_DIR / ".claude_config"
 AGENT_LAUNCHES_DIR = TOOL_DIR / ".agent-launches"
 OPS_DIR = TOOL_DIR / "ops"
 
+# The `agent` entry point itself, exported to per-project startup scripts as
+# ``AGENT_BINARY`` so they can call wrapper verbs without relying on the host's PATH
+# or on ``agent-wrap.bashrc`` having been sourced.
+AGENT_BINARY_PATH = TOOL_DIR / "bin" / "agent"
+
 # Genuine strings (not paths)
 BASE_IMAGE_NAME = "claude-agent"
 
@@ -56,6 +61,12 @@ TELEGRAM_IMAGE = (
 # Env var name used by the detached logs-viewer child process to find the same
 # tool_dir (and thus state file) as the parent that launched it.
 LOGS_TOOL_DIR_ENV = "AGENT_LOGS_TOOL_DIR"
+
+# Opt-out for starting the logs viewer on `agent run`. Absent or empty means unset, which
+# is on -- exporting the var with no value reads as clearing it, not as asking for the
+# feature to be off. Read by the launcher that acts on it and by `agent inspect`, which
+# reports whether it is actually in effect.
+AUTOSTART_LOGS_ENV = "AGENT_AUTOSTART_LOGS"
 
 # Port range for the local web viewer.
 LOGS_DEFAULT_PORT = 8765
@@ -106,10 +117,35 @@ ORPHANED_LABEL = "<orphaned>"
 # Files below this count are scanned serially (fork overhead > benefit).
 SCAN_PARALLEL_MIN_FILES = 64
 
+# ── project agent assets ─────────────────────────────────────────────────────
+
+# Per-project wrapper assets live in this directory, checked into the project (unlike
+# the git-ignored ``.claude/`` state tree next to it). Note that a ``.gitignore``
+# pattern of ``.claude/`` does not match it, but a looser ``.claude*`` would.
+AGENT_ASSETS_DIR = ".claude-agent-wrap"
+
+# The project Dockerfile. Named plainly so every editor, linter and highlighter
+# recognizes the format -- which the legacy name below defeated.
+AGENT_DOCKERFILE_NAME = "Dockerfile"
+
+# Pre-0.10.0 project Dockerfile location: ``<project>/Dockerfile.agent``. Still
+# honored, with a deprecation warning on every use.
+LEGACY_AGENT_DOCKERFILE_NAME = "Dockerfile.agent"
+
+# Optional host-side script run before launch, gated by ``# agent-enable-startup:``.
+AGENT_STARTUP_SCRIPT_NAME = "startup.sh"
+
+
 # ── run ──────────────────────────────────────────────────────────────────────
 
 # In-container mount point for the agent-wrap ops directory.
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
+
+# In-container mount point for the project directory. Anything a project Dockerfile
+# mounts *below* this path needs its mountpoint pre-created on the host, or docker
+# materializes it inside the user's project as root -- see
+# ``ConfigService.prepare_declared_mounts``.
+WORKSPACE_MOUNT = "/workspace"
 
 # Per-project state files mounted into the agent container. Only append-only files
 # belong here: a single-file bind mount pins the inode, so any writer that replaces

@@ -79,6 +79,12 @@ class Provider(ABC):
     #: and other Anthropic-backed features — a provider whose users need those to keep
     #: working overrides this to False.
     disable_nonessential_traffic: ClassVar[bool] = True
+    #: Whether `agent run` starts the `agent logs` background viewer for this provider.
+    #: That viewer is the only writer of the usage totals the bundled statusline reads,
+    #: so leaving it down costs this provider's users their token/cost segment. A
+    #: provider whose statusline segment is fed from somewhere else -- a subscription
+    #: reports seat consumption, not spend -- overrides this to False.
+    autostart_logs_viewer: ClassVar[bool] = True
 
     # ------------------------------------------------------------------
     # Shared defaults (rarely overridden)

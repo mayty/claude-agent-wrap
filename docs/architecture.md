@@ -1,11 +1,11 @@
-<!-- This file has been created with the assistance of an AI tool. -->
+<!-- This file has been edited with the assistance of an AI tool. -->
 # Architecture
 
 This document describes the project's architecture, layer boundaries, and key design conventions.
 
 ## Purpose
 
-A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process, and lets each project customize its environment with a `Dockerfile.agent`. It packages Claude Code into a reproducible container image and exposes a single `agent` command. Model traffic is routed through a provider plugin system — all shipped providers use a [LiteLLM](https://github.com/BerriAI/litellm) sidecar. See [Providers](providers.md) for available options.
+A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process, and lets each project customize its environment with a `.claude-agent-wrap/Dockerfile`. It packages Claude Code into a reproducible container image and exposes a single `agent` command. Model traffic is routed through a provider plugin system — all shipped providers use a [LiteLLM](https://github.com/BerriAI/litellm) sidecar. See [Providers](providers.md) for available options.
 
 ## Package layout
 

@@ -12,6 +12,7 @@ class Ansi(str, Enum):
     RESET = "\033[0m"
     BOLD_GREEN = "\033[1;32m"
     BOLD_YELLOW = "\033[1;33m"
+    BOLD_RED = "\033[1;31m"
     CYAN = "\033[36m"
     DIM = "\033[90m"
 
@@ -22,6 +23,13 @@ class Ansi(str, Enum):
     def __str__(self) -> str:
         return self.value
 
+
+# Severity tags. Owned by DisplayService.error/warning rather than by each
+# caller, so they cannot drift. Bracketed because colour is the only other severity
+# marker and _TextStyler.color strips it off a TTY — piped and captured output keeps
+# the tag. Continuation lines are indented by len(prefix), so widths may differ.
+ERROR_PREFIX = "[ERROR] "
+WARNING_PREFIX = "[WARNING] "
 
 # Formatting
 THOUSAND = 1_000

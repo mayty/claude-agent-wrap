@@ -1,7 +1,7 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # claude-agent-wrap
 
-A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process (in the default provider), and lets each project customize its environment with a simple `Dockerfile.agent`.
+A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process (in the default provider), and lets each project customize its environment with a simple `.claude-agent-wrap/Dockerfile` and an optional host-side startup script.
 
 It packages Claude Code into a reproducible container image and exposes a single command — `agent` — whose first argument is a verb (`run`, `rebuild`, `create`, `stats`, `logs`, `inspect`, `cleanup`, `update`, `secrets`) that selects the operation. Volume mounts, credentials, and per-project image customization are handled automatically. Model traffic is routed through a provider plugin — all shipped providers use a [LiteLLM](https://github.com/BerriAI/litellm) sidecar. See [Providers](docs/providers.md) for available options.
 

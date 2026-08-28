@@ -80,8 +80,10 @@ class TelegramSidecar(Sidecar):
         )
         _, rc = docker_run("pull", self.config.image, capture=False, timeout=600)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to pull image {self.config.image}"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to pull image {self.config.image}"
+            )
+            raise SystemExit(1)
 
     def ensure(
         self,
@@ -190,25 +192,31 @@ class TelegramSidecar(Sidecar):
             return
         _, rc = docker_run("network", "create", self.config.network_name)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to create docker network {self.config.network_name}"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to create docker network "
+                f"{self.config.network_name}"
+            )
+            raise SystemExit(1)
 
     def _attach_to_network(self, network: str) -> None:
         _, rc = docker_run("network", "inspect", network)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) does not exist"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) "
+                "does not exist"
+            )
+            raise SystemExit(1)
 
         if self._is_on_network(network):
             return
 
         _, rc = docker_run("network", "connect", network, self.config.container_name)
         if rc != 0:
-            msg = (
+            self._display.error(
                 f"{TELEGRAM_SIDECAR_LABEL}: failed to attach "
                 f"{self.config.container_name} to network '{network}'"
             )
-            raise SystemExit(msg)
+            raise SystemExit(1)
 
     def _is_on_network(self, network: str) -> bool:
         fmt = "{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}"
@@ -273,8 +281,10 @@ class TelegramSidecar(Sidecar):
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to start {self.config.container_name}"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to start {self.config.container_name}"
+            )
+            raise SystemExit(1)
 
     def _health_poll(self) -> bool:
         def poll() -> tuple[PollResult, str]:

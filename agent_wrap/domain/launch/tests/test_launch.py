@@ -12,7 +12,13 @@ from unittest.mock import call as mocker_call
 
 import pytest
 
-from agent_wrap.constants import STATE_FILES
+from agent_wrap.constants import (
+    AGENT_ASSETS_DIR,
+    AGENT_DOCKERFILE_NAME,
+    AUTOSTART_LOGS_ENV,
+    LEGACY_AGENT_DOCKERFILE_NAME,
+    STATE_FILES,
+)
 from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
@@ -25,15 +31,24 @@ from agent_wrap.domain.launch.constants import (
     STATE_MOUNTS,
 )
 from agent_wrap.domain.launch.service import LaunchService
+from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.base import Sidecar
 from agent_wrap.domain.sidecars.service import SidecarService, SidecarTracker
+from agent_wrap.domain.startup.service import StartupService
 from agent_wrap.domain.updates.service import UpdateService
-from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
+from agent_wrap.exceptions import (
+    DockerfileDirectiveError,
+    HostMountError,
+    ProviderNotFoundError,
+    SecretNotFoundError,
+    StartupScriptError,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import TextIO
     from unittest.mock import Mock
 
@@ -52,50 +67,10 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
         provider_service=mocker.Mock(spec=ProviderService),
         sidecar_service=sidecar_svc,
         build_service=build_svc,
+        startup_service=mocker.Mock(spec=StartupService),
         display_service=mocker.Mock(spec=DisplayService),
+        logs_service=mocker.Mock(spec=LogsService),
     )
-
-
-def test_resolve_agent_name_use_base(tmp_path: Path, launch_svc: LaunchService) -> None:
-    result = launch_svc._resolve_agent_name(use_base=True, cwd=tmp_path)
-    assert result == tmp_path.name.lower()
-
-
-def test_resolve_agent_name_no_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:
-    result = launch_svc._resolve_agent_name(use_base=False, cwd=tmp_path)
-    assert result == tmp_path.name.lower()
-
-
-def test_resolve_agent_name_from_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
-    dockerfile.write_text("# agent-name: my-custom-agent\nFROM claude-agent\n")
-    result = launch_svc._resolve_agent_name(use_base=False, cwd=tmp_path)
-    assert result == "my-custom-agent"
-
-
-def test_resolve_agent_name_dockerfile_no_agent_name(
-    tmp_path: Path, launch_svc: LaunchService
-) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
-    dockerfile.write_text("FROM claude-agent\n")
-    result = launch_svc._resolve_agent_name(use_base=False, cwd=tmp_path)
-    assert result == tmp_path.name.lower()
-
-
-def test_resolve_agent_name_empty_sanitized(tmp_path: Path, launch_svc: LaunchService) -> None:
-    bad_dir = tmp_path / "---"
-    bad_dir.mkdir()
-    result = launch_svc._resolve_agent_name(use_base=True, cwd=bad_dir)
-    assert result == "agent"
-
-
-def test_resolve_agent_name_empty_value_after_colon(
-    tmp_path: Path, launch_svc: LaunchService
-) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
-    dockerfile.write_text("# agent-name: \nFROM claude-agent\n")
-    result = launch_svc._resolve_agent_name(use_base=False, cwd=tmp_path)
-    assert result == tmp_path.name.lower()
 
 
 def test_resolve_secrets_optional_missing_skips(
@@ -420,31 +395,59 @@ def test_build_volume_mounts_separates_two_instances(launch_svc: LaunchService) 
     ]
 
 
-def test_parse_directives_no_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:
-    fake_dockerfile = tmp_path / "Dockerfile"
-    user, ports, extras = launch_svc._parse_dockerfile_directives(fake_dockerfile)
+def test_parse_directives_base_image_is_not_parsed(
+    tmp_path: Path, launch_svc: LaunchService
+) -> None:
+    """The base image's Dockerfile shares its basename with the project one -- see the gate."""
+    resolved = ResolvedImage(
+        image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
+    )
+    user, ports, extras, startup = launch_svc._parse_dockerfile_directives(resolved)
     assert user == "ubuntu"
     assert ports == []
     assert extras == []
+    assert startup is None
+    launch_svc._build_service.parse_dockerfile_agent.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 def test_parse_directives_with_dockerfile(tmp_path: Path, launch_svc: LaunchService) -> None:
-    dockerfile = tmp_path / "Dockerfile.agent"
-    dockerfile.write_text(
-        "# agent-name: test\n"
-        "# agent-user: customuser\n"
-        "EXPOSE 8080\n"
-        "# agent-run-args: --cap-add SYS_ADMIN\n"
+    dockerfile = tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
+    resolved = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=dockerfile,
+        context=tmp_path,
+        agent_name="test",
     )
     launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
         agent_user="customuser",
         expose_ports=["8080"],
         extra_run_args=["--cap-add", "SYS_ADMIN"],
+        startup_timeout=10.0,
     )
-    user, ports, extras = launch_svc._parse_dockerfile_directives(dockerfile)
+    user, ports, extras, startup = launch_svc._parse_dockerfile_directives(resolved)
     assert user == "customuser"
     assert ports == ["-p", "127.0.0.1:8080:8080"]
     assert extras == ["--cap-add", "SYS_ADMIN"]
+    assert startup == 10.0
+    launch_svc._build_service.parse_dockerfile_agent.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        dockerfile, legacy=False
+    )
+
+
+def test_parse_directives_forwards_legacy_flag(tmp_path: Path, launch_svc: LaunchService) -> None:
+    dockerfile = tmp_path / LEGACY_AGENT_DOCKERFILE_NAME
+    resolved = ResolvedImage(
+        image="claude-agent-test",
+        dockerfile=dockerfile,
+        context=tmp_path,
+        agent_name="test",
+        is_legacy=True,
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo()  # pyrefly: ignore [missing-attribute]
+    launch_svc._parse_dockerfile_directives(resolved)
+    launch_svc._build_service.parse_dockerfile_agent.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        dockerfile, legacy=True
+    )
 
 
 def test_host_network_env_not_set(launch_svc: LaunchService) -> None:
@@ -489,7 +492,7 @@ def test_host_network_wsl_agent_network_specified(
     use, _, ports = launch_svc._resolve_host_network("mynet", ["-p", "8080:8080"])
     assert use is False
     launch_svc._display.warning.assert_any_call(  # pyrefly: ignore [missing-attribute]
-        "AGENT_USE_HOST_NETWORK ignored — Dockerfile.agent already "
+        "AGENT_USE_HOST_NETWORK ignored — the project Dockerfile already "
         "specifies --network via agent-run-args."
     )
     assert ports == ["-p", "8080:8080"]
@@ -499,7 +502,10 @@ def _stub_provider(mocker: pytest_mock.MockFixture, launch_svc: LaunchService) -
     """Point launch_svc's provider service at a provider declaring one sidecar."""
     provider = mocker.Mock(spec=Provider)
     provider.name = "litellm-test"
-    provider.sidecar.return_value = mocker.Mock(spec=Sidecar)
+    provider.sidecar.return_value = mocker.Mock(
+        spec=Sidecar, cold_start_time=120.0, short_circuit_time=2.0
+    )
+    provider.sidecar.return_value.container_name = "agent-wrap-litellm-test"
     provider.sidecar.return_value.required_secrets.return_value = [("api_key", "Test Key")]
     launch_svc._provider_service.get_provider.return_value = provider  # pyrefly: ignore [missing-attribute]
     return provider
@@ -641,6 +647,8 @@ def test_prepare_for_launch_registers_one_entry_per_sidecar_container(
         instance_id="inst-1",
         telegram_available=True,
         per_sidecar_secrets={sc: {} for sc in two_sidecars},
+        startup_timeout=None,
+        agent_name="test",
     )
 
     assert prepared.running_handles == {
@@ -667,6 +675,8 @@ def test_prepare_for_launch_registers_nothing_when_an_ensure_fails(
             instance_id="inst-1",
             telegram_available=True,
             per_sidecar_secrets={sc: {} for sc in two_sidecars},
+            startup_timeout=None,
+            agent_name="test",
         )
 
     tracker.register_running.assert_not_called()
@@ -929,3 +939,411 @@ def test_prepare_config_precreates_every_project_mount_source(
             INSTANCE_STATE_FILES,
         )
     )
+
+
+def test_launch_declared_mount_failure_aborts_before_sidecars(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent-test",
+        dockerfile=tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME,
+        context=tmp_path,
+        agent_name="test",
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        extra_run_args=["-v", "/srv/models:/models:ro"]
+    )
+    launch_svc._config.prepare_declared_mounts.side_effect = HostMountError(  # pyrefly: ignore [missing-attribute]
+        "read-only mounts whose host source does not exist"
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    launch_svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        "read-only mounts whose host source does not exist"
+    )
+    # The provider is resolved at the top of launch() now, so "before sidecars" is
+    # asserted on the first thing sidecar assembly does instead.
+    launch_svc._secrets.read.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+
+
+def test_launch_passes_declared_run_args_to_config(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent-test",
+        dockerfile=tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME,
+        context=tmp_path,
+        agent_name="test",
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        extra_run_args=["-v", "/workspace/node_modules"]
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
+    # declaration rather than on get_provider, which now runs before that phase.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
+
+    launch_svc.launch(use_base=False, claude_args=[])
+
+    launch_svc._config.prepare_declared_mounts.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        ["-v", "/workspace/node_modules"], tmp_path
+    )
+
+
+def test_prepare_for_launch_runs_startup_script_before_registering(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    """
+    The script runs after every ensure() and before registration.
+
+    Registration is all-or-nothing, so a failing script must leave nothing registered.
+    """
+    calls: list[str] = []
+    no_flags: list[str] = []
+
+    def _note(name: str) -> Callable[..., list[str]]:
+        def _record(*_args: object, **_kwargs: object) -> list[str]:
+            calls.append(name)
+            return no_flags
+
+        return _record
+
+    for sc in two_sidecars:
+        sc.ensure.side_effect = _note("ensure")
+    launch_svc._startup.run.side_effect = _note("startup")  # pyrefly: ignore [missing-attribute]
+    tracker.register_running.side_effect = _note("register")
+
+    launch_svc._prepare_for_launch(
+        two_sidecars,
+        tracker,
+        net=(False, None),
+        instance_id="inst-1",
+        telegram_available=True,
+        per_sidecar_secrets={sc: {} for sc in two_sidecars},
+        startup_timeout=7.5,
+        agent_name="proj",
+    )
+
+    assert calls == ["ensure", "ensure", "startup", "register", "register"]
+    launch_svc._startup.run.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        Path.cwd(), timeout=7.5, agent_name="proj", instance_id="inst-1"
+    )
+
+
+def test_prepare_for_launch_skips_startup_when_not_enabled(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    no_flags: list[str] = []
+    for sc in two_sidecars:
+        sc.ensure.return_value = no_flags
+
+    launch_svc._prepare_for_launch(
+        two_sidecars,
+        tracker,
+        net=(False, None),
+        instance_id="inst-1",
+        telegram_available=True,
+        per_sidecar_secrets={sc: {} for sc in two_sidecars},
+        startup_timeout=None,
+        agent_name="proj",
+    )
+
+    launch_svc._startup.run.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_prepare_for_launch_registers_nothing_when_startup_fails(
+    launch_svc: LaunchService, two_sidecars: list[Mock], tracker: Mock
+) -> None:
+    no_flags: list[str] = []
+    for sc in two_sidecars:
+        sc.ensure.return_value = no_flags
+    launch_svc._startup.run.side_effect = StartupScriptError("boom")  # pyrefly: ignore [missing-attribute]
+
+    with pytest.raises(StartupScriptError):
+        launch_svc._prepare_for_launch(
+            two_sidecars,
+            tracker,
+            net=(False, None),
+            instance_id="inst-1",
+            telegram_available=True,
+            per_sidecar_secrets={sc: {} for sc in two_sidecars},
+            startup_timeout=1.0,
+            agent_name="proj",
+        )
+
+    tracker.register_running.assert_not_called()
+
+
+def _stub_launch_up_to_prepare(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    *,
+    startup_timeout: float | None,
+    is_legacy: bool = False,
+) -> None:
+    """Drive launch() far enough to reach the under-lock prepare phase."""
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent-test",
+        dockerfile=tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME,
+        context=tmp_path,
+        agent_name="test",
+        is_legacy=is_legacy,
+    )
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        startup_timeout=startup_timeout
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    # priority_lock opens these for real, so a Mock path will not do.
+    trk = mocker.Mock(spec=SidecarTracker)
+    trk.lock_path = tmp_path / "sidecars.lock"
+    trk.start_waiters_dir = tmp_path / "start-waiters"
+    launch_svc._sidecar_service.create_tracker.return_value = trk  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_aborts_when_startup_script_fails(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=5.0)
+    provider = _stub_provider(mocker, launch_svc)
+    launch_svc._secrets.read.return_value = "secret-value"  # pyrefly: ignore [missing-attribute]
+    no_secrets: list[tuple[str, str]] = []
+    launch_svc._sidecar_service.telegram_required_secrets.return_value = no_secrets  # pyrefly: ignore [missing-attribute]
+    no_flags: list[str] = []
+    provider.sidecar.return_value.ensure.return_value = no_flags
+    launch_svc._startup.run.side_effect = StartupScriptError("Error: startup failed")  # pyrefly: ignore [missing-attribute]
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    launch_svc._display.error.assert_any_call("Error: startup failed")  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+    # Teardown still runs for every sidecar this launch declared.
+    launch_svc._sidecar_service.create_tracker.return_value.clear_running.assert_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_reports_a_malformed_startup_directive(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=None)
+    launch_svc._build_service.parse_dockerfile_agent.side_effect = DockerfileDirectiveError(  # pyrefly: ignore [missing-attribute]
+        "Error: agent-enable-startup value 'maybe' is not understood."
+    )
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    launch_svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        "Error: agent-enable-startup value 'maybe' is not understood."
+    )
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize("is_legacy", [False, True])
+def test_launch_warns_about_an_unused_startup_script(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    is_legacy: bool,  # noqa: FBT001
+) -> None:
+    _stub_launch_up_to_prepare(
+        tmp_path, mocker, launch_svc, startup_timeout=None, is_legacy=is_legacy
+    )
+    # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
+    # declaration rather than on get_provider, which now runs before that phase.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
+
+    launch_svc.launch(use_base=False, claude_args=[])
+
+    launch_svc._startup.warn_if_unused.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        tmp_path, is_legacy=is_legacy
+    )
+
+
+def test_launch_base_flag_neither_runs_nor_warns_about_startup(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    """--base ignores project customization, so neither half of the feature applies."""
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent",
+        dockerfile=tmp_path / "Dockerfile",
+        context=tmp_path,
+    )
+    mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.image_exists",
+        return_value=True,
+        autospec=True,
+    )
+    # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
+    # declaration rather than on get_provider, which now runs before that phase.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
+
+    launch_svc.launch(use_base=True, claude_args=[])
+
+    launch_svc._startup.warn_if_unused.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    launch_svc._startup.run.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.fixture
+def autostart_svc(mocker: pytest_mock.MockFixture, launch_svc: LaunchService) -> LaunchService:
+    """Return a launch service whose provider wants the viewer and whose viewer starts."""
+    provider = mocker.Mock(spec=Provider, autostart_logs_viewer=True)
+    launch_svc._provider_service.get_provider.return_value = provider  # pyrefly: ignore [missing-attribute]
+    launch_svc._logs.autostart.return_value = True  # pyrefly: ignore [missing-attribute]
+    return launch_svc
+
+
+def test_autostart_logs_starts_the_viewer_by_default(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+    autostart_svc._display.warning.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_treats_an_empty_value_as_unset(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """Exporting the var with no value reads as clearing it, not as opting out."""
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, "")
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "FALSE"])
+def test_autostart_logs_env_opt_out(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService, value: str
+) -> None:
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, value)
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_skipped_when_the_provider_declines(
+    monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider = mocker.Mock(spec=Provider, autostart_logs_viewer=False)
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_skipped_when_headless(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=True)
+
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_failure_warns_and_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._logs.autostart.return_value = False  # pyrefly: ignore [missing-attribute]
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        "could not start the logs viewer — continuing without it. "
+        "Today's usage will be missing from the statusline; "
+        "run `agent logs` to start it by hand."
+    )
+
+
+def test_launch_autostarts_the_viewer_before_the_update_check(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """
+    The viewer's cold start is a full walk of the log tree, so it is kicked off before
+    anything that costs wall clock -- including the check that can abort this launch.
+    """
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._updates.check_updates.return_value = True  # pyrefly: ignore [missing-attribute]
+
+    assert autostart_svc.launch(use_base=False, claude_args=[]) == 0
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_autostarts_the_viewer_before_resolving_the_image(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: pytest_mock.MockFixture,
+    autostart_svc: LaunchService,
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    autostart_svc._build_service.resolve_image.side_effect = SystemExit("no image here")  # pyrefly: ignore [missing-attribute]
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    assert autostart_svc.launch(use_base=False, claude_args=[]) == 1
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+
+
+def test_launch_does_not_autostart_the_viewer_when_headless(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """Nothing renders a statusline headlessly, so there is no usage segment to feed."""
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    # Headless already skips the update check, so the image resolve is the stop point.
+    autostart_svc._build_service.resolve_image.side_effect = SystemExit("no image here")  # pyrefly: ignore [missing-attribute]
+
+    assert autostart_svc.launch(use_base=False, claude_args=["-p", "hello"]) == 1
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_reports_an_unresolvable_provider_before_autostarting(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """The provider gates the autostart, so a failure to resolve it precedes everything."""
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # pyrefly: ignore [missing-attribute]
+        "Unknown provider: bogus"
+    )
+
+    assert autostart_svc.launch(use_base=False, claude_args=[]) == 1
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    autostart_svc._updates.check_updates.assert_not_called()  # pyrefly: ignore [missing-attribute]

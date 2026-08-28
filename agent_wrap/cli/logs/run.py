@@ -54,7 +54,7 @@ def run(args: list[str]) -> int:
 
     if ns.stop:
         if ns.foreground or ns.port != LOGS_DEFAULT_PORT:
-            services.display_service.error("usage: agent logs --stop (takes no other arguments)")
+            services.display_service.error("agent logs --stop (takes no other arguments)")
             return 1
         return services.logs_service.stop_daemon()
 
@@ -63,7 +63,14 @@ def run(args: list[str]) -> int:
 
     running = services.logs_service.running_server()
     if running is not None:
-        services.display_service.info(services.logs_service.connect_line(running["port"]))
+        # A viewer that has been claimed but is not listening yet is reported as such
+        # rather than being started again -- the port in its claim is still provisional.
+        line = (
+            services.logs_service.starting_line(running["port"])
+            if running["starting"]
+            else services.logs_service.connect_line(running["port"])
+        )
+        services.display_service.info(line)
         return 0
 
     return services.logs_service.spawn_background(ns.port)

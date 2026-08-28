@@ -118,3 +118,15 @@ def test_only_anthropic_sub_disables_nonessential_traffic_opt_out(svc: ProviderS
         provider = svc.get_provider(name)
         expected = name != "litellm-anthropic-sub"
         assert provider.disable_nonessential_traffic is expected, name
+
+
+def test_only_anthropic_sub_opts_out_of_the_logs_viewer(svc: ProviderService):
+    """
+    The viewer exists to feed the statusline's token/cost segment. litellm-anthropic-sub
+    is the only provider whose statusline shows seat consumption instead, so it is the
+    only one with nothing to feed.
+    """
+    for name in svc.discover_providers():
+        provider = svc.get_provider(name)
+        expected = name != "litellm-anthropic-sub"
+        assert provider.autostart_logs_viewer is expected, name

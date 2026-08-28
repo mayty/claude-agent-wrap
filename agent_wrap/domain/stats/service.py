@@ -219,7 +219,7 @@ class StatsService:
         * a bound plus ``--days 0`` → open on the other side
         """
         if from_date is not None and until_date is not None and days_given:
-            return WindowError("usage: at most two of --from, --until, --days may be given")
+            return WindowError("at most two of --from, --until, --days may be given")
 
         # A count of 0 means "unlimited" — it imposes no bound on the open side.
         lo, hi = self._combine_bounds(from_date, until_date, days or None, days_given=days_given)
@@ -228,7 +228,7 @@ class StatsService:
         lo_iso = None if lo == date.min else lo.isoformat()
         hi_iso = None if hi == date.max else hi.isoformat()
         if lo_iso is not None and hi_iso is not None and lo_iso > hi_iso:
-            return WindowError("usage: --from date is after --until date")
+            return WindowError("--from date is after --until date")
         return lo_iso, hi_iso
 
     def _combine_bounds(

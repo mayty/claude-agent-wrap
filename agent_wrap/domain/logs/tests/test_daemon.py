@@ -43,7 +43,19 @@ def test_read_state_rejects_wrong_shape(tmp_path: Path):
 def test_write_thenread_state_round_trip():
     write_state(pid=4242, port=8765)
     state = read_state()
-    assert state == {"pid": 4242, "port": 8765}
+    assert state == {"pid": 4242, "port": 8765, "starting": False}
+
+
+def test_write_then_read_state_round_trip_keeps_the_starting_claim():
+    write_state(pid=4242, port=8765, starting=True)
+    assert read_state() == {"pid": 4242, "port": 8765, "starting": True}
+
+
+def test_read_state_treats_a_file_without_starting_as_listening():
+    """A state file written before `starting` existed means "was listening"."""
+    state_file().parent.mkdir(parents=True, exist_ok=True)
+    state_file().write_text(json.dumps({"pid": 4242, "port": 8765}), encoding="utf-8")
+    assert read_state() == {"pid": 4242, "port": 8765, "starting": False}
 
 
 def test_log_info_prints_timestamped_message(capsys: pytest.CaptureFixture[str]):

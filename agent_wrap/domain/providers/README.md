@@ -58,6 +58,7 @@ Subclass `Provider` (`agent_wrap/domain/providers/base.py`) and override:
 | `secret_description` (class attr) | Human-readable description of the upstream credential. Drives `required_secrets()`, which returns `[("api_key", secret_description)]` — leave empty for an upstream needing no secret, or when the credential the agent needs is one it already holds itself (e.g. an existing OAuth login) rather than a string this provider could store. |
 | `get_sidecar_env(secrets)` | Env vars for the sidecar container. *secrets* is keyed by the names `required_secrets()` declared, so read the upstream key from `secrets["api_key"]`. |
 | `get_agent_env(master_key, base_url)` | Env vars for the agent container. *base_url* already carries the container name and the resolved port — never hard-code either. |
+| `autostart_logs_viewer` (class attr, default `True`) | Whether `agent run` starts the `agent logs` background viewer for this provider. That viewer maintains the usage totals the bundled statusline reads, so override to `False` only when this provider's statusline segment is fed from somewhere else. |
 | `on_started(master_key)` / `on_stopping(master_key)` (optional) | Run once when the sidecar starts/stops — e.g. approve/un-approve the master key in `.claude.json`. Default no-op. |
 
 Two attributes usually need no override: `container_name` defaults to `agent-wrap-<name>` (assign a literal to pin it), and `internal_port` is only the *preferred base* the cold-start scan begins at — providers share one base and do not need distinct values.
