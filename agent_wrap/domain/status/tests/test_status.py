@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.constants import BASE_IMAGE_NAME
+from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME
 from agent_wrap.domain.build.models import ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
@@ -120,6 +120,9 @@ def sidecar_mock(mocker: pytest_mock.MockFixture) -> Mock:
 def provider_mock(mocker: pytest_mock.MockFixture) -> Mock:
     mock = mocker.create_autospec(ProviderService, instance=True)
     mock.get_provider.return_value.name = "litellm-bedrock"
+    # Seeded explicitly: autospec would leave this a truthy Mock, so the default-on case
+    # would pass even if the flag were never read.
+    mock.get_provider.return_value.autostart_logs_viewer = True
     return mock
 
 
@@ -336,6 +339,67 @@ def test_unresolvable_default_provider_does_not_abort(
     provider_mock.get_provider.side_effect = RuntimeError("bad AGENT_PROVIDER")
     report = service.build_report()
     assert [row.is_default for row in report.providers] == [False, False]
+
+
+def test_autostart_logs_is_on_when_nothing_opts_out(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart = service.build_report().logs_autostart
+    assert (autostart.requested, autostart.effective) == (None, True)
+    assert autostart.declining_provider == ""
+
+
+def test_autostart_logs_treats_an_empty_value_as_unset(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opposite polarity to host networking: unset and empty both mean on."""
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, "")
+    autostart = service.build_report().logs_autostart
+    assert (autostart.requested, autostart.effective) == (None, True)
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no"])
+def test_autostart_logs_off_by_env(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, value)
+    autostart = service.build_report().logs_autostart
+    assert (autostart.requested, autostart.effective) == (False, False)
+    assert autostart.declining_provider == ""
+
+
+def test_autostart_logs_off_because_the_provider_declines(
+    service: InspectService, provider_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider_mock.get_provider.return_value.autostart_logs_viewer = False
+    provider_mock.get_provider.return_value.name = "litellm-anthropic-sub"
+    autostart = service.build_report().logs_autostart
+    assert (autostart.requested, autostart.effective) == (None, False)
+    assert autostart.declining_provider == "litellm-anthropic-sub"
+
+
+def test_autostart_logs_requested_but_the_provider_declines(
+    service: InspectService, provider_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Set-and-ignored is the case a plain on/off row would misreport."""
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, "1")
+    provider_mock.get_provider.return_value.autostart_logs_viewer = False
+    provider_mock.get_provider.return_value.name = "litellm-anthropic-sub"
+    autostart = service.build_report().logs_autostart
+    assert (autostart.requested, autostart.effective) == (True, False)
+    assert autostart.declining_provider == "litellm-anthropic-sub"
+
+
+def test_autostart_logs_falls_back_to_the_env_when_the_provider_is_unresolvable(
+    service: InspectService, provider_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that cannot be resolved gates nothing, and must not abort the report."""
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider_mock.get_provider.side_effect = RuntimeError("bad AGENT_PROVIDER")
+    autostart = service.build_report().logs_autostart
+    assert (autostart.effective, autostart.declining_provider) == (True, "")
 
 
 def test_host_network_requested_but_ignored_off_wsl(

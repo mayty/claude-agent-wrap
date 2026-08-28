@@ -45,6 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import (
+    AUTOSTART_LOGS_ENV,
     BASE_IMAGE_NAME,
     DAY_START_HOURS,
     LITELLM_LOGS_DIRNAME,
@@ -61,6 +62,7 @@ from agent_wrap.domain.status.constants import (
 )
 from agent_wrap.domain.status.models import (
     AgentRow,
+    AutostartRow,
     ClaudeVersions,
     DockerStatus,
     EnvironmentRow,
@@ -74,13 +76,14 @@ from agent_wrap.domain.status.models import (
     WrapperRow,
 )
 from agent_wrap.lib import docker_utils
-from agent_wrap.lib.utils import directory_size, is_truthy_env
+from agent_wrap.lib.utils import directory_size, is_truthy_env, optional_truthy_env
 
 if TYPE_CHECKING:
     from agent_wrap.domain.build.models import ResolvedImage
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.logs.service import LogsService
+    from agent_wrap.domain.providers.base import Provider
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.secrets.service import SecretsService
     from agent_wrap.domain.sidecars.models import AgentContainer, SidecarContainer
@@ -159,6 +162,7 @@ class InspectService:
             agents=self._agent_rows(found_agents),
             queued_launches=registry.waiting,
             viewer=self._viewer_row(),
+            logs_autostart=self._autostart_row(),
             providers=self._provider_rows(),
             wrapper=self._wrapper_row(),
             environment=self._environment_row(
@@ -335,15 +339,46 @@ class InspectService:
             for name, missing in sorted(self._secrets.missing_keys_by_sidecar().items())
         ]
 
+    def _default_provider(self) -> Provider | None:
+        """
+        Resolve the provider ``agent run`` would use, or None when it cannot be resolved.
+
+        An unresolvable provider (bad AGENT_PROVIDER, broken plugin) must not abort the
+        report — the provider list itself still shows what exists, and the missing default
+        is visible by its absence.
+        """
+        try:
+            return self._providers.get_provider()
+        except Exception:  # noqa: BLE001
+            return None
+
     def _default_provider_name(self) -> str:
         """Name of the provider ``agent run`` would use, or "" if it cannot resolve."""
-        try:
-            return self._providers.get_provider().name
-        except Exception:  # noqa: BLE001
-            # An unresolvable provider (bad AGENT_PROVIDER, broken plugin) must not
-            # abort the report — the provider list itself still shows what exists, and
-            # the missing default is visible by its absence.
-            return ""
+        provider = self._default_provider()
+        return provider.name if provider is not None else ""
+
+    def _autostart_row(self) -> AutostartRow:
+        """
+        Report whether the next non-headless ``agent run`` would start the logs viewer.
+
+        Requested-vs-effective, for the same reason ``AGENT_USE_HOST_NETWORK`` is reported
+        that way: the variable can be set and still not apply, which otherwise reads as
+        the setting simply not working. Here the gate is the provider rather than the
+        host — one whose statusline segment is fed from somewhere else has no use for the
+        viewer and declines it.
+
+        Note the polarity is the opposite of host networking's: this is an opt-out, so an
+        unset variable means on, and only an explicit falsey value turns it off.
+        """
+        requested = optional_truthy_env(os.environ.get(AUTOSTART_LOGS_ENV, ""))
+        provider = self._default_provider()
+        # An unresolved provider gates nothing: the variable alone is all that can be said.
+        declines = provider is not None and not provider.autostart_logs_viewer
+        return AutostartRow(
+            requested=requested,
+            effective=requested is not False and not declines,
+            declining_provider=provider.name if declines and provider is not None else "",
+        )
 
     def _wrapper_row(self) -> WrapperRow:
         """Resolve the installed wrapper's git identity, locally."""

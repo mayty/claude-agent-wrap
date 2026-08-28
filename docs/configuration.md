@@ -115,6 +115,8 @@ AGENT_AUTOSTART_LOGS=0 agent run
 
 Two launches skip the autostart regardless of this variable. A headless `agent run` (`-p`/`--print`/`--bare`/`--safe-mode`) renders no statusline, so there is no segment to feed; and under the [`litellm-anthropic-sub`](providers.md) provider the statusline shows subscription rate limits instead of token totals, so the file the viewer maintains has no reader. `agent logs` still starts the viewer on demand in both cases.
 
+[`agent inspect`](shell-commands.md#agent-inspect) reports the result as a `logs viewer autostart` row, directly under the viewer's own state: `on`, `OFF (AGENT_AUTOSTART_LOGS)` when you turned it off, or `OFF (<provider> does not use it)` when the provider is what declines it. Setting the variable to `1` under a provider that declines reads as `requested but IGNORED`, flagged in yellow — that combination does nothing, and a plain `off` would leave you guessing which of the two decided it. The report cannot account for headless launches, since that depends on one launch's arguments.
+
 ## `AGENT_SPELLCHECK` (prompt spell checking)
 
 Claude Code can underline misspelled words in the prompt input as you type, but it ships no spell checker of its own — it drives an external one. The wrapper supplies that: `hunspell` and the configured dictionaries are installed in the base image, and a `spellcheck` block is injected into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch (see [Injected settings](container-environment.md#injected-settings-not-env-vars)).

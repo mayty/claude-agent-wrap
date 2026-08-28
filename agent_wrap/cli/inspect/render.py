@@ -42,7 +42,7 @@ from agent_wrap.cli.inspect.constants import (
     SIDECAR_HEADERS,
     UNKNOWN,
 )
-from agent_wrap.constants import DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
+from agent_wrap.constants import AUTOSTART_LOGS_ENV, DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem
 
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.status.models import (
         AgentRow,
+        AutostartRow,
         EnvironmentRow,
         InspectReport,
         ProjectImageRow,
@@ -203,7 +204,12 @@ class Details:
     """
 
     @staticmethod
-    def logs_rows(viewer: ViewerRow, storage: StorageRow, display: DisplayService) -> list[RowItem]:
+    def logs_rows(
+        viewer: ViewerRow,
+        autostart: AutostartRow,
+        storage: StorageRow,
+        display: DisplayService,
+    ) -> list[RowItem]:
         """Report the logs viewer's liveness and the on-disk footprint of what it serves."""
         if viewer.running:
             detail = f"(pid {viewer.pid}" if viewer.pid is not None else "("
@@ -232,7 +238,31 @@ class Details:
         text = f"{size} · {storage.projects_registered} project(s) registered"
         if storage.projects_stale:
             text += f", {storage.projects_stale} with no logs directory"
-        return [viewer_row, Cells.row("logs storage", text)]
+        autostart_text, autostart_style = Details.logs_autostart(autostart)
+        return [
+            viewer_row,
+            Cells.row("logs viewer autostart", autostart_text, autostart_style),
+            Cells.row("logs storage", text),
+        ]
+
+    @staticmethod
+    def logs_autostart(autostart: AutostartRow) -> tuple[str, Ansi]:
+        """
+        Whether the next `agent run` would start the viewer, and what decides it.
+
+        The casing is inverted relative to `host network`: this feature is on by default,
+        so "off" is the state worth noticing. Requested-but-ignored is flagged for the
+        same reason there — a variable that is set and does nothing otherwise reads as the
+        setting simply not working.
+        """
+        if autostart.effective:
+            return "on", Ansi.NONE
+        if autostart.requested is False:
+            return f"OFF ({AUTOSTART_LOGS_ENV})", Ansi.NONE
+        reason = f"{autostart.declining_provider} does not use it"
+        if autostart.requested:
+            return f"requested but IGNORED ({reason})", Ansi.BOLD_YELLOW
+        return f"OFF ({reason})", Ansi.NONE
 
     @staticmethod
     def secrets_rows(rows: list[ProviderRow]) -> list[RowItem]:
@@ -399,7 +429,7 @@ class Details:
     def table(report: InspectReport, display: DisplayService) -> list[str]:
         """Render the three groups as one table, dividing group from group."""
         groups = [
-            Details.logs_rows(report.viewer, report.storage, display),
+            Details.logs_rows(report.viewer, report.logs_autostart, report.storage, display),
             Details.secrets_rows(report.providers),
             Details.wrapper_rows(report.wrapper, report.environment, report.project),
         ]

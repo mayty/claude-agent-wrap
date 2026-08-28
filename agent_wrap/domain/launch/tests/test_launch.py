@@ -15,6 +15,7 @@ import pytest
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
     AGENT_DOCKERFILE_NAME,
+    AUTOSTART_LOGS_ENV,
     LEGACY_AGENT_DOCKERFILE_NAME,
     STATE_FILES,
 )
@@ -23,7 +24,6 @@ from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.constants import (
-    AUTOSTART_LOGS_ENV,
     EXTERNAL_STATE_MOUNTS,
     INSTANCE_STATE_FILES,
     INSTANCE_STATE_MOUNTS,

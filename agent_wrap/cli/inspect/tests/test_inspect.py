@@ -15,6 +15,7 @@ from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.status.models import (
     AgentRow,
+    AutostartRow,
     DockerStatus,
     EnvironmentRow,
     InspectReport,
@@ -83,6 +84,7 @@ def _report(  # noqa: PLR0913
     logs_bytes: int | None = 1_033_465_471,
     warnings: list[str] | None = None,
     viewer: ViewerRow | None = None,
+    logs_autostart: AutostartRow | None = None,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -91,6 +93,8 @@ def _report(  # noqa: PLR0913
         sidecars=[_SIDECAR] if docker_available else [],
         agents=[_AGENT] if docker_available else [],
         queued_launches=queued or [],
+        logs_autostart=logs_autostart
+        or AutostartRow(requested=None, effective=True, declining_provider=""),
         viewer=viewer
         or ViewerRow(
             running=True,
@@ -317,6 +321,7 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
     out = _stdout(display_mock_service)
     for label in (
         "logs viewer",
+        "logs viewer autostart",
         "logs storage",
         "wrapper",
         "base image",
@@ -346,6 +351,49 @@ def test_human_output_reports_a_starting_viewer_without_a_connect_line(
     out = _stdout(display_mock_service)
     assert "starting" in out
     assert "http://127.0.0.1" not in out
+
+
+def test_human_output_reports_autostart_off_by_env(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        logs_autostart=AutostartRow(requested=False, effective=False, declining_provider="")
+    )
+    run([])
+    assert "OFF (AGENT_AUTOSTART_LOGS)" in _stdout(display_mock_service)
+
+
+def test_human_output_flags_an_autostart_the_provider_ignores(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """
+    Set-and-ignored has to say so, not read as plain "off".
+
+    The same reasoning as the `host network` row's requested-but-IGNORED state: a
+    variable that is set and does nothing otherwise looks like a broken feature.
+    """
+    inspect_mock.build_report.return_value = _report(
+        logs_autostart=AutostartRow(
+            requested=True, effective=False, declining_provider="litellm-anthropic-sub"
+        )
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "requested but IGNORED (litellm-anthropic-sub does not use it)" in out
+
+
+def test_human_output_names_the_provider_that_declines_the_autostart(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        logs_autostart=AutostartRow(
+            requested=None, effective=False, declining_provider="litellm-anthropic-sub"
+        )
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "OFF (litellm-anthropic-sub does not use it)" in out
+    assert "IGNORED" not in out
 
 
 @pytest.mark.usefixtures("inspect_mock")

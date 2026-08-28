@@ -87,6 +87,30 @@ class ViewerRow:
 
 
 @dataclass(frozen=True)
+class AutostartRow:
+    """
+    Whether `agent run` would start the logs viewer, and what decides that.
+
+    Kept apart from :class:`ViewerRow`, which reports the viewer process's own state: this
+    is launch policy, read from the environment and the default provider rather than from
+    anything running.
+
+    Invariant the renderer relies on: *effective* is False only when *requested* is False
+    or *declining_provider* is non-empty, so there is always a reason to name.
+    """
+
+    #: Tri-state AGENT_AUTOSTART_LOGS: None when unset, else its truthiness. The autostart
+    #: is on by default, so "unset" and "explicitly off" are different answers here.
+    requested: bool | None
+    #: Whether the next non-headless `agent run` would actually start the viewer. Headless
+    #: is a property of one launch's arguments, so it cannot be answered by a report.
+    effective: bool
+    #: The default provider's name when that provider is what turns the autostart off,
+    #: else "" -- including when the provider could not be resolved at all.
+    declining_provider: str
+
+
+@dataclass(frozen=True)
 class ProviderRow:
     """One known sidecar/provider and whether its secrets are all stored."""
 
@@ -180,6 +204,8 @@ class InspectReport:
     #: Instance ids queued for the shared sidecar lock (launches mid-start).
     queued_launches: list[str]
     viewer: ViewerRow
+    #: Whether the next `agent run` would start that viewer, and what decides it.
+    logs_autostart: AutostartRow
     providers: list[ProviderRow]
     wrapper: WrapperRow
     environment: EnvironmentRow

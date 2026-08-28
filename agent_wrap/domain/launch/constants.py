@@ -62,11 +62,6 @@ INSTANCE_STATE_FILES = (
 # one by liveness alone -- the grace period is what tells them apart.
 INSTANCE_SWEEP_GRACE_SECONDS = 3600
 
-#: Opt-out for starting the `agent logs` viewer on launch. Absent or empty means unset,
-#: which is on -- exporting the var with no value reads as clearing it, not as asking for
-#: the feature to be off.
-AUTOSTART_LOGS_ENV = "AGENT_AUTOSTART_LOGS"
-
 #: Claude Code flags marking a non-interactive invocation — the Telegram sidecar and the
 #: self-update prompt are both skipped under these.
 HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})

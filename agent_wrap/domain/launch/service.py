@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     AGENT_WRAP_MOUNT,
+    AUTOSTART_LOGS_ENV,
     GLOBAL_CONFIG_DIR,
     INSTANCE_ID_LABEL,
     OPS_DIR,
@@ -27,7 +28,6 @@ from agent_wrap.constants import (
     WORKSPACE_MOUNT,
 )
 from agent_wrap.domain.launch.constants import (
-    AUTOSTART_LOGS_ENV,
     EXPECTED_QUEUE_DEPTH,
     EXTERNAL_STATE_MOUNTS,
     HEADLESS_FLAGS,
@@ -52,7 +52,12 @@ from agent_wrap.exceptions import (
 )
 from agent_wrap.lib import docker_utils
 from agent_wrap.lib.priority_lock import Priority, priority_lock
-from agent_wrap.lib.utils import generate_uuid, is_truthy_env, sanitize_name
+from agent_wrap.lib.utils import (
+    generate_uuid,
+    is_truthy_env,
+    optional_truthy_env,
+    sanitize_name,
+)
 
 if TYPE_CHECKING:
     from typing import TextIO
@@ -253,8 +258,7 @@ class LaunchService:
         """
         if headless or not provider.autostart_logs_viewer:
             return
-        raw = os.environ.get(AUTOSTART_LOGS_ENV, "")
-        if raw and not is_truthy_env(raw):
+        if optional_truthy_env(os.environ.get(AUTOSTART_LOGS_ENV, "")) is False:
             return
         if not self._logs.autostart():
             self._display.warning(

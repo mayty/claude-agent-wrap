@@ -62,6 +62,12 @@ TELEGRAM_IMAGE = (
 # tool_dir (and thus state file) as the parent that launched it.
 LOGS_TOOL_DIR_ENV = "AGENT_LOGS_TOOL_DIR"
 
+# Opt-out for starting the logs viewer on `agent run`. Absent or empty means unset, which
+# is on -- exporting the var with no value reads as clearing it, not as asking for the
+# feature to be off. Read by the launcher that acts on it and by `agent inspect`, which
+# reports whether it is actually in effect.
+AUTOSTART_LOGS_ENV = "AGENT_AUTOSTART_LOGS"
+
 # Port range for the local web viewer.
 LOGS_DEFAULT_PORT = 8765
 LOGS_MIN_PORT = 1
