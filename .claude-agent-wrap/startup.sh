@@ -47,6 +47,7 @@ else
     echo "startup: project image has Claude Code v$project, base has v$base -- rebuilding."
 fi
 
-# exec: the rebuild's exit code becomes this script's, and the PID the wrapper times
-# out is the rebuild itself rather than a shell that would orphan it.
+# exec: the rebuild's exit code becomes this script's, with no shell in between to
+# translate it. The wrapper's timeout signals this script's whole process group, so the
+# rebuild -- and the `docker build` under it -- are torn down either way.
 exec "$AGENT_BINARY" rebuild

@@ -113,6 +113,7 @@ Rules to write it against:
 - **cwd is the project root.** The interpreter comes from the shebang; with none it runs under `/bin/sh`, so write `#!/usr/bin/env bash` if you use bash features. No execute bit is needed.
 - **Non-interactive** — stdin is closed. It cannot prompt.
 - **Any failure aborts the launch**: non-zero exit, timeout, or an unusable interpreter.
+- **Nothing it starts outlives the budget.** The script runs in its own process group; on a timeout (or Ctrl-C) the whole group is signalled, `SIGTERM` then `SIGKILL`. Do not use the script to leave a background daemon behind — start what the container needs as a container.
 - Env it receives, on top of the host environment: `AGENT_NAME`, `AGENT_INSTANCE_ID`, `AGENT_SIDECAR_NETWORK`, and `AGENT_BINARY` (absolute path to the `agent` executable). Call only read-only verbs through `AGENT_BINARY` — `agent run` from the script deadlocks against the lock the script is holding.
 
 ## Validating the project Dockerfile

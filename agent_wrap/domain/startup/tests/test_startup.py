@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import subprocess
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,12 +22,17 @@ from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.startup.constants import DEFAULT_STARTUP_RUNNER
 from agent_wrap.domain.startup.service import StartupService
 from agent_wrap.exceptions import StartupScriptError
+from agent_wrap.lib.process_utils import pid_alive
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+    from unittest.mock import MagicMock
 
     import pytest_mock
+
+CHILD_PID = 4242
+TREE_DEATH_TIMEOUT_SECONDS = 5.0
 
 
 @pytest.fixture
@@ -45,62 +54,91 @@ def write_script(tmp_path: Path) -> Callable[..., Path]:
     return _write
 
 
+@pytest.fixture
+def patch_popen(mocker: pytest_mock.MockFixture) -> Callable[..., MagicMock]:
+    """
+    Patch ``subprocess.Popen`` and return the patch, so argv/env/kwargs can be asserted.
+
+    ``wait_error`` is raised by the *first* ``wait()`` only -- the budget wait. The later
+    calls are ``terminate_tree``'s reaping waits, which must see an exited process rather
+    than the same exception again.
+    """
+
+    def _patch(returncode: int = 0, wait_error: BaseException | None = None) -> MagicMock:
+        proc = mocker.Mock(spec=["pid", "wait"])
+        proc.pid = CHILD_PID
+        if wait_error is None:
+            proc.wait.return_value = returncode
+        else:
+            proc.wait.side_effect = [wait_error, -signal.SIGTERM, -signal.SIGTERM]
+        return mocker.patch(
+            "agent_wrap.domain.startup.service.subprocess.Popen",
+            autospec=True,
+            return_value=proc,
+        )
+
+    return _patch
+
+
 def test_run_succeeds_on_zero_exit(
     tmp_path: Path,
     startup_svc: StartupService,
     write_script: Callable[..., Path],
-    mocker: pytest_mock.MockFixture,
+    patch_popen: Callable[..., MagicMock],
 ) -> None:
     write_script()
-    run = mocker.patch(
-        "agent_wrap.domain.startup.service.subprocess.run",
-        autospec=True,
-        return_value=mocker.Mock(spec=["returncode"], returncode=0),
-    )
+    popen = patch_popen()
 
     startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
 
-    run.assert_called_once()
+    popen.assert_called_once()
 
 
 def test_run_executes_from_the_project_directory_with_stdin_closed(
     tmp_path: Path,
     startup_svc: StartupService,
     write_script: Callable[..., Path],
-    mocker: pytest_mock.MockFixture,
+    patch_popen: Callable[..., MagicMock],
 ) -> None:
     script = write_script()
-    run = mocker.patch(
-        "agent_wrap.domain.startup.service.subprocess.run",
-        autospec=True,
-        return_value=mocker.Mock(spec=["returncode"], returncode=0),
-    )
+    popen = patch_popen()
 
     startup_svc.run(tmp_path, timeout=3.5, agent_name="proj", instance_id="proj-1")
 
-    args, kwargs = run.call_args
+    args, kwargs = popen.call_args
     assert args[0] == ["/bin/sh", str(script)]
     assert kwargs["cwd"] == tmp_path
     assert kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["timeout"] == 3.5
+    assert popen.return_value.wait.call_args.kwargs["timeout"] == 3.5
+
+
+def test_run_starts_the_script_in_its_own_session(
+    tmp_path: Path,
+    startup_svc: StartupService,
+    write_script: Callable[..., Path],
+    patch_popen: Callable[..., MagicMock],
+) -> None:
+    """Without its own process group there is nothing for a timeout to signal."""
+    write_script()
+    popen = patch_popen()
+
+    startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
+
+    assert popen.call_args.kwargs["start_new_session"] is True
 
 
 def test_run_exports_the_agent_environment(
     tmp_path: Path,
     startup_svc: StartupService,
     write_script: Callable[..., Path],
-    mocker: pytest_mock.MockFixture,
+    patch_popen: Callable[..., MagicMock],
 ) -> None:
     write_script()
-    run = mocker.patch(
-        "agent_wrap.domain.startup.service.subprocess.run",
-        autospec=True,
-        return_value=mocker.Mock(spec=["returncode"], returncode=0),
-    )
+    popen = patch_popen()
 
     startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
 
-    env = run.call_args.kwargs["env"]
+    env = popen.call_args.kwargs["env"]
     assert env["AGENT_NAME"] == "proj"
     assert env["AGENT_INSTANCE_ID"] == "proj-1"
     assert env["AGENT_SIDECAR_NETWORK"] == SIDECAR_NETWORK_NAME
@@ -113,14 +151,10 @@ def test_run_aborts_on_non_zero_exit(
     tmp_path: Path,
     startup_svc: StartupService,
     write_script: Callable[..., Path],
-    mocker: pytest_mock.MockFixture,
+    patch_popen: Callable[..., MagicMock],
 ) -> None:
     write_script()
-    mocker.patch(
-        "agent_wrap.domain.startup.service.subprocess.run",
-        autospec=True,
-        return_value=mocker.Mock(spec=["returncode"], returncode=3),
-    )
+    patch_popen(returncode=3)
 
     with pytest.raises(StartupScriptError, match="exit code 3"):
         startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
@@ -130,17 +164,68 @@ def test_run_aborts_on_timeout(
     tmp_path: Path,
     startup_svc: StartupService,
     write_script: Callable[..., Path],
-    mocker: pytest_mock.MockFixture,
+    patch_popen: Callable[..., MagicMock],
 ) -> None:
     write_script()
-    mocker.patch(
-        "agent_wrap.domain.startup.service.subprocess.run",
-        autospec=True,
-        side_effect=subprocess.TimeoutExpired(cmd="sh", timeout=10.0),
-    )
+    patch_popen(wait_error=subprocess.TimeoutExpired(cmd="sh", timeout=10.0))
 
     with pytest.raises(StartupScriptError, match="exceeded its 10s timeout"):
         startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
+
+
+def test_run_signals_the_process_group_on_timeout(
+    tmp_path: Path,
+    startup_svc: StartupService,
+    write_script: Callable[..., Path],
+    patch_popen: Callable[..., MagicMock],
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """SIGTERM first (the docker CLI turns it into a build cancel), then SIGKILL."""
+    write_script()
+    patch_popen(wait_error=subprocess.TimeoutExpired(cmd="sh", timeout=1.0))
+    killpg = mocker.patch("agent_wrap.domain.startup.service.os.killpg")
+
+    with pytest.raises(StartupScriptError):
+        startup_svc.run(tmp_path, timeout=1.0, agent_name="proj", instance_id="proj-1")
+
+    assert [call.args for call in killpg.call_args_list] == [
+        (CHILD_PID, signal.SIGTERM),
+        (CHILD_PID, signal.SIGKILL),
+    ]
+
+
+def test_run_relays_a_keyboard_interrupt_to_the_process_group(
+    tmp_path: Path,
+    startup_svc: StartupService,
+    write_script: Callable[..., Path],
+    patch_popen: Callable[..., MagicMock],
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """The new session has no controlling tty, so Ctrl-C must be forwarded by hand."""
+    write_script()
+    patch_popen(wait_error=KeyboardInterrupt())
+    killpg = mocker.patch("agent_wrap.domain.startup.service.os.killpg")
+
+    with pytest.raises(StartupScriptError, match="was interrupted"):
+        startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
+
+    assert killpg.call_count == 2
+
+
+def test_run_tolerates_an_already_dead_process_group(
+    tmp_path: Path,
+    startup_svc: StartupService,
+    write_script: Callable[..., Path],
+    patch_popen: Callable[..., MagicMock],
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """A group that raced us to exit is not an error the user should ever see."""
+    write_script()
+    patch_popen(wait_error=subprocess.TimeoutExpired(cmd="sh", timeout=1.0))
+    mocker.patch("agent_wrap.domain.startup.service.os.killpg", side_effect=ProcessLookupError)
+
+    with pytest.raises(StartupScriptError, match="exceeded its"):
+        startup_svc.run(tmp_path, timeout=1.0, agent_name="proj", instance_id="proj-1")
 
 
 def test_run_aborts_when_the_interpreter_is_missing(
@@ -151,7 +236,7 @@ def test_run_aborts_when_the_interpreter_is_missing(
 ) -> None:
     write_script("#!/nonexistent/interpreter\n")
     mocker.patch(
-        "agent_wrap.domain.startup.service.subprocess.run",
+        "agent_wrap.domain.startup.service.subprocess.Popen",
         autospec=True,
         side_effect=FileNotFoundError(2, "No such file or directory"),
     )
@@ -161,13 +246,13 @@ def test_run_aborts_when_the_interpreter_is_missing(
 
 
 def test_run_warns_and_returns_when_the_script_is_missing(
-    tmp_path: Path, startup_svc: StartupService, mocker: pytest_mock.MockFixture
+    tmp_path: Path, startup_svc: StartupService, patch_popen: Callable[..., MagicMock]
 ) -> None:
-    run = mocker.patch("agent_wrap.domain.startup.service.subprocess.run", autospec=True)
+    popen = patch_popen()
 
     startup_svc.run(tmp_path, timeout=10.0, agent_name="proj", instance_id="proj-1")
 
-    run.assert_not_called()
+    popen.assert_not_called()
     startup_svc._display.warning.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
@@ -256,3 +341,30 @@ def test_run_end_to_end_propagates_a_real_failure(
 
     with pytest.raises(StartupScriptError, match="exit code 7"):
         startup_svc.run(tmp_path, timeout=30.0, agent_name="proj", instance_id="proj-1")
+
+
+def test_run_kills_the_whole_process_tree_on_timeout(
+    tmp_path: Path, startup_svc: StartupService, write_script: Callable[..., Path]
+) -> None:
+    """
+    A grandchild must not outlive the budget.
+
+    This is the orphaned-``docker build`` regression: ``subprocess.run(timeout=...)``
+    SIGKILLs only the direct child, so a script that shelled out left the real work
+    running -- still on the terminal, still on the docker daemon -- after the abort.
+    """
+    pidfile = tmp_path / "grandchild.pid"
+    write_script(f'#!/bin/sh\nsleep 60 &\necho $! > "{pidfile}"\nwait\n')
+
+    with pytest.raises(StartupScriptError, match="exceeded its"):
+        startup_svc.run(tmp_path, timeout=1.0, agent_name="proj", instance_id="proj-1")
+
+    grandchild = int(pidfile.read_text())
+    try:
+        deadline = time.monotonic() + TREE_DEATH_TIMEOUT_SECONDS
+        while time.monotonic() < deadline and pid_alive(grandchild):
+            time.sleep(0.05)
+        assert not pid_alive(grandchild)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(grandchild, signal.SIGKILL)

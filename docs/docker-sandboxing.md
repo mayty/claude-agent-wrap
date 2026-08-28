@@ -139,6 +139,11 @@ The contract:
 - **Failure aborts the launch.** A non-zero exit, a timeout, or an unusable interpreter stops
   `agent run` before `docker run`; sidecars started for that launch are released. An agent whose
   prerequisites failed to materialize is worse than no agent.
+- **The whole process tree is torn down.** The script runs in a session of its own, so a timeout
+  signals the script *and everything it spawned*: `SIGTERM` to its process group, then `SIGKILL`
+  five seconds later. Ctrl-C is relayed the same way and reported as a failed script. Nothing the
+  script starts survives its budget, so it cannot be used to leave a daemon running — and a
+  descendant that calls `setsid` for itself escapes the group and is out of reach.
 - **stdin is closed.** The script cannot prompt — see the lock note below.
 - **`agent run --base` skips it entirely**, along with every other project directive.
 - **Timing.** It runs as late as possible in the pre-launch sequence: after the image is resolved,

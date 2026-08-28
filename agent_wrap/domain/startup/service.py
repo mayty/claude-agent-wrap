@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -15,7 +17,11 @@ from agent_wrap.constants import (
     LEGACY_AGENT_DOCKERFILE_NAME,
     SIDECAR_NETWORK_NAME,
 )
-from agent_wrap.domain.startup.constants import DEFAULT_STARTUP_RUNNER, SHEBANG_PROBE_BYTES
+from agent_wrap.domain.startup.constants import (
+    DEFAULT_STARTUP_RUNNER,
+    SHEBANG_PROBE_BYTES,
+    STARTUP_KILL_GRACE_SECONDS,
+)
 from agent_wrap.exceptions import StartupScriptError
 
 if TYPE_CHECKING:
@@ -72,10 +78,21 @@ class StartupService:
         """
         Run the project's startup script to completion, from the project directory.
 
+        The script gets a session of its own, so that a timeout -- or a Ctrl-C -- can
+        signal the script *and everything it spawned*. ``subprocess.run(timeout=...)``
+        cannot: it SIGKILLs only the direct child, which left a script that shelled out
+        to ``docker build`` with an orphaned build still streaming to the terminal and
+        still running on the daemon long after the launch had been aborted. A descendant
+        that calls ``setsid`` for itself does escape the group, and is out of reach.
+
+        Because the new session has no controlling terminal, the tty no longer delivers
+        SIGINT to the script; ``KeyboardInterrupt`` is relayed here instead.
+
         Raises:
-            StartupScriptError: If the script exits non-zero, exceeds *timeout*, or its
-                interpreter cannot be executed. The launch is aborted in every case --
-                an agent whose prerequisites failed to materialize is worse than no agent.
+            StartupScriptError: If the script exits non-zero, exceeds *timeout*, is
+                interrupted, or its interpreter cannot be executed. The launch is aborted
+                in every case -- an agent whose prerequisites failed to materialize is
+                worse than no agent.
 
         """
         script = self.script_path(project_dir)
@@ -97,23 +114,54 @@ class StartupService:
         try:
             # stdin is closed: the script holds the host-global sidecar lock while it
             # runs, so one that stopped to prompt would stall every other launcher.
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 [*self.runner_argv(script), str(script)],
                 cwd=project_dir,
                 env=env,
                 stdin=subprocess.DEVNULL,
-                timeout=timeout,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired as e:
-            msg = f"Error: '{rel}' exceeded its {timeout:g}s timeout; aborting launch."
-            raise StartupScriptError(msg) from e
         except OSError as e:
             msg = f"Error: could not execute '{rel}': {e}"
             raise StartupScriptError(msg) from e
 
-        if result.returncode != 0:
-            msg = f"Error: '{rel}' failed with exit code {result.returncode}; aborting launch."
+        try:
+            returncode = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            self.terminate_tree(proc)
+            msg = f"Error: '{rel}' exceeded its {timeout:g}s timeout; aborting launch."
+            raise StartupScriptError(msg) from e
+        except KeyboardInterrupt as e:
+            self.terminate_tree(proc)
+            msg = f"Error: '{rel}' was interrupted; aborting launch."
+            raise StartupScriptError(msg) from e
+
+        if returncode != 0:
+            msg = f"Error: '{rel}' failed with exit code {returncode}; aborting launch."
             raise StartupScriptError(msg)
+
+    def terminate_tree(self, proc: subprocess.Popen[bytes]) -> None:
+        """
+        Signal the whole process group *proc* leads, then reap it.
+
+        ``start_new_session=True`` made *proc* its own process-group leader, so its pid
+        doubles as the group id. Both signals are sent before the reaping ``wait()``: once
+        the leader's zombie is cleared the group id is gone, and with it the only handle
+        on the children still in it.
+        """
+        pgid = proc.pid
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGTERM)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=STARTUP_KILL_GRACE_SECONDS)
+        # Unconditional rather than "only if the leader is still alive": the leader
+        # exiting says nothing about *its* children, which stay in the group and would
+        # otherwise keep running.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGKILL)
+        # Bounded: a leaked zombie beats a launcher wedged on an unkillable child.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=STARTUP_KILL_GRACE_SECONDS)
 
     def warn_if_unused(self, project_dir: Path, *, is_legacy: bool) -> None:
         """
