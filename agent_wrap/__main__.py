@@ -21,7 +21,7 @@ def main() -> int:
     """Run the normal CLI dispatch path."""
     if len(sys.argv) < MIN_ARGS:
         meta = command_meta()
-        services.display_service.error(format_usage(meta), end="")
+        services.display_service.info(format_usage(meta), end="")
         return 1
 
     name = sys.argv[1]

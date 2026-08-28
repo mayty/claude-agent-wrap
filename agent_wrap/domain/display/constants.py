@@ -12,6 +12,7 @@ class Ansi(str, Enum):
     RESET = "\033[0m"
     BOLD_GREEN = "\033[1;32m"
     BOLD_YELLOW = "\033[1;33m"
+    BOLD_RED = "\033[1;31m"
     CYAN = "\033[36m"
     DIM = "\033[90m"
 

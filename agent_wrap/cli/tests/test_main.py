@@ -35,14 +35,14 @@ def test_help_lists_every_discovered_command(
     mocker.patch("sys.argv", ["agent_wrap"])
     rc = main()
     assert rc == 1
-    err_call = services.display_service.error.call_args  # pyrefly: ignore [missing-attribute]
-    assert err_call is not None
-    err_text = err_call[0][0]
+    info_call = services.display_service.info.call_args  # pyrefly: ignore [missing-attribute]
+    assert info_call is not None
+    help_text = info_call[0][0]
     for c in command_meta().values():
         with subtests.test(msg=c.name):
-            assert c.name in err_text, f"help output missing command {c.name!r}"
+            assert c.name in help_text, f"help output missing command {c.name!r}"
             if c.summary:
-                assert c.summary in err_text, f"help output missing summary for {c.name!r}"
+                assert c.summary in help_text, f"help output missing summary for {c.name!r}"
 
 
 def test_unknown_command_returns_error(

@@ -15,15 +15,12 @@ from agent_wrap.domain.display.constants import SPINNERS, Ansi
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from agent_wrap.domain.display.service import DisplayService
-
 
 class Spinner:
     """Animated, label-prefixed stderr spinner."""
 
-    def __init__(self, label: str, display: DisplayService) -> None:
+    def __init__(self, label: str) -> None:
         self._label = label
-        self._display = display
 
     # -- internal helpers --
 
@@ -54,7 +51,7 @@ class Spinner:
         done_fn = (lambda: done_message) if isinstance(done_message, str) else done_message
 
         if not sys.stderr.isatty():
-            self._display.error(f"{self._label}: {msg_fn()}")
+            print(f"{self._label}: {msg_fn()}", file=sys.stderr)
             work()
             return
 
@@ -125,7 +122,7 @@ class Spinner:
         while time.monotonic() < deadline:
             verdict, status = poll()
             if status and status != last_status:
-                self._display.error(f"{self._label}: {status}")
+                print(f"{self._label}: {status}", file=sys.stderr)
                 last_status = status
             if verdict is PollResult.SUCCESS:
                 return True

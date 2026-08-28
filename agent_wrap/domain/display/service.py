@@ -98,8 +98,13 @@ class DisplayService:
         print(message, end=end, flush=flush)
 
     def error(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stderr."""
-        print(message, end=end, flush=flush, file=sys.stderr)
+        """Print *message* to stderr with red styling (TTY only)."""
+        print(
+            _TextStyler.color(message, Ansi.BOLD_RED, stream=sys.stderr),
+            end=end,
+            flush=flush,
+            file=sys.stderr,
+        )
 
     def warning(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stderr with yellow styling (TTY only)."""
@@ -265,7 +270,7 @@ class DisplayService:
         work: Callable[[], object],
     ) -> None:
         """Animate a spinner while running *work* on a background thread."""
-        Spinner(label, self).spin_while(message=message, done_message=done_message, work=work)
+        Spinner(label).spin_while(message=message, done_message=done_message, work=work)
 
     def poll_until(  # noqa: PLR0913
         self,
@@ -278,7 +283,7 @@ class DisplayService:
         poll_interval: float = 0.5,
     ) -> bool:
         """Animate a spinner, polling *poll* until success, failure, or *timeout*."""
-        return Spinner(label, self).poll_until(
+        return Spinner(label).poll_until(
             poll=poll,
             message=message,
             done_message=done_message,
@@ -301,9 +306,8 @@ class DisplayService:
 
     def prompt_secret(self, description: str) -> str:
         """Prompt the user for a secret value, echoing input hidden."""
-        self.error(f"Enter {description}: ", end="", flush=True)
         try:
-            return getpass("")
+            return getpass(f"Enter {description}: ")
         except EOFError as exc:
             msg = "Secret input interrupted"
             raise SystemExit(msg) from exc
