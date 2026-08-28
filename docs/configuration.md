@@ -103,6 +103,18 @@ Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`)
 AGENT_LOG_DEBUG=1 agent logs
 ```
 
+## `AGENT_AUTOSTART_LOGS` (logs-viewer autostart opt-out)
+
+`agent run` starts the [`agent logs`](shell-commands.md#agent-logs) background viewer for you, because that viewer is the only thing that keeps the statusline's `Today: ↑… ↓… | $…` segment up to date — without it the statusline reads `run \`agent logs\` for stats` instead. It is started as the very first step of a launch, so its initial walk of the log tree happens while the image is resolved and the LiteLLM sidecar comes up rather than after, and it is **not** stopped when the agent exits: the viewer is a host-level singleton shared by every project, and [`agent logs --stop`](shell-commands.md#agent-logs) remains the way to stop it. A viewer that is already running or already starting is adopted rather than duplicated, and a failure to start one is a warning that does not block the launch.
+
+The autostart is on by default. Set `AGENT_AUTOSTART_LOGS=0` (or `false`/`no`) to turn it off; exporting the variable with an empty value counts as leaving it unset.
+
+```sh
+AGENT_AUTOSTART_LOGS=0 agent run
+```
+
+Two launches skip the autostart regardless of this variable. A headless `agent run` (`-p`/`--print`/`--bare`/`--safe-mode`) renders no statusline, so there is no segment to feed; and under the [`litellm-anthropic-sub`](providers.md) provider the statusline shows subscription rate limits instead of token totals, so the file the viewer maintains has no reader. `agent logs` still starts the viewer on demand in both cases.
+
 ## `AGENT_SPELLCHECK` (prompt spell checking)
 
 Claude Code can underline misspelled words in the prompt input as you type, but it ships no spell checker of its own — it drives an external one. The wrapper supplies that: `hunspell` and the configured dictionaries are installed in the base image, and a `spellcheck` block is injected into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch (see [Injected settings](container-environment.md#injected-settings-not-env-vars)).

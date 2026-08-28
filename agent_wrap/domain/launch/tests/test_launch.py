@@ -23,6 +23,7 @@ from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.constants import (
+    AUTOSTART_LOGS_ENV,
     EXTERNAL_STATE_MOUNTS,
     INSTANCE_STATE_FILES,
     INSTANCE_STATE_MOUNTS,
@@ -30,6 +31,7 @@ from agent_wrap.domain.launch.constants import (
     STATE_MOUNTS,
 )
 from agent_wrap.domain.launch.service import LaunchService
+from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
@@ -67,6 +69,7 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
         build_service=build_svc,
         startup_service=mocker.Mock(spec=StartupService),
         display_service=mocker.Mock(spec=DisplayService),
+        logs_service=mocker.Mock(spec=LogsService),
     )
 
 
@@ -968,7 +971,9 @@ def test_launch_declared_mount_failure_aborts_before_sidecars(
     launch_svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         "read-only mounts whose host source does not exist"
     )
-    launch_svc._provider_service.get_provider.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    # The provider is resolved at the top of launch() now, so "before sidecars" is
+    # asserted on the first thing sidecar assembly does instead.
+    launch_svc._secrets.read.assert_not_called()  # pyrefly: ignore [missing-attribute]
     run.assert_not_called()
 
 
@@ -991,7 +996,9 @@ def test_launch_passes_declared_run_args_to_config(
         return_value=True,
         autospec=True,
     )
-    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError("stop here")  # pyrefly: ignore [missing-attribute]
+    # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
+    # declaration rather than on get_provider, which now runs before that phase.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
 
     launch_svc.launch(use_base=False, claude_args=[])
 
@@ -1167,7 +1174,9 @@ def test_launch_warns_about_an_unused_startup_script(
     _stub_launch_up_to_prepare(
         tmp_path, mocker, launch_svc, startup_timeout=None, is_legacy=is_legacy
     )
-    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError("stop here")  # pyrefly: ignore [missing-attribute]
+    # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
+    # declaration rather than on get_provider, which now runs before that phase.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
 
     launch_svc.launch(use_base=False, claude_args=[])
 
@@ -1192,9 +1201,149 @@ def test_launch_base_flag_neither_runs_nor_warns_about_startup(
         return_value=True,
         autospec=True,
     )
-    launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError("stop here")  # pyrefly: ignore [missing-attribute]
+    # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
+    # declaration rather than on get_provider, which now runs before that phase.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
 
     launch_svc.launch(use_base=True, claude_args=[])
 
     launch_svc._startup.warn_if_unused.assert_not_called()  # pyrefly: ignore [missing-attribute]
     launch_svc._startup.run.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.fixture
+def autostart_svc(mocker: pytest_mock.MockFixture, launch_svc: LaunchService) -> LaunchService:
+    """Return a launch service whose provider wants the viewer and whose viewer starts."""
+    provider = mocker.Mock(spec=Provider, autostart_logs_viewer=True)
+    launch_svc._provider_service.get_provider.return_value = provider  # pyrefly: ignore [missing-attribute]
+    launch_svc._logs.autostart.return_value = True  # pyrefly: ignore [missing-attribute]
+    return launch_svc
+
+
+def test_autostart_logs_starts_the_viewer_by_default(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+    autostart_svc._display.warning.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_treats_an_empty_value_as_unset(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """Exporting the var with no value reads as clearing it, not as opting out."""
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, "")
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "FALSE"])
+def test_autostart_logs_env_opt_out(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService, value: str
+) -> None:
+    monkeypatch.setenv(AUTOSTART_LOGS_ENV, value)
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_skipped_when_the_provider_declines(
+    monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockFixture, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider = mocker.Mock(spec=Provider, autostart_logs_viewer=False)
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_skipped_when_headless(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=True)
+
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_autostart_logs_failure_warns_and_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._logs.autostart.return_value = False  # pyrefly: ignore [missing-attribute]
+    provider = autostart_svc._provider_service.get_provider()
+
+    autostart_svc._maybe_autostart_logs(provider, headless=False)
+
+    autostart_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        "could not start the logs viewer — continuing without it. "
+        "Today's usage will be missing from the statusline; "
+        "run `agent logs` to start it by hand."
+    )
+
+
+def test_launch_autostarts_the_viewer_before_the_update_check(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """
+    The viewer's cold start is a full walk of the log tree, so it is kicked off before
+    anything that costs wall clock -- including the check that can abort this launch.
+    """
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._updates.check_updates.return_value = True  # pyrefly: ignore [missing-attribute]
+
+    assert autostart_svc.launch(use_base=False, claude_args=[]) == 0
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_autostarts_the_viewer_before_resolving_the_image(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: pytest_mock.MockFixture,
+    autostart_svc: LaunchService,
+) -> None:
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    autostart_svc._build_service.resolve_image.side_effect = SystemExit("no image here")  # pyrefly: ignore [missing-attribute]
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    assert autostart_svc.launch(use_base=False, claude_args=[]) == 1
+    autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+
+
+def test_launch_does_not_autostart_the_viewer_when_headless(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """Nothing renders a statusline headlessly, so there is no usage segment to feed."""
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    # Headless already skips the update check, so the image resolve is the stop point.
+    autostart_svc._build_service.resolve_image.side_effect = SystemExit("no image here")  # pyrefly: ignore [missing-attribute]
+
+    assert autostart_svc.launch(use_base=False, claude_args=["-p", "hello"]) == 1
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_reports_an_unresolvable_provider_before_autostarting(
+    monkeypatch: pytest.MonkeyPatch, autostart_svc: LaunchService
+) -> None:
+    """The provider gates the autostart, so a failure to resolve it precedes everything."""
+    monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
+    autostart_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # pyrefly: ignore [missing-attribute]
+        "Unknown provider: bogus"
+    )
+
+    assert autostart_svc.launch(use_base=False, claude_args=[]) == 1
+    autostart_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    autostart_svc._updates.check_updates.assert_not_called()  # pyrefly: ignore [missing-attribute]

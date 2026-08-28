@@ -27,6 +27,7 @@ from agent_wrap.constants import (
     WORKSPACE_MOUNT,
 )
 from agent_wrap.domain.launch.constants import (
+    AUTOSTART_LOGS_ENV,
     EXPECTED_QUEUE_DEPTH,
     EXTERNAL_STATE_MOUNTS,
     HEADLESS_FLAGS,
@@ -60,6 +61,8 @@ if TYPE_CHECKING:
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.display.service import DisplayService
+    from agent_wrap.domain.logs.service import LogsService
+    from agent_wrap.domain.providers.base import Provider
     from agent_wrap.domain.providers.service import ProviderService
     from agent_wrap.domain.secrets.service import SecretsService
     from agent_wrap.domain.sidecars.base import Sidecar
@@ -85,6 +88,7 @@ class LaunchService:
         build_service: BuildService,
         startup_service: StartupService,
         display_service: DisplayService,
+        logs_service: LogsService,
     ) -> None:
         self._config = config_service
         self._secrets = secrets_service
@@ -94,6 +98,7 @@ class LaunchService:
         self._build_service = build_service
         self._startup = startup_service
         self._display = display_service
+        self._logs = logs_service
 
     # Public entry point
 
@@ -106,6 +111,18 @@ class LaunchService:
         error.
         """
         headless = self._is_headless(claude_args)
+
+        # The provider is resolved first because the logs viewer's autostart is gated on
+        # it, and that autostart wants to be the very first thing this launch does: the
+        # viewer walks the whole log tree before it can serve anything, and every step
+        # below -- the update check, the image resolve, secret prompts, the sidecar's own
+        # cold start -- is wall clock that walk can happen inside instead of after.
+        try:
+            provider = self._provider_service.get_provider()
+        except ProviderNotFoundError as e:
+            self._display.error(str(e))
+            return 1
+        self._maybe_autostart_logs(provider, headless=headless)
 
         if not headless and self._updates.check_updates():
             return 0
@@ -146,7 +163,6 @@ class LaunchService:
             sidecars, per_sidecar_secrets, telegram_available = self._assemble_sidecars(
                 agent_name, instance_id, headless=headless
             )
-            provider = self._provider_service.get_provider()
         except ProviderNotFoundError as e:
             self._display.error(str(e))
             return 1
@@ -218,6 +234,34 @@ class LaunchService:
             elif arg.startswith(("--network=", "--net=")):
                 return arg.split("=", 1)[1]
         return None
+
+    def _maybe_autostart_logs(self, provider: Provider, *, headless: bool) -> None:
+        """
+        Start the logs viewer for this launch, unless something opts out.
+
+        Three things opt out. A headless launch renders no statusline, so there is nothing
+        to feed; a provider whose statusline segment comes from elsewhere has nothing to
+        feed either; and the env var is the user's own switch.
+
+        The viewer is deliberately not a sidecar: it is a host-level singleton, shared by
+        every project, and nothing here tears it down when the agent exits. That is the
+        point -- it keeps writing the usage totals the statusline reads, and `agent logs
+        --stop` remains the way to stop it.
+
+        A failure is a warning, never an abort. Nothing about the agent depends on the
+        viewer; losing it costs one statusline segment.
+        """
+        if headless or not provider.autostart_logs_viewer:
+            return
+        raw = os.environ.get(AUTOSTART_LOGS_ENV, "")
+        if raw and not is_truthy_env(raw):
+            return
+        if not self._logs.autostart():
+            self._display.warning(
+                "could not start the logs viewer — continuing without it. "
+                "Today's usage will be missing from the statusline; "
+                "run `agent logs` to start it by hand."
+            )
 
     def _is_headless(self, claude_args: list[str]) -> bool:
         """Report whether Claude Code is launched in a mode that won't use the sidecar."""

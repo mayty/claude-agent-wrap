@@ -299,13 +299,17 @@ class InspectService:
     def _viewer_row(self) -> ViewerRow:
         """Read the logs viewer's state, adding its connect line when it is up."""
         state = self._logs.viewer_state()
+        # No connect line for a starting viewer: its recorded port is the one that was
+        # requested, and bind_port scans past it when it is taken.
+        listening = state.running and not state.starting
         connect_line = (
-            self._logs.connect_line(state.port) if state.running and state.port is not None else ""
+            self._logs.connect_line(state.port) if listening and state.port is not None else ""
         )
         return ViewerRow(
             running=state.running,
             pid=state.pid,
             port=state.port,
+            starting=state.starting,
             connect_line=connect_line,
             log_size=state.log_size,
             log_mtime=state.log_mtime,

@@ -213,6 +213,22 @@ to check consumption with `/usage` — so this provider overrides
 `_build_env_args` substitutes `DISABLE_AUTOUPDATER=1` in its place, so the CLI
 baked into the image still never tries to self-update.
 
+## The logs viewer is not autostarted
+
+Every other provider sets `autostart_logs_viewer = True` (the `Provider`
+default), so `agent run` starts the `agent logs` background viewer for them. The
+viewer is the only writer of the usage totals the bundled statusline reads —
+except that under this provider the statusline never reads them: `ops/statusline.py`
+recognises the passthrough through `ANTHROPIC_BASE_URL` and renders
+`rate_limit_segment`, the subscription's own seat consumption, in place of
+`usage_segment`. A subscription has no marginal per-token cost to report, which
+is the same reason `compute_cost` returns `0.0` here.
+
+So this provider overrides `autostart_logs_viewer = False`: starting a
+background HTTP server on every launch to maintain a file nothing consults would
+be pure waste. `agent logs` still starts it on demand, and the request logs it
+serves are written and browsable exactly as with any other provider.
+
 ## Env vars
 
 Agent container (injected by `get_agent_env`):

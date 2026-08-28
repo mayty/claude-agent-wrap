@@ -82,6 +82,7 @@ def _report(  # noqa: PLR0913
     lite: bool = False,
     logs_bytes: int | None = 1_033_465_471,
     warnings: list[str] | None = None,
+    viewer: ViewerRow | None = None,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -90,10 +91,12 @@ def _report(  # noqa: PLR0913
         sidecars=[_SIDECAR] if docker_available else [],
         agents=[_AGENT] if docker_available else [],
         queued_launches=queued or [],
-        viewer=ViewerRow(
+        viewer=viewer
+        or ViewerRow(
             running=True,
             pid=41233,
             port=8765,
+            starting=False,
             connect_line="LiteLLM log viewer running at http://127.0.0.1:8765",
             log_size=42_000,
             log_mtime=1_700_000_000.0,
@@ -322,6 +325,27 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
         "day boundary",
     ):
         assert label in out
+
+
+def test_human_output_reports_a_starting_viewer_without_a_connect_line(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A viewer that has not bound its port yet has no address to advertise."""
+    inspect_mock.build_report.return_value = _report(
+        viewer=ViewerRow(
+            running=True,
+            pid=41233,
+            port=8765,
+            starting=True,
+            connect_line="",
+            log_size=42_000,
+            log_mtime=1_700_000_000.0,
+        )
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "starting" in out
+    assert "http://127.0.0.1" not in out
 
 
 @pytest.mark.usefixtures("inspect_mock")

@@ -96,6 +96,7 @@ class Services:
             build_service=self.build_service,
             startup_service=self.startup_service,
             display_service=self.display_service,
+            logs_service=self.logs_service,
         )
 
     @cached_property

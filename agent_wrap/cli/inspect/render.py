@@ -210,7 +210,12 @@ class Details:
             if viewer.log_size is not None:
                 detail += f", log {display.format_bytes(viewer.log_size)}"
             detail += ")"
-            state = f"running  {viewer.connect_line}  {detail}"
+            # "starting" is a distinct report, not a flavour of running: the process is up
+            # but nothing is listening yet, so there is no connect line to hand over.
+            if viewer.starting:
+                state = f"starting  {detail}"
+            else:
+                state = f"running  {viewer.connect_line}  {detail}"
             viewer_row = Cells.row("logs viewer", state)
         else:
             viewer_row = Cells.row("logs viewer", "not running")

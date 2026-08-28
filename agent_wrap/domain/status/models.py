@@ -75,8 +75,12 @@ class ViewerRow:
     running: bool
     pid: int | None
     port: int | None
-    #: The viewer's own connect line, verbatim from the logs domain, or "" when down.
-    #: Taken whole rather than reassembled from *port* so the two can never disagree.
+    #: True when the process is alive but not listening yet, so *running* is already True
+    #: while the connect line would point at nothing.
+    starting: bool
+    #: The viewer's own connect line, verbatim from the logs domain, or "" when it is not
+    #: yet listening. Taken whole rather than reassembled from *port* so the two can
+    #: never disagree.
     connect_line: str
     log_size: int | None
     log_mtime: float | None

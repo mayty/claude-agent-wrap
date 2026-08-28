@@ -138,7 +138,12 @@ def secrets_mock(mocker: pytest_mock.MockFixture) -> Mock:
 def logs_mock(mocker: pytest_mock.MockFixture) -> Mock:
     mock = mocker.create_autospec(LogsService, instance=True)
     mock.viewer_state.return_value = ViewerState(
-        running=True, pid=41233, port=8765, log_size=42_000, log_mtime=1_700_000_000.0
+        running=True,
+        pid=41233,
+        port=8765,
+        starting=False,
+        log_size=42_000,
+        log_mtime=1_700_000_000.0,
     )
     mock.connect_line.return_value = "LiteLLM log viewer running at http://127.0.0.1:8765"
     return mock
@@ -270,9 +275,25 @@ def test_viewer_row_takes_connect_line_verbatim(service: InspectService) -> None
 
 def test_viewer_row_has_no_connect_line_when_down(service: InspectService, logs_mock: Mock) -> None:
     logs_mock.viewer_state.return_value = ViewerState(
-        running=False, pid=None, port=None, log_size=None, log_mtime=None
+        running=False, pid=None, port=None, starting=False, log_size=None, log_mtime=None
     )
     assert service.build_report().viewer.connect_line == ""
+
+
+def test_viewer_row_reports_starting_without_a_connect_line(
+    service: InspectService, logs_mock: Mock
+) -> None:
+    """A starting viewer's recorded port is provisional, so there is nothing to connect to."""
+    logs_mock.viewer_state.return_value = ViewerState(
+        running=True,
+        pid=41233,
+        port=8765,
+        starting=True,
+        log_size=None,
+        log_mtime=None,
+    )
+    viewer = service.build_report().viewer
+    assert (viewer.running, viewer.starting, viewer.connect_line) == (True, True, "")
 
 
 def test_report_uses_read_only_viewer_probe(service: InspectService, logs_mock: Mock) -> None:
