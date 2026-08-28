@@ -208,10 +208,11 @@ class _GitOps:
         if md_status == MdPropagation.UPDATED:
             display.success("CLAUDE.md updated to new default")
         elif md_status == MdPropagation.CONFLICT:
-            display.error("CLAUDE.md changed upstream but you have local customizations")
-            display.error(f'Review: git -C "{TOOL_DIR}" diff {before} {after} -- default-CLAUDE.md')
             display.error(
-                "Merge into .claude_config/.claude/CLAUDE.md or delete it to accept the new default"
+                "CLAUDE.md changed upstream but you have local customizations\n"
+                f'Review: git -C "{TOOL_DIR}" diff {before} {after} -- default-CLAUDE.md\n'
+                "Merge into .claude_config/.claude/CLAUDE.md or delete it to accept the "
+                "new default"
             )
 
     @staticmethod
@@ -226,9 +227,7 @@ class _GitOps:
         # local fast-forward merge to the resolved target is sufficient.
         _, rc, stderr = _GitOps.git_full("merge", "--ff-only", target_ref, cwd=str(TOOL_DIR))
         if rc != 0:
-            display.error("Update failed:")
-            if stderr:
-                display.error(stderr)
+            display.error(f"update failed\n{stderr}" if stderr else "update failed")
             return 1
 
         after, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
@@ -333,8 +332,7 @@ class UpdateService:
         """
         _, rc = _GitOps.git("symbolic-ref", "--short", "HEAD", cwd=str(TOOL_DIR))
         if rc != 0:
-            self._display.error("Update failed:")
-            self._display.error("could not determine current branch")
+            self._display.error("update failed\ncould not determine current branch")
             return 1
 
         if target_ref is None:
@@ -346,8 +344,7 @@ class UpdateService:
 
         before, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
         if rc != 0:
-            self._display.error("Update failed:")
-            self._display.error("could not get current HEAD")
+            self._display.error("update failed\ncould not get current HEAD")
             return 1
 
         pre_state = _GitOps.detect_claude_md_state()

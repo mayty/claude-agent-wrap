@@ -67,6 +67,11 @@ def run(args: list[str]) -> int:
     else:
         for line in render(report, dsp):
             dsp.info(line)
+        # Warnings go through display.warning rather than riding the report's line list:
+        # they belong on stderr, so a redirected report stays machine-readable and the
+        # severity survives being piped.
+        for text in report.warnings:
+            dsp.warning(text)
 
     if not report.docker.available:
         # The report above still printed everything that does not need Docker; the

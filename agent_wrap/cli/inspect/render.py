@@ -464,5 +464,4 @@ def render(report: InspectReport, display: DisplayService) -> list[str]:
         # steps are a property of the run, and naming them once keeps the tables reading
         # the same in both modes.
         lines.append(LITE_NOTE)
-    lines.extend(f"warning: {text}" for text in report.warnings)
     return lines

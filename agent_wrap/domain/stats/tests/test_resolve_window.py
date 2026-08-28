@@ -106,12 +106,12 @@ def test_until_and_days_zero_opens_lower(stats: StatsService):
 
 def test_all_three_bounds_rejected(stats: StatsService):
     resolved = _resolve(stats, from_date=date(2026, 6, 1), until_date=date(2026, 6, 10), days=3)
-    assert resolved == WindowError("usage: at most two of --from, --until, --days may be given")
+    assert resolved == WindowError("at most two of --from, --until, --days may be given")
 
 
 def test_from_after_until_rejected(stats: StatsService):
     resolved = _resolve(stats, from_date=date(2026, 6, 10), until_date=date(2026, 6, 1))
-    assert resolved == WindowError("usage: --from date is after --until date")
+    assert resolved == WindowError("--from date is after --until date")
 
 
 def test_equal_from_and_until_is_a_single_day(stats: StatsService):

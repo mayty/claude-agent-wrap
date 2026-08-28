@@ -59,7 +59,7 @@ def test_create_refuses_if_exists(
     rc = svc.create()
     assert rc == 1
     svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
-        f"Error: {dockerfile} already exists"
+        f"{dockerfile} already exists"
     )
 
 
@@ -74,7 +74,7 @@ def test_create_refuses_when_legacy_dockerfile_present(
     rc = svc.create()
     assert rc == 1
     svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
-        f"Error: {legacy} already exists. Move it to "
+        f"{legacy} already exists. Move it to "
         f"{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME} instead of scaffolding a new one."
     )
     assert not (tmp_path / AGENT_ASSETS_DIR).exists()
@@ -91,5 +91,5 @@ def test_create_empty_sanitized_name_returns_error(
     rc = svc.create()
     assert rc == 1
     svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
-        f"Error: could not derive agent-name from directory '{dir_with_bad_name}'"
+        f"could not derive agent-name from directory '{dir_with_bad_name}'"
     )

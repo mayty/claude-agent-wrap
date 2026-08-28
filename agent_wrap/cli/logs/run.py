@@ -54,7 +54,7 @@ def run(args: list[str]) -> int:
 
     if ns.stop:
         if ns.foreground or ns.port != LOGS_DEFAULT_PORT:
-            services.display_service.error("usage: agent logs --stop (takes no other arguments)")
+            services.display_service.error("agent logs --stop (takes no other arguments)")
             return 1
         return services.logs_service.stop_daemon()
 

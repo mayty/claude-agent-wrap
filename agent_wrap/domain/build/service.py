@@ -90,9 +90,10 @@ class BuildService:
 
         if re.match(rf"^{BASE_IMAGE_NAME}(:.*)?$", from_line) and not image_exists(BASE_IMAGE_NAME):
             self._display.error(
-                f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built."
+                f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is "
+                "not built.\n"
+                "Run 'agent rebuild --full' to build the base first."
             )
-            self._display.error("       Run 'agent rebuild --full' to build the base first.")
             return False
 
         if from_line and not re.match(rf"^{BASE_IMAGE_NAME}(:.*)?$", from_line):
@@ -130,7 +131,7 @@ class BuildService:
         if seconds > 0:
             return seconds
         msg = (
-            f"Error: agent-enable-startup value {raw!r} is not understood. Use "
+            f"agent-enable-startup value {raw!r} is not understood. Use "
             f"'true'/'false' or a positive number of seconds (0 is not a timeout -- "
             f"write 'false' to disable)."
         )
@@ -174,7 +175,7 @@ class BuildService:
                 elif match := re.match(r"^#\s*agent-enable-startup:\s*(\S+)", line):
                     if legacy:
                         msg = (
-                            f"Error: '# agent-enable-startup:' is only supported in "
+                            f"'# agent-enable-startup:' is only supported in "
                             f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'. Move "
                             f"'{LEGACY_AGENT_DOCKERFILE_NAME}' there to use a startup script."
                         )
@@ -207,7 +208,7 @@ class BuildService:
 
         if current.is_file() and legacy.is_file():
             msg = (
-                f"Error: both '{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}' and legacy "
+                f"both '{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}' and legacy "
                 f"'{LEGACY_AGENT_DOCKERFILE_NAME}' exist in {cwd}. Delete "
                 f"'{LEGACY_AGENT_DOCKERFILE_NAME}'."
             )
@@ -254,7 +255,7 @@ class BuildService:
                         name = match.group(1)
                         if not re.match(r"^[a-z0-9_.\-]+$", name):
                             msg = (
-                                f"Error: agent-name '{name}' must match [a-z0-9_.-]+ "
+                                f"agent-name '{name}' must match [a-z0-9_.-]+ "
                                 f"(Docker image names are lowercase)"
                             )
                             raise SystemExit(msg)
@@ -268,7 +269,7 @@ class BuildService:
                             is_legacy=location.is_legacy,
                         )
 
-            msg = f"Error: {location.path} must contain '# agent-name: <name>' comment"
+            msg = f"{location.path} must contain '# agent-name: <name>' comment"
             raise SystemExit(msg)
 
         return ResolvedImage(

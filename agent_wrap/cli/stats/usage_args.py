@@ -143,7 +143,7 @@ def parse_usage_args(
         try:
             compiled_pattern = re.compile(ns.pattern)
         except re.error as exc:
-            display.error(f"usage: invalid regex pattern: {exc}")
+            display.error(f"invalid regex pattern: {exc}")
             return None
 
     return UsageArgs(

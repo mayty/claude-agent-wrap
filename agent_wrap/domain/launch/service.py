@@ -707,7 +707,5 @@ class LaunchService:
 
     def _get_image_missing_error(self, image: str, *, use_base: bool) -> str:
         if use_base:
-            return f"Error: Base image '{image}' not found. Run 'agent rebuild --full' to build it."
-        return (
-            f"Error: Image '{image}' not found. Run 'agent rebuild' in this directory to build it."
-        )
+            return f"base image '{image}' not found. Run 'agent rebuild --full' to build it."
+        return f"image '{image}' not found. Run 'agent rebuild' in this directory to build it."

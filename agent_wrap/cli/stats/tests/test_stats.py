@@ -182,12 +182,12 @@ def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_errors_when_report_is_empty(mocker: MockerFixture) -> None:
+def test_run_notes_when_report_is_empty(mocker: MockerFixture) -> None:
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run([]) == 0
     render_spy.assert_not_called()
-    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no LiteLLM logs found" in message
 
 
@@ -197,7 +197,7 @@ def test_run_names_the_pattern_when_it_matched_nothing(mocker: MockerFixture) ->
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
     assert stats_run(["-p", "nomatch"]) == 0
-    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "nomatch" in message
 
 
@@ -223,11 +223,11 @@ def test_run_footnotes_unrecorded_usage(mocker: MockerFixture) -> None:
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_errors_when_no_projects_registered() -> None:
+def test_run_notes_when_no_projects_registered() -> None:
     services.config_service.read_project_paths.return_value = []  # pyrefly: ignore [missing-attribute]
 
     assert stats_run([]) == 0
-    message = services.display_service.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no projects recorded yet" in message
 
 

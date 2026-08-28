@@ -303,7 +303,7 @@ class ConfigService:
         if missing:
             listed = "\n".join(f"  {spec.source} -> {spec.target}" for spec in missing)
             msg = (
-                "Error: the project Dockerfile declares read-only mounts whose host source"
+                "the project Dockerfile declares read-only mounts whose host source"
                 " does not exist:\n"
                 f"{listed}\n"
                 "Create each path on the host, or drop ':ro' to have it created automatically."
@@ -355,7 +355,7 @@ class ConfigService:
             else:
                 path.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            msg = f"Error: cannot create host mount path '{path}' from the project Dockerfile: {e}"
+            msg = f"cannot create host mount path '{path}' from the project Dockerfile: {e}"
             raise HostMountError(msg) from e
 
     def link_litellm_logs(self, project_dir: Path) -> None:

@@ -8,11 +8,13 @@ from getpass import getpass
 from typing import TYPE_CHECKING, TextIO
 
 from agent_wrap.domain.display.constants import (
+    ERROR_PREFIX,
     KIBIBYTE,
     SECONDS_PER_DAY,
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
     THOUSAND,
+    WARNING_PREFIX,
     Ansi,
 )
 from agent_wrap.domain.display.spinner import Spinner
@@ -34,6 +36,21 @@ class _TextStyler:
         if not stream.isatty():
             return s
         return f"{code}{s}{Ansi.RESET}"
+
+    @staticmethod
+    def prefixed(message: str, prefix: str) -> str:
+        """
+        Tag the first line of *message* with *prefix*, aligning the rest under it.
+
+        Indenting continuation lines by the prefix width is what lets a caller pass one
+        multi-line message instead of several calls: the block reads as a single
+        diagnostic, and nothing else can interleave between its lines.
+        """
+        head, _, rest = message.partition("\n")
+        if not rest:
+            return prefix + head
+        pad = " " * len(prefix)
+        return prefix + head + "\n" + "\n".join(pad + line for line in rest.split("\n"))
 
 
 class _TableRenderer:
@@ -98,18 +115,22 @@ class DisplayService:
         print(message, end=end, flush=flush)
 
     def error(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stderr with red styling (TTY only)."""
+        """Print *message* to stderr, tagged ``[ERROR]``, with red styling (TTY only)."""
         print(
-            _TextStyler.color(message, Ansi.BOLD_RED, stream=sys.stderr),
+            _TextStyler.color(
+                _TextStyler.prefixed(message, ERROR_PREFIX), Ansi.BOLD_RED, stream=sys.stderr
+            ),
             end=end,
             flush=flush,
             file=sys.stderr,
         )
 
     def warning(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stderr with yellow styling (TTY only)."""
+        """Print *message* to stderr, tagged ``[WARNING]``, with yellow styling (TTY only)."""
         print(
-            _TextStyler.color(message, Ansi.BOLD_YELLOW, stream=sys.stderr),
+            _TextStyler.color(
+                _TextStyler.prefixed(message, WARNING_PREFIX), Ansi.BOLD_YELLOW, stream=sys.stderr
+            ),
             end=end,
             flush=flush,
             file=sys.stderr,
@@ -309,5 +330,5 @@ class DisplayService:
         try:
             return getpass(f"Enter {description}: ")
         except EOFError as exc:
-            msg = "Secret input interrupted"
-            raise SystemExit(msg) from exc
+            self.error("secret input interrupted")
+            raise SystemExit(1) from exc

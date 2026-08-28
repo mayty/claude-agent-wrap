@@ -290,7 +290,7 @@ def test_spawn_background_does_not_mistake_the_claim_for_readiness(
 
     assert logs_svc.spawn_background(0) == 1
     logs_svc._display.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
-        "error: logs viewer started but did not become ready in time"
+        "logs viewer started but did not become ready in time"
     )
     assert (VIEWER_PID, signal.SIGTERM) in killed
     assert not state_file().exists()

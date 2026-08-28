@@ -30,20 +30,20 @@ class CreateService:
         dst = cwd / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
 
         if dst.exists():
-            self._display.error(f"Error: {dst} already exists")
+            self._display.error(f"{dst} already exists")
             return 1
 
         legacy = cwd / LEGACY_AGENT_DOCKERFILE_NAME
         if legacy.exists():
             self._display.error(
-                f"Error: {legacy} already exists. Move it to "
+                f"{legacy} already exists. Move it to "
                 f"{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME} instead of scaffolding a new one."
             )
             return 1
 
         name = sanitize_name(cwd.name)
         if not name:
-            self._display.error(f"Error: could not derive agent-name from directory '{cwd}'")
+            self._display.error(f"could not derive agent-name from directory '{cwd}'")
             return 1
 
         dst.parent.mkdir(parents=True, exist_ok=True)

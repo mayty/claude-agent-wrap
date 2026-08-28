@@ -160,6 +160,10 @@ def _stdout(dsp: Mock) -> str:
     return "\n".join(_lines(dsp))
 
 
+def _warnings(dsp: Mock) -> list[str]:
+    return [str(call.args[0]) for call in dsp.warning.call_args_list]
+
+
 def _details_lines(dsp: Mock) -> list[str]:
     """Return the rendered details table, from its title to the end of the output."""
     lines = _lines(dsp)
@@ -495,12 +499,14 @@ def test_human_output_has_no_lite_note_in_the_full_report(display_mock_service: 
     assert "--lite" not in _stdout(display_mock_service)
 
 
-def test_human_output_prints_collection_warnings(
+def test_human_output_reports_collection_warnings_off_stdout(
     inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
-    inspect_mock.build_report.return_value = _report(warnings=["Error: both Dockerfiles exist"])
+    """Warnings belong on stderr so a redirected report stays machine-readable."""
+    inspect_mock.build_report.return_value = _report(warnings=["both Dockerfiles exist"])
     run([])
-    assert "warning: Error: both Dockerfiles exist" in _stdout(display_mock_service)
+    assert "both Dockerfiles exist" in _warnings(display_mock_service)
+    assert "both Dockerfiles exist" not in _stdout(display_mock_service)
 
 
 def test_human_output_flags_an_available_update(

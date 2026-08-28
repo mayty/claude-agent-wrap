@@ -206,10 +206,10 @@ class LogsService:
         try:
             claimed = self._claim_or_spawn(port)
         except (LockTimeoutError, OSError) as e:
-            self._display.error(f"error: could not start the logs viewer: {e}")
+            self._display.error(f"could not start the logs viewer: {e}")
             return 1
         if claimed is None:
-            self._display.error("error: could not start the logs viewer")
+            self._display.error("could not start the logs viewer")
             return 1
         if not claimed["starting"]:
             # Already listening: either a concurrent launcher won the lock and its viewer
@@ -246,7 +246,7 @@ class LogsService:
             os.kill(pid, signal.SIGTERM)
         with contextlib.suppress(OSError):
             state_file().unlink(missing_ok=True)
-        self._display.error("error: logs viewer started but did not become ready in time")
+        self._display.error("logs viewer started but did not become ready in time")
         return 1
 
     def _claim_or_spawn(self, port: int) -> DaemonState | None:

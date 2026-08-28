@@ -122,22 +122,22 @@ class StartupService:
                 start_new_session=True,
             )
         except OSError as e:
-            msg = f"Error: could not execute '{rel}': {e}"
+            msg = f"could not execute '{rel}': {e}"
             raise StartupScriptError(msg) from e
 
         try:
             returncode = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
             self.terminate_tree(proc)
-            msg = f"Error: '{rel}' exceeded its {timeout:g}s timeout; aborting launch."
+            msg = f"'{rel}' exceeded its {timeout:g}s timeout; aborting launch."
             raise StartupScriptError(msg) from e
         except KeyboardInterrupt as e:
             self.terminate_tree(proc)
-            msg = f"Error: '{rel}' was interrupted; aborting launch."
+            msg = f"'{rel}' was interrupted; aborting launch."
             raise StartupScriptError(msg) from e
 
         if returncode != 0:
-            msg = f"Error: '{rel}' failed with exit code {returncode}; aborting launch."
+            msg = f"'{rel}' failed with exit code {returncode}; aborting launch."
             raise StartupScriptError(msg)
 
     def terminate_tree(self, proc: subprocess.Popen[bytes]) -> None:

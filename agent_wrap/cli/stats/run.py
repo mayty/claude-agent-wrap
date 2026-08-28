@@ -20,15 +20,15 @@ def run(args: list[str]) -> int:
 
     projects = services.config_service.read_project_paths()
     if not projects:
-        dsp.error("usage: no projects recorded yet — launch `agent` once to register a project.")
+        dsp.info("no projects recorded yet — launch `agent` once to register a project.")
         return 0
 
     report = services.stats_service.build_report(projects, parsed)
     if not report.rows and report.orphaned is None:
         if parsed.pattern is not None:
-            dsp.error(f"usage: no logs found for any project matching '{parsed.pattern.pattern}'.")
+            dsp.info(f"no logs found for any project matching '{parsed.pattern.pattern}'.")
         else:
-            dsp.error("usage: no LiteLLM logs found for any registered project.")
+            dsp.info("no LiteLLM logs found for any registered project.")
         return 0
 
     dsp.info(
@@ -53,7 +53,7 @@ def run(args: list[str]) -> int:
     # Footnote any successful requests whose usage was never recorded.
     if report.unrecorded:
         dsp.warning(
-            f"note: {report.unrecorded} successful request(s) had unrecorded usage and "
+            f"{report.unrecorded} successful request(s) had unrecorded usage and "
             "contribute $0 to the totals above (response logged without a usage "
             "block). Cost is understated by their unknown amount."
         )
