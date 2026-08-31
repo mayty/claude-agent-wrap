@@ -84,6 +84,7 @@ class Services:
         return UpdateService(
             display_service=self.display_service,
             logs_service=self.logs_service,
+            sidecar_service=self.sidecar_service,
         )
 
     @cached_property

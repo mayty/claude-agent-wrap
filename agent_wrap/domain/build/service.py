@@ -18,6 +18,7 @@ from agent_wrap.constants import (
     SPELLCHECK_BUILD_ARG,
     SPELLCHECK_LANG,
     TOOL_DIR,
+    UpdateCheck,
 )
 from agent_wrap.domain.build.constants import (
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
@@ -46,7 +47,10 @@ class BuildService:
 
     def rebuild(self, *, full: bool) -> int:
         """Execute the rebuild pipeline. Returns exit code."""
-        if self._updates.check_updates():
+        outcome = self._updates.check_updates()
+        if outcome is UpdateCheck.BLOCKED:
+            return 1
+        if outcome is UpdateCheck.HANDLED:
             return 0
         return self._do_rebuild(full=full)
 

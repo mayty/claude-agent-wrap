@@ -20,6 +20,22 @@ class PollResult(Enum):
     FAILURE = auto()
 
 
+class UpdateCheck(Enum):
+    """
+    What ``UpdateService.check_updates`` decided, for the command that asked to act on.
+
+    Lives here rather than in the updates subpackage because ``launch`` and ``build``
+    both branch on it, and a runtime cross-domain import would trip rule EA001.
+    """
+
+    #: Nothing to update, or the user declined — run the original command.
+    PROCEED = auto()
+    #: An update ran; the caller's command is now stale and must not run. Exit 0.
+    HANDLED = auto()
+    #: Containers are live, so the update was refused outright. Exit 1.
+    BLOCKED = auto()
+
+
 TOOL_DIR = Path(__file__).parent.parent.resolve()
 GLOBAL_CONFIG_DIR = TOOL_DIR / ".claude_config"
 AGENT_LAUNCHES_DIR = TOOL_DIR / ".agent-launches"
