@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.lib.docker_utils import (
+    ImageStamp,
     daemon_reachable,
     docker_run,
     get_container_uid,
@@ -15,6 +16,7 @@ from agent_wrap.lib.docker_utils import (
     host_network_build_args,
     image_claude_version,
     image_exists,
+    image_stamp,
     inspect_containers,
     is_newer_version,
     is_rootless,
@@ -114,6 +116,47 @@ def test_image_exists_file_not_found(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.side_effect = FileNotFoundError()
     assert image_exists("missing") is False
+
+
+def test_image_stamp_reads_id_and_labels(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = 'sha256:abc {"agent-wrap.build-iteration":"2"}'
+    assert image_stamp("claude-agent") == ImageStamp(
+        id="sha256:abc", labels={"agent-wrap.build-iteration": "2"}
+    )
+
+
+def test_image_stamp_treats_no_labels_as_an_empty_mapping(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Docker renders an unlabelled image's Config.Labels as JSON null."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = "sha256:abc null"
+    assert image_stamp("claude-agent") == ImageStamp(id="sha256:abc", labels={})
+
+
+def test_image_stamp_returns_none_for_an_absent_image(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 1
+    mock_run.return_value.stdout = ""
+    assert image_stamp("nope") is None
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["sha256:abc {not json", "sha256:abc", 'sha256:abc ["a","b"]'],
+    ids=["malformed", "no-labels-field", "not-a-mapping"],
+)
+def test_image_stamp_keeps_the_id_when_labels_cannot_be_read(
+    mocker: pytest_mock.MockFixture, stdout: str
+) -> None:
+    """The image is genuinely there; an unreadable label reads as one never set."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = stdout
+    assert image_stamp("claude-agent") == ImageStamp(id="sha256:abc", labels={})
 
 
 def test_image_claude_version_returns_version_on_success(

@@ -36,6 +36,23 @@ class UpdateCheck(Enum):
     BLOCKED = auto()
 
 
+class BuildForce(Enum):
+    """
+    What ``BuildService.ensure_images`` must build regardless of staleness.
+
+    Lives here rather than in the build subpackage for the same reason as
+    ``UpdateCheck``: ``launch`` has to name a member when it asks for the images it is
+    about to run, and a runtime cross-domain import would trip rule EA001.
+    """
+
+    #: ``agent run`` — build only what is missing or stale.
+    NONE = auto()
+    #: ``agent rebuild`` — always rebuild the project image; ensure the base.
+    PROJECT = auto()
+    #: ``agent rebuild --full`` — always rebuild both.
+    ALL = auto()
+
+
 TOOL_DIR = Path(__file__).parent.parent.resolve()
 GLOBAL_CONFIG_DIR = TOOL_DIR / ".claude_config"
 AGENT_LAUNCHES_DIR = TOOL_DIR / ".agent-launches"
@@ -57,6 +74,18 @@ PYTHON_POINTER_FILE = PYTHON_DIR / "current"
 
 # Genuine strings (not paths)
 BASE_IMAGE_NAME = "claude-agent"
+
+# Bumped by hand when a change to the *base image's* recipe has to invalidate every such
+# image already on disk -- ops/Dockerfile, or the build args _docker_build passes. `agent
+# run` compares this against BUILD_ITERATION_LABEL on the local base image and rebuilds it
+# -- and every project image on top of it -- when the two differ.
+#
+# Scope is the wrapper as a tool, on every host that runs it. A change to one project's
+# own .claude-agent-wrap/Dockerfile, this repo's included, is not a reason to bump: that
+# image is rebuilt by an `agent rebuild` in that project. One bump per release is enough,
+# and nothing enforces it: not every base-affecting change is statically detectable. See
+# CLAUDE.md, "Development workflow".
+DOCKER_BUILD_ITERATION = 1
 
 # Filename of the project registry that `agent run` appends to on every launch, and
 # that `agent stats` / the logs viewer read. Lives in AGENT_LAUNCHES_DIR.
@@ -280,6 +309,15 @@ ROLE_VALUE = BASE_IMAGE_NAME
 #: Docker label carrying an agent's instance id — the flock registry's key, and the
 #: key the stale per-instance state sweep matches live containers on.
 INSTANCE_ID_LABEL = "agent-wrap.instance-id"
+
+#: Image label carrying DOCKER_BUILD_ITERATION as of the build. Stamped on every image the
+#: wrapper builds, but read only off the *base* image: docker merges Config.Labels through
+#: FROM, so a project image's copy is inherited from the base and says nothing about the
+#: project image itself.
+BUILD_ITERATION_LABEL = "agent-wrap.build-iteration"
+#: Image label carrying the base image's docker Id as of the project build. An absent label
+#: means the image predates stamping and has to be rebuilt once.
+BASE_IMAGE_ID_LABEL = "agent-wrap.base-image-id"
 
 LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"

@@ -202,6 +202,13 @@ so the two never have to share the more conservative number.
 - **``models.py``**: data- and type-carrying classes (dataclasses, TypedDicts, NamedTuples, type aliases) belong in an optional ``models.py`` within their domain subpackage (see rule 8).
 - **``constants.py``**: module-level constants (whether public or ``_``-prefixed), including enums, belong in an optional ``constants.py`` within their domain subpackage, neighboring ``models.py`` (see rule 10).
 - **``service.py``**: every domain service class must be defined in ``service.py`` — not after the subpackage and not with a ``_service`` suffix (see rule 11).
+- **Image build stamps**: agent images carry their provenance as docker *build* labels
+  (`--label`), not `LABEL` instructions, so no project Dockerfile has to cooperate to be
+  trackable — the base image records `DOCKER_BUILD_ITERATION` and each project image
+  records the base image's docker ID. Docker merges `Config.Labels` through `FROM`, so the
+  iteration label is only ever read off the base image. The iteration and `BuildForce` both
+  live in the *root* `agent_wrap/constants.py` for the same reason `UpdateCheck` does:
+  `launch` and `build` both name them, and a runtime cross-domain import would trip EA001.
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
 - **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.

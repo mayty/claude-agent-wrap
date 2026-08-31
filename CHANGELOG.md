@@ -9,8 +9,9 @@ the [release notes style guide](releases/styleguide.md).
 
 **Breaking:** the wrapper now runs a CPython version that it pins itself, not the host's
 `python3`. Run `bin/agent-bootstrap` one time in each checkout, or `agent` refuses to
-start. It also adds spell checking, per-project startup scripts, and a new home for the
-project Dockerfile. Requires one `agent rebuild --full` after upgrading.
+start. It also adds spell checking, per-project startup scripts, automatic image rebuilds,
+and a new home for the project Dockerfile. A project Dockerfile must now inherit from
+`claude-agent`. The first `agent run` rebuilds both images by itself.
 
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14
 

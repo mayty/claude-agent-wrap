@@ -345,20 +345,28 @@ class Details:
         """
         Whether the base image exists, which Claude Code it carries, and if that is stale.
 
-        Yellow when absent (a rebuild is needed) or behind the registry (an update is
-        available); plain when present and current, including when the registry was not
-        consulted at all — ``--lite`` leaves the latest version unknown, and an unknown
-        latest must never look like an update.
+        Yellow when absent, when the next launch would rebuild it, or when it is behind the
+        registry (an update is available); plain when present and current, including when
+        the registry was not consulted at all — ``--lite`` leaves the latest version
+        unknown, and an unknown latest must never look like an update.
+
+        Absence is no longer an instruction: ``agent run`` builds a missing image itself,
+        so the row says when that will happen rather than what to type.
         """
         if not environment.base_image_present:
             return Cells.row(
                 "base image",
-                f"{environment.base_image} MISSING (run `agent rebuild --full`)",
+                f"{environment.base_image} MISSING (built on the next `agent run`)",
                 Ansi.BOLD_YELLOW,
             )
         state = f"{environment.base_image} present"
         if environment.base_image_version:
             state += f" (Claude Code v{environment.base_image_version})"
+        if environment.base_image_stale_reason:
+            state += (
+                f" -- STALE, rebuilt on the next `agent run`: {environment.base_image_stale_reason}"
+            )
+            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
         if environment.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
             return Cells.row("base image", state, Ansi.BOLD_YELLOW)
@@ -387,7 +395,7 @@ class Details:
             return [
                 Cells.row(
                     PROJECT_IMAGE_LABEL,
-                    f"{project.image} MISSING (run `agent rebuild`)",
+                    f"{project.image} MISSING (built on the next `agent run`)",
                     Ansi.BOLD_YELLOW,
                 )
             ]
@@ -395,6 +403,9 @@ class Details:
         if project.claude_version:
             state += f" (Claude Code v{project.claude_version})"
         style = Ansi.NONE
+        if project.stale_reason:
+            state += f" -- STALE, rebuilt on the next `agent run`: {project.stale_reason}"
+            style = Ansi.BOLD_YELLOW
         if project.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
             style = Ansi.BOLD_YELLOW

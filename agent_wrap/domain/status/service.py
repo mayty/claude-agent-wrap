@@ -13,8 +13,8 @@ runs the legacy-keyfile migration), ``LogsService.viewer_state`` instead of
 ``running_server`` (which unlinks a stale state file), ``SidecarService.registry_state``
 instead of ``has_live_runners`` (which reaps stale lock files), ``UpdateService
 .current_revision`` instead of ``check_updates`` (which fetches, and prompts), and
-``BuildService.resolve_image`` instead of anything further along the rebuild path (which
-builds).
+``BuildService.resolve_image`` and ``BuildService.stale_summary`` instead of
+``ensure_images`` or anything else further along the rebuild path (which builds).
 
 Read-only is not the same as cheap, and two probes are neither local nor silent: reading
 the Claude Code version inside an image starts a throwaway container from it, and the "is
@@ -79,7 +79,7 @@ from agent_wrap.lib import docker_utils
 from agent_wrap.lib.utils import directory_size, is_truthy_env, optional_truthy_env
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.build.models import ResolvedImage
+    from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.logs.service import LogsService
@@ -147,6 +147,12 @@ class InspectService:
             logs_future = (
                 None if lite else pool.submit(directory_size, TOOL_DIR / LITELLM_LOGS_DIRNAME)
             )
+            # The same verdict ``agent run`` acts on, asked of the one service that owns
+            # it — a second implementation here would be free to disagree with the build
+            # that actually happens.
+            staleness_future = (
+                pool.submit(self._build.stale_summary, resolved) if docker_up else None
+            )
 
             presence = self._probe_presence(pool, resolved, docker_up=docker_up)
             versions = self._probe_versions(pool, resolved, presence, lite=lite)
@@ -155,6 +161,7 @@ class InspectService:
             found_sidecars = sidecars_future.result() if sidecars_future else []
             found_agents = agents_future.result() if agents_future else []
             logs_bytes = logs_future.result() if logs_future else None
+            staleness = staleness_future.result() if staleness_future else None
 
         return InspectReport(
             docker=docker,
@@ -166,10 +173,15 @@ class InspectService:
             providers=self._provider_rows(),
             wrapper=self._wrapper_row(),
             environment=self._environment_row(
-                presence=presence, versions=versions, network_present=network_present
+                presence=presence,
+                versions=versions,
+                network_present=network_present,
+                staleness=staleness,
             ),
             storage=self._storage_row(logs_bytes=logs_bytes),
-            project=self._project_image_row(resolved, presence=presence, versions=versions),
+            project=self._project_image_row(
+                resolved, presence=presence, versions=versions, staleness=staleness
+            ),
             lite=lite,
             warnings=[project_warning] if project_warning else [],
         )
@@ -254,9 +266,10 @@ class InspectService:
         try:
             resolved = self._build.resolve_image()
         except SystemExit as exc:
-            # Both Dockerfile locations populated, or a missing/invalid `# agent-name:`.
-            # Fatal to a launch; here it costs one row, and the rest of the report is
-            # exactly what someone diagnosing that state wants to see.
+            # Both Dockerfile locations populated, a missing/invalid `# agent-name:`, or a
+            # final FROM that is not the base image. Fatal to a launch; here it costs one
+            # row, and the rest of the report is exactly what someone diagnosing that
+            # state wants to see.
             return None, str(exc)
         except OSError as exc:
             return None, f"project Dockerfile could not be read: {exc}"
@@ -417,6 +430,7 @@ class InspectService:
         *,
         presence: ImagePresence,
         versions: ClaudeVersions,
+        staleness: ImageStaleness | None,
     ) -> ProjectImageRow | None:
         """
         Describe the image this project's Dockerfile declares, or None when it declares none.
@@ -436,10 +450,16 @@ class InspectService:
             claude_update_available=docker_utils.is_newer_version(
                 versions.project, versions.latest
             ),
+            stale_reason=staleness.project if staleness else "",
         )
 
     def _environment_row(
-        self, *, presence: ImagePresence, versions: ClaudeVersions, network_present: bool
+        self,
+        *,
+        presence: ImagePresence,
+        versions: ClaudeVersions,
+        network_present: bool,
+        staleness: ImageStaleness | None,
     ) -> EnvironmentRow:
         """
         Collect the host facts behind the most common launch surprises.
@@ -456,6 +476,7 @@ class InspectService:
             base_image_version=versions.base,
             latest_claude_version=versions.latest,
             claude_update_available=docker_utils.is_newer_version(versions.base, versions.latest),
+            base_image_stale_reason=staleness.base if staleness else "",
             network_name=SIDECAR_NETWORK_NAME,
             network_present=network_present,
             host_network_requested=requested,

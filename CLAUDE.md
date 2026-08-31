@@ -60,6 +60,15 @@ A `Makefile` provides all QA targets. Follow these rules:
 - **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck`.
 - **Fix lint/format errors with `make` first.** Auto-fix via `make lint` or `make format` before manual edits.
 - **Never `pip install` dependencies.** Add them to the `dev` dependency group (`[dependency-groups]`) in `pyproject.toml` and prompt the user to run `agent rebuild` — `bin/agent-bootstrap` installs the group during the image build. The host runtime stays stdlib-only: `[project]` declares no `dependencies`.
+- **Bump `DOCKER_BUILD_ITERATION` (in `agent_wrap/constants.py`) once per release in which
+  the base image's recipe changed** — that is `ops/Dockerfile`, or the build args
+  `BuildService._docker_build` passes. Every host's next `agent run` then rebuilds its
+  `claude-agent` base image and every project image on top of it, so the scope is the
+  wrapper as a tool, not this repo. Changes to *this project's* own
+  `.claude-agent-wrap/Dockerfile`, `pyproject.toml` or `dev` dependency group are **not**
+  reasons to bump — they reach one image, applied by an `agent rebuild` here. There is
+  deliberately no `make` check: one bump per release is enough, and not every
+  base-affecting change is statically detectable.
 - **Never import a private (`_`-prefixed) name from another module.** If a name is
   intended for import outside its defining module, it must be public (no underscore).
   Ruff's `SLF001` only catches `obj._attr` access, not `from module import _name`,

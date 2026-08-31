@@ -1,5 +1,4 @@
 # agent-name: agent-wrap
-# agent-enable-startup: 600
 # The container gets its OWN provisioned interpreter at the SAME path the host
 # uses. This project's directory is the wrapper's own tool directory, so the
 # host's .python/ is bind-mounted in at /workspace/.python — and on a macOS host

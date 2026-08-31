@@ -159,6 +159,48 @@ def image_exists(image: str) -> bool:
     return rc == 0
 
 
+class ImageStamp(NamedTuple):
+    """
+    Identity and labels of a local image, read in a single inspect.
+
+    ``labels`` carries what docker reports on ``Config.Labels``, which *includes* every
+    label inherited through ``FROM`` -- a derived image cannot be told apart from its
+    parent by a label the parent set. Callers that care must know which image class they
+    are reading a given label off.
+    """
+
+    #: The image's content id, e.g. "sha256:...".
+    id: str
+    #: Labels, or {} when the image declares none.
+    labels: dict[str, str]
+
+
+def image_stamp(image: str) -> ImageStamp | None:
+    """
+    Id and labels of *image*, or None when it is absent or docker is unreachable.
+
+    Doubles as the existence probe, so a caller that wants both facts pays one docker
+    call rather than three. Labels come back as JSON rather than through
+    ``{{index .Config.Labels "k"}}``, which renders an absent key and an empty value
+    identically -- and absence is a state of its own here ("built before stamping").
+    Unparseable label JSON degrades to {} rather than to None: the image is genuinely
+    there, and an unreadable label reads as a label that was never set.
+    """
+    stdout, rc = docker_run(
+        "image", "inspect", "--format", "{{.Id}} {{json .Config.Labels}}", image, timeout=10
+    )
+    if rc != 0 or not stdout:
+        return None
+    image_id, _, raw_labels = stdout.partition(" ")
+    try:
+        parsed = json.loads(raw_labels)
+    except json.JSONDecodeError:
+        return ImageStamp(id=image_id, labels={})
+    if not isinstance(parsed, dict):
+        return ImageStamp(id=image_id, labels={})
+    return ImageStamp(id=image_id, labels={str(k): str(v) for k, v in parsed.items()})
+
+
 def image_claude_version(image: str) -> str | None:
     """
     Return the @anthropic-ai/claude-code version inside *image*, or None.

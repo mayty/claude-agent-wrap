@@ -154,6 +154,9 @@ class EnvironmentRow:
     latest_claude_version: str | None
     #: True when the npm registry reports a newer version than the base image's.
     claude_update_available: bool
+    #: Why the next ``agent run`` would rebuild the base image, or "" when it is current.
+    #: A string rather than the build domain's enum: this row is serialised by ``--json``.
+    base_image_stale_reason: str
     network_name: str
     network_present: bool
     #: Whether AGENT_USE_HOST_NETWORK is set to a truthy value.
@@ -198,6 +201,8 @@ class ProjectImageRow:
     #: True when the npm registry reports a newer version than this image's. Always False
     #: in lite mode, which never consults the registry.
     claude_update_available: bool
+    #: Why the next ``agent run`` would rebuild this image, or "" when it is current.
+    stale_reason: str
 
 
 @dataclass(frozen=True)

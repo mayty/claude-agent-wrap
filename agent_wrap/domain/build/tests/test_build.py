@@ -1,6 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.build.service.BuildService."""
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,15 +10,21 @@ import pytest
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
     AGENT_DOCKERFILE_NAME,
+    BASE_IMAGE_ID_LABEL,
+    BASE_IMAGE_NAME,
+    BUILD_ITERATION_LABEL,
+    DOCKER_BUILD_ITERATION,
     LEGACY_AGENT_DOCKERFILE_NAME,
+    BuildForce,
     UpdateCheck,
 )
 from agent_wrap.domain.build.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS
-from agent_wrap.domain.build.models import ResolvedImage
+from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.updates.service import UpdateService
 from agent_wrap.exceptions import DockerfileDirectiveError
+from agent_wrap.lib.docker_utils import ImageStamp
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -71,110 +78,405 @@ def _write_project_dockerfile(project_dir: Path, content: str) -> Path:
     return path
 
 
-def test_from_claude_agent_image_exists(
-    build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: test\nFROM claude-agent\n")
-    resolved = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
+BASE_ID = "sha256:aaa"
+NEW_BASE_ID = "sha256:bbb"
+
+
+@pytest.fixture
+def docker_up(mocker: pytest_mock.MockFixture) -> None:
+    """Make the build path believe the Docker daemon answers."""
     mocker.patch(
-        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
+        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=True
     )
-    assert build_svc._check_from_line(resolved) is True
 
 
-def test_from_claude_agent_image_missing(
-    build_svc: BuildService,
-    tmp_path: Path,
+@pytest.fixture
+def docker_build(mocker: pytest_mock.MockFixture) -> pytest_mock.MockType:
+    """Fake every subprocess the build path shells out to, succeeding."""
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    mock_run.return_value.returncode = 0
+    return mock_run
+
+
+def _stamps(
     mocker: pytest_mock.MockFixture,
+    base: ImageStamp | None,
+    project: ImageStamp | None = None,
+    *,
+    after_base_build: ImageStamp | None = None,
+) -> pytest_mock.MockType:
+    """
+    Patch ``image_stamp`` to answer per image name.
+
+    *after_base_build* is what the base reads as once it has been rebuilt, which is how
+    the "stamp the project with the id that was just created" path gets exercised.
+    """
+    state = {"base": base}
+
+    def _answer(image: str) -> ImageStamp | None:
+        if image == BASE_IMAGE_NAME:
+            current = state["base"]
+            if after_base_build is not None:
+                state["base"] = after_base_build
+            return current
+        return project
+
+    return mocker.patch(
+        "agent_wrap.domain.build.service.image_stamp", autospec=True, side_effect=_answer
+    )
+
+
+def _built_images(mock_run: pytest_mock.MockType) -> list[str]:
+    """Return the ``-t`` argument of every ``docker build`` the run mock saw, in order."""
+    images: list[str] = []
+    for call in mock_run.call_args_list:
+        argv: list[str] = call[0][0] if call[0] else []
+        if isinstance(argv, list) and "build" in argv:
+            images.append(argv[argv.index("-t") + 1])
+    return images
+
+
+def _labels_for(mock_run: pytest_mock.MockType, image: str) -> dict[str, str]:
+    """Return the ``--label`` pairs the build of *image* was given."""
+    for call in mock_run.call_args_list:
+        argv: list[str] = call[0][0] if call[0] else []
+        if not isinstance(argv, list) or "build" not in argv or argv[argv.index("-t") + 1] != image:
+            continue
+        return dict(argv[i + 1].split("=", 1) for i, arg in enumerate(argv) if arg == "--label")
+    return {}
+
+
+CURRENT_BASE = ImageStamp(id=BASE_ID, labels={BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION)})
+STALE_BASE = ImageStamp(id=BASE_ID, labels={BUILD_ITERATION_LABEL: "0"})
+UNSTAMPED_BASE = ImageStamp(id=BASE_ID, labels={})
+CURRENT_PROJECT = ImageStamp(id="sha256:ccc", labels={BASE_IMAGE_ID_LABEL: BASE_ID})
+FOREIGN_PROJECT = ImageStamp(id="sha256:ccc", labels={BASE_IMAGE_ID_LABEL: "sha256:zzz"})
+UNSTAMPED_PROJECT = ImageStamp(id="sha256:ccc", labels={})
+
+
+@pytest.fixture
+def project_resolved(tmp_path: Path) -> ResolvedImage:
+    """Return a resolved project image whose Dockerfile inherits from the base."""
+    dockerfile = _write_project_dockerfile(tmp_path, "# agent-name: t\nFROM claude-agent\n")
+    return ResolvedImage(
+        image="claude-agent-t", dockerfile=dockerfile, context=tmp_path, agent_name="t"
+    )
+
+
+@pytest.fixture
+def base_resolved(tmp_path: Path) -> ResolvedImage:
+    """Return the base image as ``resolve_image`` returns it."""
+    return ResolvedImage(
+        image=BASE_IMAGE_NAME, dockerfile=tmp_path / "ops" / AGENT_DOCKERFILE_NAME, context=tmp_path
+    )
+
+
+def test_ensure_images_refuses_when_docker_is_down(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, base_resolved: ResolvedImage
 ) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: test\nFROM claude-agent\n")
-    resolved = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
+    """A build against a dead daemon would fail with docker's error, not a useful one."""
     mocker.patch(
-        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=False
+        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
     )
-    assert build_svc._check_from_line(resolved) is False
-    build_svc._display.error.assert_any_call(  # pyrefly: ignore [missing-attribute]
-        f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built.\n"
-        "Run 'agent rebuild --full' to build the base first."
-    )
-    assert build_svc._display.error.call_count == 1  # pyrefly: ignore [missing-attribute]
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+
+    assert build_svc.ensure_images(base_resolved, force=BuildForce.NONE) == 1
+
+    mock_run.assert_not_called()
+    message = build_svc._display.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "Docker daemon is not reachable" in message
 
 
-def test_from_custom_image(
+@pytest.mark.parametrize(
+    ("base_stamp", "expected"),
+    [
+        (None, [BASE_IMAGE_NAME]),
+        (UNSTAMPED_BASE, [BASE_IMAGE_NAME]),
+        (STALE_BASE, [BASE_IMAGE_NAME]),
+        (CURRENT_BASE, []),
+    ],
+    ids=["missing", "unstamped", "iteration-changed", "current"],
+)
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_base_only(  # noqa: PLR0913
+    mocker: pytest_mock.MockFixture,
     build_svc: BuildService,
-    tmp_path: Path,
+    base_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+    base_stamp: ImageStamp | None,
+    expected: list[str],
 ) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: test\nFROM ubuntu:24.04\n")
-    resolved = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
-    assert build_svc._check_from_line(resolved) is True
-    build_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
-        f"'{resolved.dockerfile}' inherits from 'ubuntu:24.04' rather than"
-        " 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse"
-        " the base toolchain."
-    )
+    """With no project image in play, only the base's own state decides."""
+    _stamps(mocker, base_stamp)
+
+    assert build_svc.ensure_images(base_resolved, force=BuildForce.NONE) == 0
+    assert _built_images(docker_build) == expected
 
 
-def test_empty_dockerfile(build_svc: BuildService, tmp_path: Path) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("")
-    resolved = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
-    assert build_svc._check_from_line(resolved) is True
-
-
-def test_multistage_dockerfile_last_from_wins(
-    build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockerFixture
+@pytest.mark.parametrize(
+    ("project_stamp", "expected"),
+    [
+        (None, ["claude-agent-t"]),
+        (UNSTAMPED_PROJECT, ["claude-agent-t"]),
+        (FOREIGN_PROJECT, ["claude-agent-t"]),
+        (CURRENT_PROJECT, []),
+    ],
+    ids=["missing", "unstamped", "base-changed", "current"],
+)
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_project_against_a_current_base(  # noqa: PLR0913
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+    project_stamp: ImageStamp | None,
+    expected: list[str],
 ) -> None:
-    """Multi-stage Dockerfile: _check_from_line uses the last FROM line."""
+    """The base is current, so the project image's recorded base id is the whole question."""
+    _stamps(mocker, CURRENT_BASE, project_stamp)
+
+    assert build_svc.ensure_images(project_resolved, force=BuildForce.NONE) == 0
+    assert _built_images(docker_build) == expected
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_stale_base_rebuilds_the_project_too(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """A project image is only ever as current as the base it was built on."""
+    _stamps(mocker, STALE_BASE, CURRENT_PROJECT, after_base_build=CURRENT_BASE)
+
+    assert build_svc.ensure_images(project_resolved, force=BuildForce.NONE) == 0
+    assert _built_images(docker_build) == [BASE_IMAGE_NAME, "claude-agent-t"]
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_stamps_the_project_with_the_rebuilt_base_id(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """Recording the pre-rebuild id would leave the project image stale forever."""
+    rebuilt = ImageStamp(
+        id=NEW_BASE_ID, labels={BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION)}
+    )
+    _stamps(mocker, STALE_BASE, CURRENT_PROJECT, after_base_build=rebuilt)
+
+    build_svc.ensure_images(project_resolved, force=BuildForce.NONE)
+
+    assert _labels_for(docker_build, "claude-agent-t")[BASE_IMAGE_ID_LABEL] == NEW_BASE_ID
+    assert _labels_for(docker_build, BASE_IMAGE_NAME) == {
+        BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION)
+    }
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_stops_when_the_base_build_fails(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+) -> None:
+    """A project image must never be built on a base that is absent or known to be wrong."""
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    mock_run.return_value.returncode = 1
+    _stamps(mocker, None, CURRENT_PROJECT)
+
+    assert build_svc.ensure_images(project_resolved, force=BuildForce.NONE) == 1
+    assert _built_images(mock_run) == [BASE_IMAGE_NAME]
+
+
+@pytest.mark.parametrize(
+    ("force", "expected"),
+    [
+        (BuildForce.NONE, []),
+        (BuildForce.PROJECT, ["claude-agent-t"]),
+        (BuildForce.ALL, [BASE_IMAGE_NAME, "claude-agent-t"]),
+    ],
+    ids=["none", "project", "all"],
+)
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_honours_force(  # noqa: PLR0913
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+    force: BuildForce,
+    expected: list[str],
+) -> None:
+    """Everything is current, so only the caller's insistence produces a build."""
+    _stamps(mocker, CURRENT_BASE, CURRENT_PROJECT)
+
+    assert build_svc.ensure_images(project_resolved, force=force) == 0
+    assert _built_images(docker_build) == expected
+
+
+@pytest.mark.usefixtures("docker_up")
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_forces_the_base_when_it_is_the_only_image(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    base_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """`agent rebuild` in a project with no Dockerfile can only have meant the base."""
+    _stamps(mocker, CURRENT_BASE, after_base_build=CURRENT_BASE)
+
+    assert build_svc.ensure_images(base_resolved, force=BuildForce.PROJECT) == 0
+    assert _built_images(docker_build) == [BASE_IMAGE_NAME]
+
+
+def test_ensure_images_explains_an_automatic_rebuild(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    base_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """An auto-build spends minutes the user did not ask for; it has to say why."""
+    _stamps(mocker, STALE_BASE)
+
+    build_svc.ensure_images(base_resolved, force=BuildForce.NONE)
+
+    assert _built_images(docker_build) == [BASE_IMAGE_NAME]
+    reason = build_svc._display.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "build iteration" in reason
+    assert "--no-cache" in reason
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_states_no_reason_for_a_forced_rebuild(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    base_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """`agent rebuild` was the user's own idea and needs no justification."""
+    _stamps(mocker, CURRENT_BASE)
+
+    build_svc.ensure_images(base_resolved, force=BuildForce.ALL)
+
+    assert _built_images(docker_build) == [BASE_IMAGE_NAME]
+    build_svc._display.info.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_waits_for_a_concurrent_build(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    base_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """A launcher queued behind another build must say so rather than hang silently."""
     mocker.patch(
-        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
+        "agent_wrap.domain.build.service.try_file_lock",
+        autospec=True,
+        return_value=nullcontext(enter_result=False),
     )
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    # First FROM is a builder, second is the real base
-    dockerfile.write_text(
-        "# agent-name: test\nFROM node:20 AS builder\nRUN npm install\nFROM claude-agent\n"
-    )
-    resolved = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
-    assert build_svc._check_from_line(resolved) is True
+    _stamps(mocker, CURRENT_BASE)
+
+    assert build_svc.ensure_images(base_resolved, force=BuildForce.NONE) == 0
+
+    # Nothing to do once the lock is free -- the holder built it while this one waited.
+    assert _built_images(docker_build) == []
+    build_svc._display.info.assert_called_once()  # pyrefly: ignore [missing-attribute]
+    message = build_svc._display.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "waiting for another agent-wrap image build" in message
 
 
-def test_multistage_dockerfile_last_custom_base(build_svc: BuildService, tmp_path: Path) -> None:
-    """Multi-stage Dockerfile where last FROM is a custom image."""
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: test\nFROM claude-agent AS base\nFROM ubuntu:24.04\n")
-    resolved = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
+@pytest.mark.parametrize(
+    ("base_stamp", "project_stamp", "expected_base", "expected_project"),
+    [
+        (CURRENT_BASE, CURRENT_PROJECT, "", ""),
+        (STALE_BASE, CURRENT_PROJECT, "build iteration", "is not the one it was built on"),
+        (CURRENT_BASE, None, "", "not built on this host"),
+    ],
+    ids=["both-current", "stale-base", "missing-project"],
+)
+@pytest.mark.usefixtures("docker_up")
+def test_stale_summary_reports_without_building(  # noqa: PLR0913
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    base_stamp: ImageStamp,
+    project_stamp: ImageStamp | None,
+    expected_base: str,
+    expected_project: str,
+) -> None:
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    _stamps(mocker, base_stamp, project_stamp)
+
+    summary = build_svc.stale_summary(project_resolved)
+
+    mock_run.assert_not_called()
+    assert expected_base in summary.base
+    assert bool(summary.base) is bool(expected_base)
+    assert expected_project in summary.project
+    assert bool(summary.project) is bool(expected_project)
+
+
+def test_stale_summary_is_silent_when_docker_is_down(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, project_resolved: ResolvedImage
+) -> None:
+    """An unreachable daemon is not evidence that anything is stale."""
+    mocker.patch(
+        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
     )
-    assert build_svc._check_from_line(resolved) is True
-    build_svc._display.warning.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
-        f"'{resolved.dockerfile}' inherits from 'ubuntu:24.04' rather than"
-        " 'claude-agent'. Consider migrating to 'FROM claude-agent' to reuse"
-        " the base toolchain."
-    )
+
+    assert build_svc.stale_summary(project_resolved) == ImageStaleness(base="", project="")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "# agent-name: t\nFROM ubuntu:24.04\n",
+        "# agent-name: t\nFROM claude-agent AS base\nFROM ubuntu:24.04\n",
+    ],
+    ids=["single-stage", "multi-stage-last-foreign"],
+)
+def test_resolve_rejects_a_foreign_final_from(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_svc: BuildService,
+    content: str,
+) -> None:
+    """The last FROM is what the tag contains, so it is the one that must be the base."""
+    monkeypatch.chdir(tmp_path)
+    _write_project_dockerfile(tmp_path, content)
+
+    with pytest.raises(SystemExit, match="must inherit from the wrapper's base image"):
+        build_svc.resolve_image(use_base=False)
+
+
+def test_resolve_rejects_a_dockerfile_with_no_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_project_dockerfile(tmp_path, "# agent-name: t\n")
+
+    with pytest.raises(SystemExit, match="must contain a 'FROM claude-agent' line"):
+        build_svc.resolve_image(use_base=False)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "# agent-name: t\nFROM claude-agent\n",
+        "# agent-name: t\nFROM claude-agent:latest\n",
+        "# agent-name: t\nFROM node:20 AS builder\nRUN npm install\nFROM claude-agent\n",
+    ],
+    ids=["plain", "tagged", "multi-stage-last-base"],
+)
+def test_resolve_accepts_a_base_final_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build_svc: BuildService, content: str
+) -> None:
+    """Earlier stages produce throwaway artifacts and may use any image at all."""
+    monkeypatch.chdir(tmp_path)
+    _write_project_dockerfile(tmp_path, content)
+
+    assert build_svc.resolve_image(use_base=False).image == "claude-agent-t"
 
 
 def test_do_rebuild_resolve_image_exit(
@@ -192,59 +494,51 @@ def test_do_rebuild_resolve_image_exit(
     build_svc._display.error.assert_called_once_with("no project Dockerfile")  # pyrefly: ignore [missing-attribute]
 
 
-def test_do_rebuild_full_build_fails(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+@pytest.mark.usefixtures("docker_up")
+def test_do_rebuild_propagates_a_build_failure(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
 ) -> None:
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
-    mock_resolve.return_value = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=tmp_path / AGENT_DOCKERFILE_NAME,
-        context=tmp_path,
-    )
+    mocker.patch.object(BuildService, "resolve_image", autospec=True, return_value=project_resolved)
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 1
-    rc = build_svc._do_rebuild(full=True)
-    assert rc == 1
-    mock_run.assert_called_once()  # reason: subprocess was attempted
+    _stamps(mocker, CURRENT_BASE, CURRENT_PROJECT)
+
+    assert build_svc._do_rebuild(full=False) == 1
+    assert _built_images(mock_run) == ["claude-agent-t"]
 
 
-def test_do_rebuild_project_build_fails(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+@pytest.mark.usefixtures("docker_up")
+def test_do_rebuild_full_builds_base_then_project(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
 ) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
-    mock_resolve.return_value = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
-    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
-    mock_run.return_value.returncode = 1
-    rc = build_svc._do_rebuild(full=False)
-    assert rc == 1
-    mock_run.assert_called_once()  # reason: subprocess was attempted
+    mocker.patch.object(BuildService, "resolve_image", autospec=True, return_value=project_resolved)
+    _stamps(mocker, CURRENT_BASE, CURRENT_PROJECT, after_base_build=CURRENT_BASE)
+
+    assert build_svc._do_rebuild(full=True) == 0
+    assert _built_images(docker_build) == [BASE_IMAGE_NAME, "claude-agent-t"]
+    # Base build + project build + the closing `docker images` listing.
+    assert docker_build.call_count == 3
 
 
-def test_do_rebuild_check_from_line_fails(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
+@pytest.mark.usefixtures("docker_up")
+def test_do_rebuild_full_says_the_base_was_the_only_build_needed(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    base_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
 ) -> None:
-    dockerfile = _write_project_dockerfile(tmp_path, "# agent-name: t\nFROM claude-agent\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
-    mock_resolve.return_value = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-        agent_name="t",
-    )
-    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
-    mock_run.return_value.returncode = 0
-    mocker.patch(
-        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=False
-    )
-    rc = build_svc._do_rebuild(full=False)
-    assert rc == 1
-    mock_run.assert_not_called()  # reason: guard clause returns early before docker build
+    mocker.patch.object(BuildService, "resolve_image", autospec=True, return_value=base_resolved)
+    _stamps(mocker, CURRENT_BASE, after_base_build=CURRENT_BASE)
+
+    assert build_svc._do_rebuild(full=True) == 0
+    assert _built_images(docker_build) == [BASE_IMAGE_NAME]
+    message = build_svc._display.success.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "base build is the only build needed" in message
 
 
 def test_docker_build_returns_exit_code(
@@ -252,7 +546,7 @@ def test_docker_build_returns_exit_code(
 ) -> None:
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
-    rc = build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    rc = build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, labels={})
     assert rc == 0
 
 
@@ -261,7 +555,7 @@ def test_docker_build_failure(
 ) -> None:
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 1
-    rc = build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    rc = build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, labels={})
     assert rc == 1
     mock_run.assert_called_once()  # reason: docker build subprocess was attempted
 
@@ -276,7 +570,7 @@ def test_docker_build_splices_host_network(
         autospec=True,
         return_value=["--network", "host"],
     )
-    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, labels={})
     argv = mock_run.call_args[0][0]
     assert "--network" in argv
     assert argv[argv.index("--network") + 1] == "host"
@@ -289,7 +583,7 @@ def test_docker_build_splices_spellcheck_lang(
     # settings.json names a dictionary that was never installed.
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
     mock_run.return_value.returncode = 0
-    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, labels={})
     argv = mock_run.call_args[0][0]
     assert "SPELLCHECK_LANG=en_US,ru_RU" in argv
     assert argv[argv.index("SPELLCHECK_LANG=en_US,ru_RU") - 1] == "--build-arg"
@@ -305,51 +599,8 @@ def test_docker_build_no_host_network_by_default(
         autospec=True,
         return_value=[],
     )
-    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, "1000", "1000")
+    build_svc._docker_build(tmp_path / "Dockerfile", "test-img", tmp_path, labels={})
     assert "--network" not in mock_run.call_args[0][0]
-
-
-def test_do_rebuild_project_success(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
-) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: t\nFROM custom-image\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
-    mock_resolve.return_value = ResolvedImage(
-        image="claude-agent-test",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
-    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
-    mock_run.return_value.returncode = 0
-    rc = build_svc._do_rebuild(full=False)
-    assert rc == 0
-
-
-def test_do_rebuild_full_base_then_project(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, build_svc: BuildService
-) -> None:
-    dockerfile = tmp_path / AGENT_DOCKERFILE_NAME
-    dockerfile.write_text("# agent-name: t\nFROM claude-agent\n")
-    mock_resolve = mocker.patch.object(BuildService, "resolve_image", autospec=True)
-    mock_resolve.return_value = ResolvedImage(
-        image="claude-agent-t",
-        dockerfile=dockerfile,
-        context=tmp_path,
-    )
-    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
-    mock_run.return_value.returncode = 0
-    mocker.patch(
-        f"{'agent_wrap.domain.build.service'}.image_exists", autospec=True, return_value=True
-    )
-    rc = build_svc._do_rebuild(full=True)
-    assert rc == 0
-    # Base build + project build + docker images ls (only at end, not after base)
-    assert mock_run.call_count == 3
-    # Verify docker build commands were issued
-    call_args_list = [c[0][0] for c in mock_run.call_args_list if c[0]]
-    docker_builds = [a for a in call_args_list if isinstance(a, list) and "build" in a]
-    assert len(docker_builds) == 2  # base + project
 
 
 def test_agent_user(write_dockerfile: Callable[[str], Path], build_svc: BuildService) -> None:

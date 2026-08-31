@@ -28,6 +28,18 @@ class DockerfileAgentInfo:
     startup_timeout: float | None = None
 
 
+class ImageStaleness(NamedTuple):
+    """
+    Why each image would be rebuilt if asked right now, for read-only reporting.
+
+    Each field is the rendered reason line, or "" when that image is current, absent from
+    the question (no project Dockerfile), or could not be checked at all.
+    """
+
+    base: str
+    project: str
+
+
 @dataclass
 class ResolvedImage:
     """Result of resolving which Docker image to use."""

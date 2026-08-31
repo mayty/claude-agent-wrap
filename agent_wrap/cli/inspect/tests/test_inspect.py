@@ -67,6 +67,7 @@ _PROJECT = ProjectImageRow(
     present=True,
     claude_version="2.0.50",
     claude_update_available=False,
+    stale_reason="",
 )
 
 
@@ -128,6 +129,7 @@ def _report(  # noqa: PLR0913
             base_image_version="2.0.50",
             latest_claude_version=None,
             claude_update_available=False,
+            base_image_stale_reason="",
             network_name="agent-wrap-net",
             network_present=True,
             host_network_requested=False,
@@ -441,7 +443,26 @@ def test_human_output_flags_a_project_image_that_was_never_built(
     )
     run([])
     out = _stdout(display_mock_service)
-    assert "claude-agent-wrap MISSING (run `agent rebuild`)" in out
+    assert "claude-agent-wrap MISSING (built on the next `agent run`)" in out
+
+
+def test_human_output_flags_an_image_the_next_launch_will_rebuild(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Present is not the same as current, and the report has to say which."""
+    report = _report(project=dataclasses.replace(_PROJECT, stale_reason="its base moved"))
+    inspect_mock.build_report.return_value = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment, base_image_stale_reason="the build iteration changed"
+        ),
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
+    assert "the build iteration changed" in out
+    assert "claude-agent-wrap present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
+    assert "its base moved" in out
 
 
 def test_human_output_flags_a_stale_project_image(

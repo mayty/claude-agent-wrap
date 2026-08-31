@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME
-from agent_wrap.domain.build.models import ResolvedImage
+from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.logs.models import ViewerState
@@ -171,6 +171,7 @@ def config_mock(mocker: pytest_mock.MockFixture, tmp_path: Path) -> Mock:
 def build_mock(mocker: pytest_mock.MockFixture) -> Mock:
     mock = mocker.create_autospec(BuildService, instance=True)
     mock.resolve_image.return_value = _PROJECT_IMAGE
+    mock.stale_summary.return_value = ImageStaleness(base="", project="")
     return mock
 
 
@@ -456,6 +457,33 @@ def test_report_is_json_serialisable(service: InspectService) -> None:
     payload = json.dumps(dataclasses.asdict(service.build_report()))
     assert json.loads(payload)["sidecars"][0]["port"] == 48620
     assert json.loads(payload)["environment"]["base_image_version"] == "2.0.50"
+
+
+def test_report_carries_the_staleness_the_build_service_reports(
+    service: InspectService, build_mock: Mock
+) -> None:
+    """One verdict, produced by the service that acts on it, reaching both image rows."""
+    build_mock.stale_summary.return_value = ImageStaleness(
+        base="the build iteration changed", project="its base moved"
+    )
+
+    report = service.build_report()
+
+    assert report.environment.base_image_stale_reason == "the build iteration changed"
+    assert report.project is not None
+    assert report.project.stale_reason == "its base moved"
+
+
+def test_report_reports_no_staleness_when_docker_is_down(
+    service: InspectService, build_mock: Mock, docker_probes: dict[str, Mock]
+) -> None:
+    """An unreachable daemon cannot be asked, and must not be reported as an answer."""
+    docker_probes["reachable"].return_value = False
+
+    report = service.build_report()
+
+    build_mock.stale_summary.assert_not_called()
+    assert report.environment.base_image_stale_reason == ""
 
 
 def test_environment_row_includes_base_image_version(
