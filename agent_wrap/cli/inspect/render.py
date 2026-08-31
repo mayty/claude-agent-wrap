@@ -42,17 +42,17 @@ from agent_wrap.cli.inspect.constants import (
     NONE_CELL,
     NOT_MEASURED,
     PROJECT_IMAGE_LABEL,
-    REASON_MAX_WIDTH,
     SIDECAR_ALIGNS,
     SIDECAR_HEADERS,
     STALE_IMAGES_ALIGNS,
+    STALE_IMAGES_ELIDE,
     STALE_IMAGES_HEADERS,
     UNKNOWN,
 )
 from agent_wrap.constants import AUTOSTART_LOGS_ENV, DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem
-from agent_wrap.lib.path_tree import build_path_tree, walk_path_tree
+from agent_wrap.lib.path_tree import build_path_tree, expand_widest_chain, walk_path_tree
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.models import RowItemOrDivider
@@ -70,7 +70,7 @@ if TYPE_CHECKING:
         ViewerRow,
         WrapperRow,
     )
-    from agent_wrap.lib.path_tree import PathTreeLine
+    from agent_wrap.lib.path_tree import PathTreeLine, PathTreeNode
 
 #: Divider sentinel understood by ``DisplayService.render_table``.
 
@@ -109,20 +109,6 @@ class Cells:
         return image.split("@", 1)[0].rsplit("/", 1)[-1] or UNKNOWN
 
     @staticmethod
-    def reason(reason: str) -> str:
-        """
-        Trim a build reason to one column's worth, marking that it was trimmed.
-
-        Same trade as :meth:`image` above, for the same reason: the untrimmed cell is wide
-        enough to wrap the row on a normal terminal. What is dropped is the tail of the
-        longest reason, which explains what to do rather than which image is stale, and
-        `-j`/`--json` still carries every reason in full.
-        """
-        if len(reason) <= REASON_MAX_WIDTH:
-            return reason
-        return reason[: REASON_MAX_WIDTH - 1].rstrip() + "…"
-
-    @staticmethod
     def stale_row(line: PathTreeLine[StaleImageRow]) -> RowItem:
         """
         Build one stale-images row from a walked tree line.
@@ -135,7 +121,7 @@ class Cells:
         if row is None:
             return RowItem(cells=[line.label, "", ""], style=Ansi.DIM, prefix_len=line.prefix_len)
         return RowItem(
-            cells=[line.label, row.image, Cells.reason(row.reason)],
+            cells=[line.label, row.image, row.reason],
             style=Ansi.BOLD_YELLOW,
             prefix_len=line.prefix_len,
         )
@@ -248,9 +234,17 @@ class Tables:
 
         ``PROJECT`` is a path tree rather than a column of absolute paths, the same
         rendering `agent stats` gives its projects: registered projects cluster under a few
-        parents, so the shared prefix is worth stating once instead of once per row -- and
-        this column is measured, not capped, so the deepest path would otherwise set the
-        width of the whole table.
+        parents, so the shared prefix is worth stating once instead of once per row. The
+        column is measured rather than capped, and chopped down to the console when the
+        measurement does not fit -- the fold that states a shared prefix once is the same
+        fold that makes one node very wide, so it is undone a segment at a time until the
+        table fits.
+
+        Chopping comes first because it costs nothing but height. Only once the tree is as
+        narrow as it goes do ``IMAGE`` and ``REASON`` start giving up characters and ending
+        in an ellipsis, and ``PROJECT`` never does: a path is what the reader acts on, and
+        half of one identifies nothing. ``-j``/``--json`` carries every reason in full
+        whatever the console does here.
 
         Every project row is yellow, unlike the container tables where the style
         distinguishes rows from each other: here it is the whole table that is the
@@ -264,29 +258,61 @@ class Tables:
         if not rows:
             return []
 
-        # A row whose project is empty names no path and cannot be placed in the tree.
-        # Dropping it would leave the title counting a row nothing shows, so it is listed
-        # flat underneath, the way `agent stats` hangs its `<orphaned>` row off the root.
         placed = [row for row in rows if row.project]
+        unplaceable = [row for row in rows if not row.project]
+        root = build_path_tree([(row.project, row) for row in placed]) if placed else None
+        headers = list(STALE_IMAGES_HEADERS)
+
+        def measure() -> tuple[list[RowItemOrDivider], list[int]]:
+            """Return the body as the tree stands now, plus the widths of its other columns."""
+            body = Tables.stale_body(root, unplaceable)
+            return body, display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
+
+        # Chop the tree only while the tree is the thing that does not fit -- that is what
+        # `table_overflow` reports once told which columns can be cut instead. Then `elide`
+        # cuts those. Both are no-ops when there is no terminal width to respect.
+        body, shared = measure()
+        while (
+            root is not None
+            and display.table_overflow(headers, body, 1, shared, elide=STALE_IMAGES_ELIDE)
+            and expand_widest_chain(root)
+        ):
+            body, shared = measure()
+
+        return display.render_table(
+            f"Stale images ({len(rows)}):",
+            headers,
+            list(STALE_IMAGES_ALIGNS),
+            body,
+            1,
+            shared,
+            elide=STALE_IMAGES_ELIDE,
+        )
+
+    @staticmethod
+    def stale_body(
+        root: PathTreeNode[StaleImageRow] | None, unplaceable: list[StaleImageRow]
+    ) -> list[RowItemOrDivider]:
+        """
+        Lay the stale-image rows out under the tree, rebuildable as the tree is chopped.
+
+        A row whose project is empty names no path and cannot be placed in the tree.
+        Dropping it would leave the title counting a row nothing shows, so it is listed flat
+        underneath, the way `agent stats` hangs its `<orphaned>` row off the root.
+        """
         body: list[RowItemOrDivider] = []
-        if placed:
-            root = build_path_tree([(row.project, row) for row in placed])
+        if root is not None:
             body.append(RowItem(cells=[root.name, "", ""], style=Ansi.DIM, prefix_len=0))
             body.extend(Cells.stale_row(line) for line in walk_path_tree(root))
         body.extend(
             RowItem(
-                cells=[UNKNOWN, row.image, Cells.reason(row.reason)],
+                cells=[UNKNOWN, row.image, row.reason],
                 style=Ansi.BOLD_YELLOW,
                 prefix_len=0,
             )
-            for row in rows
-            if not row.project
+            for row in unplaceable
         )
-        headers = list(STALE_IMAGES_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        return display.render_table(
-            f"Stale images ({len(rows)}):", headers, list(STALE_IMAGES_ALIGNS), body, 1, shared
-        )
+        return body
 
 
 class Details:

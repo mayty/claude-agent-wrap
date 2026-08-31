@@ -40,6 +40,17 @@ SECONDS_PER_MINUTE = 60
 SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE
 SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR
 
+# Table fitting.
+
+#: Read before the terminal is asked, and honored even when stdout is not a TTY — the one
+#: lever a script (or a test) has to state a width the terminal cannot be asked for.
+TERM_WIDTH_ENV = "COLUMNS"
+
+#: Assumed width when stdout is a TTY that will not report one. Wide rather than the
+#: conventional 80, because these tables have up to nine columns and a too-narrow guess
+#: would chop and wrap output that had no need of it.
+DEFAULT_TERM_WIDTH = 120
+
 # Spinner glyph sets
 SPINNERS: dict[str, tuple[tuple[str, ...], float | None]] = {
     "default": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), None),

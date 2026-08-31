@@ -818,24 +818,57 @@ def test_human_output_orders_the_stale_image_columns(
     ]
 
 
-def test_human_output_trims_a_long_stale_image_reason(
-    inspect_mock: Mock, display_mock_service: Mock
+#: The longest build reason there is, at 121 characters (BuildReason.UNSTAMPED).
+_LONG_REASON = (
+    "it was built before agent-wrap stamped its images, so it cannot be checked -- "
+    "this is a one-time rebuild after the upgrade"
+)
+
+
+def _one_long_reason() -> list[StaleImageRow]:
+    return [StaleImageRow(project="/home/me/wotp", image="claude-agent-wotp", reason=_LONG_REASON)]
+
+
+def test_human_output_keeps_a_long_stale_image_reason_whole_when_it_fits(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The untrimmed reason is wide enough to wrap the row on a normal terminal."""
-    long_reason = (
-        "it was built before agent-wrap stamped its images, so it cannot be checked -- "
-        "this is a one-time rebuild after the upgrade"
-    )
-    inspect_mock.build_report.return_value = _report(
-        stale_images=[
-            StaleImageRow(project="/home/me/wotp", image="claude-agent-wotp", reason=long_reason)
-        ]
-    )
+    """
+    The reported bug: the reason used to be cut to a fixed 72 at any console width.
+
+    Nothing decides how wide a cell may be except the console, so a console with room for
+    all 121 characters prints all 121.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
+    assert _LONG_REASON in body
+    assert "\u2026" not in body
+
+
+def test_human_output_trims_a_long_stale_image_reason_to_the_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Too narrow for the whole reason, so its tail goes -- the head still identifies it."""
+    monkeypatch.setenv("COLUMNS", "100")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
     run([])
     body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
     assert "before agent-wrap stamped its images" in body
     assert "\u2026" in body
-    assert long_reason not in body
+    assert _LONG_REASON not in body
+
+
+def test_human_output_never_trims_the_stale_image_project(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path is what the reader acts on; the tree is chopped rather than cut short."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    projects = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert not any("\u2026" in project for project in projects)
+    assert "wotp" in projects[-1]
 
 
 def test_json_output_keeps_a_long_stale_image_reason_whole(
@@ -1046,3 +1079,81 @@ def test_interpreter_row_survives_an_unreadable_pin(display_mock_service: Mock) 
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "bootstrap" not in line
+
+
+_DEEP_STALE_IMAGES = [
+    StaleImageRow(
+        project="/home/me/work/wargaming/wotp",
+        image="claude-agent-wotp",
+        reason="its Dockerfile changed",
+    ),
+    StaleImageRow(
+        project="/home/me/work/personal/dotfiles",
+        image="claude-agent-dotfiles",
+        reason="its Dockerfile changed",
+    ),
+]
+
+
+def test_human_output_chops_the_stale_image_tree_into_a_narrow_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Too narrow for the tree even with IMAGE and REASON cut to their headers, so it chops.
+
+    Both folded siblings give up a segment, not just the wider one -- `personal/` and
+    `wargaming/` end at the same depth and in the order they started.
+    """
+    monkeypatch.setenv("COLUMNS", "35")
+    inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert labels == [
+        "/",
+        "└home/me/work/",
+        " ├personal/",
+        " │└dotfiles",
+        " └wargaming/",
+        "  └wotp",
+    ]
+
+
+def test_human_output_leaves_the_stale_image_tree_whole_when_cutting_is_enough(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The tree is chopped only when the tree is what does not fit.
+
+    A 60-column console has no room for the whole table, but trimming IMAGE and REASON
+    covers all of it -- and a chopped tree would have cost rows without saving a character
+    the prose columns were not already giving up.
+    """
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert labels == ["/", "└home/me/work/", " ├personal/dotfiles", " └wargaming/wotp"]
+
+
+def test_human_output_keeps_the_stale_image_tree_folded_when_chopping_would_not_help(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Splitting `home/me/` would indent the leaves that already set the width."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert [label for label in labels if label] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
+
+
+def test_human_output_keeps_the_stale_image_table_inside_a_narrow_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever chopping cannot fix, cutting does: no drawn line runs past the console."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    drawn = [
+        line for line in _stale_lines(display_mock_service) if line.startswith(("│", "┌", "├", "└"))
+    ]
+    assert {len(line) for line in drawn} == {60}

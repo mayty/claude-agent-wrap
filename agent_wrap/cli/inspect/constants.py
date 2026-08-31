@@ -35,11 +35,10 @@ LEGACY_DOCKERFILE_NOTE = " (from deprecated Dockerfile.agent)"
 STALE_IMAGES_HEADERS = ("PROJECT", "IMAGE", "REASON")
 STALE_IMAGES_ALIGNS = ("<", "<", "<")
 
-#: Width the REASON cell is trimmed to. Only one build reason runs long -- the one-time
-#: "built before agent-wrap stamped its images" line -- and its tail is advice rather than
-#: identification, so trimming it keeps the table inside a normal terminal without costing
-#: the reader anything they cannot get in full from `-j`/`--json`.
-REASON_MAX_WIDTH = 72
+#: Columns of that table which may be cut short when the console is narrow: the image name
+#: and the build reason, both prose. PROJECT is absent deliberately -- a path is what the
+#: reader acts on, and half of one identifies nothing, so the tree is chopped instead.
+STALE_IMAGES_ELIDE = (1, 2)
 
 #: Replaces the stale-images table when the sweep found nothing. Printed in green through
 #: `DisplayService.success`, being the one section whose empty state is good news.
