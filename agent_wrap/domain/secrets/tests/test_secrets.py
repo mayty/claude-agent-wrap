@@ -9,12 +9,14 @@ if TYPE_CHECKING:
     import pytest_mock
 
 import contextlib
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import agent_wrap.domain.secrets.store as store_mod
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.secrets.store import (
@@ -161,6 +163,33 @@ def test_derive_key_empty_machine_id(
 def test_encrypt_decrypt_roundtrip(plaintext: bytes) -> None:
     key = b"k" * 32
     ct = EncryptionPrimitives.encrypt(plaintext, key)
+    assert EncryptionPrimitives.decrypt(ct, key) == plaintext
+
+
+def test_encrypt_known_answer_pins_on_disk_format(mocker: pytest_mock.MockFixture) -> None:
+    """
+    Pin the exact ciphertext for a fixed key and nonce.
+
+    The CTR block counter is derived from the block index, so a change to the
+    chunking loop shifts the keystream *identically* in encrypt and decrypt --
+    ``test_encrypt_decrypt_roundtrip`` would still pass while every secrets file
+    already on disk became undecryptable. Only a known-answer vector catches that.
+    The plaintext is 772 bytes: 24 full 32-byte blocks plus a 4-byte tail, so both
+    the multi-block counter and the short final block are covered.
+    """
+    # encrypt() calls os.urandom exactly once, for the 16-byte nonce.
+    mocker.patch.object(store_mod.os, "urandom", return_value=bytes(range(16)))
+    key = b"k" * 32
+    plaintext = bytes(range(256)) * 3 + b"tail"
+
+    ct = EncryptionPrimitives.encrypt(plaintext, key)
+
+    assert ct[:16] == bytes(range(16))  # the stubbed nonce, stored verbatim
+    assert len(ct) == 16 + len(plaintext) + 32
+    assert (
+        hashlib.sha256(ct).hexdigest()
+        == "a29847b2ca0c95f54024309860a4505ec8d9c06cceb4940f5d323d5ef65d9baf"
+    )
     assert EncryptionPrimitives.decrypt(ct, key) == plaintext
 
 

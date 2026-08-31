@@ -29,7 +29,11 @@ def make_parser(
     ``allow_abbrev`` is disabled so callers can't rely on prefix matching (and so
     pass-through commands don't swallow the inner tool's flags). ``description``
     is rendered verbatim via ``RawDescriptionHelpFormatter`` to preserve the
-    hand-written multi-line help blocks.
+    hand-written multi-line help blocks. ``suggest_on_error`` adds a "maybe you
+    meant" hint to invalid ``choices=`` values and subparser names — note it does
+    *not* apply to mistyped option flags, so today it only affects
+    ``agent secrets <action>``, the one command with ``choices=``; it is set here
+    rather than there so any parser added later inherits it.
     """
     return argparse.ArgumentParser(
         prog=f"agent {name}",
@@ -37,6 +41,7 @@ def make_parser(
         description=description,
         add_help=add_help,
         allow_abbrev=False,
+        suggest_on_error=True,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 

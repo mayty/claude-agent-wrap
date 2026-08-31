@@ -19,6 +19,12 @@
 #   EF001 — Misplaced enum: an Enum class defined outside its package's
 #           `constants.py` (architecture rule 10). Applies to the same scope
 #           as ED001/EE001, including the package root.
+#   EG001 — Redundant future import: `from __future__ import annotations`
+#           anywhere except litellm_runtime/ (architecture rule 12). PEP 649
+#           defers annotation evaluation natively on the pinned interpreter, so
+#           the import only downgrades annotations back to plain strings. The
+#           carve-out is the exact complement of EC001's scope: litellm_runtime/
+#           runs on the LiteLLM image's older Python, which still needs it.
 #
 # Usage: python3 scripts/validate-architecture.py
 #

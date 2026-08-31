@@ -15,6 +15,7 @@ from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.scan import (
     accumulate_record,
+    enumerate_session_files,
     plan_pool,
     scan_logs_dir,
     scan_session_file,
@@ -87,19 +88,19 @@ def _seed_many_dirs(tool_dir: Path, n: int, records_per: int) -> list[Path]:
 
 
 def test_plan_pool_caps_workers_at_eight(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=64)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=64)
     workers, _chunksize = plan_pool(10_000)
     assert workers == 8
 
 
 def test_plan_pool_scales_down_on_single_core(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=1)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=1)
     workers, _chunksize = plan_pool(10_000)
     assert workers == 1
 
 
 def test_plan_pool_scales_workers_to_file_count(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=64)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=64)
     workers, _chunksize = plan_pool(20)
     assert workers == 2
 
@@ -121,15 +122,58 @@ def test_plan_pool_chunksize_in_clamp_range(
     nfiles: int,
     expected: int,
 ) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=20)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=20)
     _workers, chunksize = plan_pool(nfiles)
     assert chunksize == expected
 
 
-def test_plan_pool_handles_unknown_cpu_count(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=None)
+def test_plan_pool_handles_unknown_process_cpu_count(mocker: pytest_mock.MockFixture) -> None:
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=None)
     workers, _chunksize = plan_pool(1000)
     assert workers == 1
+
+
+def test_enumerate_session_files_finds_units(tmp_path: Path) -> None:
+    """A well-formed ``<provider>/<session>/messages.jsonl`` is returned as a unit."""
+    msg = tmp_path / "litellm-bedrock" / "s1" / "messages.jsonl"
+    msg.parent.mkdir(parents=True)
+    msg.write_text(json.dumps(_dated_rec("2026-06-15")) + "\n", encoding="utf-8")
+
+    assert enumerate_session_files(tmp_path, None) == [("litellm-bedrock", msg)]
+
+
+def test_enumerate_session_files_skips_non_directories(tmp_path: Path) -> None:
+    """A plain file where a provider or session dir would sit is ignored."""
+    (tmp_path / "stray.txt").write_text("not a provider dir", encoding="utf-8")
+    provider = tmp_path / "litellm-bedrock"
+    provider.mkdir()
+    (provider / "stray.txt").write_text("not a session dir", encoding="utf-8")
+
+    assert enumerate_session_files(tmp_path, None) == []
+
+
+def test_enumerate_session_files_skips_session_without_messages(tmp_path: Path) -> None:
+    """A session dir with no ``messages.jsonl`` yields nothing."""
+    (tmp_path / "litellm-bedrock" / "s1").mkdir(parents=True)
+
+    assert enumerate_session_files(tmp_path, None) == []
+
+
+def test_enumerate_session_files_culls_stale_mtime(tmp_path: Path) -> None:
+    """A file whose mtime predates the lower bound never becomes scan work."""
+    msg = tmp_path / "litellm-bedrock" / "s1" / "messages.jsonl"
+    msg.parent.mkdir(parents=True)
+    msg.write_text(json.dumps(_dated_rec("2026-01-01")) + "\n", encoding="utf-8")
+    old = _day_epoch("2026-01-01")
+    os.utime(msg, (old, old))
+
+    assert enumerate_session_files(tmp_path, "2026-06-01") == []
+    assert enumerate_session_files(tmp_path, None) == [("litellm-bedrock", msg)]
+
+
+def test_enumerate_session_files_returns_empty_for_missing_dir(tmp_path: Path) -> None:
+    """An unreadable or absent logs dir is swallowed, not raised."""
+    assert enumerate_session_files(tmp_path / "nope", None) == []
 
 
 def test_file_culling_skips_old_mtime(

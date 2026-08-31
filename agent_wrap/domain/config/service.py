@@ -10,7 +10,6 @@ instead of jq.
 import contextlib
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -181,7 +180,7 @@ class ConfigService:
         template_path = OPS_DIR / "default-CLAUDE.md"
         target = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
         if not target.exists() and template_path.exists():
-            shutil.copy2(template_path, target)
+            template_path.copy(target, preserve_metadata=True)
 
     # global / per-project config
 
@@ -264,7 +263,7 @@ class ConfigService:
             for src in old_memory_dir.iterdir():
                 dst = new_memory_dir / src.name
                 if not dst.exists():
-                    shutil.move(str(src), str(dst))
+                    src.move(dst)
 
     def prepare_declared_mounts(self, run_args: list[str], project_dir: Path) -> None:
         """

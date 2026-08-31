@@ -469,7 +469,11 @@ class StatsService:
             return []
         for child in children:
             try:
-                if not child.is_dir():
+                # Free: ``child`` came from ``iterdir()``, so ``.info`` answers from the
+                # cached scandir dirent instead of a ``stat()``. The ``except OSError``
+                # now guards only ``resolve()`` below — ``.info.is_dir()`` returns False
+                # on error rather than raising.
+                if not child.info.is_dir():
                     continue
                 if child.resolve() not in reachable:
                     orphaned.append(child)

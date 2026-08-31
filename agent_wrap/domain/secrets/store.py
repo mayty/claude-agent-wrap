@@ -15,6 +15,7 @@ import os
 import struct
 import subprocess
 import tempfile
+from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -102,13 +103,18 @@ class EncryptionPrimitives:
         enc_key = hmac.new(key, ENCRYPTION_SUBKEY_LABEL, hashlib.sha256).digest()
         auth_key = hmac.new(key, AUTH_SUBKEY_LABEL, hashlib.sha256).digest()
 
-        # CTR mode — generate a keystream block per 32-byte plaintext chunk
+        # CTR mode — one keystream block per chunk, chunked at the SHA-256 digest
+        # length so each HMAC output covers exactly one chunk. ``enumerate`` yields
+        # the block index the counter is packed from. ``batched`` gives tuples of
+        # ints rather than bytes, which the xor below is indifferent to.
         ciphertext = bytearray()
-        for i in range(0, len(plaintext), 32):
-            block_num = i // 32
+        # batched(strict=False): the trailing chunk is short whenever the payload is
+        # not a multiple of 32; yield it as-is rather than raise or pad.
+        for block_num, block in enumerate(batched(plaintext, 32, strict=False)):
             counter = nonce + struct.pack(">Q", block_num)
             keystream = hmac.new(enc_key, counter, hashlib.sha256).digest()
-            block = plaintext[i : i + 32]
+            # zip(strict=False): that trailing chunk is shorter than the full 32-byte
+            # keystream block, and the surplus keystream must be dropped.
             for a, b in zip(block, keystream, strict=False):
                 ciphertext.append(a ^ b)
 
@@ -140,11 +146,9 @@ class EncryptionPrimitives:
             return None
 
         plaintext = bytearray()
-        for i in range(0, len(ciphertext), 32):
-            block_num = i // 32
+        for block_num, block in enumerate(batched(ciphertext, 32, strict=False)):
             counter = nonce + struct.pack(">Q", block_num)
             keystream = hmac.new(enc_key, counter, hashlib.sha256).digest()
-            block = ciphertext[i : i + 32]
             for a, b in zip(block, keystream, strict=False):
                 plaintext.append(a ^ b)
 
