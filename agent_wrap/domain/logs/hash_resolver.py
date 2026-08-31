@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Hash-pointer resolution for log records."""
 
-from __future__ import annotations
-
 import json
 from typing import TYPE_CHECKING, Any
 

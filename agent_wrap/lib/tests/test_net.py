@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap/lib/net.py."""
 
-from __future__ import annotations
-
 import socket
 from contextlib import closing
 from typing import TYPE_CHECKING

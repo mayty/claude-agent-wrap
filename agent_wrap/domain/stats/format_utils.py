@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Date/time helpers for the usage-stats domain."""
 
-from __future__ import annotations
-
 from agent_wrap.domain.stats.constants import UNKNOWN_TIME_KEY
 
 

@@ -1,6 +1,4 @@
 # This file has been edited with the assistance of an AI tool.
-from __future__ import annotations
-
 import json
 import re
 from datetime import timedelta

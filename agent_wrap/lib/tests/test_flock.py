@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap/lib/flock.py."""
 
-from __future__ import annotations
-
 import fcntl
 from typing import TYPE_CHECKING
 

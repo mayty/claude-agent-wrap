@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Singleton service container with lazy-initialized, dependency-injected services."""
 
-from __future__ import annotations
-
 from functools import cached_property
 from typing import TYPE_CHECKING
 
@@ -81,7 +79,11 @@ class Services:
     def update_service(self) -> UpdateService:
         from agent_wrap.domain.updates.service import UpdateService
 
-        return UpdateService(display_service=self.display_service)
+        return UpdateService(
+            display_service=self.display_service,
+            logs_service=self.logs_service,
+            sidecar_service=self.sidecar_service,
+        )
 
     @cached_property
     def launch_service(self) -> LaunchService:

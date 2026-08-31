@@ -1,9 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI-layer tests for the `stats` subcommand — rendering and arg parsing."""
 
-from __future__ import annotations
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
@@ -68,7 +66,7 @@ def test_render_includes_orphaned_row(display_service: Mock) -> None:
         },
         0.0,
     )
-    last_ts = datetime(2026, 6, 29, tzinfo=timezone.utc)
+    last_ts = datetime(2026, 6, 29, tzinfo=UTC)
     orphaned = {"sessions": 1, "last_ts": last_ts, "total": b}
     out = render([], {}, None, None, orphaned=orphaned, display=display_service)
     assert ORPHANED_LABEL in out

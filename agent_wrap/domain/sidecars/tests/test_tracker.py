@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/sidecars/tracker.py."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import pytest

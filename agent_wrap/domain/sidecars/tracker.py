@@ -38,8 +38,6 @@ The lock itself is taken by the runner directly via ``agent_wrap.lib.flock`` (on
 for the whole ensure-all / release-all phase).
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR

@@ -40,6 +40,11 @@ A complete skeleton looks like this:
 - Form: `### <Category>: <short description>`.
 - The description is lowercase (except code spans, identifiers, and proper
   nouns) and has no trailing punctuation.
+- The heading names **every** change in its section. A merged section whose heading
+  cannot name all of them is either split, or renamed on the pattern
+  `<Category>: <change one>, and <change two>`. Name the change, not the topic:
+  "the wrapper creates the missing host paths that a mount needs", not "host paths
+  for mounts".
 - Sections appear in the file in **exactly** the order the categories are listed
   below — `Breaking`, then `Added`, then `Changed`, then `Improved`, then
   `Fixed`, then `Other`. Group every section of a given category together; never
@@ -57,7 +62,8 @@ A complete skeleton looks like this:
 ## Body
 
 - Write **prose paragraphs**, not bullet lists. A single change gets one tight
-  paragraph; fold supporting detail into sentences rather than bullets.
+  paragraph; fold supporting detail into sentences rather than bullets. Split the
+  paragraph when it reaches the six-sentence limit below, rather than letting it run.
 - Keep fenced code blocks for commands the reader runs (e.g. a migration
   `rm -rf`) — prose alone would lose precision there.
 - A Markdown table is allowed for a dense mapping where prose would be harder to
@@ -88,3 +94,38 @@ A complete skeleton looks like this:
   test additions, refactors, and similar changes that have no user-visible
   effect are omitted from release notes entirely. The `**Full Changelog**`
   compare link is the audit trail for those who need it.
+
+## Language
+
+Release notes are written in **ASD-STE100 Simplified Technical English**. The rules
+that matter most here:
+
+- One topic per sentence, and **20 words maximum** per sentence.
+- **Six sentences maximum** per paragraph. A section that needs more gets a second
+  paragraph.
+- Active voice, simple present tense. Name the actor: "`agent update` refuses to
+  start", not "the update is refused".
+- No `-ing` clauses, and no noun cluster longer than three words.
+- No idiom, metaphor or understatement.
+- Give the behavior, not the argument for it: no rationale, no self-justification,
+  and no "deliberately" or "on purpose".
+- Keep the article ("the", "a") in front of each noun. Do not write a telegraphic
+  style.
+
+[`0.10.0.md`](0.10.0.md) is the reference for this section; [`0.5.0.md`](0.5.0.md)
+stays the reference for structure. Older files keep the prose they shipped with.
+
+## Length
+
+A reader does not read a wall of text, so each release has a budget:
+
+- **200 words maximum per change.** A section that merges related changes gets that
+  budget for each change it covers.
+- **1500 words maximum per file.** Merge related sections before you cut facts — one
+  section for all the changes to one command, for example.
+- **80 words maximum** for the release's summary paragraph in
+  [CHANGELOG.md](../CHANGELOG.md), which links here for the full notes.
+
+Cut in this order to reach the budget: `--json` field inventories, edge cases and
+failure modes, internals, and each "See `<doc>`" line after the first one in a
+section.

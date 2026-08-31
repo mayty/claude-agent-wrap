@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.build.service.BuildService."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,6 +10,7 @@ from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
     AGENT_DOCKERFILE_NAME,
     LEGACY_AGENT_DOCKERFILE_NAME,
+    UpdateCheck,
 )
 from agent_wrap.domain.build.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS
 from agent_wrap.domain.build.models import ResolvedImage
@@ -33,6 +32,35 @@ def build_svc(mocker: pytest_mock.MockFixture) -> BuildService:
         update_service=mocker.Mock(spec=UpdateService),
         display_service=mocker.Mock(spec=DisplayService),
     )
+
+
+def test_rebuild_aborts_while_containers_are_live(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
+    """Rebuilding is pointless if the update it is gated behind cannot run."""
+    build_svc._updates.check_updates.return_value = UpdateCheck.BLOCKED  # pyrefly: ignore [missing-attribute]
+    do_rebuild = mocker.patch.object(BuildService, "_do_rebuild", autospec=True)
+    assert build_svc.rebuild(full=False) == 1
+    do_rebuild.assert_not_called()
+
+
+def test_rebuild_stops_after_applying_an_update(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
+    """The wrapper just changed under us, so the rebuild must be re-issued, not continued."""
+    build_svc._updates.check_updates.return_value = UpdateCheck.HANDLED  # pyrefly: ignore [missing-attribute]
+    do_rebuild = mocker.patch.object(BuildService, "_do_rebuild", autospec=True)
+    assert build_svc.rebuild(full=False) == 0
+    do_rebuild.assert_not_called()
+
+
+def test_rebuild_proceeds_when_there_is_no_update(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService
+) -> None:
+    build_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
+    do_rebuild = mocker.patch.object(BuildService, "_do_rebuild", autospec=True, return_value=0)
+    assert build_svc.rebuild(full=True) == 0
+    do_rebuild.assert_called_once_with(build_svc, full=True)
 
 
 def _write_project_dockerfile(project_dir: Path, content: str) -> Path:
@@ -76,9 +104,10 @@ def test_from_claude_agent_image_missing(
     )
     assert build_svc._check_from_line(resolved) is False
     build_svc._display.error.assert_any_call(  # pyrefly: ignore [missing-attribute]
-        f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built."
+        f"'{resolved.dockerfile}' uses 'FROM claude-agent' but the base image is not built.\n"
+        "Run 'agent rebuild --full' to build the base first."
     )
-    assert build_svc._display.error.call_count == 2  # pyrefly: ignore [missing-attribute]
+    assert build_svc._display.error.call_count == 1  # pyrefly: ignore [missing-attribute]
 
 
 def test_from_custom_image(

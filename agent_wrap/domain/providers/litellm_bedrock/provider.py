@@ -1,15 +1,13 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM Bedrock provider — routes Claude Code through AWS Bedrock."""
 
-from __future__ import annotations
-
 import gzip
 import html
 import json
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -103,7 +101,7 @@ class _BedrockPricing:
                     "cw_1h": float(region[cols["cw_1h"]]["price"]),
                     "cr": float(region[cols["cr"]]["price"]),
                 }
-            except (KeyError, TypeError, ValueError):
+            except KeyError, TypeError, ValueError:
                 continue
             table[canonical] = row
         return table
@@ -116,7 +114,7 @@ class _BedrockPricing:
         if cache_path.is_file():
             try:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except OSError, json.JSONDecodeError:
                 cached = None
 
         fresh_enough = (
@@ -133,7 +131,7 @@ class _BedrockPricing:
             page = _BedrockPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             data = json.loads(_BedrockPricing.http_get(PRICING_DATA_URL))
             prices = _BedrockPricing.build_pricing_table(page, data, DEFAULT_REGION_LABEL)
-        except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError):
+        except urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError:
             if cached:
                 return cached.get("prices") or {}
             return {}
@@ -163,12 +161,14 @@ class BedrockProvider(Provider):
     name = "litellm-bedrock"
     secret_description: ClassVar[str] = "AWS Bedrock Bearer Token"  # noqa: S105
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "AWS_BEARER_TOKEN_BEDROCK": secrets.get("api_key", ""),
             "AWS_REGION_NAME": "us-east-1",
         }
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {
             "AWS_BEARER_TOKEN_BEDROCK": master_key,
@@ -177,6 +177,7 @@ class BedrockProvider(Provider):
             "AWS_REGION": "us-east-1",
         }
 
+    @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """Return the cached AWS Bedrock pricing table for this provider."""
         cache_path = self._state_dir() / "pricing.json"

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Logs viewer domain service — session listing, record normalization, and daemon lifecycle."""
 
-from __future__ import annotations
-
 import contextlib
 import os
 import signal
@@ -197,7 +195,7 @@ class LogsService:
         """
         try:
             return self._claim_or_spawn(LOGS_DEFAULT_PORT) is not None
-        except (LockTimeoutError, OSError):
+        except LockTimeoutError, OSError:
             return False
 
     def spawn_background(self, port: int) -> int:

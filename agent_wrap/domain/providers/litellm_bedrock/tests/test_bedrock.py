@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for the litellm-bedrock provider."""
 
-from __future__ import annotations
-
 import json
 import time
 from pathlib import Path

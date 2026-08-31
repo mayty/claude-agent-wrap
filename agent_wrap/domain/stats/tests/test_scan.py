@@ -1,11 +1,9 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for scan orchestration and plan_pool heuristic."""
 
-from __future__ import annotations
-
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -17,6 +15,7 @@ from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.scan import (
     accumulate_record,
+    enumerate_session_files,
     plan_pool,
     scan_logs_dir,
     scan_session_file,
@@ -89,19 +88,19 @@ def _seed_many_dirs(tool_dir: Path, n: int, records_per: int) -> list[Path]:
 
 
 def test_plan_pool_caps_workers_at_eight(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=64)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=64)
     workers, _chunksize = plan_pool(10_000)
     assert workers == 8
 
 
 def test_plan_pool_scales_down_on_single_core(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=1)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=1)
     workers, _chunksize = plan_pool(10_000)
     assert workers == 1
 
 
 def test_plan_pool_scales_workers_to_file_count(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=64)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=64)
     workers, _chunksize = plan_pool(20)
     assert workers == 2
 
@@ -123,15 +122,58 @@ def test_plan_pool_chunksize_in_clamp_range(
     nfiles: int,
     expected: int,
 ) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=20)
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=20)
     _workers, chunksize = plan_pool(nfiles)
     assert chunksize == expected
 
 
-def test_plan_pool_handles_unknown_cpu_count(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch.object(scan_mod.os, "cpu_count", return_value=None)
+def test_plan_pool_handles_unknown_process_cpu_count(mocker: pytest_mock.MockFixture) -> None:
+    mocker.patch.object(scan_mod.os, "process_cpu_count", return_value=None)
     workers, _chunksize = plan_pool(1000)
     assert workers == 1
+
+
+def test_enumerate_session_files_finds_units(tmp_path: Path) -> None:
+    """A well-formed ``<provider>/<session>/messages.jsonl`` is returned as a unit."""
+    msg = tmp_path / "litellm-bedrock" / "s1" / "messages.jsonl"
+    msg.parent.mkdir(parents=True)
+    msg.write_text(json.dumps(_dated_rec("2026-06-15")) + "\n", encoding="utf-8")
+
+    assert enumerate_session_files(tmp_path, None) == [("litellm-bedrock", msg)]
+
+
+def test_enumerate_session_files_skips_non_directories(tmp_path: Path) -> None:
+    """A plain file where a provider or session dir would sit is ignored."""
+    (tmp_path / "stray.txt").write_text("not a provider dir", encoding="utf-8")
+    provider = tmp_path / "litellm-bedrock"
+    provider.mkdir()
+    (provider / "stray.txt").write_text("not a session dir", encoding="utf-8")
+
+    assert enumerate_session_files(tmp_path, None) == []
+
+
+def test_enumerate_session_files_skips_session_without_messages(tmp_path: Path) -> None:
+    """A session dir with no ``messages.jsonl`` yields nothing."""
+    (tmp_path / "litellm-bedrock" / "s1").mkdir(parents=True)
+
+    assert enumerate_session_files(tmp_path, None) == []
+
+
+def test_enumerate_session_files_culls_stale_mtime(tmp_path: Path) -> None:
+    """A file whose mtime predates the lower bound never becomes scan work."""
+    msg = tmp_path / "litellm-bedrock" / "s1" / "messages.jsonl"
+    msg.parent.mkdir(parents=True)
+    msg.write_text(json.dumps(_dated_rec("2026-01-01")) + "\n", encoding="utf-8")
+    old = _day_epoch("2026-01-01")
+    os.utime(msg, (old, old))
+
+    assert enumerate_session_files(tmp_path, "2026-06-01") == []
+    assert enumerate_session_files(tmp_path, None) == [("litellm-bedrock", msg)]
+
+
+def test_enumerate_session_files_returns_empty_for_missing_dir(tmp_path: Path) -> None:
+    """An unreadable or absent logs dir is swallowed, not raised."""
+    assert enumerate_session_files(tmp_path / "nope", None) == []
 
 
 def test_file_culling_skips_old_mtime(
@@ -184,7 +226,7 @@ def test_day_start_hours_shifts_record_bucket(
     # A record timestamped just after UTC midnight falls on the next UTC day
     # once the day-start offset is pushed forward past that instant.
     mocker.patch.object(scan_mod, "DAY_START_HOURS", 0)
-    ts = datetime(2026, 6, 15, 1, 0, 0, tzinfo=timezone.utc).timestamp()
+    ts = datetime(2026, 6, 15, 1, 0, 0, tzinfo=UTC).timestamp()
     logs = tmp_path / ".claude" / "litellm-logs"
     sdir = logs / "litellm-bedrock" / "s1"
     sdir.mkdir(parents=True)
@@ -207,7 +249,7 @@ def test_day_start_hours_shifts_record_bucket(
 
 def test_accumulate_record_carries_raw_timestamp() -> None:
     """The archive re-buckets by UTC hour, so the un-offset instant must survive."""
-    ts = datetime(2026, 6, 15, 14, 37, 12, tzinfo=timezone.utc)
+    ts = datetime(2026, 6, 15, 14, 37, 12, tzinfo=UTC)
     rec = {
         "status": "success",
         "model": "claude-opus-4-8",
@@ -252,7 +294,7 @@ def test_accumulate_record_drops_timestampless_record_when_windowed(
 
 def test_scan_session_file_records_carry_timestamps(tmp_path: Path) -> None:
     """scan_session_file threads each record's ts through to its RawRecord."""
-    ts = datetime(2026, 6, 15, 9, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 6, 15, 9, 0, 0, tzinfo=UTC)
     msg = tmp_path / "messages.jsonl"
     with msg.open("w", encoding="utf-8") as f:
         f.write(

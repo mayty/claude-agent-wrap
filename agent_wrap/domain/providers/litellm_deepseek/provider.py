@@ -1,15 +1,13 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM DeepSeek provider — routes Claude Code through DeepSeek provider."""
 
-from __future__ import annotations
-
 import gzip
 import json
 import re
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
@@ -121,7 +119,7 @@ class _DeepSeekPricing:
         if cache_path.is_file():
             try:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except OSError, json.JSONDecodeError:
                 cached = None
 
         fresh_enough = (
@@ -136,7 +134,7 @@ class _DeepSeekPricing:
         try:
             page = _DeepSeekPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             prices = _DeepSeekPricing.parse_pricing_page(page)
-        except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        except urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError:
             if cached is not None:
                 return cached.get("prices") or {}
             return {}
@@ -168,11 +166,13 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
     master_key_prefix: ClassVar[str] = "sk-ds-"
     secret_description: ClassVar[str] = "DeepSeek API Key"  # noqa: S105
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "DEEPSEEK_API_KEY": secrets.get("api_key", ""),
         }
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {
             "ANTHROPIC_API_KEY": master_key,
@@ -185,6 +185,7 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
 
+    @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """Return the cached DeepSeek pricing table, scraping if stale."""
         cache_path = self._state_dir() / "pricing.json"
@@ -192,8 +193,10 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
 
     # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 
+    @override
     def on_started(self, master_key: str) -> None:
         self._approve_master_key(master_key)
 
+    @override
     def on_stopping(self, master_key: str) -> None:
         self._unapprove_master_key(master_key)

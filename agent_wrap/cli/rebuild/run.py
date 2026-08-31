@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """The `rebuild` subcommand — builds Docker images."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.containers import services

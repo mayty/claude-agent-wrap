@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap.domain.logs.service.LogsService."""
 
-from __future__ import annotations
-
 import os
 import signal
 from typing import TYPE_CHECKING

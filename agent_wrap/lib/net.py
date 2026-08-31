@@ -13,8 +13,6 @@ port between the probe and the real bind stays possible, and shows up as the sta
 service failing its health check.
 """
 
-from __future__ import annotations
-
 import socket
 from contextlib import closing
 

@@ -1,13 +1,11 @@
 # This file has been created with the assistance of an AI tool.
 """Token usage stats aggregation — domain service."""
 
-from __future__ import annotations
-
 import copy
 import shutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from functools import cache, partial
 from typing import TYPE_CHECKING
 
@@ -284,7 +282,7 @@ class StatsService:
     @staticmethod
     def now_utc() -> datetime:
         """Return the current UTC instant — the seam tests freeze for deterministic windows."""
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def build_report(self, projects: list[Path], args: UsageArgs) -> StatsReport:
         """
@@ -471,7 +469,11 @@ class StatsService:
             return []
         for child in children:
             try:
-                if not child.is_dir():
+                # Free: ``child`` came from ``iterdir()``, so ``.info`` answers from the
+                # cached scandir dirent instead of a ``stat()``. The ``except OSError``
+                # now guards only ``resolve()`` below — ``.info.is_dir()`` returns False
+                # on error rather than raising.
+                if not child.info.is_dir():
                     continue
                 if child.resolve() not in reachable:
                     orphaned.append(child)
@@ -787,7 +789,7 @@ class StatsService:
         """
         try:
             year, month, day = (int(part) for part in date_key.split("-"))
-            return datetime(year, month, day, int(hour_key), tzinfo=timezone.utc)
+            return datetime(year, month, day, int(hour_key), tzinfo=UTC)
         except ValueError:
             return None
 

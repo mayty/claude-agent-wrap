@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/lib/docker_utils.py."""
 
-from __future__ import annotations
-
 import subprocess
 from typing import TYPE_CHECKING
 

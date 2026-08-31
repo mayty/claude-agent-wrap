@@ -99,7 +99,7 @@ neither check is sufficient alone. The sweep is skipped entirely when Docker is 
 
 ## Read-only tool mounts
 
-The wrapper's `ops/` directory is mounted at `/opt/agent-wrap/` so the in-container agent can inspect and invoke those files (the base `Dockerfile`, `default-CLAUDE.md`, `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, `wl-paste-shim`). The wrapper's Python source is not mounted:
+The wrapper's `ops/` directory is mounted at `/opt/agent-wrap/` so the in-container agent can inspect and invoke those files (the base `Dockerfile`, `default-CLAUDE.md`, `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, `wl-paste-shim`). Neither the wrapper's Python source nor the interpreter it runs on (`.python/`) is mounted — `_build_volume_mounts` exposes only `ops/` and the `.claude_config`/`.claude` state directories, so this holds by construction:
 
 | Host | Container |
 | --- | --- |

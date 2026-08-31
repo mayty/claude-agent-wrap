@@ -16,8 +16,6 @@ names each ``replace`` is independent; concurrent writers are last-writer-wins o
 hooks, statusline, project registry).
 """
 
-from __future__ import annotations
-
 import json
 import os
 import tempfile

@@ -1,10 +1,10 @@
 # This file has been edited with the assistance of an AI tool.
 """Terminal control sequences (ANSI SGR + cursor codes)."""
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Ansi(str, Enum):
+class Ansi(StrEnum):
     """Terminal control sequences."""
 
     # Empty sentinel for "no styling" — falsy, so `if style:` guards skip it.
@@ -19,9 +19,6 @@ class Ansi(str, Enum):
     # Cursor/line control (not SGR — don't append 'm')
     CR = "\r"
     ERASE_LINE = "\033[2K"
-
-    def __str__(self) -> str:
-        return self.value
 
 
 # Severity tags. Owned by DisplayService.error/warning rather than by each

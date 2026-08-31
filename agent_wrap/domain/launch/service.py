@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Agent launch orchestration domain service."""
 
-from __future__ import annotations
-
 import os
 import shutil
 import subprocess
@@ -26,6 +24,7 @@ from agent_wrap.constants import (
     TELEGRAM_SIDECAR_NAME,
     TOOL_DIR,
     WORKSPACE_MOUNT,
+    UpdateCheck,
 )
 from agent_wrap.domain.launch.constants import (
     EXPECTED_QUEUE_DEPTH,
@@ -129,8 +128,9 @@ class LaunchService:
             return 1
         self._maybe_autostart_logs(provider, headless=headless)
 
-        if not headless and self._updates.check_updates():
-            return 0
+        update_code = self._update_check_exit_code(headless=headless)
+        if update_code is not None:
+            return update_code
 
         try:
             resolved = self._build_service.resolve_image(use_base=use_base)
@@ -251,7 +251,9 @@ class LaunchService:
         The viewer is deliberately not a sidecar: it is a host-level singleton, shared by
         every project, and nothing here tears it down when the agent exits. That is the
         point -- it keeps writing the usage totals the statusline reads, and `agent logs
-        --stop` remains the way to stop it.
+        --stop` is how it is stopped by hand. The one thing that stops it on the user's
+        behalf is `UpdateService.apply`, before it merges; the next launch is what starts
+        it again.
 
         A failure is a warning, never an abort. Nothing about the agent depends on the
         viewer; losing it costs one statusline segment.
@@ -266,6 +268,25 @@ class LaunchService:
                 "Today's usage will be missing from the statusline; "
                 "run `agent logs` to start it by hand."
             )
+
+    def _update_check_exit_code(self, *, headless: bool) -> int | None:
+        """
+        Run the pre-flight update check; return the exit code to stop on, or None.
+
+        A headless launch skips it entirely: nobody is there to answer the prompt, and
+        an update applied under a script would swap the wrapper mid-pipeline. When the
+        check refuses because containers are live, the launch is refused with it —
+        starting one more agent against a checkout that is due to be replaced only
+        makes the fleet harder to drain.
+        """
+        if headless:
+            return None
+        outcome = self._updates.check_updates()
+        if outcome is UpdateCheck.BLOCKED:
+            return 1
+        if outcome is UpdateCheck.HANDLED:
+            return 0
+        return None
 
     def _is_headless(self, claude_args: list[str]) -> bool:
         """Report whether Claude Code is launched in a mode that won't use the sidecar."""

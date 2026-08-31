@@ -1,12 +1,11 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for providers/litellm_runtime/helpers.py."""
 
-from __future__ import annotations
-
 import importlib.util
 import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -249,12 +248,15 @@ def test_json_safe_non_dict_mapping_serialized_as_object() -> None:
         def __init__(self, data: dict[str, str]) -> None:
             self._data = data
 
+        @override
         def __getitem__(self, key: str) -> str:
             return self._data[key]
 
+        @override
         def __iter__(self) -> Iterator[str]:
             return iter(self._data)
 
+        @override
         def __len__(self) -> int:
             return len(self._data)
 

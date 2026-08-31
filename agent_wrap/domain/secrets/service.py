@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Secrets domain service — encrypted storage and sidecar-aware orchestration."""
 
-from __future__ import annotations
-
 import sys
 from typing import TYPE_CHECKING
 
@@ -113,7 +111,7 @@ class SecretsService:
         """
         try:
             return self.get_required_secrets(sidecar_name)
-        except (ProviderNotFoundError, SystemExit):
+        except ProviderNotFoundError, SystemExit:
             return []
 
     # -- Sidecar secret actions ---------------------------------------------

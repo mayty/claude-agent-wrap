@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """General-purpose utility functions."""
 
-from __future__ import annotations
-
 import re
 import stat
 import uuid

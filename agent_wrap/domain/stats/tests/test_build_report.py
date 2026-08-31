@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for StatsService.build_report — the one aggregation `agent stats` renders."""
 
-from __future__ import annotations
-
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING

@@ -7,12 +7,9 @@ _agent_record_project, and related config-prep helpers. Uses stdlib json
 instead of jq.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,7 +43,7 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         if not text.strip():
             return {}
         return json.loads(text)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
 
 
@@ -183,7 +180,7 @@ class ConfigService:
         template_path = OPS_DIR / "default-CLAUDE.md"
         target = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
         if not target.exists() and template_path.exists():
-            shutil.copy2(template_path, target)
+            template_path.copy(target, preserve_metadata=True)
 
     # global / per-project config
 
@@ -266,7 +263,7 @@ class ConfigService:
             for src in old_memory_dir.iterdir():
                 dst = new_memory_dir / src.name
                 if not dst.exists():
-                    shutil.move(str(src), str(dst))
+                    src.move(dst)
 
     def prepare_declared_mounts(self, run_args: list[str], project_dir: Path) -> None:
         """

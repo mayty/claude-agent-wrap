@@ -7,10 +7,10 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.10.0](releases/0.10.0.md) — 2026-08-28
 
-Adds spell checking of the prompt input, recognising English and Russian together, and per-project
-startup scripts — an optional `.claude-agent-wrap/startup.sh` run on the host before each launch. The
-project Dockerfile moves into that same directory; `Dockerfile.agent` still works, with a deprecation
-warning. Requires one `agent rebuild --full` after upgrading.
+**Breaking:** the wrapper now runs a CPython version that it pins itself, not the host's
+`python3`. Run `bin/agent-bootstrap` one time in each checkout, or `agent` refuses to
+start. It also adds spell checking, per-project startup scripts, and a new home for the
+project Dockerfile. Requires one `agent rebuild --full` after upgrading.
 
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14
 

@@ -38,9 +38,8 @@ constraint is that a version probe must never run against an absent image, since
 probes are an awaited phase of their own instead of another handful of futures.
 """
 
-from __future__ import annotations
-
 import os
+import platform
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -49,6 +48,7 @@ from agent_wrap.constants import (
     BASE_IMAGE_NAME,
     DAY_START_HOURS,
     LITELLM_LOGS_DIRNAME,
+    PYTHON_PIN_FILE,
     SIDECAR_NETWORK_NAME,
     TOOL_DIR,
 )
@@ -381,14 +381,35 @@ class InspectService:
         )
 
     def _wrapper_row(self) -> WrapperRow:
-        """Resolve the installed wrapper's git identity, locally."""
+        """Resolve the installed wrapper's git identity and interpreter, locally."""
         revision = self._updates.current_revision()
         return WrapperRow(
             branch=revision.branch,
             commit=revision.commit,
             describe=revision.describe,
             dirty=revision.dirty,
+            python_version=platform.python_version(),
+            python_pinned=self._pinned_python_version(),
         )
+
+    @staticmethod
+    def _pinned_python_version() -> str | None:
+        """
+        Read AGENT_PY_VERSION out of python-pin.env, or None if it cannot be read.
+
+        Deliberately a two-line parse rather than anything that sources the file: this
+        runs inside a read-only report, and the file is a plain list of KEY=value lines
+        precisely so that both sh and this can read it without a shell.
+        """
+        try:
+            text = PYTHON_PIN_FILE.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        for line in text.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "AGENT_PY_VERSION":
+                return value.strip() or None
+        return None
 
     def _project_image_row(
         self,

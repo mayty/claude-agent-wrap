@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """In-memory cache and background FS watcher for the logs viewer."""
 
-from __future__ import annotations
-
 import bisect
 import contextlib
 import operator
@@ -590,7 +588,7 @@ class LogsCache:
         for raw_path_str in added:
             try:
                 path = Path(raw_path_str)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
 
             logs_d = self._logs_dir_for(path)

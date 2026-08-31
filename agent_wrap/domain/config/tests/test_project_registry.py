@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap.domain.config.project_registry."""
 
-from __future__ import annotations
-
 import pytest
 
 from agent_wrap.domain.config.project_registry import ProjectRegistry

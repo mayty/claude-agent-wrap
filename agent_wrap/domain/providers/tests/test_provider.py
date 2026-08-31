@@ -1,9 +1,7 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the Provider sidecar factory in agent_wrap.domain.providers.base."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 from unittest.mock import Mock
 
 from agent_wrap.domain.display.service import DisplayService
@@ -38,14 +36,17 @@ class ConcreteTestProvider(Provider):
         super().__init__(sidecar_service=sidecar_service, display_service=Mock(spec=DisplayService))
         self._test_state_dir = state_dir
 
+    @override
     def _state_dir(self) -> Path:
         if self._test_state_dir:
             return self._test_state_dir
         return super()._state_dir()
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {"UPSTREAM_KEY": secrets.get("api_key", "")}
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {"API_KEY": master_key, "BASE_URL": base_url}
 

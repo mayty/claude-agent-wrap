@@ -1,9 +1,7 @@
 # This file has been created with the assistance of an AI tool.
 """Calendar-day bucketing with a configurable day-start offset from UTC midnight."""
 
-from __future__ import annotations
-
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -16,8 +14,8 @@ def epoch_to_dt(x: float | None) -> datetime | None:
     if x is None:
         return None
     try:
-        return datetime.fromtimestamp(x, tz=timezone.utc)
-    except (ValueError, OSError, OverflowError):
+        return datetime.fromtimestamp(x, tz=UTC)
+    except ValueError, OSError, OverflowError:
         return None
 
 
@@ -35,7 +33,7 @@ def get_day(dt: datetime, day_start_hours: int) -> date:
 
 def local_utc_offset_hours() -> int:
     """Return the host's current local UTC offset, rounded to the nearest whole hour."""
-    now_utc = datetime.now(tz=timezone.utc)
+    now_utc = datetime.now(tz=UTC)
     offset = now_utc.astimezone().utcoffset()
     assert offset is not None
     return round(offset.total_seconds() / 3600)
@@ -43,7 +41,7 @@ def local_utc_offset_hours() -> int:
 
 def utc_offset_hours_for_tz(tz_name: str) -> int:
     """Return the named IANA zone's current UTC offset, rounded to the nearest whole hour."""
-    now_utc = datetime.now(tz=timezone.utc)
+    now_utc = datetime.now(tz=UTC)
     offset = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
     assert offset is not None
     return round(offset.total_seconds() / 3600)

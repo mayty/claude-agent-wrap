@@ -23,8 +23,6 @@ shows a dim "send a message to see limits" hint, as it does for any unusable
 payload.
 """
 
-from __future__ import annotations
-
 import contextlib
 import fcntl
 import json

@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Path-trie machinery for rendering the per-project (and per-model) tree."""
 
-from __future__ import annotations
-
 import operator
 from pathlib import Path
 from typing import TYPE_CHECKING

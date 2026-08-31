@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """The `inspect` subcommand — a read-only report of agent-wrap's state on this host."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 from typing import TYPE_CHECKING

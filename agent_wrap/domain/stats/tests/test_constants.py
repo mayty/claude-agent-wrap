@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the AGENT_DAY_START_UTC parsing in the stats domain's constants module."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfoNotFoundError
 

@@ -1,36 +1,21 @@
 # This file has been edited with the assistance of an AI tool.
 """Docker-related utility functions."""
 
-from __future__ import annotations
-
 import json
 import os
-import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
 from agent_wrap.lib.utils import is_truthy_env
 
-# Docker emits RFC3339 with nanosecond precision and a literal "Z"
-# (e.g. "2026-07-30T09:39:12.123456789Z"). Split off the fractional part so it can be
-# truncated to the 6 digits datetime accepts.
-_TIMESTAMP_RE = re.compile(
-    r"^(?P<base>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
-    r"(?:\.(?P<frac>\d+))?"
-    r"(?P<tz>Z|[+-]\d{2}:?\d{2})?$"
-)
-
 # What docker reports for a timestamp that never happened (e.g. StartedAt on a
 # container that was created but never started). It parses fine and would yield a
 # ~2000-year uptime, so it is mapped to None instead.
 _ZERO_TIMESTAMP_YEAR = 1
-
-# Maximum fractional digits datetime.fromisoformat accepts.
-_MAX_FRACTIONAL_DIGITS = 6
 
 
 def is_wsl() -> bool:
@@ -74,7 +59,7 @@ def docker_run(
             text=True,
             timeout=timeout,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError:
         return "", 1
     stdout = result.stdout.strip() if result.stdout is not None else ""
     return stdout, result.returncode
@@ -146,36 +131,26 @@ def parse_docker_timestamp(raw: str) -> datetime | None:
     """
     Parse a docker RFC3339 timestamp into a UTC-aware datetime, or None if unusable.
 
-    Written out rather than handed to ``datetime.fromisoformat`` because the supported
-    floor is Python 3.10, which accepts neither a trailing ``Z``, nor a colon-less UTC
-    offset (``+0200``), nor docker's nanosecond precision (it wants exactly 3 or 6
-    fractional digits). Fractional digits are truncated, not rounded — sub-microsecond
-    precision is meaningless for the uptimes this feeds.
+    ``fromisoformat`` handles every shape docker emits: a trailing ``Z``, a colon-less
+    offset (``+0200``), and nanosecond precision (truncated to microseconds, which is
+    ample for the uptimes this feeds), so no hand-rolled normalizing is needed.
 
-    Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None.
+    Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None,
+    and so does a bare date: ``fromisoformat`` would happily read it as midnight, but
+    docker never emits one, so it means the caller was handed something else.
     """
-    match = _TIMESTAMP_RE.match(raw.strip())
-    if match is None:
+    text = raw.strip()
+    if "T" not in text and " " not in text:
         return None
-
-    frac = (match.group("frac") or "")[:_MAX_FRACTIONAL_DIGITS]
-    tz = match.group("tz") or "Z"
-    if tz != "Z" and ":" not in tz:
-        tz = f"{tz[:3]}:{tz[3:]}"
-    normalized = match.group("base")
-    if frac:
-        normalized += f".{frac}"
-    normalized += "+00:00" if tz == "Z" else tz
-
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.year <= _ZERO_TIMESTAMP_YEAR:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def image_exists(image: str) -> bool:
@@ -213,7 +188,7 @@ def image_claude_version(image: str) -> str | None:
         data = json.loads(stdout)
         package = data.get("dependencies", {}).get("@anthropic-ai/claude-code", {})
         return package.get("version")
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         return None
 
 

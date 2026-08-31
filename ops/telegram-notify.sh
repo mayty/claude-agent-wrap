@@ -1,6 +1,5 @@
 #!/bin/bash
 # This file has been edited with the assistance of an AI tool.
-# This file has been edited with the assistance of an AI tool.
 # telegram-notify.sh — Thin proxy that forwards Claude Code hook events to
 # the Telegram decision sidecar. The sidecar owns all rendering, credentials,
 # and Telegram Bot API interaction.

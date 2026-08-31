@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """The `cleanup` subcommand — removes leftover state from deleted projects."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.cleanup.constants import CLEANUP_LABEL

@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Log-file scanning (serial + parallel) for the stats command."""
 
-from __future__ import annotations
-
 import json
 import math
 import os
@@ -77,8 +75,13 @@ def enumerate_session_files(logs_dir: Path, from_iso: str | None) -> list[tuple[
         provider_dirs = list(logs_dir.iterdir())
     except OSError:
         return units
+    # ``.info`` on a path that came out of ``iterdir()`` answers from the cached
+    # ``os.scandir`` dirent, so these two checks cost no ``stat()`` — which matters
+    # because this loop runs once per session dir. Only paths *yielded by* iterdir
+    # carry that cache; a constructed Path stats on first ``.info`` use instead
+    # (which is why ``messages_file`` below still uses plain ``is_file()``).
     for provider_dir in provider_dirs:
-        if not provider_dir.is_dir():
+        if not provider_dir.info.is_dir():
             continue
         provider_name = provider_dir.name
         try:
@@ -86,7 +89,7 @@ def enumerate_session_files(logs_dir: Path, from_iso: str | None) -> list[tuple[
         except OSError:
             continue
         for session_dir in session_dirs:
-            if not session_dir.is_dir():
+            if not session_dir.info.is_dir():
                 continue
             messages_file = session_dir / "messages.jsonl"
             if not messages_file.is_file():
@@ -318,15 +321,20 @@ def plan_pool(nfiles: int) -> tuple[int, int]:
 
     Sized to the machine and the workload, validated against a chunksize-by-pool
     sweep on a 25.5K-record dataset:
-      * workers — ``min(cpu_count, 8, ceil(nfiles / 16))``. Decode saturates
-        ~8 workers (16 was no faster), so 8 is the cap; it also scales *down* on
-        few-core hosts and small datasets (no point forking 8 for 20 files).
+      * workers — ``min(process_cpu_count, 8, ceil(nfiles / 16))``. Decode
+        saturates ~8 workers (16 was no faster), so 8 is the cap; it also scales
+        *down* on few-core hosts and small datasets (no point forking 8 for 20
+        files). ``process_cpu_count`` rather than ``cpu_count`` so an affinity-
+        restricted host (``taskset``, a cpuset) is not over-forked with workers
+        that only contend for cores this process may not use; it also honours
+        ``PYTHON_CPU_COUNT`` / ``-X cpu_count``, so the pool size is overridable
+        without a code change.
       * chunksize — ``max(1, min(8, nfiles // (workers * 4)))``, ≈4 chunks per
         worker. ``map`` dispatches chunks lazily as workers free up, so several
         small chunks per worker keep load balanced when a few sessions are far
         larger than the rest; the [1, 8] clamp matches the sweep's flat optimum.
     """
-    cpu = os.cpu_count() or 1
+    cpu = os.process_cpu_count() or 1
     workers = max(1, min(cpu, 8, math.ceil(nfiles / 16)))
     chunksize = max(1, min(8, nfiles // (workers * 4)))
     return workers, chunksize

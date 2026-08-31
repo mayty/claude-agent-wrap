@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for the `inspect` CLI command — argument parsing and service protocol."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 from typing import TYPE_CHECKING
@@ -83,6 +81,8 @@ def _report(  # noqa: PLR0913
     lite: bool = False,
     logs_bytes: int | None = 1_033_465_471,
     warnings: list[str] | None = None,
+    python_version: str | None = "3.14.7",
+    python_pinned: str | None = "3.14.7",
     viewer: ViewerRow | None = None,
     logs_autostart: AutostartRow | None = None,
 ) -> InspectReport:
@@ -114,7 +114,14 @@ def _report(  # noqa: PLR0913
                 missing_keys=["telegram:TelegramBotToken"],
             ),
         ],
-        wrapper=WrapperRow(branch="master", commit="7e8ef2f", describe="0.8.0", dirty=False),
+        wrapper=WrapperRow(
+            branch="master",
+            commit="7e8ef2f",
+            describe="0.8.0",
+            dirty=False,
+            python_version=python_version,
+            python_pinned=python_pinned,
+        ),
         environment=EnvironmentRow(
             base_image="claude-agent",
             base_image_present=True,
@@ -788,3 +795,36 @@ def test_completion_omits_an_already_used_lite_flag() -> None:
     offered = complete_fn(3, ["agent", "inspect", "-l", ""])
     assert "--lite" not in offered
     assert "--json" in offered
+
+
+def test_interpreter_row_reports_the_provisioned_version(display_mock_service: Mock) -> None:
+    services.inspect_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "bootstrap" not in line
+
+
+def test_interpreter_row_flags_a_pin_the_bootstrap_has_not_caught_up_with(
+    display_mock_service: Mock,
+) -> None:
+    """Nothing else in the report would reveal that the two have diverged."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        python_version="3.14.7", python_pinned="3.15.0"
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "3.15.0" in line
+    assert "bin/agent-bootstrap" in line
+
+
+def test_interpreter_row_survives_an_unreadable_pin(display_mock_service: Mock) -> None:
+    """A missing python-pin.env must not make the row claim a mismatch."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        python_version="3.14.7", python_pinned=None
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "bootstrap" not in line

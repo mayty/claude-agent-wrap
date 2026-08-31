@@ -191,7 +191,10 @@ or, worse, a root-owned mountpoint inside your project.
 - **Mountpoints under `/workspace` are created too.** `-v /workspace/node_modules` — the
   shadow-volume pattern — needs a `node_modules` directory inside the `/workspace` bind mount for
   the volume to land on; the wrapper creates it in the project as the host user. This holds for any
-  mount targeting a path below `/workspace`, whatever its kind.
+  mount targeting a path below `/workspace`, whatever its kind. This repo's own
+  `.claude-agent-wrap/Dockerfile` is a worked example: it shadows `/workspace/.python` so the
+  container uses the interpreter baked into the image rather than the host's, which on a macOS
+  host would be a Mach-O binary inside a Linux container.
 
 `-v`/`--volume`, `--mount type=bind` and `--tmpfs` are all understood. A source counts as a host
 path when it starts with `/`, `./` or `../` — Docker's own rule for telling a path from a volume

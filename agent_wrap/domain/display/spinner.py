@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Spinner collaborator for DisplayService."""
 
-from __future__ import annotations
-
 import random
 import sys
 import threading

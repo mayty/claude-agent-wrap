@@ -56,10 +56,10 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 A `Makefile` provides all QA targets. Follow these rules:
 
-- **`make check` must pass before handing off.** Never conclude a task until `make check` (lintcheck + format-check + test + typecheck + markdown-check + arch-check + check-executables) passes cleanly.
+- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
 - **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck`.
 - **Fix lint/format errors with `make` first.** Auto-fix via `make lint` or `make format` before manual edits.
-- **Never `pip install` dependencies.** Add them to the `dev` dependency group in `pyproject.toml` and prompt the user to run `agent rebuild`.
+- **Never `pip install` dependencies.** Add them to the `dev` dependency group (`[dependency-groups]`) in `pyproject.toml` and prompt the user to run `agent rebuild` — `bin/agent-bootstrap` installs the group during the image build. The host runtime stays stdlib-only: `[project]` declares no `dependencies`.
 - **Never import a private (`_`-prefixed) name from another module.** If a name is
   intended for import outside its defining module, it must be public (no underscore).
   Ruff's `SLF001` only catches `obj._attr` access, not `from module import _name`,
@@ -87,6 +87,11 @@ A `Makefile` provides all QA targets. Follow these rules:
   callable (including one that only injects constructor dependencies before
   forwarding) is forbidden. Inline the target's implementation into the service
   method and delete the original target. See architecture.md rule 9.
+- **Never write `from __future__ import annotations`.** PEP 649 defers annotation
+  evaluation natively on the pinned interpreter, so the import only downgrades
+  annotations back to plain strings. Enforced by `EG001` in `make arch-check`. The
+  sole exception is `agent_wrap/domain/providers/litellm_runtime/`, which runs on
+  the LiteLLM image's older Python.
 - **Namespace classes replace comment-separated function blocks.** Standalone
   functions that share a micro-domain must be grouped into a namespace class
   (``@staticmethod``-only, no instance state) instead of being divided by

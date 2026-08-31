@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Data models for the providers domain."""
 
-from __future__ import annotations
-
 from typing import Any, TypedDict
 
 

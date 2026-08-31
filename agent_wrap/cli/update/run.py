@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """The `update` subcommand — git-based self-update."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.containers import services

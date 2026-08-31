@@ -1,9 +1,9 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.config."""
 
-from __future__ import annotations
-
 import json
+import os
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -252,6 +252,23 @@ def test_ensure_claude_md_copies_when_missing(svc: ConfigService, tmp_path: Path
     target = tmp_path / ".claude" / "CLAUDE.md"
     assert target.exists()
     assert target.read_text() == "# hello"
+
+
+def test_ensure_claude_md_preserves_template_metadata(svc: ConfigService, tmp_path: Path) -> None:
+    """The copy keeps the template's mtime and mode (Path.copy drops both by default)."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "ops").mkdir()
+    template = tmp_path / "ops" / "default-CLAUDE.md"
+    template.write_text("# hello")
+    template.chmod(0o640)
+    os.utime(template, (1_000_000, 1_000_000))
+    before = template.stat()
+
+    svc._ensure_claude_md()
+
+    after = (tmp_path / ".claude" / "CLAUDE.md").stat()
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert stat.S_IMODE(after.st_mode) == 0o640
 
 
 def test_ensure_claude_md_skips_when_exists(svc: ConfigService, tmp_path: Path) -> None:

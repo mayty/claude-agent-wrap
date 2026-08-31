@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI-layer tests for agent_wrap.cli.rebuild — argument parsing and calling protocol."""
 
-from __future__ import annotations
-
 import pytest
 
 from agent_wrap.cli.rebuild.complete import complete as rebuild_complete

@@ -6,8 +6,6 @@ Normal path:  python3 -m agent_wrap <verb> [args...]
 Complete path: AGENT_COMPLETE=1 python3 -m agent_wrap <cword> <word0> ...
 """
 
-from __future__ import annotations
-
 import os
 import sys
 

@@ -16,8 +16,6 @@ Subclasses override a handful of class attributes and two abstract env hooks; th
 wires them into a ``LiteLLMSidecarConfig`` in ``sidecar()``.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from functools import cache
 from pathlib import Path

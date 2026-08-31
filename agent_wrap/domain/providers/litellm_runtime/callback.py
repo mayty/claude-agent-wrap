@@ -23,7 +23,7 @@ import re
 import sys
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -492,7 +492,7 @@ async def _record_failure(
     """
     if not _claim_failure(kwargs.get("litellm_call_id")):
         return
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     record = build_record(
         kwargs,
         response_obj,

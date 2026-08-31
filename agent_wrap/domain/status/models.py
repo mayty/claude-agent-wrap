@@ -15,8 +15,6 @@ Durations are stored as seconds and timestamps as epoch floats — formatting is
 concern, and a JSON consumer wants the number, not "3h 12m".
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 
@@ -132,6 +130,14 @@ class WrapperRow:
     commit: str
     describe: str
     dirty: bool
+    #: Version of the provisioned CPython the CLI is running on, or None when nothing
+    #: is provisioned (in which case the CLI could not have started, so this is only
+    #: None in a report built by something other than bin/agent).
+    python_version: str | None
+    #: Version python-pin.env asks for. A mismatch means bin/agent-bootstrap has not
+    #: caught up with the pin -- the interpreter still works, but it is not the one
+    #: this revision of the wrapper is meant to run on.
+    python_pinned: str | None
 
 
 @dataclass(frozen=True)

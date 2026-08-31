@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Command metadata read reflectively off each subcommand's ``run`` module."""
 
-from __future__ import annotations
-
 from importlib import import_module
 
 from agent_wrap.cli.constants import COMMANDS

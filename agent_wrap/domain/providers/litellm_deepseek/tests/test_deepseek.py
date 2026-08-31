@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the litellm-deepseek provider."""
 
-from __future__ import annotations
-
 import json
 import time
 from pathlib import Path

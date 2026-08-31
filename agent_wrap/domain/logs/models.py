@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Data models for the logs domain."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
 

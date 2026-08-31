@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.launch.launch.LaunchService."""
 
-from __future__ import annotations
-
 import io
 import os
 import time
@@ -18,6 +16,7 @@ from agent_wrap.constants import (
     AUTOSTART_LOGS_ENV,
     LEGACY_AGENT_DOCKERFILE_NAME,
     STATE_FILES,
+    UpdateCheck,
 )
 from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
@@ -135,14 +134,22 @@ def test_launch_headless_skips_update_check(launch_svc: LaunchService) -> None:
 def test_launch_non_headless_runs_update_check_and_short_circuits(
     launch_svc: LaunchService,
 ) -> None:
-    launch_svc._updates.check_updates.return_value = True  # pyrefly: ignore [missing-attribute]
+    launch_svc._updates.check_updates.return_value = UpdateCheck.HANDLED  # pyrefly: ignore [missing-attribute]
     rc = launch_svc.launch(use_base=False, claude_args=["--model", "x"])
     assert rc == 0
     launch_svc._build_service.resolve_image.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
-def test_launch_non_headless_update_check_false_continues(launch_svc: LaunchService) -> None:
-    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+def test_launch_non_headless_update_blocked_aborts(launch_svc: LaunchService) -> None:
+    """A refused update refuses the launch with it: one more agent only delays the drain."""
+    launch_svc._updates.check_updates.return_value = UpdateCheck.BLOCKED  # pyrefly: ignore [missing-attribute]
+    rc = launch_svc.launch(use_base=False, claude_args=["--model", "x"])
+    assert rc == 1
+    launch_svc._build_service.resolve_image.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_non_headless_update_check_proceed_continues(launch_svc: LaunchService) -> None:
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # pyrefly: ignore [missing-attribute]
     rc = launch_svc.launch(use_base=False, claude_args=[])
     assert rc == 1
@@ -153,7 +160,7 @@ def test_launch_unknown_provider_reports_clean_error(
     tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
     mocker.patch.object(Path, "cwd", return_value=tmp_path)
-    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
     )
@@ -945,7 +952,7 @@ def test_launch_declared_mount_failure_aborts_before_sidecars(
     tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
     mocker.patch.object(Path, "cwd", return_value=tmp_path)
-    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent-test",
         dockerfile=tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME,
@@ -981,7 +988,7 @@ def test_launch_passes_declared_run_args_to_config(
     tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
     mocker.patch.object(Path, "cwd", return_value=tmp_path)
-    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent-test",
         dockerfile=tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME,
@@ -1101,7 +1108,7 @@ def _stub_launch_up_to_prepare(
 ) -> None:
     """Drive launch() far enough to reach the under-lock prepare phase."""
     mocker.patch.object(Path, "cwd", return_value=tmp_path)
-    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent-test",
         dockerfile=tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME,
@@ -1190,7 +1197,7 @@ def test_launch_base_flag_neither_runs_nor_warns_about_startup(
 ) -> None:
     """--base ignores project customization, so neither half of the feature applies."""
     mocker.patch.object(Path, "cwd", return_value=tmp_path)
-    launch_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent",
         dockerfile=tmp_path / "Dockerfile",
@@ -1302,7 +1309,7 @@ def test_launch_autostarts_the_viewer_before_the_update_check(
     anything that costs wall clock -- including the check that can abort this launch.
     """
     monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
-    autostart_svc._updates.check_updates.return_value = True  # pyrefly: ignore [missing-attribute]
+    autostart_svc._updates.check_updates.return_value = UpdateCheck.HANDLED  # pyrefly: ignore [missing-attribute]
 
     assert autostart_svc.launch(use_base=False, claude_args=[]) == 0
     autostart_svc._logs.autostart.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
@@ -1314,7 +1321,7 @@ def test_launch_autostarts_the_viewer_before_resolving_the_image(
     autostart_svc: LaunchService,
 ) -> None:
     monkeypatch.delenv(AUTOSTART_LOGS_ENV, raising=False)
-    autostart_svc._updates.check_updates.return_value = False  # pyrefly: ignore [missing-attribute]
+    autostart_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     autostart_svc._build_service.resolve_image.side_effect = SystemExit("no image here")  # pyrefly: ignore [missing-attribute]
     run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
 
