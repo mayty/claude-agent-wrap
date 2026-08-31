@@ -1,5 +1,4 @@
 # This file has been created with the assistance of an AI tool.
-# This file has been edited with the assistance of an AI tool.
 """Tests for SidecarService's container-discovery methods."""
 
 import json

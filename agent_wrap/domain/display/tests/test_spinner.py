@@ -1,7 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the DisplayService spinner (public API only)."""
 
-# This file has been edited with the assistance of an AI tool.
 from typing import TYPE_CHECKING
 
 import pytest

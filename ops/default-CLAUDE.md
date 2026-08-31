@@ -38,9 +38,14 @@ Read [dockerfile-agent-guide.md](/opt/agent-wrap/dockerfile-agent-guide.md) when
 
 ## AI attribution
 
-Whenever you create or edit a file, ensure one of these lines appears at the very top — match the file's comment syntax:
+Every file you create or edit carries **exactly one** attribution line at the very top, in the file's comment syntax. Which line applies depends on the file's current state:
 
-- **Create**: `This file has been created with the assistance of an AI tool.`
-- **Edit**: `This file has been edited with the assistance of an AI tool.`
+- **No attribution line, and you are creating the file**: add `This file has been created with the assistance of an AI tool.`
+- **No attribution line, and you are editing an existing file**: add `This file has been edited with the assistance of an AI tool.`
+- **An attribution line is already present**: leave it exactly as it is and add nothing.
 
-Leave existing attribution lines alone — do not replace "created" with "edited". For formats that disallow comments (JSON), skip it.
+Never stack two attribution lines. A "created" line already implies every later edit, so editing such a file adds **no** "edited" line below it — and never rewrite "created" into "edited" either. For formats that disallow comments (JSON), skip attribution entirely.
+
+**Generated output is exempt.** Attribution tracks authorship, not which tool wrote the bytes. When you write a generator — a script, template, or codegen step whose job is to emit files when it runs — the generator itself carries the attribution line and the files it emits carry none.
+
+That exemption covers only files a program produces as its normal output. A one-off mechanical edit is not generation: creating or rewriting a file with `sed`, a heredoc, or a throwaway script you run once is you authoring that file, so the rules above apply to the result exactly as if you had typed it out.
