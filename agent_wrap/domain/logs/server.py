@@ -68,7 +68,7 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
                 return None, None
             try:
                 project_id = int(raw)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self._send_json({"error": f"invalid project id: {raw!r}"}, 400)
                 return None, None
             logs_dirs = cache.get_logs_dirs(project_id)
@@ -155,7 +155,7 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
             if raw_from is not None:
                 try:
                     from_val = int(raw_from)
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self._send_json({"error": f"invalid from value: {raw_from!r}"}, 400)
                     return
 
@@ -266,7 +266,7 @@ def bind_port(
     for _offset in range(PORT_SCAN_LIMIT):
         try:
             return ThreadingHTTPServer(("127.0.0.1", port), handler)
-        except OSError:  # noqa: PERF203
+        except OSError:
             port += 1
     msg = f"could not bind to any port in range [original, original+{PORT_SCAN_LIMIT})"
     raise RuntimeError(msg)

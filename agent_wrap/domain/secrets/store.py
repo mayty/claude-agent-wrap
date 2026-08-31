@@ -52,7 +52,7 @@ class KeyDerivation:
         # -- keyfile --
         try:
             keyfile_bytes = keyfile_path.read_bytes()
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError, OSError:
             keyfile_bytes = os.urandom(32)
             keyfile_path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(keyfile_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -66,7 +66,7 @@ class KeyDerivation:
             machine_id = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
             if not machine_id:
                 display.warning("/etc/machine-id is empty — secrets are not bound to this machine")
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError, OSError:
             display.warning("/etc/machine-id not found — secrets are not bound to this machine")
             machine_id = ""
         h.update(machine_id.encode())

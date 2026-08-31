@@ -18,6 +18,7 @@ from agent_wrap.domain.logs.models import DaemonState
 
 if TYPE_CHECKING:
     from datetime import timedelta
+    from typing import Self
 
 
 def state_dir() -> Path:
@@ -45,7 +46,7 @@ def read_state() -> DaemonState | None:
         return None
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None
     if (
         isinstance(data, dict)
@@ -89,7 +90,7 @@ class _LogSpan:
         self._threshold = threshold
         self._start = time.monotonic()
 
-    def __enter__(self) -> _LogSpan:  # noqa: PYI034 — `Self` needs py3.11+, target is py3.10
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:

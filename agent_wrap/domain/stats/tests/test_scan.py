@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -184,7 +184,7 @@ def test_day_start_hours_shifts_record_bucket(
     # A record timestamped just after UTC midnight falls on the next UTC day
     # once the day-start offset is pushed forward past that instant.
     mocker.patch.object(scan_mod, "DAY_START_HOURS", 0)
-    ts = datetime(2026, 6, 15, 1, 0, 0, tzinfo=timezone.utc).timestamp()
+    ts = datetime(2026, 6, 15, 1, 0, 0, tzinfo=UTC).timestamp()
     logs = tmp_path / ".claude" / "litellm-logs"
     sdir = logs / "litellm-bedrock" / "s1"
     sdir.mkdir(parents=True)
@@ -207,7 +207,7 @@ def test_day_start_hours_shifts_record_bucket(
 
 def test_accumulate_record_carries_raw_timestamp() -> None:
     """The archive re-buckets by UTC hour, so the un-offset instant must survive."""
-    ts = datetime(2026, 6, 15, 14, 37, 12, tzinfo=timezone.utc)
+    ts = datetime(2026, 6, 15, 14, 37, 12, tzinfo=UTC)
     rec = {
         "status": "success",
         "model": "claude-opus-4-8",
@@ -252,7 +252,7 @@ def test_accumulate_record_drops_timestampless_record_when_windowed(
 
 def test_scan_session_file_records_carry_timestamps(tmp_path: Path) -> None:
     """scan_session_file threads each record's ts through to its RawRecord."""
-    ts = datetime(2026, 6, 15, 9, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 6, 15, 9, 0, 0, tzinfo=UTC)
     msg = tmp_path / "messages.jsonl"
     with msg.open("w", encoding="utf-8") as f:
         f.write(

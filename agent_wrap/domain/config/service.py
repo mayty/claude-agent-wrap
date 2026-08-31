@@ -46,7 +46,7 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         if not text.strip():
             return {}
         return json.loads(text)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
 
 

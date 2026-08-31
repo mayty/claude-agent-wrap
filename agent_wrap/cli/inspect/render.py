@@ -298,6 +298,7 @@ class Details:
         host_net, host_net_style = Details.host_network(environment)
         return [
             Cells.row("wrapper", Details.revision(wrapper)),
+            Details.interpreter_row(wrapper),
             Details.base_image_row(environment),
             *Details.project_image_rows(project, environment),
             Details.network_row(environment),
@@ -318,6 +319,28 @@ class Details:
         if wrapper.dirty:
             detail += " [dirty]"
         return detail
+
+    @staticmethod
+    def interpreter_row(wrapper: WrapperRow) -> RowItem:
+        """
+        Report the provisioned CPython, flagged when it has fallen behind the pin.
+
+        A drifted interpreter is not broken -- the old one still runs -- so it is a
+        warning and not an error. It does mean the wrapper is running on something
+        other than what this revision pins, which is worth saying out loud since
+        nothing else in the report would reveal it.
+        """
+        running = wrapper.python_version
+        pinned = wrapper.python_pinned
+        if running is None:
+            return Cells.row("interpreter", "not provisioned", Ansi.BOLD_YELLOW)
+        if pinned and pinned != running:
+            return Cells.row(
+                "interpreter",
+                f"{running} (pinned {pinned}) -- run bin/agent-bootstrap",
+                Ansi.BOLD_YELLOW,
+            )
+        return Cells.row("interpreter", running)
 
     @staticmethod
     def base_image_row(environment: EnvironmentRow) -> RowItem:

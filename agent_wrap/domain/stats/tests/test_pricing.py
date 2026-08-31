@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -383,7 +383,7 @@ def test_aggregate_archived_reconstructs_last_ts(
     )
     result = stats_svc.aggregate_archived_orphaned({}, {})
     assert result is not None
-    assert result["last_ts"] == datetime(2026, 7, 20, 17, tzinfo=timezone.utc)
+    assert result["last_ts"] == datetime(2026, 7, 20, 17, tzinfo=UTC)
 
 
 def test_aggregate_archived_rebuckets_day_at_read_time(
@@ -611,8 +611,8 @@ def test_merge_orphaned_results_combines_both(stats_svc: StatsService) -> None:
         },
         2.0,
     )
-    live_ts = datetime(2026, 7, 1, tzinfo=timezone.utc)
-    archived_ts = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    live_ts = datetime(2026, 7, 1, tzinfo=UTC)
+    archived_ts = datetime(2026, 7, 20, tzinfo=UTC)
 
     merged = stats_svc.merge_orphaned_results(
         {"sessions": 2, "last_ts": live_ts, "total": live_total},
@@ -633,7 +633,7 @@ def test_merge_orphaned_results_combines_both(stats_svc: StatsService) -> None:
 def test_merge_orphaned_results_passes_through_single_side(stats_svc: StatsService) -> None:
     only = {
         "sessions": 1,
-        "last_ts": datetime(2026, 7, 1, tzinfo=timezone.utc),
+        "last_ts": datetime(2026, 7, 1, tzinfo=UTC),
         "total": stats_svc._pricing.new_bucket(),
     }
     assert stats_svc.merge_orphaned_results(only, None) is only

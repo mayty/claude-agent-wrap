@@ -10,7 +10,7 @@ import sys
 import tempfile
 import types
 from collections.abc import Iterator, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -176,8 +176,8 @@ def test_build_record_timing_falls_back_to_callback_datetimes() -> None:
     # When the standard_logging_object lacks epoch timestamps, the callback's own
     # start_time/end_time datetimes fill in — so start is never None and the stats
     # reader never mints the timestamp-less "?" day-key.
-    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=timezone.utc)
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=UTC)
     record = build_record({}, None, status="success", start_time=start, end_time=end)
     assert record["timing"] == {
         "start": start.timestamp(),
@@ -189,7 +189,7 @@ def test_build_record_timing_falls_back_to_callback_datetimes() -> None:
 def test_build_record_timing_prefers_slo_epoch_over_datetime_fallback() -> None:
     # The standard_logging_object epoch values win when present; the datetime
     # fallback is only used for fields LiteLLM omitted.
-    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=UTC)
     kwargs = {"standard_logging_object": {"startTime": 1780916982.12}}
     record = build_record(kwargs, None, status="success", start_time=start)
     assert record["timing"]["start"] == 1780916982.12
@@ -1046,8 +1046,8 @@ def test_log_stream_event_writes_a_success_record(tmp_path: Path) -> None:
         mod.file_logger_instance.async_log_stream_event(
             kwargs=kwargs,
             response_obj={"usage": {"input_tokens": 11, "output_tokens": 22}},
-            start_time=datetime(2026, 8, 7, 13, 0, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 8, 7, 13, 0, 1, tzinfo=timezone.utc),
+            start_time=datetime(2026, 8, 7, 13, 0, 0, tzinfo=UTC),
+            end_time=datetime(2026, 8, 7, 13, 0, 1, tzinfo=UTC),
         )
     )
 
@@ -1216,8 +1216,8 @@ def test_build_record_failure_leaves_completion_start_none() -> None:
     A failed call produced no first token, so completionStart must not inherit the
     call's start — the viewer would otherwise report a 0s time-to-first-token.
     """
-    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=timezone.utc)
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 6, 5, 12, 0, 3, tzinfo=UTC)
     record = build_record({}, None, status="failure", start_time=start, end_time=end)
     assert record["timing"] == {
         "start": start.timestamp(),
@@ -1228,7 +1228,7 @@ def test_build_record_failure_leaves_completion_start_none() -> None:
 
 def test_build_record_failure_keeps_a_real_completion_start() -> None:
     """A call that streamed tokens and then errored still reports its first token."""
-    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 6, 5, 12, 0, 0, tzinfo=UTC)
     kwargs = {"standard_logging_object": {"completionStartTime": 1780916982.5}}
     record = build_record(kwargs, None, status="failure", start_time=start)
     assert record["timing"]["completionStart"] == 1780916982.5
@@ -1242,7 +1242,7 @@ def test_post_call_failure_hook_timestamps_the_record(tmp_path: Path) -> None:
     meta.json never gets a last_ts.
     """
     mod = _load_callback_with_stub_litellm(tmp_path)
-    before = datetime.now(tz=timezone.utc).timestamp()
+    before = datetime.now(tz=UTC).timestamp()
 
     asyncio.run(
         mod.file_logger_instance.async_post_call_failure_hook(
@@ -1252,7 +1252,7 @@ def test_post_call_failure_hook_timestamps_the_record(tmp_path: Path) -> None:
         )
     )
 
-    after = datetime.now(tz=timezone.utc).timestamp()
+    after = datetime.now(tz=UTC).timestamp()
     timing = _logged_records(tmp_path, "sess-ts")[0]["timing"]
     assert before <= timing["start"] <= after
     assert before <= timing["end"] <= after

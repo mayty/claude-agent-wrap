@@ -113,7 +113,7 @@ class SecretsService:
         """
         try:
             return self.get_required_secrets(sidecar_name)
-        except (ProviderNotFoundError, SystemExit):
+        except ProviderNotFoundError, SystemExit:
             return []
 
     # -- Sidecar secret actions ---------------------------------------------

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -58,7 +58,7 @@ _AGENT_MOUNTS = json.dumps(
 
 
 def _recent_timestamp(seconds_ago: int) -> str:
-    started = datetime.now(tz=timezone.utc) - timedelta(seconds=seconds_ago)
+    started = datetime.now(tz=UTC) - timedelta(seconds=seconds_ago)
     return started.isoformat().replace("+00:00", "Z")
 
 

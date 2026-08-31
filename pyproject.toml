@@ -3,9 +3,9 @@
 [project]
 name = "agent-wrap"
 version = "0.0.0"
-requires-python = ">=3.10"
+requires-python = "==3.14.7"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=9.1.1,<10",
     "pytest-cov>=7.1.0,<8",
@@ -31,9 +31,10 @@ markers = []
 # ruff (linter + formatter)
 # ---------------------------------------------------------------------------
 [tool.ruff]
-target-version = "py310"
+target-version = "py314"
 line-length = 100
 src = ["."]
+extend-exclude = [".python"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -123,6 +124,7 @@ ignore = [
     "TC001",   # imports from the parent package are runtime dependencies in sidecar context
     "TC002",   # same — sidecar-deployed files import at runtime, not just type-checking
     "T201",    # EC001 forbids importing agent_wrap here, so DisplayService is unreachable
+    "UP017",   # runs on the LiteLLM image's Python, not ours -- datetime.UTC needs 3.11+
 ]
 "scripts/**" = [
     "INP001",  # individual scripts, not package
@@ -150,6 +152,15 @@ known-first-party = ["agent_wrap"]
 ban-relative-imports = "all"
 
 [tool.ruff.format]
+# The carve-out regions are formatted separately, at their own lower target
+# version (see the carveout-check and format targets in the Makefile). At
+# target-version py314 the formatter strips the parentheses from
+# `except (A, B):` -- legal since PEP 758, and a SyntaxError on the older
+# interpreters these two regions actually run on.
+exclude = [
+    "ops/statusline.py",
+    "agent_wrap/domain/providers/litellm_runtime/**",
+]
 quote-style = "double"
 indent-style = "space"
 
@@ -194,7 +205,7 @@ project_includes = [
 # and an explicit path argument makes pyrefly ignore project_excludes entirely, so
 # those entries never took effect. The directory's flat sys.path imports are covered
 # by inline `# type: ignore` comments in the files themselves instead.
-python_version = "3.10"
+python_version = "3.14"
 
 [tool.pyrefly.errors]
 missing-override-decorator = false

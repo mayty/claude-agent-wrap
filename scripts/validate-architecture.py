@@ -586,7 +586,7 @@ def check_file(file_path: Path) -> list[tuple[str, int, str, str]]:
 
     try:
         source = file_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return violations
 
     try:

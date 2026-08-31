@@ -18,7 +18,7 @@ import contextlib
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -249,7 +249,7 @@ class TelegramSidecar(Sidecar):
             docker_run("rm", "-f", self.config.container_name)
 
         # Prepare log directory and LOG_LOCATION
-        dt = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
+        dt = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
         log_dir = self.config.log_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         log_filename = f"{dt}.log"

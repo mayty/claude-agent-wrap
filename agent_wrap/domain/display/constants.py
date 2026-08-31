@@ -4,7 +4,11 @@
 from enum import Enum
 
 
-class Ansi(str, Enum):
+# UP042 is suppressed deliberately: StrEnum is available on the pinned interpreter,
+# but swapping the base changes how members format in f-strings and %-interpolation,
+# and every escape sequence in this file flows through those. That migration stands
+# on its own.
+class Ansi(str, Enum):  # noqa: UP042
     """Terminal control sequences."""
 
     # Empty sentinel for "no styling" — falsy, so `if style:` guards skip it.

@@ -152,6 +152,33 @@ Providers access sidecar functionality through an injected `SidecarService` (see
     ``_service`` suffix (e.g. ``provider_service.py``). Each domain subpackage
     defines exactly one service class in its ``service.py``.
 
+## The interpreter, and the dependency policy
+
+`bin/agent` execs a pinned CPython that `bin/agent-bootstrap` provisions into `.python/`
+(version and per-platform SHA-256 in `python-pin.env`). There is deliberately no fallback
+to the host's `python3`: a fallback would be a floor in disguise, and the point of owning
+the interpreter is that the oldest distro anyone runs no longer decides what this code may
+use. `requires-python` pins that exact version, and `make python-check` fails when the two
+files disagree or when the running interpreter is not the pinned one.
+
+**The host runtime is stdlib-only.** `[project]` declares no `dependencies`, and the
+`dev` dependency group holds tools only — the bootstrap installs the group without
+installing `agent_wrap` itself, so nothing can shadow the source `PYTHONPATH` provides.
+
+**Two regions do not run on the pinned interpreter** and must stay inside a lower floor:
+
+| Region | Runs on |
+| --- | --- |
+| `ops/statusline.py` | the agent container's `python3` |
+| `agent_wrap/domain/providers/litellm_runtime/` | the pinned LiteLLM image's Python |
+
+`make carveout-check` enforces that floor with three legs, all of which have caught
+something: `ruff check` for version-gated syntax, `pyrefly` for stdlib APIs that do not
+exist yet on the floor (`datetime.UTC`), and `ruff format` — because at `py314` the
+*formatter* strips the parentheses from `except (A, B):`, which is a `SyntaxError` on
+older interpreters. Those files are excluded from the default format pass for that reason
+and are formatted at their own target instead.
+
 ## Key conventions
 
 - **Exceptions**: all custom exceptions are defined in `agent_wrap/exceptions.py`. Consumers import directly from there.

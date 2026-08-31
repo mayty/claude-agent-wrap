@@ -321,7 +321,7 @@ class DisplayService:
         self.info(prompt, end=" ")
         try:
             ans = input()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             return False
         return ans.strip().lower() == "y"
 

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -94,9 +94,9 @@ def _leaf(doc: ArchiveDoc, date: str, hour: str, model: str, source: str) -> Arc
 @pytest.mark.parametrize(
     ("ts", "expected"),
     [
-        (datetime(2026, 7, 20, 14, 37, tzinfo=timezone.utc), ("2026-07-20", "14")),
-        (datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc), ("2026-01-02", "00")),
-        (datetime(2026, 1, 2, 23, 59, tzinfo=timezone.utc), ("2026-01-02", "23")),
+        (datetime(2026, 7, 20, 14, 37, tzinfo=UTC), ("2026-07-20", "14")),
+        (datetime(2026, 1, 2, 0, 0, tzinfo=UTC), ("2026-01-02", "00")),
+        (datetime(2026, 1, 2, 23, 59, tzinfo=UTC), ("2026-01-02", "23")),
         (None, ("?", "?")),
     ],
 )
@@ -111,7 +111,7 @@ def test_archive_time_keys_converts_to_utc() -> None:
 
 
 def test_fold_sums_same_cell_across_records(pricing_service: PricingService) -> None:
-    ts = datetime(2026, 7, 20, 14, 5, tzinfo=timezone.utc)
+    ts = datetime(2026, 7, 20, 14, 5, tzinfo=UTC)
     doc = fold_records_into_archive(
         [_record(ts), _record(ts.replace(minute=55)), _record(ts)], pricing_service
     )
@@ -124,9 +124,9 @@ def test_fold_sums_same_cell_across_records(pricing_service: PricingService) -> 
 def test_fold_splits_by_hour_and_date(pricing_service: PricingService) -> None:
     doc = fold_records_into_archive(
         [
-            _record(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc)),
-            _record(datetime(2026, 7, 20, 15, 0, tzinfo=timezone.utc)),
-            _record(datetime(2026, 7, 21, 14, 0, tzinfo=timezone.utc)),
+            _record(datetime(2026, 7, 20, 14, 0, tzinfo=UTC)),
+            _record(datetime(2026, 7, 20, 15, 0, tzinfo=UTC)),
+            _record(datetime(2026, 7, 21, 14, 0, tzinfo=UTC)),
         ],
         pricing_service,
     )
@@ -135,7 +135,7 @@ def test_fold_splits_by_hour_and_date(pricing_service: PricingService) -> None:
 
 
 def test_fold_splits_by_model_and_source(pricing_service: PricingService) -> None:
-    ts = datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 7, 20, 14, 0, tzinfo=UTC)
     doc = fold_records_into_archive(
         [
             _record(ts),
@@ -162,10 +162,10 @@ def test_fold_normalizes_model_names(pricing_service: PricingService) -> None:
     doc = fold_records_into_archive(
         [
             _record(
-                datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc),
+                datetime(2026, 7, 20, 14, 0, tzinfo=UTC),
                 model="litellm-bedrock/claude-opus-4-8-20260515",
             ),
-            _record(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc)),
+            _record(datetime(2026, 7, 20, 14, 0, tzinfo=UTC)),
         ],
         pricing_service,
     )
@@ -178,7 +178,7 @@ def test_fold_preserves_explicit_cache_tier_split(pricing_service: PricingServic
     doc = fold_records_into_archive(
         [
             _record(
-                datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc),
+                datetime(2026, 7, 20, 14, 0, tzinfo=UTC),
                 usage=_usage(cw_flat=300, cw_5m=100, cw_1h=200),
             )
         ],
@@ -192,7 +192,7 @@ def test_fold_preserves_explicit_cache_tier_split(pricing_service: PricingServic
 def test_fold_applies_flat_cache_write_fallback(pricing_service: PricingService) -> None:
     """With no ephemeral split, Bucket.add charges the flat total at the 5m rate."""
     doc = fold_records_into_archive(
-        [_record(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc), usage=_usage(cw_flat=500))],
+        [_record(datetime(2026, 7, 20, 14, 0, tzinfo=UTC), usage=_usage(cw_flat=500))],
         pricing_service,
     )
     leaf = _leaf(doc, "2026-07-20", "14", "litellm-bedrock/claude-opus-4-8", "native")
@@ -203,7 +203,7 @@ def test_fold_applies_flat_cache_write_fallback(pricing_service: PricingService)
 def test_fold_stores_no_cost(pricing_service: PricingService) -> None:
     """Cost must be re-derived at read time, so it is never persisted."""
     doc = fold_records_into_archive(
-        [_record(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))], pricing_service
+        [_record(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))], pricing_service
     )
     leaf = _leaf(doc, "2026-07-20", "14", "litellm-bedrock/claude-opus-4-8", "native")
     assert "cost" not in leaf

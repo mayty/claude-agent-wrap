@@ -7,7 +7,7 @@ import copy
 import shutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from functools import cache, partial
 from typing import TYPE_CHECKING
 
@@ -284,7 +284,7 @@ class StatsService:
     @staticmethod
     def now_utc() -> datetime:
         """Return the current UTC instant — the seam tests freeze for deterministic windows."""
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def build_report(self, projects: list[Path], args: UsageArgs) -> StatsReport:
         """
@@ -787,7 +787,7 @@ class StatsService:
         """
         try:
             year, month, day = (int(part) for part in date_key.split("-"))
-            return datetime(year, month, day, int(hour_key), tzinfo=timezone.utc)
+            return datetime(year, month, day, int(hour_key), tzinfo=UTC)
         except ValueError:
             return None
 

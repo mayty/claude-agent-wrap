@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import DAY_START_HOURS, GLOBAL_CONFIG_DIR
@@ -79,7 +79,7 @@ class UsageTracker:
         # If the file's mtime predates today's day boundary, it can't contain
         # today's records — store the fingerprint and skip I/O entirely.
         mtime_ns = stat_info[0]
-        mtime_dt = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=timezone.utc)
+        mtime_dt = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=UTC)
         if get_day(mtime_dt, DAY_START_HOURS).isoformat() < self._today_key:
             self._fingerprints[file_path] = stat_info
             return False
@@ -140,4 +140,4 @@ class UsageTracker:
 
     @staticmethod
     def _current_day_key() -> str:
-        return get_day(datetime.now(timezone.utc), DAY_START_HOURS).isoformat()
+        return get_day(datetime.now(UTC), DAY_START_HOURS).isoformat()

@@ -273,7 +273,7 @@ def read_meta_json(session_dir: Path) -> MetaData | None:
         return None
     try:
         cached = json.loads(meta_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
     # Reject a pre-timing-format cache: `last_ts` used to be an ISO string but
     # is now an epoch float. A leftover string entry (e.g. an old sidecar that

@@ -17,14 +17,22 @@ from typing import Any
 
 import pytest
 
+from agent_wrap.constants import AGENT_BOOTSTRAP_PATH
+from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.updates.constants import MdPropagation, MdState
 from agent_wrap.domain.updates.service import UpdateService, _GitOps
 
 
 @pytest.fixture
-def update_svc(display_mock: Mock) -> UpdateService:
+def logs_mock(mocker: pytest_mock.MockFixture) -> Mock:
+    """Return an autospecced LogsService, which UpdateService stops before re-provisioning."""
+    return mocker.create_autospec(LogsService, instance=True)
+
+
+@pytest.fixture
+def update_svc(display_mock: Mock, logs_mock: Mock) -> UpdateService:
     """Return an UpdateService with the shared display_mock."""
-    return UpdateService(display_service=display_mock)
+    return UpdateService(display_service=display_mock, logs_service=logs_mock)
 
 
 def test_get_behind_not_git_dir(mocker: pytest_mock.MockFixture) -> None:
@@ -553,3 +561,135 @@ def test_current_revision_bounds_every_git_call(
     update_svc.current_revision()
     for call in git.call_args_list:
         assert call.kwargs["timeout"] > 0
+
+
+def _advancing_git(before: str, after: str):
+    """Return a fake _GitOps.git where rev-parse reports `before` then `after`."""
+    seen: list[str] = []
+
+    def fake_git(*args: Any, **_: Any) -> tuple[str, int]:
+        if args[0] == "symbolic-ref":
+            return ("main", 0)
+        if args[0] == "rev-parse":
+            seen.append(args[0])
+            return (before, 0) if len(seen) == 1 else (after, 0)
+        return ("", 0)
+
+    return fake_git
+
+
+@pytest.fixture
+def bootstrap_run(mocker: pytest_mock.MockFixture) -> Mock:
+    """Patch the subprocess the re-provision step shells out to."""
+    return mocker.patch(
+        "agent_wrap.domain.updates.service.subprocess.run",
+        autospec=True,
+        return_value=mocker.Mock(returncode=0),
+    )
+
+
+def test_apply_reprovisions_the_interpreter_after_advancing(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """A stale pin would leave users on an unpatched CPython, so this is not advisory."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+
+    assert update_svc.apply("origin/main") == 0
+    assert bootstrap_run.call_count == 1
+    assert bootstrap_run.call_args.args[0] == [str(AGENT_BOOTSTRAP_PATH)]
+    assert bootstrap_run.call_args.kwargs["timeout"] > 0
+
+
+def test_apply_stops_the_logs_daemon_before_reprovisioning(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    logs_mock: Mock,
+    bootstrap_run: Mock,
+) -> None:
+    """The daemon holds the old interpreter open while running newly merged code."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+
+    update_svc.apply("origin/main")
+    logs_mock.stop_daemon.assert_called_once()
+    assert bootstrap_run.called
+
+
+def test_apply_does_not_reprovision_when_already_up_to_date(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    logs_mock: Mock,
+    bootstrap_run: Mock,
+) -> None:
+    """No-op updates must not stop a running viewer or shell out at all."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "aaa111"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+
+    assert update_svc.apply("origin/main") == 0
+    assert not bootstrap_run.called
+    logs_mock.stop_daemon.assert_not_called()
+
+
+def test_apply_survives_a_failing_bootstrap(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """The already-installed interpreter still works, so the update itself succeeded."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+    bootstrap_run.return_value = mocker.Mock(returncode=1)
+
+    assert update_svc.apply("origin/main") == 0
+    assert str(AGENT_BOOTSTRAP_PATH) in display_mock.error.call_args.args[0]
+
+
+def test_apply_reports_an_unrunnable_bootstrap(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """A missing or non-executable script must name the command, not raise."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+    bootstrap_run.side_effect = OSError("Permission denied")
+
+    assert update_svc.apply("origin/main") == 0
+    assert "Permission denied" in display_mock.error.call_args.args[0]

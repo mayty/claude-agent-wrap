@@ -7,8 +7,9 @@ import os
 import subprocess
 from typing import TYPE_CHECKING
 
-from agent_wrap.constants import GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
+from agent_wrap.constants import AGENT_BOOTSTRAP_PATH, GLOBAL_CONFIG_DIR, OPS_DIR, TOOL_DIR
 from agent_wrap.domain.updates.constants import (
+    BOOTSTRAP_FILES,
     REBUILD_FILES,
     RESOURCE_FILES,
     MdPropagation,
@@ -23,6 +24,7 @@ from agent_wrap.lib.utils import is_truthy_env
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
+    from agent_wrap.domain.logs.service import LogsService
 
 
 class _GitOps:
@@ -40,7 +42,7 @@ class _GitOps:
                 timeout=timeout,
             )
             return result.stdout.strip(), result.returncode
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except subprocess.TimeoutExpired, FileNotFoundError:
             return "", 1
 
     @staticmethod
@@ -54,7 +56,7 @@ class _GitOps:
                 cwd=cwd,
             )
             return GitFullResult(result.stdout.strip(), result.returncode, result.stderr.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except subprocess.TimeoutExpired, FileNotFoundError:
             return GitFullResult("", 1, "")
 
     @staticmethod
@@ -204,6 +206,11 @@ class _GitOps:
         else:
             display.success("no re-build needed")
 
+        if changed & BOOTSTRAP_FILES:
+            display.warning("the pinned CPython moved — re-provisioning")
+        else:
+            display.success("no re-provision needed")
+
         md_status = _GitOps.handle_claude_md_propagation(before, after, pre_state)
         if md_status == MdPropagation.UPDATED:
             display.success("CLAUDE.md updated to new default")
@@ -245,8 +252,9 @@ class _GitOps:
 class UpdateService:
     """Git-based self-update logic for agent-wrap."""
 
-    def __init__(self, display_service: DisplayService) -> None:
+    def __init__(self, display_service: DisplayService, logs_service: LogsService) -> None:
         self._display = display_service
+        self._logs = logs_service
 
     def current_revision(self) -> WrapperRevision:
         """
@@ -348,4 +356,47 @@ class UpdateService:
             return 1
 
         pre_state = _GitOps.detect_claude_md_state()
-        return _GitOps.fast_forward(target_ref, before, pre_state, self._display)
+        rc = _GitOps.fast_forward(target_ref, before, pre_state, self._display)
+        if rc == 0:
+            self._reprovision_interpreter(before)
+        return rc
+
+    def _reprovision_interpreter(self, before: str) -> None:
+        """
+        Re-run the bootstrap after an update that actually advanced HEAD.
+
+        Invoked unconditionally rather than gated on ``BOOTSTRAP_FILES`` appearing in
+        the diff: the bootstrap's own fast path makes it a few-millisecond no-op when
+        the pin has not moved, which costs nothing and additionally repairs a previous
+        bootstrap that was interrupted. Gating here would mean parsing the pin file in
+        Python as well as in sh, for no gain.
+
+        Best-effort by design. A failure leaves the *existing* interpreter in place and
+        working, so it must not turn a successful update into a failed one — the message
+        names the command to re-run.
+        """
+        after, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
+        if rc != 0 or after == before:
+            return
+
+        # The daemon is a long-lived process holding the *old* interpreter open while
+        # now executing newly merged code — on the first migration that pairing is a
+        # pre-3.11 interpreter running code that expects `datetime.UTC`, and its stdio
+        # is /dev/null, so it would fail invisibly. The next `agent run` restarts it.
+        self._logs.stop_daemon()
+
+        try:
+            proc = subprocess.run(
+                [str(AGENT_BOOTSTRAP_PATH)],
+                cwd=str(TOOL_DIR),
+                timeout=600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self._display.error(
+                f"could not provision the pinned CPython: {exc}\nRun: {AGENT_BOOTSTRAP_PATH}"
+            )
+            return
+        if proc.returncode != 0:
+            self._display.error(
+                f"provisioning the pinned CPython failed\nRun: {AGENT_BOOTSTRAP_PATH}"
+            )

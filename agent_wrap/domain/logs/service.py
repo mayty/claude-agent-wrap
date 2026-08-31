@@ -197,7 +197,7 @@ class LogsService:
         """
         try:
             return self._claim_or_spawn(LOGS_DEFAULT_PORT) is not None
-        except (LockTimeoutError, OSError):
+        except LockTimeoutError, OSError:
             return False
 
     def spawn_background(self, port: int) -> int:

@@ -590,7 +590,7 @@ class LogsCache:
         for raw_path_str in added:
             try:
                 path = Path(raw_path_str)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
 
             logs_d = self._logs_dir_for(path)

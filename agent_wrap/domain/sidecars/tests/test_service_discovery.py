@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -26,9 +26,7 @@ _NETWORKS = json.dumps({"agent-wrap-net": {}})
 
 
 def _started_now() -> str:
-    return (
-        (datetime.now(tz=timezone.utc) - timedelta(seconds=60)).isoformat().replace("+00:00", "Z")
-    )
+    return (datetime.now(tz=UTC) - timedelta(seconds=60)).isoformat().replace("+00:00", "Z")
 
 
 def _sidecar_line(name: str) -> str:

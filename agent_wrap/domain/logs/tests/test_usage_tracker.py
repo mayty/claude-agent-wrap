@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -61,7 +61,7 @@ def make_record() -> Callable[..., dict[str, Any]]:
         cache_creation: int = 0,
         start_ts: float | None = None,
     ) -> dict[str, Any]:
-        ts = start_ts if start_ts is not None else datetime.now(timezone.utc).timestamp()
+        ts = start_ts if start_ts is not None else datetime.now(UTC).timestamp()
         return {
             "status": status,
             "model": model,
@@ -114,7 +114,7 @@ def test_todays_records_are_counted(
 ) -> None:
     """A single file with today's records is scanned and its totals appear in output."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(
         mf,
         [
@@ -142,7 +142,7 @@ def test_yesterdays_records_are_excluded(
 ) -> None:
     """Records from before today (per DAY_START_HOURS) are excluded."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    yesterday_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).timestamp()
+    yesterday_ts = (datetime.now(UTC) - timedelta(hours=48)).timestamp()
     write_messages_file(mf, [make_record(input_tokens=999, start_ts=yesterday_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -164,7 +164,7 @@ def test_unknown_cost_model_produces_question_mark(
     pricing.compute_cost.return_value = None
 
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -196,7 +196,7 @@ def test_unchanged_file_is_skipped(
 ) -> None:
     """update_file returns False when the stat fingerprint hasn't changed."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
@@ -212,9 +212,9 @@ def test_file_with_yesterdays_mtime_is_skipped(
 ) -> None:
     """A file whose mtime predates today's boundary is skipped without scanning."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=999, output_tokens=999, start_ts=now_ts)])
-    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    yesterday = datetime.now(UTC) - timedelta(days=1)
     os.utime(mf, (yesterday.timestamp(), yesterday.timestamp()))
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
@@ -232,9 +232,9 @@ def test_file_touched_today_is_scanned(
 ) -> None:
     """After touching the file to today, it is scanned normally."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     os.utime(mf, (now.timestamp(), now.timestamp()))
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
@@ -251,7 +251,7 @@ def test_multiple_files_are_aggregated(
     write_messages_file: Callable[[Path, list[dict[str, Any]]], None],
 ) -> None:
     """Contributions from multiple files are merged into one total."""
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     for i, provider in enumerate(["litellm-bedrock", "litellm-dashscope"]):
         mf = tmp_path / "litellm-logs" / provider / f"sess-{i}" / "messages.jsonl"
         write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
@@ -276,7 +276,7 @@ def test_removed_file_contribution_is_dropped(
 ) -> None:
     """After remove_file, the file's contribution is gone."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=500, output_tokens=250, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -312,7 +312,7 @@ def test_flush_resets_on_rollover(
 ) -> None:
     """Flush clears state when the day has changed since last update."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -335,7 +335,7 @@ def test_reset_clears_state(
 ) -> None:
     """Reset clears all file buckets, fingerprints, and refreshes _today_key."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
@@ -364,7 +364,7 @@ def test_cache_creation_tokens_are_tracked(
 ) -> None:
     """Cache write tokens appear under cache_creation in output."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(
         mf,
         [
@@ -394,7 +394,7 @@ def test_updating_same_file_replaces_old_contribution(
 ) -> None:
     """Calling update_file twice with different stat replaces the old contribution."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))

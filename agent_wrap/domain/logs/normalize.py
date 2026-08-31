@@ -179,7 +179,7 @@ def extract_alias(rec: LogRecord) -> str | None:
     stripped = content.strip()
     try:
         obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         match = ALIAS_NAME_RE.search(stripped)
         return match.group(1).strip() or None if match else None
     if isinstance(obj, dict):
@@ -201,7 +201,7 @@ def extract_title(rec: LogRecord) -> str | None:
     stripped = content.strip()
     try:
         obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         match = TITLE_RE.search(stripped)
         return match.group(1).strip() or None if match else None
     if isinstance(obj, dict):

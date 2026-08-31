@@ -81,7 +81,10 @@ class Services:
     def update_service(self) -> UpdateService:
         from agent_wrap.domain.updates.service import UpdateService
 
-        return UpdateService(display_service=self.display_service)
+        return UpdateService(
+            display_service=self.display_service,
+            logs_service=self.logs_service,
+        )
 
     @cached_property
     def launch_service(self) -> LaunchService:

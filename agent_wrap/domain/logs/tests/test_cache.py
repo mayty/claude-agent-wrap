@@ -111,9 +111,7 @@ _CWD = Path()
 
 
 @pytest.fixture
-def started_cache(
-    pricing: PricingService, config_mock: ConfigService
-) -> Generator[LogsCache, None, None]:
+def started_cache(pricing: PricingService, config_mock: ConfigService) -> Generator[LogsCache]:
     stats = Mock(spec=StatsService)
     stats.resolve_group.return_value = (_CWD, ".", False)
     stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
@@ -302,7 +300,7 @@ def test_oserror_handled_gracefully_during_poll(
         original_iterdir = Path.iterdir
         _simulated_msg = "Simulated"
 
-        def _failing_iterdir(self_path: Path) -> Generator[Path, None, None]:
+        def _failing_iterdir(self_path: Path) -> Generator[Path]:
             if self_path == logs_target:
                 raise OSError(_simulated_msg)
             yield from original_iterdir(self_path)

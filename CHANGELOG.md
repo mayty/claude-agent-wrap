@@ -7,9 +7,12 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.10.0](releases/0.10.0.md) — 2026-08-28
 
-Adds spell checking of the prompt input, recognising English and Russian together, and per-project
-startup scripts — an optional `.claude-agent-wrap/startup.sh` run on the host before each launch. The
-project Dockerfile moves into that same directory; `Dockerfile.agent` still works, with a deprecation
+**Breaking:** the wrapper now runs on a CPython version it pins and provisions itself, with no
+fallback to the host's `python3` — run `bin/agent-bootstrap` once per checkout after upgrading, or
+`agent` will refuse to start. Docker, `curl` and `tar` are now the only host requirements. Also adds
+spell checking of the prompt input, recognising English and Russian together, and per-project startup
+scripts — an optional `.claude-agent-wrap/startup.sh` run on the host before each launch. The project
+Dockerfile moves into that same directory; `Dockerfile.agent` still works, with a deprecation
 warning. Requires one `agent rebuild --full` after upgrading.
 
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14

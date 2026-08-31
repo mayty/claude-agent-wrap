@@ -121,7 +121,7 @@ class _DeepSeekPricing:
         if cache_path.is_file():
             try:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except OSError, json.JSONDecodeError:
                 cached = None
 
         fresh_enough = (
@@ -136,7 +136,7 @@ class _DeepSeekPricing:
         try:
             page = _DeepSeekPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             prices = _DeepSeekPricing.parse_pricing_page(page)
-        except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        except urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError:
             if cached is not None:
                 return cached.get("prices") or {}
             return {}

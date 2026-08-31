@@ -53,7 +53,7 @@ class MasterKeyApprovalMixin:
             if not text.strip():
                 return {}
             return json.loads(text)
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             return None
 
     def _save_claude_json(self, data: dict[str, Any]) -> None:

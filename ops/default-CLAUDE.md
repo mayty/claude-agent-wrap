@@ -11,7 +11,7 @@ A smaller set is private to **this container** rather than to the project, mount
 
 Two per-project mounts sit outside that directory: your session scratchpad (under `/tmp/claude-<uid>/`, from host `.claude/claude-tmp/`) and the MCP server logs (`~/.cache/claude-cli-nodejs/-workspace/`, from host `.claude/mcp-logs/`). The scratchpad therefore survives the container — files you leave there are still present if this session is later resumed. Everything else under `/tmp` and `~/.cache` is discarded.
 
-The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Dockerfile` (the base image), `default-CLAUDE.md` (this file), `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, and `wl-paste-shim`. Consult those when guidance below is ambiguous. The wrapper's Python source is **not** mounted — it stays on the host.
+The wrapper's operational files are mounted read-only at `/opt/agent-wrap/`: `Dockerfile` (the base image), `default-CLAUDE.md` (this file), `dockerfile-agent-guide.md`, `statusline.py`, `telegram-notify.sh`, `validate-dockerfile-agent`, and `wl-paste-shim`. Consult those when guidance below is ambiguous. The wrapper's Python source is **not** mounted, and neither is the pinned interpreter it runs on — both stay on the host.
 
 **Important:** You always run as a non-root user and are never granted `sudo` access. Do not attempt to use `sudo` or assume root privileges. If a task requires elevated permissions, instruct the user to add the necessary `RUN` steps to their `.claude-agent-wrap/Dockerfile` instead.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -131,7 +131,7 @@ def test_orphaned_disk_usage_no_dirs_is_zero(stats_svc: StatsService) -> None:
 
 def test_archives_and_deletes(stats_svc: StatsService, tmp_path: Path, archive_path: Path) -> None:
     logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 5, tzinfo=timezone.utc))]
+        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 5, tzinfo=UTC))]
     )
     result = stats_svc.archive_and_delete_orphaned([logs])
 
@@ -148,7 +148,7 @@ def test_removes_no_staging_file_on_success(
     stats_svc: StatsService, tmp_path: Path, archive_path: Path
 ) -> None:
     logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
+        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))]
     )
     result = stats_svc.archive_and_delete_orphaned([logs])
     assert result.staging_path == archive_path.with_suffix(".new.json")
@@ -163,7 +163,7 @@ def test_staging_written_before_any_delete(
 ) -> None:
     """The merged stats must be durable while the source dir still exists."""
     logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
+        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))]
     )
     staging = archive_path.with_suffix(".new.json")
     observed: dict[str, Any] = {}
@@ -206,7 +206,7 @@ def test_merges_into_existing_archive(
         encoding="utf-8",
     )
     logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 30, tzinfo=timezone.utc))]
+        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 30, tzinfo=UTC))]
     )
     stats_svc.archive_and_delete_orphaned([logs])
 
@@ -222,8 +222,8 @@ def test_archives_records_outside_any_stats_window(
         tmp_path / "central",
         "hashA",
         [
-            _rec(datetime(2019, 1, 2, 3, 0, tzinfo=timezone.utc)),
-            _rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc)),
+            _rec(datetime(2019, 1, 2, 3, 0, tzinfo=UTC)),
+            _rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC)),
         ],
     )
     stats_svc.archive_and_delete_orphaned([logs])
@@ -233,9 +233,7 @@ def test_archives_records_outside_any_stats_window(
 
 def test_freed_bytes_matches_removed_dirs(stats_svc: StatsService, tmp_path: Path) -> None:
     central = tmp_path / "central"
-    logs = _write_log_dir(
-        central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
-    )
+    logs = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
     expected = stats_svc.orphaned_disk_usage([logs])
     result = stats_svc.archive_and_delete_orphaned([logs])
     assert result.freed_bytes == expected
@@ -250,12 +248,8 @@ def test_failed_rmtree_skips_dir_and_continues(
 ) -> None:
     """A dir that cannot be deleted must not be archived — else it double-counts."""
     central = tmp_path / "central"
-    bad = _write_log_dir(
-        central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
-    )
-    good = _write_log_dir(
-        central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc))]
-    )
+    bad = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
+    good = _write_log_dir(central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=UTC))])
     real_rmtree = shutil.rmtree
 
     def selective(path: Path) -> None:
@@ -280,12 +274,8 @@ def test_failed_rmtree_excluded_from_freed_bytes(
     mocker: pytest_mock.MockFixture,
 ) -> None:
     central = tmp_path / "central"
-    bad = _write_log_dir(
-        central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
-    )
-    good = _write_log_dir(
-        central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc))]
-    )
+    bad = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
+    good = _write_log_dir(central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=UTC))])
     good_size = stats_svc.orphaned_disk_usage([good])
     real_rmtree = shutil.rmtree
 
@@ -306,7 +296,7 @@ def test_failed_promotion_reports_unfinalized(
     archive_path: Path,
 ) -> None:
     logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
+        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))]
     )
     result = stats_svc.archive_and_delete_orphaned([logs])
 
@@ -324,12 +314,8 @@ def test_failed_promotion_stops_remaining_dirs(
 ) -> None:
     """Stopping keeps the second dir intact rather than deleting it unarchived."""
     central = tmp_path / "central"
-    first = _write_log_dir(
-        central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc))]
-    )
-    second = _write_log_dir(
-        central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc))]
-    )
+    first = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
+    second = _write_log_dir(central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=UTC))])
     result = stats_svc.archive_and_delete_orphaned([first, second])
 
     assert result.finalized is False

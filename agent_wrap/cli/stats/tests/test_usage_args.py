@@ -10,7 +10,7 @@ a rejected window is reported. The resolution table itself belongs to
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import agent_wrap.cli.stats.usage_args as ua
@@ -29,7 +29,7 @@ _TODAY = date(2026, 6, 29)
 
 def _parse(mocker: MockerFixture, display_mock: Mock, *flags: str):
     """Parse *flags*, with "today" frozen and the window resolver stubbed."""
-    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
+    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=UTC)
     services.stats_service.now_utc.return_value = frozen  # pyrefly: ignore [missing-attribute]
     # Pin the day boundary so a relative -Nd reduces to plain UTC-date arithmetic
     # regardless of the CI host's local offset.
@@ -104,7 +104,7 @@ def test_refresh_defaults_false(mocker: MockerFixture, display_mock: Mock):
 
 
 def test_window_error_is_reported_and_stops(mocker: MockerFixture, display_mock: Mock):
-    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
+    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=UTC)
     services.stats_service.now_utc.return_value = frozen  # pyrefly: ignore [missing-attribute]
     mocker.patch.object(ua, "DAY_START_HOURS", 0)
     services.stats_service.resolve_window.return_value = WindowError("nope")  # pyrefly: ignore [missing-attribute]

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -16,17 +16,17 @@ if TYPE_CHECKING:
 
 
 def test_get_day_zero_offset_matches_utc_date() -> None:
-    dt = datetime(2026, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 6, 15, 10, 30, 0, tzinfo=UTC)
     assert get_day(dt, 0) == date(2026, 6, 15)
 
 
 def test_get_day_positive_offset_pushes_early_hours_to_previous_day() -> None:
-    dt = datetime(2026, 6, 15, 1, 0, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 6, 15, 1, 0, 0, tzinfo=UTC)
     assert get_day(dt, 2) == date(2026, 6, 14)
 
 
 def test_get_day_negative_offset_pushes_late_hours_to_next_day() -> None:
-    dt = datetime(2026, 6, 15, 23, 0, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 6, 15, 23, 0, 0, tzinfo=UTC)
     assert get_day(dt, -2) == date(2026, 6, 16)
 
 
@@ -41,7 +41,7 @@ def test_get_day_negative_offset_pushes_late_hours_to_next_day() -> None:
     ],
 )
 def test_get_day_boundary_crossing(hour: int, day_start_hours: int, expected: date) -> None:
-    dt = datetime(2026, 6, 15, hour, 0, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 6, 15, hour, 0, 0, tzinfo=UTC)
     assert get_day(dt, day_start_hours) == expected
 
 

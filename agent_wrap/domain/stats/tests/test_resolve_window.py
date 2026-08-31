@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
@@ -26,7 +26,7 @@ _TODAY = date(2026, 6, 29)
 def stats(mocker: MockerFixture) -> StatsService:
     """Return a StatsService whose "today" is pinned to _TODAY at plain UTC."""
     svc = StatsService(Mock(spec=PricingService), Mock(spec=ConfigService))
-    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=timezone.utc)
+    frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=UTC)
     mocker.patch.object(svc, "now_utc", return_value=frozen, autospec=True)
     # Pin the day boundary to 0 so get_day() reduces to UTC-date extraction
     # regardless of the CI host's real local offset.
