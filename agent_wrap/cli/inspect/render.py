@@ -2,13 +2,18 @@
 """
 Terminal rendering for the inspect command.
 
-Three tables: the sidecar containers, the agent containers, and everything else. That
-last one — ``Details`` — is a table rather than a block of ``Label: value`` lines so the
-whole report reads as one kind of output, and its three concerns (logs, secrets,
-wrapper/host) are separated by dividers rather than left to run together.
+Four tables: the sidecar containers, the agent containers, everything else, and the
+registered projects whose own image is already stale. ``Details`` — the third — is a table
+rather than a block of ``Label: value`` lines so the whole report reads as one kind of
+output, and its three concerns (logs, secrets, wrapper/host) are separated by dividers
+rather than left to run together. The fourth closes the report because its empty state is
+a green line ``run.py`` prints in its place, and only a trailing section can be replaced
+that way.
 
 Each renderer returns lines rather than printing, so ``run.py`` owns all output and the
-whole report can be assembled before anything reaches the terminal.
+whole report can be assembled before anything reaches the terminal. That is also why the
+one green line in the report is not built here: an unstyled line list has nowhere to carry
+it, and ``DisplayService.success`` prints rather than returning.
 
 Colour carries one meaning throughout: green confirms something is ready, yellow flags
 something the user may want to act on (a container not running, a stale image, a missing
@@ -19,8 +24,9 @@ not set is dim rather than yellow for the same reason: `agent run` prompts for t
 the next launch, so it is a state to know about and not a fault to go and fix.
 
 Rows that have nothing to say are omitted rather than filled in: a project that declares
-no Dockerfile gets no ``project image`` row at all. A lite report closes with one line
-naming what it skipped, instead of marking each row the omission touched.
+no Dockerfile gets no ``project image`` row at all, and a stale-image table with no rows
+is not drawn empty. A lite report closes with one line naming what it skipped, instead of
+marking each row the omission touched.
 """
 
 from typing import TYPE_CHECKING
@@ -36,8 +42,11 @@ from agent_wrap.cli.inspect.constants import (
     NONE_CELL,
     NOT_MEASURED,
     PROJECT_IMAGE_LABEL,
+    REASON_MAX_WIDTH,
     SIDECAR_ALIGNS,
     SIDECAR_HEADERS,
+    STALE_IMAGES_ALIGNS,
+    STALE_IMAGES_HEADERS,
     UNKNOWN,
 )
 from agent_wrap.constants import AUTOSTART_LOGS_ENV, DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
@@ -55,6 +64,7 @@ if TYPE_CHECKING:
         ProjectImageRow,
         ProviderRow,
         SidecarRow,
+        StaleImageRow,
         StorageRow,
         ViewerRow,
         WrapperRow,
@@ -97,6 +107,20 @@ class Cells:
         return image.split("@", 1)[0].rsplit("/", 1)[-1] or UNKNOWN
 
     @staticmethod
+    def reason(reason: str) -> str:
+        """
+        Trim a build reason to one column's worth, marking that it was trimmed.
+
+        Same trade as :meth:`image` above, for the same reason: the untrimmed cell is wide
+        enough to wrap the row on a normal terminal. What is dropped is the tail of the
+        longest reason, which explains what to do rather than which image is stale, and
+        `-j`/`--json` still carries every reason in full.
+        """
+        if len(reason) <= REASON_MAX_WIDTH:
+            return reason
+        return reason[: REASON_MAX_WIDTH - 1].rstrip() + "…"
+
+    @staticmethod
     def row_style(status: str) -> Ansi:
         """Flag anything not running; leave a healthy row unstyled."""
         return Ansi.NONE if status == RUNNING_STATUS else Ansi.BOLD_YELLOW
@@ -108,7 +132,7 @@ class Cells:
 
 
 class Tables:
-    """The two container tables."""
+    """The two container tables, and the fleet-wide stale-image table under them."""
 
     @staticmethod
     def sidecars(rows: list[SidecarRow], queued: list[str], display: DisplayService) -> list[str]:
@@ -190,6 +214,37 @@ class Tables:
         shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
         return display.render_table(
             f"Agents ({len(rows)}):", headers, list(AGENT_ALIGNS), body, 1, shared
+        )
+
+    @staticmethod
+    def stale_images(rows: list[StaleImageRow] | None, display: DisplayService) -> list[str]:
+        """
+        Render one row per registered project whose own image is already stale.
+
+        Returns nothing for both of the empty cases, which are different facts and are
+        both reported elsewhere: None means the sweep did not run (lite mode says so on its
+        closing line; an unreachable daemon is already the report's headline), and an empty
+        list is the good news ``run.py`` prints in green instead of an empty table.
+
+        Every row is yellow, unlike the container tables where the style distinguishes rows
+        from each other: here it is the whole table that is the actionable finding, and a
+        plain row would read as a project that is fine.
+        """
+        if not rows:
+            return []
+
+        body: list[RowItemOrDivider] = [
+            RowItem(
+                cells=[row.project or UNKNOWN, row.image, Cells.reason(row.reason)],
+                style=Ansi.BOLD_YELLOW,
+                prefix_len=0,
+            )
+            for row in rows
+        ]
+        headers = list(STALE_IMAGES_HEADERS)
+        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
+        return display.render_table(
+            f"Stale images ({len(rows)}):", headers, list(STALE_IMAGES_ALIGNS), body, 1, shared
         )
 
 
@@ -492,8 +547,16 @@ def render(report: InspectReport, display: DisplayService) -> list[str]:
 
     lines.extend(Details.table(report, display))
     if report.lite:
-        # One closing line rather than a marker on each affected row: the two skipped
-        # steps are a property of the run, and naming them once keeps the tables reading
-        # the same in both modes.
+        # One closing line rather than a marker on each affected row: the skipped steps are
+        # a property of the run, and naming them once keeps the tables reading the same in
+        # both modes.
         lines.append(LITE_NOTE)
+
+    # Last, and never in lite mode, so it can never collide with the note above. The
+    # position is also what lets `run.py` print the green "nothing is stale" line in its
+    # place: colour outside a table cell has no route through a line list.
+    stale = Tables.stale_images(report.stale_images, display)
+    if stale:
+        lines.append("")
+        lines.extend(stale)
     return lines

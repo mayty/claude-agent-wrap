@@ -38,6 +38,7 @@ from agent_wrap.domain.build.models import (
     DockerfileLocation,
     ImageStaleness,
     ResolvedImage,
+    StaleProjectImage,
 )
 from agent_wrap.exceptions import DockerfileDirectiveError
 from agent_wrap.lib.docker_utils import (
@@ -193,13 +194,17 @@ class BuildService:
 
         return info
 
-    def locate_dockerfile(self, cwd: Path) -> DockerfileLocation:
+    def locate_dockerfile(self, cwd: Path, *, warn: bool = True) -> DockerfileLocation:
         """
         Find the project Dockerfile, preferring the current location over the legacy one.
 
         The single discovery point for the whole wrapper -- every caller that needs to
         know whether a project customizes its image goes through here, so the two paths
         cannot drift apart.
+
+        *warn* off silences the legacy-location deprecation notice, for a caller sweeping
+        many projects at once: the notice is addressed to whoever owns the Dockerfile, and
+        one copy per registered project would bury the report it was printed alongside.
 
         Raises:
             SystemExit: If both locations are populated, which leaves no way to tell
@@ -221,15 +226,18 @@ class BuildService:
             return DockerfileLocation(path=current, is_legacy=False)
 
         if legacy.is_file():
-            self._display.warning(
-                f"'{LEGACY_AGENT_DOCKERFILE_NAME}' is deprecated -- move it to "
-                f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'."
-            )
+            if warn:
+                self._display.warning(
+                    f"'{LEGACY_AGENT_DOCKERFILE_NAME}' is deprecated -- move it to "
+                    f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'."
+                )
             return DockerfileLocation(path=legacy, is_legacy=True)
 
         return DockerfileLocation(path=None, is_legacy=False)
 
-    def resolve_image(self, *, use_base: bool = False) -> ResolvedImage:
+    def resolve_image(
+        self, *, use_base: bool = False, project_dir: Path | None = None, warn: bool = True
+    ) -> ResolvedImage:
         """
         Determine which Docker image to use, its Dockerfile, and build context.
 
@@ -240,6 +248,10 @@ class BuildService:
 
         Args:
             use_base: If True, always use the base claude-agent image.
+            project_dir: The project to resolve for; the cwd when None. Passed by the
+                fleet-wide sweep, which answers this question for projects the caller is
+                not standing in -- everything else asks about where it already is.
+            warn: Forwarded to :meth:`locate_dockerfile`; see the note there.
 
         Returns:
             ResolvedImage with image name, dockerfile path, and context directory.
@@ -250,11 +262,11 @@ class BuildService:
                 the base image.
 
         """
-        cwd = Path.cwd()
+        cwd = Path.cwd() if project_dir is None else project_dir
         location = (
             DockerfileLocation(path=None, is_legacy=False)
             if use_base
-            else self.locate_dockerfile(cwd)
+            else self.locate_dockerfile(cwd, warn=warn)
         )
 
         if location.path is not None:
@@ -500,6 +512,74 @@ class BuildService:
         )
         project = self._reason_text(project_reason, base_stamp) if project_reason else ""
         return ImageStaleness(base=base, project=project)
+
+    def stale_project_images(self, project_dirs: list[Path]) -> list[StaleProjectImage]:
+        """
+        Sweep *project_dirs* and report each one whose per-project image is stale.
+
+        The fleet-wide counterpart to :meth:`stale_summary`, and read-only for the same
+        reason: ``agent inspect`` is its only caller, and a report that rebuilt what it
+        describes would be worse than no report.
+
+        Three kinds of project are absent from the result rather than reported as current:
+
+        * one that declares no Dockerfile -- its target is the base image, and the base's
+          staleness is one fact about this host, not one per project that inherits it;
+        * one whose image is not built on this host -- there is nothing stale about an
+          image that does not exist, and the launch that creates it is not a rebuild;
+        * one whose directory or Dockerfile cannot be read. Run from inside an agent
+          container, every project but the mounted one falls in here, and a Dockerfile
+          that fails validation is a fault its own project's ``agent run`` will report in
+          full -- neither is answerable from where this sweep stands.
+
+        A stale base short-circuits every project image to "the base moved", which
+        :meth:`_project_reason` already does without a docker call. The verdict is
+        memoised per image tag, so projects sharing an ``# agent-name:`` cost one inspect
+        between them rather than one each.
+        """
+        if not daemon_reachable():
+            return []  # an unreachable daemon is not evidence that anything is stale
+        base_stamp = image_stamp(BASE_IMAGE_NAME)
+        base_reason = self._base_reason(base_stamp, force=BuildForce.NONE, is_target=False)
+
+        reasons: dict[str, BuildReason | None] = {}
+        rows: list[StaleProjectImage] = []
+        for project_dir in project_dirs:
+            resolved = self._resolve_quietly(project_dir)
+            if resolved is None or resolved.image == BASE_IMAGE_NAME:
+                continue
+            if resolved.image not in reasons:
+                reasons[resolved.image] = self._project_reason(
+                    resolved,
+                    base_stamp,
+                    base_rebuilt=base_reason is not None,
+                    force=BuildForce.NONE,
+                )
+            reason = reasons[resolved.image]
+            if reason is None or reason is BuildReason.MISSING:
+                continue
+            rows.append(
+                StaleProjectImage(
+                    project=project_dir,
+                    image=resolved.image,
+                    reason=self._reason_text(reason, base_stamp),
+                )
+            )
+        return rows
+
+    def _resolve_quietly(self, project_dir: Path) -> ResolvedImage | None:
+        """
+        Resolve one project's target image, or None when the project cannot be read.
+
+        Everything :meth:`resolve_image` treats as fatal is merely a skipped row here --
+        see :meth:`stale_project_images` for why none of it is actionable from a sweep.
+        """
+        try:
+            if not project_dir.is_dir():
+                return None
+            return self.resolve_image(project_dir=project_dir, warn=False)
+        except SystemExit, OSError:
+            return None
 
     def _do_rebuild(self, *, full: bool) -> int:
         """Perform the actual rebuild. Returns exit code."""

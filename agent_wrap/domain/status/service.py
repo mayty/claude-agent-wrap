@@ -13,15 +13,16 @@ runs the legacy-keyfile migration), ``LogsService.viewer_state`` instead of
 ``running_server`` (which unlinks a stale state file), ``SidecarService.registry_state``
 instead of ``has_live_runners`` (which reaps stale lock files), ``UpdateService
 .current_revision`` instead of ``check_updates`` (which fetches, and prompts), and
-``BuildService.resolve_image`` and ``BuildService.stale_summary`` instead of
-``ensure_images`` or anything else further along the rebuild path (which builds).
+``BuildService.resolve_image``, ``BuildService.stale_summary`` and
+``BuildService.stale_project_images`` instead of ``ensure_images`` or anything else
+further along the rebuild path (which builds).
 
 Read-only is not the same as cheap, and two probes are neither local nor silent: reading
 the Claude Code version inside an image starts a throwaway container from it, and the "is
 there a newer one" check runs ``npm view`` in that container, which reaches the npm
-registry. ``lite=True`` drops the registry call and the recursive logs-size walk — the two
-slowest things the report does — and keeps everything else, including both installed
-versions.
+registry. ``lite=True`` drops those two, plus the fleet-wide staleness sweep, whose cost
+grows with the project registry rather than with the report — and keeps everything else,
+including both installed versions.
 
 **Total.** Every section degrades on its own. Docker being down empties the container
 lists and leaves everything filesystem-derived intact; a section that cannot be read
@@ -71,6 +72,7 @@ from agent_wrap.domain.status.models import (
     ProjectImageRow,
     ProviderRow,
     SidecarRow,
+    StaleImageRow,
     StorageRow,
     ViewerRow,
     WrapperRow,
@@ -79,7 +81,11 @@ from agent_wrap.lib import docker_utils
 from agent_wrap.lib.utils import directory_size, is_truthy_env, optional_truthy_env
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage
+    from agent_wrap.domain.build.models import (
+        ImageStaleness,
+        ResolvedImage,
+        StaleProjectImage,
+    )
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.logs.service import LogsService
@@ -127,6 +133,7 @@ class InspectService:
 
         registry = self._sidecars.registry_state(TOOL_DIR)
         resolved, project_warning = self._project_dockerfile()
+        project_paths = self._config.read_project_paths()
 
         with ThreadPoolExecutor(
             max_workers=PROBE_WORKERS, thread_name_prefix=PROBE_THREAD_PREFIX
@@ -153,6 +160,14 @@ class InspectService:
             staleness_future = (
                 pool.submit(self._build.stale_summary, resolved) if docker_up else None
             )
+            # The fleet-wide counterpart, and the third thing lite mode drops: it inspects
+            # one image per distinct project tag, which is unbounded in the registry's size
+            # rather than in the report's.
+            stale_images_future = (
+                pool.submit(self._build.stale_project_images, project_paths)
+                if docker_up and not lite
+                else None
+            )
 
             presence = self._probe_presence(pool, resolved, docker_up=docker_up)
             versions = self._probe_versions(pool, resolved, presence, lite=lite)
@@ -162,6 +177,11 @@ class InspectService:
             found_agents = agents_future.result() if agents_future else []
             logs_bytes = logs_future.result() if logs_future else None
             staleness = staleness_future.result() if staleness_future else None
+            stale_images = (
+                self._stale_image_rows(stale_images_future.result())
+                if stale_images_future
+                else None
+            )
 
         return InspectReport(
             docker=docker,
@@ -182,6 +202,7 @@ class InspectService:
             project=self._project_image_row(
                 resolved, presence=presence, versions=versions, staleness=staleness
             ),
+            stale_images=stale_images,
             lite=lite,
             warnings=[project_warning] if project_warning else [],
         )
@@ -311,6 +332,18 @@ class InspectService:
                 sidecars=container.sidecars,
             )
             for container in found
+        ]
+
+    def _stale_image_rows(self, found: list[StaleProjectImage]) -> list[StaleImageRow]:
+        """
+        Map the build domain's sweep onto report rows, stringifying the project paths.
+
+        The conversion exists for that one reason: a ``Path`` anywhere in the report breaks
+        ``--json`` with no type error to warn about (see the models module docstring).
+        """
+        return [
+            StaleImageRow(project=str(row.project), image=row.image, reason=row.reason)
+            for row in found
         ]
 
     def _viewer_row(self) -> ViewerRow:

@@ -40,6 +40,24 @@ class ImageStaleness(NamedTuple):
     project: str
 
 
+class StaleProjectImage(NamedTuple):
+    """
+    One registered project whose per-project image would be rebuilt on its next launch.
+
+    A row of the fleet-wide sweep :meth:`BuildService.stale_project_images` performs, as
+    opposed to :class:`ImageStaleness`, which answers the same question for the cwd alone.
+    Projects that declare no Dockerfile never appear: their target is the base image, whose
+    staleness is one fact about this host rather than one per project.
+    """
+
+    #: The registered project directory, verbatim from the registry.
+    project: Path
+    #: The ``claude-agent-<name>`` tag that project's next launch would use.
+    image: str
+    #: The rendered reason line, the same prose the cwd's own rows carry.
+    reason: str
+
+
 @dataclass
 class ResolvedImage:
     """Result of resolving which Docker image to use."""

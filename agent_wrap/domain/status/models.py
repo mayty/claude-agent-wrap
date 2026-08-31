@@ -206,6 +206,26 @@ class ProjectImageRow:
 
 
 @dataclass(frozen=True)
+class StaleImageRow:
+    """
+    One registered project whose per-project image would be rebuilt on its next launch.
+
+    Fleet-wide, unlike :class:`ProjectImageRow`, which reports the cwd alone. A project
+    that declares no Dockerfile never appears here: its target is the base image, already
+    reported once on :class:`EnvironmentRow`. Neither does one whose image is not built on
+    this host -- nothing is stale about an image that does not exist.
+    """
+
+    #: The registered project directory. A string, not a Path -- see the module docstring.
+    project: str
+    #: The ``claude-agent-<name>`` tag that project's next launch would use. Repeats across
+    #: rows when two projects declare the same ``# agent-name:``.
+    image: str
+    #: Why it would be rebuilt -- the same prose the cwd's own rows carry.
+    reason: str
+
+
+@dataclass(frozen=True)
 class InspectReport:
     """The whole report — one screen of state, or one JSON document."""
 
@@ -225,6 +245,10 @@ class InspectReport:
     #: is the whole answer to "does this project customize its image" -- there is no
     #: empty-string stand-in to misread.
     project: ProjectImageRow | None = None
+    #: Every registered project whose per-project image is stale, or None when the sweep
+    #: did not run -- lite mode skips it, and an unreachable daemon cannot answer it. None
+    #: is not the empty list: [] is the measured verdict that every one of them is current.
+    stale_images: list[StaleImageRow] | None = None
     #: Whether this report was collected in lite mode, which skips the npm-registry
     #: version check and the logs-size walk. Carried so a consumer can tell a value that
     #: was not measured from one measured as absent.

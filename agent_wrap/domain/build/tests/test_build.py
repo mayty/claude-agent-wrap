@@ -873,3 +873,131 @@ def test_parse_other_directives_still_work_in_legacy_location(
     info = build_svc.parse_dockerfile_agent(dockerfile, legacy=True)
     assert info.agent_user == "dev"
     assert info.extra_run_args == ["--cap-add", "SYS_ADMIN"]
+
+
+@pytest.fixture
+def sweep_projects(tmp_path: Path) -> dict[str, Path]:
+    """
+    Build a small fleet of registered project directories under one root.
+
+    ``twin_a``/``twin_b`` deliberately declare the same ``# agent-name:``, which is what
+    makes them one image and two rows. ``plain`` customizes nothing, ``broken`` declares a
+    Dockerfile that cannot be resolved, and ``gone`` never existed on disk at all.
+    """
+    dirs = {name: tmp_path / name for name in ("twin_a", "twin_b", "plain", "broken")}
+    for path in dirs.values():
+        path.mkdir()
+    _write_project_dockerfile(dirs["twin_a"], "# agent-name: t\nFROM claude-agent\n")
+    _write_project_dockerfile(dirs["twin_b"], "# agent-name: t\nFROM claude-agent\n")
+    _write_project_dockerfile(dirs["broken"], "FROM claude-agent\n")
+    dirs["gone"] = tmp_path / "gone"
+    return dirs
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_reports_one_row_per_project_sharing_an_image(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, sweep_projects: dict[str, Path]
+) -> None:
+    """Two projects on one `# agent-name:` are two rows, but only one docker inspect."""
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    stamps = _stamps(mocker, CURRENT_BASE, FOREIGN_PROJECT)
+
+    rows = build_svc.stale_project_images([sweep_projects["twin_a"], sweep_projects["twin_b"]])
+
+    mock_run.assert_not_called()
+    assert [(row.project, row.image) for row in rows] == [
+        (sweep_projects["twin_a"], "claude-agent-t"),
+        (sweep_projects["twin_b"], "claude-agent-t"),
+    ]
+    assert all("is not the one it was built on" in row.reason for row in rows)
+    assert [call.args[0] for call in stamps.call_args_list].count("claude-agent-t") == 1
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_omits_an_image_that_is_not_built(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, sweep_projects: dict[str, Path]
+) -> None:
+    """Nothing is stale about an image that does not exist -- its launch builds it."""
+    _stamps(mocker, CURRENT_BASE, None)
+    assert build_svc.stale_project_images([sweep_projects["twin_a"]]) == []
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_omits_a_current_image(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, sweep_projects: dict[str, Path]
+) -> None:
+    _stamps(mocker, CURRENT_BASE, CURRENT_PROJECT)
+    assert build_svc.stale_project_images([sweep_projects["twin_a"]]) == []
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_short_circuits_on_a_stale_base(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, sweep_projects: dict[str, Path]
+) -> None:
+    """A moved base condemns every project image, and no per-image inspect can change it."""
+    stamps = _stamps(mocker, STALE_BASE, CURRENT_PROJECT)
+
+    rows = build_svc.stale_project_images([sweep_projects["twin_a"], sweep_projects["twin_b"]])
+
+    assert [row.image for row in rows] == ["claude-agent-t", "claude-agent-t"]
+    assert all("is not the one it was built on" in row.reason for row in rows)
+    assert [call.args[0] for call in stamps.call_args_list] == [BASE_IMAGE_NAME]
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_reports_an_unstamped_image(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, sweep_projects: dict[str, Path]
+) -> None:
+    """Built before stamping, so it cannot be checked -- a one-time rebuild is due."""
+    _stamps(mocker, CURRENT_BASE, UNSTAMPED_PROJECT)
+    rows = build_svc.stale_project_images([sweep_projects["twin_a"]])
+    assert len(rows) == 1
+    assert "before agent-wrap stamped its images" in rows[0].reason
+
+
+@pytest.mark.parametrize("project", ["plain", "broken", "gone"])
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_skips_what_it_cannot_answer_for(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    sweep_projects: dict[str, Path],
+    project: str,
+) -> None:
+    """
+    No Dockerfile, an unresolvable one, and a vanished directory are all skipped.
+
+    The base image's own staleness is reported once elsewhere, and neither a foreign
+    project's broken Dockerfile nor a path this host cannot see is answerable from here --
+    all three would otherwise be reported against the base image by accident.
+    """
+    _stamps(mocker, STALE_BASE, FOREIGN_PROJECT)
+    assert build_svc.stale_project_images([sweep_projects[project]]) == []
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_stale_project_images_does_not_warn_about_a_legacy_dockerfile(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, tmp_path: Path
+) -> None:
+    """The deprecation notice belongs to that project's own launch, not to this sweep."""
+    project = tmp_path / "legacy"
+    project.mkdir()
+    (project / LEGACY_AGENT_DOCKERFILE_NAME).write_text("# agent-name: l\nFROM claude-agent\n")
+    _stamps(mocker, CURRENT_BASE, FOREIGN_PROJECT)
+
+    rows = build_svc.stale_project_images([project])
+
+    assert [row.image for row in rows] == ["claude-agent-l"]
+    build_svc._display.warning.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_stale_project_images_is_silent_when_docker_is_down(
+    mocker: pytest_mock.MockFixture, build_svc: BuildService, sweep_projects: dict[str, Path]
+) -> None:
+    """An unreachable daemon is not evidence that anything is stale."""
+    mocker.patch(
+        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
+    )
+    stamps = _stamps(mocker, STALE_BASE, FOREIGN_PROJECT)
+
+    assert build_svc.stale_project_images([sweep_projects["twin_a"]]) == []
+    stamps.assert_not_called()
