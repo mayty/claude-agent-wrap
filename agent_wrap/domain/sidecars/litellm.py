@@ -25,11 +25,9 @@ lock + one ``SidecarTracker``, which refcounts per container name); this class o
 ensures/stops its container.
 """
 
-from __future__ import annotations
-
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from agent_wrap.constants import (
     LITELLM_SIDECAR_LABEL,
@@ -72,15 +70,18 @@ class LiteLLMSidecar(Sidecar):
         self._port: int = 0
 
     @property
+    @override
     def cold_start_time(self) -> float:
         return self.config.cold_start_time
 
     @property
+    @override
     def short_circuit_time(self) -> float:
         return self.config.short_circuit_time
 
     # Convenience accessors mirroring the old provider attributes.
     @property
+    @override
     def container_name(self) -> str:
         return self.config.container_name
 
@@ -115,17 +116,20 @@ class LiteLLMSidecar(Sidecar):
         """Display label naming the provider — two sidecars may be up at once."""
         return f"{LITELLM_SIDECAR_LABEL} ({self.config.provider_name})"
 
+    @override
     def required_secrets(self) -> list[tuple[str, str]]:
         return list(self.config.required_secrets)
 
     # --- Public: prepare / ensure ---
 
+    @override
     def prepare(self) -> None:
         """Pull the image lock-free, before the runner takes the shared lock."""
         # A cold pull (up to several minutes) must never run under the lock, or the
         # rest of a concurrent launch herd would block on it.
         self._ensure_image()
 
+    @override
     def ensure(
         self,
         *,
@@ -255,6 +259,7 @@ class LiteLLMSidecar(Sidecar):
 
     # --- Public: release ---
 
+    @override
     def release(self) -> None:
         # Runs under the runner's shared lock, only after its SidecarTracker reported
         # no other live agent on this container. Idempotent: a no-op when not running.

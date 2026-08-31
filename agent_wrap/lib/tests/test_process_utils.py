@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for lib/process_utils."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.lib.process_utils import pid_alive

@@ -12,14 +12,12 @@ Locking and the start/stop decision are the runner's concern (one shared lock
 + one ``SidecarTracker``); this class only ensures/stops its container.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -47,20 +45,24 @@ class TelegramSidecar(Sidecar):
     # --- Sidecar interface properties ---
 
     @property
+    @override
     def container_name(self) -> str:
         # One container name for every provider, so the runner refcounts this sidecar
         # across all of them — correct, since it is genuinely one shared container.
         return self.config.container_name
 
     @property
+    @override
     def cold_start_time(self) -> float:
         return self.config.cold_start_time
 
     @property
+    @override
     def short_circuit_time(self) -> float:
         return self.config.short_circuit_time
 
     @classmethod
+    @override
     def required_secrets(cls) -> list[tuple[str, str]]:
         return [
             ("TelegramBotToken", "Telegram Bot Token (from @BotFather)"),
@@ -69,6 +71,7 @@ class TelegramSidecar(Sidecar):
 
     # --- Public: prepare / ensure ---
 
+    @override
     def prepare(self) -> None:
         """Pull the sidecar image lock-free, before the runner takes the shared lock."""
         if self.config.headless:
@@ -85,6 +88,7 @@ class TelegramSidecar(Sidecar):
             )
             raise SystemExit(1)
 
+    @override
     def ensure(
         self,
         *,
@@ -152,6 +156,7 @@ class TelegramSidecar(Sidecar):
 
     # --- Public: release ---
 
+    @override
     def release(self) -> None:
         """
         Gracefully stop and remove the sidecar container.
@@ -386,5 +391,6 @@ class TelegramSidecar(Sidecar):
 
         return args
 
+    @override
     def on_exit(self) -> None:
         self._unregister()

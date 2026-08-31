@@ -9,8 +9,6 @@ The ``run`` CLI is a thin wrapper: parse ``--base``, then delegate to
 in ``agent_wrap/cli/conftest.py``.
 """
 
-from __future__ import annotations
-
 from agent_wrap.cli.run.complete import complete as run_complete
 from agent_wrap.cli.run.run import run as agent_run
 from agent_wrap.containers import services

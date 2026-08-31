@@ -151,6 +151,12 @@ Providers access sidecar functionality through an injected `SidecarService` (see
     named after the subpackage (e.g. ``build.py`` for ``BuildService``) or with a
     ``_service`` suffix (e.g. ``provider_service.py``). Each domain subpackage
     defines exactly one service class in its ``service.py``.
+12. **No ``from __future__ import annotations``.** PEP 649 defers annotation
+    evaluation natively on the pinned interpreter, so the future import buys
+    nothing and actively downgrades annotations back to plain strings. The sole
+    exception is ``providers/litellm_runtime/``, which runs on the LiteLLM image's
+    older Python and still needs it to keep ``TYPE_CHECKING`` imports out of
+    runtime annotations — the same carve-out rule 3 (EC001) draws.
 
 ## The interpreter, and the dependency policy
 
@@ -167,17 +173,24 @@ installing `agent_wrap` itself, so nothing can shadow the source `PYTHONPATH` pr
 
 **Two regions do not run on the pinned interpreter** and must stay inside a lower floor:
 
-| Region | Runs on |
-| --- | --- |
-| `ops/statusline.py` | the agent container's `python3` |
-| `agent_wrap/domain/providers/litellm_runtime/` | the pinned LiteLLM image's Python |
+| Region | Runs on | Floor |
+| --- | --- | --- |
+| `ops/statusline.py` | the agent container's `python3` | 3.12 |
+| `agent_wrap/domain/providers/litellm_runtime/` | the pinned LiteLLM image's Python | 3.13 |
 
-`make carveout-check` enforces that floor with three legs, all of which have caught
+Both floors are the versions actually running, read off the images rather than
+guessed — the `Makefile` records the two commands next to the constants. Read the
+*running process*, not `python3 -V`: `PATH` can resolve to a different interpreter
+than the one hosting the code, which is exactly the case in the LiteLLM image
+(a venv shim in front of `/usr/bin/python3.13`), so only `/proc/1/exe` settles it.
+
+`make carveout-check` enforces those floors with three legs, all of which have caught
 something: `ruff check` for version-gated syntax, `pyrefly` for stdlib APIs that do not
 exist yet on the floor (`datetime.UTC`), and `ruff format` — because at `py314` the
 *formatter* strips the parentheses from `except (A, B):`, which is a `SyntaxError` on
 older interpreters. Those files are excluded from the default format pass for that reason
-and are formatted at their own target instead.
+and are formatted at their own target instead. Each region is checked at its own floor,
+so the two never have to share the more conservative number.
 
 ## Key conventions
 

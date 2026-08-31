@@ -25,8 +25,6 @@ containers are torn down independently while two naming the same container share
 refcount.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 
 

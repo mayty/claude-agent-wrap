@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for archiving and deleting orphaned log dirs."""
 
-from __future__ import annotations
-
 import json
 import shutil
 from datetime import UTC, datetime

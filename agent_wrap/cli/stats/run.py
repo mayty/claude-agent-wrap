@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """The `stats` subcommand — aggregate token usage stats from LiteLLM logs."""
 
-from __future__ import annotations
-
 from agent_wrap.cli.stats.constants import USAGE_LINE, USAGE_TEXT
 from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.cli.stats.usage_args import parse_usage_args

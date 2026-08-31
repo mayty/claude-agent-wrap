@@ -8,8 +8,6 @@ can accidentally call real domain code. Individual tests configure
 specific return values or side effects on the already-mocked services.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import pytest

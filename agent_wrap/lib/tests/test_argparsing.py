@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the shared argparse helpers (parse_or_code / make_parser)."""
 
-from __future__ import annotations
-
 import argparse
 
 import pytest

@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Unit tests for UsageTracker — daily usage tracking and usage.json writing."""
 
-from __future__ import annotations
-
 import json
 import os
 from datetime import UTC, datetime, timedelta

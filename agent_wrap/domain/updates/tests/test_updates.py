@@ -2,8 +2,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/commands/update.py."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

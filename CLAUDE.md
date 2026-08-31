@@ -87,6 +87,11 @@ A `Makefile` provides all QA targets. Follow these rules:
   callable (including one that only injects constructor dependencies before
   forwarding) is forbidden. Inline the target's implementation into the service
   method and delete the original target. See architecture.md rule 9.
+- **Never write `from __future__ import annotations`.** PEP 649 defers annotation
+  evaluation natively on the pinned interpreter, so the import only downgrades
+  annotations back to plain strings. Enforced by `EG001` in `make arch-check`. The
+  sole exception is `agent_wrap/domain/providers/litellm_runtime/`, which runs on
+  the LiteLLM image's older Python.
 - **Namespace classes replace comment-separated function blocks.** Standalone
   functions that share a micro-domain must be grouped into a namespace class
   (``@staticmethod``-only, no instance state) instead of being divided by

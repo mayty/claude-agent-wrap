@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Log-file scanning (serial + parallel) for the stats command."""
 
-from __future__ import annotations
-
 import json
 import math
 import os

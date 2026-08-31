@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Secrets domain service — encrypted storage and sidecar-aware orchestration."""
 
-from __future__ import annotations
-
 import sys
 from typing import TYPE_CHECKING
 

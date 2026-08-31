@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the `.agent_stats_leaf` transient-project grouping resolver."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import pytest

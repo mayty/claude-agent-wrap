@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.providers."""
 
-from __future__ import annotations
-
 import inspect
 import re
 from pathlib import Path

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the secrets domain."""
 
-from __future__ import annotations
-
 from typing import NamedTuple
 
 

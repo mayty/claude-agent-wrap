@@ -1,12 +1,10 @@
 # This file has been edited with the assistance of an AI tool.
 """HTTP server and static asset serving for the logs web viewer."""
 
-from __future__ import annotations
-
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast, override
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.constants import LOGS_CONTENT_TYPES, PORT_SCAN_LIMIT
@@ -55,7 +53,8 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
         """Single-threaded HTTP handler for the logs viewer."""
 
         # Silence per-request log lines to stderr
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        @override
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
         def _resolve_project(

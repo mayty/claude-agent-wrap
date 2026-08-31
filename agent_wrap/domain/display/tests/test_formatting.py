@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for DisplayService's value formatters."""
 
-from __future__ import annotations
-
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService

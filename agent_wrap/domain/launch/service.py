@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Agent launch orchestration domain service."""
 
-from __future__ import annotations
-
 import os
 import shutil
 import subprocess

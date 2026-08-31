@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Terminal rendering for the stats command."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 

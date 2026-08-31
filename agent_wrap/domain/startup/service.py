@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Per-project startup script domain service."""
 
-from __future__ import annotations
-
 import contextlib
 import os
 import signal

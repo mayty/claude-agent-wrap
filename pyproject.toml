@@ -124,7 +124,6 @@ ignore = [
     "TC001",   # imports from the parent package are runtime dependencies in sidecar context
     "TC002",   # same — sidecar-deployed files import at runtime, not just type-checking
     "T201",    # EC001 forbids importing agent_wrap here, so DisplayService is unreachable
-    "UP017",   # runs on the LiteLLM image's Python, not ours -- datetime.UTC needs 3.11+
 ]
 "scripts/**" = [
     "INP001",  # individual scripts, not package
@@ -208,4 +207,3 @@ project_includes = [
 python_version = "3.14"
 
 [tool.pyrefly.errors]
-missing-override-decorator = false

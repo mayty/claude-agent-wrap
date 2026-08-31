@@ -8,8 +8,6 @@ a rejected window is reported. The resolution table itself belongs to
 ``StatsService.resolve_window`` and is tested in the stats domain.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 

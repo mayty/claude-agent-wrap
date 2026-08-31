@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Docker-related utility functions."""
 
-from __future__ import annotations
-
 import json
 import os
 import subprocess
@@ -135,8 +133,7 @@ def parse_docker_timestamp(raw: str) -> datetime | None:
 
     ``fromisoformat`` handles every shape docker emits: a trailing ``Z``, a colon-less
     offset (``+0200``), and nanosecond precision (truncated to microseconds, which is
-    ample for the uptimes this feeds). This used to be a hand-rolled regex normalizer
-    because the supported floor was Python 3.10, which accepted none of the three.
+    ample for the uptimes this feeds), so no hand-rolled normalizing is needed.
 
     Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None,
     and so does a bare date: ``fromisoformat`` would happily read it as midnight, but

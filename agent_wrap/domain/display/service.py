@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Centralized display output — domain service."""
 
-from __future__ import annotations
-
 import sys
 from getpass import getpass
 from typing import TYPE_CHECKING, TextIO

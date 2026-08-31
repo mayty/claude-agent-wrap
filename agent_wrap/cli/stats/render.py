@@ -22,8 +22,6 @@ Two things are injected by the caller:
     table, which has no SESSIONS/LAST LAUNCH columns).
 """
 
-from __future__ import annotations
-
 from collections import defaultdict
 from typing import TYPE_CHECKING
 

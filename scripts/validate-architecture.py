@@ -26,8 +26,6 @@
 #   0 — no violations
 #   1 — one or more violations found
 
-from __future__ import annotations
-
 import ast
 import sys
 from pathlib import Path
@@ -506,6 +504,32 @@ def _check_rule_f(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, s
     ]
 
 
+def _check_rule_g(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
+    """
+    Return EG001 violations found in *tree*.
+
+    Rule 12: ``from __future__ import annotations`` is dead weight on the pinned
+    interpreter — PEP 649 defers annotation evaluation natively, and the future import
+    only downgrades annotations back to plain strings. The one exception is
+    ``litellm_runtime/``, which runs on the LiteLLM image's older Python (see the
+    carve-out in the Makefile) and still needs it to keep ``TYPE_CHECKING`` imports
+    out of runtime annotations.
+    """
+    rel_file = str(file_path.relative_to(ROOT))
+    return [
+        (
+            rel_file,
+            node.lineno,
+            "EG001",
+            "`from __future__ import annotations` is redundant under PEP 649",
+        )
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+    ]
+
+
 def _check_rule_e(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
     """
     Return EE001 violations found in *tree*.
@@ -573,7 +597,7 @@ def _models_constants_scope(file_path: Path) -> str | None:
 
 
 def check_file(file_path: Path) -> list[tuple[str, int, str, str]]:
-    """Run both architecture rules against a single ``.py`` file."""
+    """Run every architecture rule against a single ``.py`` file."""
     violations: list[tuple[str, int, str, str]] = []
 
     # Respect exclusion list even when called directly.
@@ -607,8 +631,12 @@ def check_file(file_path: Path) -> list[tuple[str, int, str, str]]:
         violations.extend(_check_rule_b(file_path, tree))
 
     # Rule C: litellm_runtime files must not import from agent_wrap at runtime.
+    # Rule G: everywhere else, the __future__ annotations import is redundant. The two
+    # are complements -- the carve-out is exactly the region that still needs it.
     if _is_litellm_runtime(file_path):
         violations.extend(_check_rule_c(file_path, tree, parent_map))
+    else:
+        violations.extend(_check_rule_g(file_path, tree))
 
     # Rules D/E/F: types belong in models.py, constants (incl. enums) in constants.py.
     scope = _models_constants_scope(file_path)
@@ -638,7 +666,7 @@ def main() -> None:
             print(f"{rel_path}:{line}: error: {code}: {msg}", file=sys.stderr)
 
         parts: list[str] = []
-        for code in ("EA001", "EB001", "EC001", "ED001", "EE001", "EF001"):
+        for code in ("EA001", "EB001", "EC001", "ED001", "EE001", "EF001", "EG001"):
             count = sum(1 for v in violations if v[2] == code)
             if count:
                 parts.append(f"{count} {code}")

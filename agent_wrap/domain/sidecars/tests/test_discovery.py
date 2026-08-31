@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for sidecar/agent container discovery parsing."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 from datetime import UTC, datetime, timedelta

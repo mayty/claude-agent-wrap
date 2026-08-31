@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Domain service for provider discovery and resolution."""
 
-from __future__ import annotations
-
 import importlib
 import inspect
 import os

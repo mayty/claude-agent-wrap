@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """In-memory cache and background FS watcher for the logs viewer."""
 
-from __future__ import annotations
-
 import bisect
 import contextlib
 import operator

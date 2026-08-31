@@ -23,8 +23,6 @@ no Dockerfile gets no ``project image`` row at all. A lite report closes with on
 naming what it skipped, instead of marking each row the omission touched.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.inspect.constants import (

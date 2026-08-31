@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Constants for the build domain."""
 
-from __future__ import annotations
-
 # Seconds a project startup script may run when ``# agent-enable-startup:`` is given a
 # plain boolean. Deliberately short: the script runs while holding the host-global
 # sidecar lock, so every concurrently launching agent waits behind it. A project that

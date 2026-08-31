@@ -5,8 +5,6 @@ CLI-layer tests for agent_wrap.cli.logs — argument parsing and calling protoco
 in ``agent_wrap/cli/conftest.py``.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from agent_wrap.cli.logs.complete import complete as logs_complete

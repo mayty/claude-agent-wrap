@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Logs viewer domain service — session listing, record normalization, and daemon lifecycle."""
 
-from __future__ import annotations
-
 import contextlib
 import os
 import signal

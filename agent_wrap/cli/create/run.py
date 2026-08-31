@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """The `create` subcommand — scaffolds a project Dockerfile."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.containers import services

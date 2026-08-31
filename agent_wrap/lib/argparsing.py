@@ -9,8 +9,6 @@ is 0 for help / success and 1 for any parse error. ``parse_or_code`` bridges the
 two so commands never have to re-derive an exit code from the raw argv.
 """
 
-from __future__ import annotations
-
 import argparse
 
 # A parsed namespace, or an exit code to return verbatim from run().

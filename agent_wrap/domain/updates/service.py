@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Shared self-update logic — domain service."""
 
-from __future__ import annotations
-
 import os
 import subprocess
 from typing import TYPE_CHECKING
@@ -410,10 +408,8 @@ class UpdateService:
         # The viewer is a long-lived process running wrapper code out of this checkout,
         # so it is stopped before the merge swaps that code underneath it rather than
         # after. Otherwise it spends the merge window executing newly merged code on an
-        # interpreter that has not been re-provisioned yet — on the first migration that
-        # pairing is a pre-3.11 interpreter running code that expects `datetime.UTC` —
-        # and its stdio is /dev/null, so it would fail invisibly. The next `agent run`
-        # restarts it.
+        # interpreter that has not been re-provisioned yet, and its stdio is /dev/null,
+        # so it would fail invisibly. The next `agent run` restarts it.
         self._logs.stop_daemon()
 
         rc = _GitOps.fast_forward(target_ref, before, pre_state, self._display)

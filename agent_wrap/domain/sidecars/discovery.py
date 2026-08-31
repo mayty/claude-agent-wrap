@@ -21,8 +21,6 @@ one cell (``None`` / ``""``) instead of raising, because a diagnostic command mu
 still print the rest of the report.
 """
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime
 

@@ -5,8 +5,6 @@ Internal path compression helpers for the project registry.
 Used by ``ConfigService`` — not part of the public domain API.
 """
 
-from __future__ import annotations
-
 from pathlib import PurePosixPath
 
 from agent_wrap.domain.config.constants import MIN_SIBLING_RUN, PREFIX_RE, SIBLING_RE

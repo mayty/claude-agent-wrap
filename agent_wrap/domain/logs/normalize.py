@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Record normalization for the logs viewer."""
 
-from __future__ import annotations
-
 import json
 from typing import TYPE_CHECKING, Any
 

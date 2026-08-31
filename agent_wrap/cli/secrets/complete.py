@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Completion for ``agent secrets`` — subcommands from parser choices, sidecar names via DI."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.secrets.constants import SUBCOMMAND_CWORD

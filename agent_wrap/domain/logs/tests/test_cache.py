@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the LogsCache — in-memory cache and background FS watcher."""
 
-from __future__ import annotations
-
 import json
 import threading
 import time

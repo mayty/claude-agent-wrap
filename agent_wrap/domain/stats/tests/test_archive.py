@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for the orphaned-usage archive's read/write/merge helpers."""
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING

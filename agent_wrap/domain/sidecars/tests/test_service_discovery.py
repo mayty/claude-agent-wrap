@@ -2,8 +2,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for SidecarService's container-discovery methods."""
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING

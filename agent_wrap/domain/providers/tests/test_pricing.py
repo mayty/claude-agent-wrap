@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap.domain.providers.pricing and Provider.compute_cost."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.domain.providers.pricing import CostComputer, ModelKeyMatcher

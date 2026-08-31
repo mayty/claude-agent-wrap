@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Singleton service container with lazy-initialized, dependency-injected services."""
 
-from __future__ import annotations
-
 from functools import cached_property
 from typing import TYPE_CHECKING
 

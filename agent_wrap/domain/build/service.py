@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Docker image building domain service."""
 
-from __future__ import annotations
-
 import os
 import re
 import subprocess

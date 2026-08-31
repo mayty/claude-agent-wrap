@@ -6,8 +6,6 @@ CLI-layer tests for agent_wrap.cli.create — argument parsing and calling proto
 in ``agent_wrap/cli/conftest.py``.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.create.complete import complete as create_complete

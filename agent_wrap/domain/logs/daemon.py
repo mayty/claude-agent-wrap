@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Background-process lifecycle for the logs viewer."""
 
-from __future__ import annotations
-
 import json
 import os
 import time

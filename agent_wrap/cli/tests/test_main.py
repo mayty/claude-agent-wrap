@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for CLI dispatch — guards against help/dispatch drift."""
 
-from __future__ import annotations
-
 import sys
 from importlib import import_module
 from typing import TYPE_CHECKING

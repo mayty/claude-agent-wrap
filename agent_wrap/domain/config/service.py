@@ -7,8 +7,6 @@ _agent_record_project, and related config-prep helpers. Uses stdlib json
 instead of jq.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import os

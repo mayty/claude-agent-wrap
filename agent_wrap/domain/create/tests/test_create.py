@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.create.service.CreateService."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 

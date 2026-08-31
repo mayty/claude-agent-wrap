@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Filesystem I/O for log and session data."""
 
-from __future__ import annotations
-
 import contextlib
 import json
 import os

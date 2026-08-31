@@ -38,8 +38,6 @@ constraint is that a version probe must never run against an absent image, since
 probes are an awaited phase of their own instead of another handful of futures.
 """
 
-from __future__ import annotations
-
 import os
 import platform
 from concurrent.futures import ThreadPoolExecutor

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Daily usage tracking for the logs viewer background thread."""
 
-from __future__ import annotations
-
 import contextlib
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING

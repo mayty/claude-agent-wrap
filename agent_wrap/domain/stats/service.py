@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Token usage stats aggregation — domain service."""
 
-from __future__ import annotations
-
 import copy
 import shutil
 from collections import defaultdict

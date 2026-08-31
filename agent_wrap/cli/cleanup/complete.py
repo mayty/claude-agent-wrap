@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Completion for ``agent cleanup`` — flags from the parser."""
 
-from __future__ import annotations
-
 from agent_wrap.cli.cleanup.run import build_parser
 from agent_wrap.lib.argparsing import unused_flags
 

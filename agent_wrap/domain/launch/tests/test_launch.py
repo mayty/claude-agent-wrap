@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.launch.launch.LaunchService."""
 
-from __future__ import annotations
-
 import io
 import os
 import time

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Constants for the CLI layer."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.cleanup.complete import complete as cleanup_complete

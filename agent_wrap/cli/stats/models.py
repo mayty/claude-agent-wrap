@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data/type-carrying classes for the `agent stats` render layer."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -12,9 +10,9 @@ if TYPE_CHECKING:
     from agent_wrap.domain.pricing.models import Bucket
 
 #: A "cost view" callback. cost/unknown MUST come from this, never ``Bucket.cost``.
-CostFn = Callable[[str, "Bucket"], tuple[float, bool]]
+type CostFn = Callable[[str, Bucket], tuple[float, bool]]
 #: Renders the per-model section of a table body.
-BuildModelSection = Callable[[dict[str, "Bucket"], int, "DisplayService"], list["RowItemOrDivider"]]
+type BuildModelSection = Callable[[dict[str, Bucket], int, DisplayService], list[RowItemOrDivider]]
 
 
 class AggregatedDayRows(NamedTuple):

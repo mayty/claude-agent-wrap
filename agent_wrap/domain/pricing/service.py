@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Shared pricing and token-extraction utilities — domain service."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.pricing.constants import (

@@ -18,15 +18,20 @@ PY_SLUG := $(shell [ -f .python/current ] && cat .python/current)
 # this regardless of the operator.
 PYTHON := .python/venv-$(PY_SLUG)/bin/python3
 
-# The two regions that do NOT run on the pinned interpreter, and the floor they
+# The two regions that do NOT run on the pinned interpreter, and the floor each
 # must stay inside. ops/statusline.py runs on the agent container's python3;
-# litellm_runtime/ runs inside the pinned LiteLLM image. 3.10 is deliberately
-# conservative -- it is the floor this repo enforced before it owned its own
-# interpreter. To tighten it, read the real versions:
-#   docker run --rm claude-agent python3 -V
-#   docker run --rm $(shell sed -n 's/.*"\(ghcr.io\/berriai\/litellm:[^"]*\)".*/\1/p' agent_wrap/constants.py | head -1) python3 -V
-CARVEOUT_PATHS   := ops/statusline.py agent_wrap/domain/providers/litellm_runtime/*.py
-CARVEOUT_VERSION := 3.10
+# litellm_runtime/ runs inside the pinned LiteLLM image. Both numbers are the
+# versions actually running, not a conservative guess -- re-read them whenever
+# either image is bumped. Read the RUNNING process, not `python3 -V`: PATH can
+# resolve to a different interpreter than the one hosting the code (the LiteLLM
+# image fronts /usr/bin/python3.13 with a venv shim, and only /proc/1/exe says so).
+#   docker run --rm claude-agent python3 -V                     -> 3.12.3
+#   docker exec agent-wrap-litellm-<provider> \
+#     sh -c 'readlink -f /proc/1/exe; /proc/1/exe -V'            -> 3.13.15
+CARVEOUT_STATUSLINE_PATHS   := ops/statusline.py
+CARVEOUT_STATUSLINE_VERSION := 3.12
+CARVEOUT_RUNTIME_PATHS      := agent_wrap/domain/providers/litellm_runtime/*.py
+CARVEOUT_RUNTIME_VERSION    := 3.13
 
 # Files that MUST be executable. Hardcoded on purpose: deriving the list from
 # git's recorded modes would be circular — a dropped bit flips git to 100644
@@ -44,7 +49,8 @@ lintcheck:
 
 format:
 	$(PYTHON) -m ruff format .
-	$(PYTHON) -m ruff format --target-version py$(subst .,,$(CARVEOUT_VERSION)) $(CARVEOUT_PATHS)
+	$(PYTHON) -m ruff format --target-version py$(subst .,,$(CARVEOUT_STATUSLINE_VERSION)) $(CARVEOUT_STATUSLINE_PATHS)
+	$(PYTHON) -m ruff format --target-version py$(subst .,,$(CARVEOUT_RUNTIME_VERSION)) $(CARVEOUT_RUNTIME_PATHS)
 
 format-check:
 	$(PYTHON) -m ruff format --check --diff .
@@ -109,16 +115,22 @@ python-check:
 		exit 1; \
 	fi
 
-# Hold the carve-out regions to their own floor. Three legs, all needed:
+# Hold each carve-out region to its own floor. Three legs, all needed:
 # ruff check catches version-gated syntax, pyrefly catches stdlib APIs that do not
 # exist yet on that floor (datetime.UTC being the one this repo would otherwise
 # have got wrong), and ruff format catches the formatter itself -- at py314 it
 # strips the parentheses from `except (A, B):`, which is a SyntaxError on the
 # interpreters these files actually run on.
-carveout-check:
-	$(PYTHON) -m ruff check --target-version py$(subst .,,$(CARVEOUT_VERSION)) $(CARVEOUT_PATHS)
-	$(PYTHON) -m ruff format --check --diff --target-version py$(subst .,,$(CARVEOUT_VERSION)) $(CARVEOUT_PATHS)
+# $(1) = paths, $(2) = floor (e.g. 3.12)
+define carveout_legs
+	$(PYTHON) -m ruff check --target-version py$(subst .,,$(2)) $(1)
+	$(PYTHON) -m ruff format --check --diff --target-version py$(subst .,,$(2)) $(1)
 	$(PYTHON) -m pyrefly check --python-interpreter-path $(PYTHON) \
-		--python-version $(CARVEOUT_VERSION) $(CARVEOUT_PATHS)
+		--python-version $(2) $(1)
+endef
+
+carveout-check:
+	$(call carveout_legs,$(CARVEOUT_STATUSLINE_PATHS),$(CARVEOUT_STATUSLINE_VERSION))
+	$(call carveout_legs,$(CARVEOUT_RUNTIME_PATHS),$(CARVEOUT_RUNTIME_VERSION))
 
 check: python-check lintcheck format-check test typecheck markdown-check arch-check carveout-check check-executables

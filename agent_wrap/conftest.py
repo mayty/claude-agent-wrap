@@ -6,9 +6,7 @@ Placed at the package root so pytest discovers it for every test file
 under ``agent_wrap/**/tests/``.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 from unittest.mock import Mock
 
 import pytest
@@ -109,16 +107,20 @@ class FakeProvider(Provider):
         self._flat = flat or {}
         self._tiered = tiered
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {"UPSTREAM_KEY": secrets.get("api_key", "")}
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {"API_KEY": master_key, "BASE_URL": base_url}
 
-    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:  # noqa: ARG002
+    @override
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         return self._flat
 
-    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:  # noqa: ARG002
+    @override
+    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
         if self._tiered is None:
             raise NotImplementedError
         return self._tiered

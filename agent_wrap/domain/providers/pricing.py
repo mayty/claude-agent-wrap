@@ -8,8 +8,6 @@ plus a token-usage record into a USD cost. Neither knows anything about sidecars
 provider identity — they are pure functions over a pricing table.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

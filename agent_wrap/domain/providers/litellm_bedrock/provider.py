@@ -1,15 +1,13 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM Bedrock provider — routes Claude Code through AWS Bedrock."""
 
-from __future__ import annotations
-
 import gzip
 import html
 import json
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -163,12 +161,14 @@ class BedrockProvider(Provider):
     name = "litellm-bedrock"
     secret_description: ClassVar[str] = "AWS Bedrock Bearer Token"  # noqa: S105
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "AWS_BEARER_TOKEN_BEDROCK": secrets.get("api_key", ""),
             "AWS_REGION_NAME": "us-east-1",
         }
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {
             "AWS_BEARER_TOKEN_BEDROCK": master_key,
@@ -177,6 +177,7 @@ class BedrockProvider(Provider):
             "AWS_REGION": "us-east-1",
         }
 
+    @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """Return the cached AWS Bedrock pricing table for this provider."""
         cache_path = self._state_dir() / "pricing.json"

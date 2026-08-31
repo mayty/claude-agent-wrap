@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for scan orchestration and plan_pool heuristic."""
 
-from __future__ import annotations
-
 import json
 import os
 from datetime import UTC, datetime

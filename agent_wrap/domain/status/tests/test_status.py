@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the status domain service (the body of `agent inspect`)."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 import threading

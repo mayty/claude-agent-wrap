@@ -6,8 +6,6 @@ Encryption is HMAC-SHA256 in CTR mode with encrypt-then-MAC authentication.
 The payload is ``nonce(16) || ciphertext || hmac(32)``.
 """
 
-from __future__ import annotations
-
 import contextlib
 import functools
 import hashlib

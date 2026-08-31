@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the config domain."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 

@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Central exception classes for agent-wrap."""
 
-from __future__ import annotations
-
 
 class SecretNotFoundError(Exception):
     """Raised when a required secret is not found in the store."""

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the stats domain."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
@@ -67,7 +65,7 @@ class DirResult(NamedTuple):
     by_source: dict[str, dict[str, Bucket]]
 
 
-ScanCache = dict["Path", DirResult]
+type ScanCache = dict[Path, DirResult]
 
 
 # A raw record returned by scan workers. Workers produce these without any
@@ -172,7 +170,7 @@ class ArchiveLeaf(TypedDict):
 # ``get_day``/``DAY_START_HOURS`` happens at read time. Records with no
 # timestamp use ``"?"`` for both, matching ``day_in_range``'s synthetic key.
 # Hours are a dict rather than a list because most hours in a day are empty.
-ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
+type ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
 
 
 # Archived usage materialized into priceable buckets, before it is merged into

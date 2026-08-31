@@ -15,8 +15,6 @@ Durations are stored as seconds and timestamps as epoch floats — formatting is
 concern, and a JSON consumer wants the number, not "3h 12m".
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 

@@ -81,9 +81,7 @@ usual design in a few load-bearing ways:
   here.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_anthropic_sub.constants import (
@@ -104,9 +102,11 @@ class AnthropicSubProvider(Provider):
     disable_nonessential_traffic: ClassVar[bool] = False
     autostart_logs_viewer: ClassVar[bool] = False
 
-    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:  # noqa: ARG002
+    @override
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {}
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         # The PASSTHROUGH_PREFIX suffix is load-bearing — see its docstring in
         # constants.py. Claude Code appends "/v1/messages" to ANTHROPIC_BASE_URL,
@@ -127,12 +127,13 @@ class AnthropicSubProvider(Provider):
             "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
         }
 
+    @override
     def compute_cost(
         self,
-        model: str,  # noqa: ARG002
-        usage: TokenUsage,  # noqa: ARG002
+        model: str,
+        usage: TokenUsage,
         *,
-        refresh_pricing_data: bool = False,  # noqa: ARG002
+        refresh_pricing_data: bool = False,
     ) -> float | None:
         """Report a known zero: subscription usage draws on the seat allowance, not per-token billing."""
         return 0.0

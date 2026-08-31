@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for the `inspect` CLI command — argument parsing and service protocol."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 from typing import TYPE_CHECKING

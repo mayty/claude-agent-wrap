@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for pricing, cost, and usage classification."""
 
-from __future__ import annotations
-
 import json
 from collections import defaultdict
 from datetime import UTC, datetime

@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """``agent secrets check|set|clear <sidecar>`` and ``agent secrets cleanup``."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.containers import services

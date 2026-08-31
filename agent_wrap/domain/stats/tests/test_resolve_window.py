@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the usage-window resolution table (--from/--until/--days semantics)."""
 
-from __future__ import annotations
-
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import Mock

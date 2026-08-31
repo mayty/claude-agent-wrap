@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for stats domain date/time formatting helpers."""
 
-from __future__ import annotations
-
 import pytest
 
 from agent_wrap.domain.stats.format_utils import day_in_range

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """The `run` subcommand — launches Claude Code in a Docker container."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.containers import services

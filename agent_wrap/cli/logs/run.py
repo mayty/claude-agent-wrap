@@ -6,8 +6,6 @@ Everything is Python stdlib only (``http.server``) — no extra dependency, no
 ``agent rebuild``, no Docker. It runs on the host exactly like `agent stats`.
 """
 
-from __future__ import annotations
-
 import argparse
 
 from agent_wrap.cli.logs.constants import USAGE_TEXT

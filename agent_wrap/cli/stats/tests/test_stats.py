@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI-layer tests for the `stats` subcommand — rendering and arg parsing."""
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any

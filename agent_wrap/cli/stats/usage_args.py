@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI argument parsing for the usage-stats subcommand."""
 
-from __future__ import annotations
-
 import argparse
 import re
 from datetime import datetime, timedelta

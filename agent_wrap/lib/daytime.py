@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Calendar-day bucketing with a configurable day-start offset from UTC midnight."""
 
-from __future__ import annotations
-
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
