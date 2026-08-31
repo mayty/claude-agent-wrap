@@ -52,6 +52,7 @@ from agent_wrap.cli.inspect.constants import (
 from agent_wrap.constants import AUTOSTART_LOGS_ENV, DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem
+from agent_wrap.lib.path_tree import build_path_tree, walk_path_tree
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.models import RowItemOrDivider
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
         ViewerRow,
         WrapperRow,
     )
+    from agent_wrap.lib.path_tree import PathTreeLine
 
 #: Divider sentinel understood by ``DisplayService.render_table``.
 
@@ -119,6 +121,24 @@ class Cells:
         if len(reason) <= REASON_MAX_WIDTH:
             return reason
         return reason[: REASON_MAX_WIDTH - 1].rstrip() + "…"
+
+    @staticmethod
+    def stale_row(line: PathTreeLine[StaleImageRow]) -> RowItem:
+        """
+        Build one stale-images row from a walked tree line.
+
+        A structural line stands for a directory and says nothing else: it has no image to
+        rebuild and no reason to report, so the two remaining cells stay empty rather than
+        carrying a subtotal nobody would act on.
+        """
+        row = line.node.row
+        if row is None:
+            return RowItem(cells=[line.label, "", ""], style=Ansi.DIM, prefix_len=line.prefix_len)
+        return RowItem(
+            cells=[line.label, row.image, Cells.reason(row.reason)],
+            style=Ansi.BOLD_YELLOW,
+            prefix_len=line.prefix_len,
+        )
 
     @staticmethod
     def row_style(status: str) -> Ansi:
@@ -226,21 +246,42 @@ class Tables:
         closing line; an unreachable daemon is already the report's headline), and an empty
         list is the good news ``run.py`` prints in green instead of an empty table.
 
-        Every row is yellow, unlike the container tables where the style distinguishes rows
-        from each other: here it is the whole table that is the actionable finding, and a
-        plain row would read as a project that is fine.
+        ``PROJECT`` is a path tree rather than a column of absolute paths, the same
+        rendering `agent stats` gives its projects: registered projects cluster under a few
+        parents, so the shared prefix is worth stating once instead of once per row -- and
+        this column is measured, not capped, so the deepest path would otherwise set the
+        width of the whole table.
+
+        Every project row is yellow, unlike the container tables where the style
+        distinguishes rows from each other: here it is the whole table that is the
+        actionable finding, and a plain row would read as a project that is fine. The
+        directory rows the tree adds are the exception, dim and blank across the other two
+        columns: they are scaffolding, and a directory is not a thing to go and rebuild.
+
+        The title counts projects, not lines, so it keeps agreeing with ``--json`` however
+        the tree comes out.
         """
         if not rows:
             return []
 
-        body: list[RowItemOrDivider] = [
+        # A row whose project is empty names no path and cannot be placed in the tree.
+        # Dropping it would leave the title counting a row nothing shows, so it is listed
+        # flat underneath, the way `agent stats` hangs its `<orphaned>` row off the root.
+        placed = [row for row in rows if row.project]
+        body: list[RowItemOrDivider] = []
+        if placed:
+            root = build_path_tree([(row.project, row) for row in placed])
+            body.append(RowItem(cells=[root.name, "", ""], style=Ansi.DIM, prefix_len=0))
+            body.extend(Cells.stale_row(line) for line in walk_path_tree(root))
+        body.extend(
             RowItem(
-                cells=[row.project or UNKNOWN, row.image, Cells.reason(row.reason)],
+                cells=[UNKNOWN, row.image, Cells.reason(row.reason)],
                 style=Ansi.BOLD_YELLOW,
                 prefix_len=0,
             )
             for row in rows
-        ]
+            if not row.project
+        )
         headers = list(STALE_IMAGES_HEADERS)
         shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
         return display.render_table(

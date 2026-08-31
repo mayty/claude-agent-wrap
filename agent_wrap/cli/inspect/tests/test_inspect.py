@@ -738,6 +738,24 @@ def _stale_lines(dsp: Mock) -> list[str]:
     return lines[start:]
 
 
+def _stale_body(dsp: Mock) -> list[str]:
+    """Return the stale-image table's content rows -- borders and the header dropped."""
+    return [line for line in _stale_lines(dsp) if line.startswith("│")][1:]
+
+
+def _stale_cells(line: str) -> list[str]:
+    """
+    Split one stale-image row into its three cells.
+
+    The PROJECT cell is rejoined from the right, because the tree prefixes are drawn with
+    "│" -- the same glyph the table uses as its column separator, so a plain split
+    oversplits exactly that cell. Only its one pad space is dropped, not its whole
+    indent: the leading blanks of a tree prefix are what say how deep the row sits.
+    """
+    parts = line.split("│")
+    return ["│".join(parts[1:-3])[1:].rstrip(), parts[-3].strip(), parts[-2].strip()]
+
+
 def test_human_output_lists_stale_images_one_row_per_project(
     inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
@@ -747,7 +765,44 @@ def test_human_output_lists_stale_images_one_row_per_project(
     table = _stale_lines(display_mock_service)
     assert table[0] == "Stale images (2):"
     assert sum(line.count("claude-agent-wotp") for line in table) == 2
-    assert any("/home/me/wotp-be" in line for line in table)
+    assert any("wotp-be" in line for line in table)
+
+
+def test_human_output_renders_the_stale_image_projects_as_a_tree(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """The shared prefix is stated once, as a directory row, the way `agent stats` does."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    body = _stale_body(display_mock_service)
+    assert [_stale_cells(line)[0] for line in body] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
+
+
+def test_human_output_leaves_a_stale_image_directory_row_blank(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A directory has no image to rebuild and no reason to report."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    rows = [_stale_cells(line) for line in _stale_body(display_mock_service)]
+    assert [cells[1:] for cells in rows if cells[0].endswith("/")] == [["", ""], ["", ""]]
+
+
+def test_human_output_keeps_a_project_less_stale_image_row(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """It names no path and cannot be placed in the tree, but the title still counts it."""
+    inspect_mock.build_report.return_value = _report(
+        stale_images=[
+            *_STALE_IMAGES,
+            StaleImageRow(project="", image="claude-agent-huh", reason="who knows"),
+        ]
+    )
+    run([])
+    table = _stale_lines(display_mock_service)
+    assert table[0] == "Stale images (3):"
+    row = next(line for line in table if "claude-agent-huh" in line)
+    assert _stale_cells(row)[0] == "?"
 
 
 def test_human_output_orders_the_stale_image_columns(
@@ -777,7 +832,7 @@ def test_human_output_trims_a_long_stale_image_reason(
         ]
     )
     run([])
-    body = next(line for line in _stale_lines(display_mock_service) if "/home/me/wotp" in line)
+    body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
     assert "before agent-wrap stamped its images" in body
     assert "\u2026" in body
     assert long_reason not in body
