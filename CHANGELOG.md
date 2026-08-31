@@ -9,11 +9,17 @@ the [release notes style guide](releases/styleguide.md).
 
 **Breaking:** the wrapper now runs on a CPython version it pins and provisions itself, with no
 fallback to the host's `python3` — run `bin/agent-bootstrap` once per checkout after upgrading, or
-`agent` will refuse to start. Docker, `curl` and `tar` are now the only host requirements. Also adds
+`agent` will refuse to start. Python leaves the host requirements, which become Docker, `tar`, a
+downloader and a SHA-256 tool; supported hosts are enumerated as glibc Linux and macOS on x86_64 or
+aarch64, so musl hosts are no longer supported. **Also breaking:** `agent update` refuses to run
+while any agent container or sidecar is up, and the same check makes `agent run` and `agent rebuild`
+exit non-zero in that state — stop the containers, or set `AGENT_SKIP_UPDATE_CHECK=1`. Also adds
 spell checking of the prompt input, recognising English and Russian together, and per-project startup
 scripts — an optional `.claude-agent-wrap/startup.sh` run on the host before each launch. The project
 Dockerfile moves into that same directory; `Dockerfile.agent` still works, with a deprecation
-warning. Requires one `agent rebuild --full` after upgrading.
+warning. The attribution rules in the `default-CLAUDE.md` shipped to projects are reworked to never
+stack two lines and to exempt generated output. Requires one `agent rebuild --full` after
+upgrading.
 
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14
 

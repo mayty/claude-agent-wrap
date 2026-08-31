@@ -19,6 +19,12 @@ It packages Claude Code into a reproducible container image and exposes a single
 
 ## Quick Start
 
+Provision the pinned CPython the wrapper runs on (once per checkout — there is no fallback to a system `python3`, so `agent` refuses to run until this has happened):
+
+```bash
+/path/to/claude-agent-wrap/bin/agent-bootstrap
+```
+
 Source the wrapper in your shell (add it to `~/.bashrc` to make it permanent):
 
 ```bash
@@ -47,11 +53,13 @@ See the [Getting Started](docs/getting-started.md) guide for full setup instruct
 .
 ├── .agent-launches/      # Project registry, encrypted secrets, usage archive, launch state (git-ignored)
 ├── .claude_config/       # Global Claude config (git-ignored)
+├── .python/              # The provisioned CPython `agent` runs on (git-ignored)
 ├── agent_wrap/           # Python orchestration (commands, providers, config)
-├── bin/                  # `agent` executable launcher
+├── bin/                  # `agent` executable launcher and `agent-bootstrap` provisioner
 ├── docs/                 # Documentation (linked from this file)
 ├── logs_page/            # Static web viewer served by `agent logs`
 ├── ops/                  # Base image, validator, status line, hooks, clipboard shim
 ├── scripts/              # Repo tooling (e.g. markdown-link validator)
-└── agent-wrap.bashrc     # PATH + tab-completion setup for `agent`
+├── agent-wrap.bashrc     # PATH + tab-completion setup for `agent`
+└── python-pin.env        # The pinned CPython version and its per-platform checksums
 ```
