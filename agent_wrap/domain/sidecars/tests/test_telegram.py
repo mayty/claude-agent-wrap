@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap/sidecars/telegram.py."""
 
-from __future__ import annotations
-
 import json
 import tempfile
 import urllib.error

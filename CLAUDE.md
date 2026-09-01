@@ -12,7 +12,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | Doc | When to read |
 | --- | --- |
 | [docs/getting-started.md](docs/getting-started.md) | Never — already handled on every `agent run` launch |
-| [docs/docker-sandboxing.md](docs/docker-sandboxing.md) | Writing/editing a `Dockerfile.agent` or its directives |
+| [docs/docker-sandboxing.md](docs/docker-sandboxing.md) | Writing/editing a `.claude-agent-wrap/Dockerfile`, its directives, or a startup script |
 | [docs/telegram-notifications.md](docs/telegram-notifications.md) | Debugging Telegram notification hooks |
 | [docs/wslg-clipboard.md](docs/wslg-clipboard.md) | Debugging clipboard passthrough on WSL2 |
 | [docs/providers.md](docs/providers.md) | Adding a new provider or switching providers |
@@ -56,10 +56,22 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 A `Makefile` provides all QA targets. Follow these rules:
 
-- **`make check` must pass before handing off.** Never conclude a task until `make check` (lintcheck + format-check + test + typecheck + markdown-check + arch-check + check-executables) passes cleanly.
+- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
 - **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck`.
 - **Fix lint/format errors with `make` first.** Auto-fix via `make lint` or `make format` before manual edits.
-- **Never `pip install` dependencies.** Add them to the `dev` dependency group in `pyproject.toml` and prompt the user to run `agent rebuild`.
+- **Never `pip install` dependencies.** Add them to the `dev` dependency group (`[dependency-groups]`) in `pyproject.toml` and prompt the user to run `agent rebuild` — `bin/agent-bootstrap` installs the group during the image build. The host runtime stays stdlib-only: `[project]` declares no `dependencies`.
+- **Bump `DOCKER_BUILD_ITERATION` (in `agent_wrap/constants.py`) once per release in which
+  the base image's recipe changed** — that is `ops/Dockerfile`, or the build args
+  `BuildService._docker_build` passes. Every host's next `agent run` then rebuilds its
+  `claude-agent` base image and every project image on top of it, so the scope is the
+  wrapper as a tool, not this repo. Changes to *this project's* own
+  `.claude-agent-wrap/Dockerfile`, `pyproject.toml` or `dev` dependency group are **not**
+  reasons to bump — they reach one image, applied by an `agent rebuild` here. There is
+  deliberately no `make` check: one bump per release is enough, and not every
+  base-affecting change is statically detectable. The base image builds *with* docker's
+  layer cache, so the bump is also what forces its cached `scaffold` stage — apt,
+  NodeSource, hadolint, crane — to be fetched again; it travels to that stage as the
+  `BUILD_ITERATION` build arg.
 - **Never import a private (`_`-prefixed) name from another module.** If a name is
   intended for import outside its defining module, it must be public (no underscore).
   Ruff's `SLF001` only catches `obj._attr` access, not `from module import _name`,
@@ -87,6 +99,11 @@ A `Makefile` provides all QA targets. Follow these rules:
   callable (including one that only injects constructor dependencies before
   forwarding) is forbidden. Inline the target's implementation into the service
   method and delete the original target. See architecture.md rule 9.
+- **Never write `from __future__ import annotations`.** PEP 649 defers annotation
+  evaluation natively on the pinned interpreter, so the import only downgrades
+  annotations back to plain strings. Enforced by `EG001` in `make arch-check`. The
+  sole exception is `agent_wrap/domain/providers/litellm_runtime/`, which runs on
+  the LiteLLM image's older Python.
 - **Namespace classes replace comment-separated function blocks.** Standalone
   functions that share a micro-domain must be grouped into a namespace class
   (``@staticmethod``-only, no instance state) instead of being divided by

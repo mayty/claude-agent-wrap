@@ -1,11 +1,9 @@
 # This file has been created with the assistance of an AI tool.
 """Domain-layer tests for pricing, cost, and usage classification."""
 
-from __future__ import annotations
-
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -18,6 +16,8 @@ from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.constants import ORPHANED_ARCHIVE_FILENAME
 from agent_wrap.domain.stats.cost import usage_source
+from agent_wrap.domain.stats.models import RawRecord
+from agent_wrap.domain.stats.scan import fold_raw_to_buckets, price_buckets
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
@@ -178,7 +178,9 @@ def test_date_stamped_request_resolves_to_base_tier(
         "cache_read_input_tokens": 0,
         "cache_creation": {},
     }
-    cost = pricing.compute_cost("bedrock", "us.anthropic.claude-opus-4-8-20260514", usage=usage)
+    cost = pricing.compute_cost(
+        "bedrock", "us.anthropic.claude-opus-4-8-20260514", usage=usage, hour=0
+    )
     # 1000 * 5.5/1M + 500 * 27.5/1M = 0.0055 + 0.01375 = 0.01925
     assert cost is not None
     assert cost == pytest.approx(0.01925)
@@ -199,7 +201,52 @@ def test_unknown_model_returns_none(
         "cache_read_input_tokens": 0,
         "cache_creation": {},
     }
-    assert pricing.compute_cost("bedrock", "claude-opus-4-5", usage=usage) is None
+    assert pricing.compute_cost("bedrock", "claude-opus-4-5", usage=usage, hour=0) is None
+
+
+def test_price_buckets_prices_per_hour_and_collapses() -> None:
+    """Records in different UTC hours are priced at their own hour, then collapsed."""
+    pricing = Mock(spec=PricingService)
+    pricing.new_bucket.side_effect = Bucket
+    pricing.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
+    pricing.compute_cost.return_value = 0.001
+
+    usage: TokenUsage = {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {},
+    }
+    model = "litellm-bedrock/claude-opus-4-8"
+    recs = [
+        RawRecord(
+            day_key="2026-07-20",
+            display_model=model,
+            usage=usage,
+            source="native",
+            unrecorded=False,
+            ts=datetime(2026, 7, 20, 6, tzinfo=UTC),
+        ),
+        RawRecord(
+            day_key="2026-07-20",
+            display_model=model,
+            usage=usage,
+            source="native",
+            unrecorded=False,
+            ts=datetime(2026, 7, 20, 10, tzinfo=UTC),
+        ),
+    ]
+
+    by_day, _by_source = fold_raw_to_buckets(recs, pricing)
+    collapsed = price_buckets(by_day, pricing)
+
+    assert set(collapsed["2026-07-20"]) == {model}
+    assert collapsed["2026-07-20"][model].msgs == 2
+    hours = {call.kwargs["hour"] for call in pricing.compute_cost.call_args_list}
+    assert hours == {6, 10}
+    weekdays = {call.kwargs["weekday"] for call in pricing.compute_cost.call_args_list}
+    assert weekdays == {0}  # both records fall on 2026-07-20 (a Monday)
 
 
 def test_aggregate_projects_merges_marked_group(
@@ -383,7 +430,7 @@ def test_aggregate_archived_reconstructs_last_ts(
     )
     result = stats_svc.aggregate_archived_orphaned({}, {})
     assert result is not None
-    assert result["last_ts"] == datetime(2026, 7, 20, 17, tzinfo=timezone.utc)
+    assert result["last_ts"] == datetime(2026, 7, 20, 17, tzinfo=UTC)
 
 
 def test_aggregate_archived_rebuckets_day_at_read_time(
@@ -611,8 +658,8 @@ def test_merge_orphaned_results_combines_both(stats_svc: StatsService) -> None:
         },
         2.0,
     )
-    live_ts = datetime(2026, 7, 1, tzinfo=timezone.utc)
-    archived_ts = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    live_ts = datetime(2026, 7, 1, tzinfo=UTC)
+    archived_ts = datetime(2026, 7, 20, tzinfo=UTC)
 
     merged = stats_svc.merge_orphaned_results(
         {"sessions": 2, "last_ts": live_ts, "total": live_total},
@@ -633,7 +680,7 @@ def test_merge_orphaned_results_combines_both(stats_svc: StatsService) -> None:
 def test_merge_orphaned_results_passes_through_single_side(stats_svc: StatsService) -> None:
     only = {
         "sessions": 1,
-        "last_ts": datetime(2026, 7, 1, tzinfo=timezone.utc),
+        "last_ts": datetime(2026, 7, 1, tzinfo=UTC),
         "total": stats_svc._pricing.new_bucket(),
     }
     assert stats_svc.merge_orphaned_results(only, None) is only

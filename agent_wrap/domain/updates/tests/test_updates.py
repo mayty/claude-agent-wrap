@@ -1,8 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-# This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap/commands/update.py."""
-
-from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
@@ -17,14 +14,40 @@ from typing import Any
 
 import pytest
 
+from agent_wrap.constants import AGENT_BOOTSTRAP_PATH, RUNNING_STATUS, UpdateCheck
+from agent_wrap.domain.logs.service import LogsService
+from agent_wrap.domain.sidecars.models import (
+    AgentContainer,
+    LiveContainers,
+    SidecarContainer,
+)
+from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.updates.constants import MdPropagation, MdState
 from agent_wrap.domain.updates.service import UpdateService, _GitOps
 
 
 @pytest.fixture
-def update_svc(display_mock: Mock) -> UpdateService:
+def logs_mock(mocker: pytest_mock.MockFixture) -> Mock:
+    """Return an autospecced LogsService, which UpdateService stops before merging."""
+    return mocker.create_autospec(LogsService, instance=True)
+
+
+@pytest.fixture
+def sidecar_mock(mocker: pytest_mock.MockFixture) -> Mock:
+    """Return an autospecced SidecarService reporting an idle host, the common case."""
+    sidecars = mocker.create_autospec(SidecarService, instance=True)
+    sidecars.live_containers.return_value = LiveContainers(agents=[], sidecars=[])
+    return sidecars
+
+
+@pytest.fixture
+def update_svc(display_mock: Mock, logs_mock: Mock, sidecar_mock: Mock) -> UpdateService:
     """Return an UpdateService with the shared display_mock."""
-    return UpdateService(display_service=display_mock)
+    return UpdateService(
+        display_service=display_mock,
+        logs_service=logs_mock,
+        sidecar_service=sidecar_mock,
+    )
 
 
 def test_get_behind_not_git_dir(mocker: pytest_mock.MockFixture) -> None:
@@ -188,7 +211,7 @@ def test_get_behind_no_commits(
 
 def test_check_skip_env_set(monkeypatch: pytest.MonkeyPatch, update_svc: UpdateService) -> None:
     monkeypatch.setenv("AGENT_SKIP_UPDATE_CHECK", "1")
-    assert update_svc.check_updates() is False
+    assert update_svc.check_updates() is UpdateCheck.PROCEED
 
 
 def test_check_no_behind(mocker: pytest_mock.MockFixture, update_svc: UpdateService) -> None:
@@ -197,7 +220,7 @@ def test_check_no_behind(mocker: pytest_mock.MockFixture, update_svc: UpdateServ
         autospec=True,
         return_value=None,
     )
-    assert update_svc.check_updates() is False
+    assert update_svc.check_updates() is UpdateCheck.PROCEED
 
 
 def test_check_user_says_no(
@@ -210,7 +233,7 @@ def test_check_user_says_no(
     )
     display_mock.prompt_confirm.return_value = False
     mock_apply = mocker.patch.object(UpdateService, "apply", autospec=True)
-    assert update_svc.check_updates() is False
+    assert update_svc.check_updates() is UpdateCheck.PROCEED
     mock_apply.assert_not_called()
 
 
@@ -224,7 +247,7 @@ def test_check_user_says_yes(
     )
     display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply", autospec=True)
-    assert update_svc.check_updates() is True
+    assert update_svc.check_updates() is UpdateCheck.HANDLED
     mock_apply.assert_called_once_with(update_svc, "origin/main")
 
 
@@ -240,7 +263,7 @@ def test_check_master_announces_tag(
     )
     display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply", autospec=True)
-    assert update_svc.check_updates() is True
+    assert update_svc.check_updates() is UpdateCheck.HANDLED
     mock_apply.assert_called_once_with(update_svc, "v1.1")
     display_mock.warning.assert_any_call("a new agent-wrap release (v1.1) is available.")
 
@@ -254,7 +277,7 @@ def test_check_eof_error(
         return_value=("main", 2, "origin/main"),
     )
     display_mock.prompt_confirm.return_value = False
-    assert update_svc.check_updates() is False
+    assert update_svc.check_updates() is UpdateCheck.PROCEED
 
 
 def test_detect_matches(tmp_path: Path) -> None:
@@ -332,8 +355,7 @@ def test_apply_cannot_determine_branch(
     )
     rc = update_svc.apply()
     assert rc == 1
-    display_mock.error.assert_any_call("Update failed:")
-    display_mock.error.assert_any_call("could not determine current branch")
+    display_mock.error.assert_called_once_with("update failed\ncould not determine current branch")
 
 
 def test_apply_cannot_get_head(
@@ -348,8 +370,7 @@ def test_apply_cannot_get_head(
     ]
     rc = update_svc.apply("origin/main")
     assert rc == 1
-    display_mock.error.assert_any_call("Update failed:")
-    display_mock.error.assert_any_call("could not get current HEAD")
+    display_mock.error.assert_called_once_with("update failed\ncould not get current HEAD")
 
 
 def test_apply_merge_fails(
@@ -374,8 +395,7 @@ def test_apply_merge_fails(
     )
     rc = update_svc.apply("origin/main")
     assert rc == 1
-    display_mock.error.assert_any_call("Update failed:")
-    display_mock.error.assert_any_call("fatal: not possible to fast-forward")
+    display_mock.error.assert_called_once_with("update failed\nfatal: not possible to fast-forward")
     # Fast-forwards to the resolved target ref, not a raw branch pull.
     assert mock_full.call_args.args == ("merge", "--ff-only", "origin/main")
 
@@ -556,3 +576,262 @@ def test_current_revision_bounds_every_git_call(
     update_svc.current_revision()
     for call in git.call_args_list:
         assert call.kwargs["timeout"] > 0
+
+
+def _agent_container(name: str) -> AgentContainer:
+    """Return a running agent container; only *name* and *status* reach the update gate."""
+    return AgentContainer(
+        name=name,
+        instance_id=name.removeprefix("claude-agent-"),
+        status=RUNNING_STATUS,
+        uptime_sec=60,
+        cwd="/home/me/thing",
+        image="claude-agent",
+        provider="litellm-anthropic",
+        sidecars=[],
+    )
+
+
+def _sidecar_container(name: str) -> SidecarContainer:
+    """Return a running sidecar container, trimmed to what the update gate reads."""
+    return SidecarContainer(
+        name=name,
+        role="litellm",
+        provider="litellm-anthropic",
+        status=RUNNING_STATUS,
+        health="healthy",
+        uptime_sec=60,
+        port=48620,
+        exit_code=None,
+        image="litellm:latest",
+        stale_image=False,
+        networks=["agent-wrap-net"],
+    )
+
+
+def _advancing_git(before: str, after: str):
+    """Return a fake _GitOps.git where rev-parse reports `before` then `after`."""
+    seen: list[str] = []
+
+    def fake_git(*args: Any, **_: Any) -> tuple[str, int]:
+        if args[0] == "symbolic-ref":
+            return ("main", 0)
+        if args[0] == "rev-parse":
+            seen.append(args[0])
+            return (before, 0) if len(seen) == 1 else (after, 0)
+        return ("", 0)
+
+    return fake_git
+
+
+@pytest.fixture
+def bootstrap_run(mocker: pytest_mock.MockFixture) -> Mock:
+    """Patch the subprocess the re-provision step shells out to."""
+    return mocker.patch(
+        "agent_wrap.domain.updates.service.subprocess.run",
+        autospec=True,
+        return_value=mocker.Mock(returncode=0),
+    )
+
+
+def test_apply_reprovisions_the_interpreter_after_advancing(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """A stale pin would leave users on an unpatched CPython, so this is not advisory."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+
+    assert update_svc.apply("origin/main") == 0
+    assert bootstrap_run.call_count == 1
+    assert bootstrap_run.call_args.args[0] == [str(AGENT_BOOTSTRAP_PATH)]
+    assert bootstrap_run.call_args.kwargs["timeout"] > 0
+
+
+def test_apply_stops_the_logs_daemon_before_merging(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    logs_mock: Mock,
+    bootstrap_run: Mock,
+) -> None:
+    """Ordering is the point: after the merge the viewer already runs the new code."""
+    order: list[str] = []
+
+    def fake_merge(*_args: Any, **_kwargs: Any) -> tuple[str, int, str]:
+        order.append("merge")
+        return ("", 0, "")
+
+    logs_mock.stop_daemon.side_effect = lambda: order.append("stop")
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        side_effect=fake_merge,
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+
+    update_svc.apply("origin/main")
+    assert order == ["stop", "merge"]
+    assert bootstrap_run.called
+
+
+def test_apply_stops_the_logs_daemon_even_when_the_merge_fails(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    logs_mock: Mock,
+    bootstrap_run: Mock,
+) -> None:
+    """Stopping first means a failed merge costs a viewer restart -- the accepted price."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "aaa111"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 1, "not a fast-forward"),
+    )
+
+    assert update_svc.apply("origin/main") == 1
+    logs_mock.stop_daemon.assert_called_once()
+    assert not bootstrap_run.called
+
+
+def test_apply_does_not_reprovision_when_the_merge_advances_nothing(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """A merge that moved no commits leaves the pinned interpreter alone."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "aaa111"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+
+    assert update_svc.apply("origin/main") == 0
+    assert not bootstrap_run.called
+
+
+def test_apply_leaves_the_viewer_alone_when_there_is_nothing_to_merge(
+    mocker: pytest_mock.MockFixture,
+    update_svc: UpdateService,
+    logs_mock: Mock,
+    sidecar_mock: Mock,
+    bootstrap_run: Mock,
+) -> None:
+    """The no-op `agent update` is the common one: no Docker call, no viewer restart."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "aaa111"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.get_behind_count",
+        autospec=True,
+        return_value=None,
+    )
+
+    assert update_svc.apply() == 0
+    logs_mock.stop_daemon.assert_not_called()
+    sidecar_mock.live_containers.assert_not_called()
+    assert not bootstrap_run.called
+
+
+def test_apply_refuses_while_containers_are_live(  # noqa: PLR0913
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    logs_mock: Mock,
+    sidecar_mock: Mock,
+    bootstrap_run: Mock,
+) -> None:
+    """Swapping the checkout under an attached fleet is the thing being prevented."""
+    sidecar_mock.live_containers.return_value = LiveContainers(
+        agents=[_agent_container("claude-agent-7f3")],
+        sidecars=[_sidecar_container("agent-wrap-litellm-anthropic")],
+    )
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    merge = mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+
+    assert update_svc.apply("origin/main") == 1
+    merge.assert_not_called()
+    logs_mock.stop_daemon.assert_not_called()
+    assert not bootstrap_run.called
+    message = display_mock.error.call_args.args[0]
+    assert "claude-agent-7f3" in message
+    assert "agent-wrap-litellm-anthropic" in message
+
+
+def test_check_updates_refuses_before_prompting_while_containers_are_live(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    sidecar_mock: Mock,
+) -> None:
+    """Nobody should be asked to confirm an update that is already refused."""
+    sidecar_mock.live_containers.return_value = LiveContainers(
+        agents=[_agent_container("claude-agent-7f3")], sidecars=[]
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.get_behind_count",
+        autospec=True,
+        return_value=("main", 2, "origin/main"),
+    )
+    mock_apply = mocker.patch.object(UpdateService, "apply", autospec=True)
+
+    assert update_svc.check_updates() is UpdateCheck.BLOCKED
+    display_mock.prompt_confirm.assert_not_called()
+    mock_apply.assert_not_called()
+
+
+def test_apply_survives_a_failing_bootstrap(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """The already-installed interpreter still works, so the update itself succeeded."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+    bootstrap_run.return_value = mocker.Mock(returncode=1)
+
+    assert update_svc.apply("origin/main") == 0
+    assert str(AGENT_BOOTSTRAP_PATH) in display_mock.error.call_args.args[0]
+
+
+def test_apply_reports_an_unrunnable_bootstrap(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    bootstrap_run: Mock,
+) -> None:
+    """A missing or non-executable script must name the command, not raise."""
+    mocker.patch(_GIT, autospec=True, side_effect=_advancing_git("aaa111", "bbb222"))
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.git_full",
+        autospec=True,
+        return_value=("", 0, ""),
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.print_status", autospec=True, return_value=None
+    )
+    bootstrap_run.side_effect = OSError("Permission denied")
+
+    assert update_svc.apply("origin/main") == 0
+    assert "Permission denied" in display_mock.error.call_args.args[0]

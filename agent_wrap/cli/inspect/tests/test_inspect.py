@@ -1,7 +1,5 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Tests for the `inspect` CLI command — argument parsing and service protocol."""
-
-from __future__ import annotations
 
 import dataclasses
 import json
@@ -11,15 +9,19 @@ import pytest
 
 from agent_wrap.cli.constants import COMMANDS
 from agent_wrap.cli.inspect.run import build_parser, run
+from agent_wrap.constants import SKIP_SAFETY_CHECK_ENV
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.status.models import (
     AgentRow,
+    AutostartRow,
     DockerStatus,
     EnvironmentRow,
     InspectReport,
+    ProjectImageRow,
     ProviderRow,
     SidecarRow,
+    StaleImageRow,
     StorageRow,
     ViewerRow,
     WrapperRow,
@@ -60,13 +62,34 @@ _AGENT = AgentRow(
 )
 
 
-def _report(
+_PROJECT = ProjectImageRow(
+    image="claude-agent-wrap",
+    dockerfile="/home/me/agent-wrap/.claude-agent-wrap/Dockerfile",
+    is_legacy=False,
+    present=True,
+    claude_version="2.0.50",
+    claude_update_available=False,
+    stale_reason="",
+)
+
+
+def _report(  # noqa: PLR0913
     *,
     docker_available: bool = True,
     queued: list[str] | None = None,
     day_start_hours: int = -3,
     day_start_overridden: bool = True,
     day_start_timezone: str | None = None,
+    project: ProjectImageRow | None = None,
+    lite: bool = False,
+    logs_bytes: int | None = 1_033_465_471,
+    warnings: list[str] | None = None,
+    python_version: str | None = "3.14.7",
+    python_pinned: str | None = "3.14.7",
+    viewer: ViewerRow | None = None,
+    logs_autostart: AutostartRow | None = None,
+    stale_images: list[StaleImageRow] | None = None,
+    safety_check_enabled: bool = True,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -75,10 +98,14 @@ def _report(
         sidecars=[_SIDECAR] if docker_available else [],
         agents=[_AGENT] if docker_available else [],
         queued_launches=queued or [],
-        viewer=ViewerRow(
+        logs_autostart=logs_autostart
+        or AutostartRow(requested=None, effective=True, declining_provider=""),
+        viewer=viewer
+        or ViewerRow(
             running=True,
             pid=41233,
             port=8765,
+            starting=False,
             connect_line="LiteLLM log viewer running at http://127.0.0.1:8765",
             log_size=42_000,
             log_mtime=1_700_000_000.0,
@@ -92,22 +119,35 @@ def _report(
                 missing_keys=["telegram:TelegramBotToken"],
             ),
         ],
-        wrapper=WrapperRow(branch="master", commit="7e8ef2f", describe="0.8.0", dirty=False),
+        wrapper=WrapperRow(
+            branch="master",
+            commit="7e8ef2f",
+            describe="0.8.0",
+            dirty=False,
+            python_version=python_version,
+            python_pinned=python_pinned,
+        ),
         environment=EnvironmentRow(
             base_image="claude-agent",
             base_image_present=True,
             base_image_version="2.0.50",
             latest_claude_version=None,
             claude_update_available=False,
+            base_image_stale_reason="",
             network_name="agent-wrap-net",
             network_present=True,
             host_network_requested=False,
             host_network_effective=False,
+            safety_check_enabled=safety_check_enabled,
             day_start_hours=day_start_hours,
             day_start_overridden=day_start_overridden,
             day_start_timezone=day_start_timezone,
         ),
-        storage=StorageRow(logs_bytes=1_033_465_471, projects_registered=24, projects_stale=2),
+        storage=StorageRow(logs_bytes=logs_bytes, projects_registered=24, projects_stale=2),
+        project=project,
+        stale_images=stale_images,
+        lite=lite,
+        warnings=warnings or [],
     )
 
 
@@ -135,11 +175,21 @@ def _stdout(dsp: Mock) -> str:
     return "\n".join(_lines(dsp))
 
 
+def _warnings(dsp: Mock) -> list[str]:
+    return [str(call.args[0]) for call in dsp.warning.call_args_list]
+
+
 def _details_lines(dsp: Mock) -> list[str]:
-    """Return the rendered details table, from its title to the end of the output."""
+    """
+    Return the rendered details table, from its title to its closing border.
+
+    Bounded at the border rather than at the end of the output: the stale-image table can
+    follow it, and its box-drawing lines would otherwise be counted as this table's.
+    """
     lines = _lines(dsp)
     start = next(i for i, line in enumerate(lines) if line.startswith("Details:"))
-    return lines[start:]
+    end = next(i for i, line in enumerate(lines[start:], start) if line.startswith("\u2514"))
+    return lines[start : end + 1]
 
 
 # --- parsing ---
@@ -156,6 +206,24 @@ def test_parser_accepts_json_flag() -> None:
 def test_parser_accepts_j_flag() -> None:
     """-j is the shorthand for --json."""
     assert build_parser().parse_args(["-j"]).as_json is True
+
+
+def test_parser_defaults_to_the_full_report() -> None:
+    assert build_parser().parse_args([]).lite is False
+
+
+def test_parser_accepts_lite_flag() -> None:
+    assert build_parser().parse_args(["--lite"]).lite is True
+
+
+def test_parser_accepts_l_flag() -> None:
+    """-l is the shorthand for --lite."""
+    assert build_parser().parse_args(["-l"]).lite is True
+
+
+def test_parser_combines_lite_and_json() -> None:
+    ns = build_parser().parse_args(["-j", "-l"])
+    assert (ns.as_json, ns.lite) == (True, True)
 
 
 def test_help_returns_zero() -> None:
@@ -178,7 +246,20 @@ def test_positional_argument_rejected(capsys: pytest.CaptureFixture[str]) -> Non
 @pytest.mark.usefixtures("display_mock_service")
 def test_run_builds_the_report_once(inspect_mock: Mock) -> None:
     assert run([]) == 0
-    inspect_mock.build_report.assert_called_once_with()
+    inspect_mock.build_report.assert_called_once_with(lite=False)
+
+
+@pytest.mark.usefixtures("display_mock_service")
+def test_run_forwards_the_lite_flag(inspect_mock: Mock) -> None:
+    assert run(["--lite"]) == 0
+    inspect_mock.build_report.assert_called_once_with(lite=True)
+
+
+def test_json_run_forwards_the_lite_flag(inspect_mock: Mock, display_mock_service: Mock) -> None:
+    """The spinner-free path takes the flag too — it is a separate call site."""
+    del display_mock_service
+    assert run(["--json", "--lite"]) == 0
+    inspect_mock.build_report.assert_called_once_with(lite=True)
 
 
 @pytest.mark.usefixtures("inspect_mock")
@@ -265,14 +346,99 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
     out = _stdout(display_mock_service)
     for label in (
         "logs viewer",
+        "logs viewer autostart",
         "logs storage",
         "wrapper",
         "base image",
         "network",
         "host network",
+        "directory guard",
         "day boundary",
     ):
         assert label in out
+
+
+def test_human_output_reports_a_starting_viewer_without_a_connect_line(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A viewer that has not bound its port yet has no address to advertise."""
+    inspect_mock.build_report.return_value = _report(
+        viewer=ViewerRow(
+            running=True,
+            pid=41233,
+            port=8765,
+            starting=True,
+            connect_line="",
+            log_size=42_000,
+            log_mtime=1_700_000_000.0,
+        )
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "starting" in out
+    assert "http://127.0.0.1" not in out
+
+
+def _guard_row(dsp: Mock) -> str:
+    """Return the rendered `directory guard` row."""
+    return next(line for line in _stdout(dsp).splitlines() if "directory guard" in line)
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_reports_the_directory_guard_on(display_mock_service: Mock) -> None:
+    run([])
+    assert "on" in _guard_row(display_mock_service)
+
+
+def test_human_output_reports_the_directory_guard_off_by_env(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(safety_check_enabled=False)
+    run([])
+    assert f"OFF ({SKIP_SAFETY_CHECK_ENV})" in _guard_row(display_mock_service)
+
+
+def test_human_output_reports_autostart_off_by_env(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        logs_autostart=AutostartRow(requested=False, effective=False, declining_provider="")
+    )
+    run([])
+    assert "OFF (AGENT_AUTOSTART_LOGS)" in _stdout(display_mock_service)
+
+
+def test_human_output_flags_an_autostart_the_provider_ignores(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """
+    Set-and-ignored has to say so, not read as plain "off".
+
+    The same reasoning as the `host network` row's requested-but-IGNORED state: a
+    variable that is set and does nothing otherwise looks like a broken feature.
+    """
+    inspect_mock.build_report.return_value = _report(
+        logs_autostart=AutostartRow(
+            requested=True, effective=False, declining_provider="litellm-anthropic-sub"
+        )
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "requested but IGNORED (litellm-anthropic-sub does not use it)" in out
+
+
+def test_human_output_names_the_provider_that_declines_the_autostart(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        logs_autostart=AutostartRow(
+            requested=None, effective=False, declining_provider="litellm-anthropic-sub"
+        )
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "OFF (litellm-anthropic-sub does not use it)" in out
+    assert "IGNORED" not in out
 
 
 @pytest.mark.usefixtures("inspect_mock")
@@ -280,6 +446,128 @@ def test_human_output_shows_base_image_version(display_mock_service: Mock) -> No
     run([])
     out = _stdout(display_mock_service)
     assert "claude-agent present (Claude Code v2.0.50)" in out
+
+
+def test_human_output_shows_the_project_image(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(project=_PROJECT)
+    run([])
+    out = _stdout(display_mock_service)
+    assert "project image" in out
+    assert "claude-agent-wrap present (Claude Code v2.0.50)" in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_omits_the_project_row_without_a_project_image(
+    display_mock_service: Mock,
+) -> None:
+    """A project that customizes nothing has nothing to say here."""
+    run([])
+    assert "project image" not in _stdout(display_mock_service)
+
+
+def test_human_output_flags_a_project_image_that_was_never_built(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        project=dataclasses.replace(_PROJECT, present=False, claude_version=None)
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent-wrap MISSING (built on the next `agent run`)" in out
+
+
+def test_human_output_flags_an_image_the_next_launch_will_rebuild(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Present is not the same as current, and the report has to say which."""
+    report = _report(project=dataclasses.replace(_PROJECT, stale_reason="its base moved"))
+    inspect_mock.build_report.return_value = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment, base_image_stale_reason="the build iteration changed"
+        ),
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
+    assert "the build iteration changed" in out
+    assert "claude-agent-wrap present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
+    assert "its base moved" in out
+
+
+def test_human_output_flags_a_stale_project_image(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Both image rows name the same available version — there is one registry answer."""
+    report = _report(project=dataclasses.replace(_PROJECT, claude_update_available=True))
+    inspect_mock.build_report.return_value = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment, latest_claude_version="2.0.51", claude_update_available=True
+        ),
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent-wrap present (Claude Code v2.0.50) → v2.0.51 available" in out
+
+
+def test_human_output_never_claims_an_update_it_did_not_check_for(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """In lite mode the latest version is unknown, and unknown must not read as stale."""
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None, project=_PROJECT)
+    run([])
+    assert "available" not in _stdout(display_mock_service)
+
+
+def test_human_output_notes_a_legacy_project_dockerfile(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(
+        project=dataclasses.replace(_PROJECT, is_legacy=True)
+    )
+    run([])
+    assert "deprecated Dockerfile.agent" in _stdout(display_mock_service)
+
+
+def test_human_output_marks_an_unmeasured_logs_footprint(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A blank cell beside the project count would read as zero bytes."""
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
+    run([])
+    out = _stdout(display_mock_service)
+    assert "not measured (--lite)" in out
+    assert "24 project(s) registered" in out
+
+
+def test_human_output_closes_a_lite_report_with_what_it_skipped(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
+    run([])
+    out = _stdout(display_mock_service)
+    assert "npm-registry version check" in out
+    assert "logs-size walk" in out
+    assert "stale-image sweep" in out
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_has_no_lite_note_in_the_full_report(display_mock_service: Mock) -> None:
+    run([])
+    assert "--lite" not in _stdout(display_mock_service)
+
+
+def test_human_output_reports_collection_warnings_off_stdout(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Warnings belong on stderr so a redirected report stays machine-readable."""
+    inspect_mock.build_report.return_value = _report(warnings=["both Dockerfiles exist"])
+    run([])
+    assert "both Dockerfiles exist" in _warnings(display_mock_service)
+    assert "both Dockerfiles exist" not in _stdout(display_mock_service)
 
 
 def test_human_output_flags_an_available_update(
@@ -452,6 +740,202 @@ def test_human_output_never_prescribes_cleanup(
     assert "agent cleanup" not in _stdout(display_mock_service)
 
 
+_STALE_IMAGES = [
+    StaleImageRow(
+        project="/home/me/wotp",
+        image="claude-agent-wotp",
+        reason="the base image claude-agent is not the one it was built on",
+    ),
+    StaleImageRow(
+        project="/home/me/wotp-be",
+        image="claude-agent-wotp",
+        reason="the base image claude-agent is not the one it was built on",
+    ),
+]
+
+
+def _stale_lines(dsp: Mock) -> list[str]:
+    """Return the rendered stale-image table, from its title to the end of the output."""
+    lines = _lines(dsp)
+    start = next(i for i, line in enumerate(lines) if line.startswith("Stale images"))
+    return lines[start:]
+
+
+def _stale_body(dsp: Mock) -> list[str]:
+    """Return the stale-image table's content rows -- borders and the header dropped."""
+    return [line for line in _stale_lines(dsp) if line.startswith("│")][1:]
+
+
+def _stale_cells(line: str) -> list[str]:
+    """
+    Split one stale-image row into its three cells.
+
+    The PROJECT cell is rejoined from the right, because the tree prefixes are drawn with
+    "│" -- the same glyph the table uses as its column separator, so a plain split
+    oversplits exactly that cell. Only its one pad space is dropped, not its whole
+    indent: the leading blanks of a tree prefix are what say how deep the row sits.
+    """
+    parts = line.split("│")
+    return ["│".join(parts[1:-3])[1:].rstrip(), parts[-3].strip(), parts[-2].strip()]
+
+
+def test_human_output_lists_stale_images_one_row_per_project(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Two projects on one image are two rows -- the project is what the reader acts on."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    table = _stale_lines(display_mock_service)
+    assert table[0] == "Stale images (2):"
+    assert sum(line.count("claude-agent-wotp") for line in table) == 2
+    assert any("wotp-be" in line for line in table)
+
+
+def test_human_output_renders_the_stale_image_projects_as_a_tree(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """The shared prefix is stated once, as a directory row, the way `agent stats` does."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    body = _stale_body(display_mock_service)
+    assert [_stale_cells(line)[0] for line in body] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
+
+
+def test_human_output_leaves_a_stale_image_directory_row_blank(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A directory has no image to rebuild and no reason to report."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    rows = [_stale_cells(line) for line in _stale_body(display_mock_service)]
+    assert [cells[1:] for cells in rows if cells[0].endswith("/")] == [["", ""], ["", ""]]
+
+
+def test_human_output_keeps_a_project_less_stale_image_row(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """It names no path and cannot be placed in the tree, but the title still counts it."""
+    inspect_mock.build_report.return_value = _report(
+        stale_images=[
+            *_STALE_IMAGES,
+            StaleImageRow(project="", image="claude-agent-huh", reason="who knows"),
+        ]
+    )
+    run([])
+    table = _stale_lines(display_mock_service)
+    assert table[0] == "Stale images (3):"
+    row = next(line for line in table if "claude-agent-huh" in line)
+    assert _stale_cells(row)[0] == "?"
+
+
+def test_human_output_orders_the_stale_image_columns(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    header = next(line for line in _stale_lines(display_mock_service) if "PROJECT" in line)
+    assert [cell.strip() for cell in header.split("\u2502") if cell.strip()] == [
+        "PROJECT",
+        "IMAGE",
+        "REASON",
+    ]
+
+
+#: The longest build reason there is, at 121 characters (BuildReason.UNSTAMPED).
+_LONG_REASON = (
+    "it was built before agent-wrap stamped its images, so it cannot be checked -- "
+    "this is a one-time rebuild after the upgrade"
+)
+
+
+def _one_long_reason() -> list[StaleImageRow]:
+    return [StaleImageRow(project="/home/me/wotp", image="claude-agent-wotp", reason=_LONG_REASON)]
+
+
+def test_human_output_keeps_a_long_stale_image_reason_whole_when_it_fits(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The reported bug: the reason used to be cut to a fixed 72 at any console width.
+
+    Nothing decides how wide a cell may be except the console, so a console with room for
+    all 121 characters prints all 121.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
+    assert _LONG_REASON in body
+    assert "\u2026" not in body
+
+
+def test_human_output_trims_a_long_stale_image_reason_to_the_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Too narrow for the whole reason, so its tail goes -- the head still identifies it."""
+    monkeypatch.setenv("COLUMNS", "100")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
+    assert "before agent-wrap stamped its images" in body
+    assert "\u2026" in body
+    assert _LONG_REASON not in body
+
+
+def test_human_output_never_trims_the_stale_image_project(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path is what the reader acts on; the tree is chopped rather than cut short."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    projects = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert not any("\u2026" in project for project in projects)
+    assert "wotp" in projects[-1]
+
+
+def test_json_output_keeps_a_long_stale_image_reason_whole(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Trimming is a table concern; a machine consumer gets the reason in full."""
+    long_reason = "x" * 200
+    inspect_mock.build_report.return_value = _report(
+        stale_images=[StaleImageRow(project="/p", image="claude-agent-p", reason=long_reason)]
+    )
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["stale_images"][0]["reason"] == long_reason
+
+
+def test_human_output_says_so_in_green_when_no_image_is_stale(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """The one section whose empty state is good news, so it is said rather than tabulated."""
+    inspect_mock.build_report.return_value = _report(stale_images=[])
+    run([])
+    display_mock_service.success.assert_called_once()
+    assert "up to date" in display_mock_service.success.call_args.args[0]
+    assert "Stale images" not in _stdout(display_mock_service)
+
+
+def test_human_output_has_no_stale_image_section_when_the_sweep_did_not_run(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """None is not the empty list: an unrun sweep has no verdict to report either way."""
+    inspect_mock.build_report.return_value = _report(stale_images=None)
+    run([])
+    display_mock_service.success.assert_not_called()
+    assert "Stale images" not in _stdout(display_mock_service)
+
+
+def test_human_output_omits_the_green_line_when_an_image_is_stale(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    display_mock_service.success.assert_not_called()
+
+
 # --- json output ---
 
 
@@ -469,6 +953,58 @@ def test_json_output_carries_no_secret_values(display_mock_service: Mock) -> Non
     out = _stdout(display_mock_service)
     for forbidden in ("LITELLM_MASTER_KEY", "AWS_BEARER_TOKEN", "TELEGRAM_BOT_TOKEN", "sk-"):
         assert forbidden not in out
+
+
+def test_json_output_carries_the_lite_marker_and_nulls(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A consumer must be able to tell "not measured" from "measured as zero"."""
+    inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
+    run(["--json", "--lite"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["lite"] is True
+    assert payload["storage"]["logs_bytes"] is None
+    assert payload["environment"]["latest_claude_version"] is None
+    assert payload["stale_images"] is None
+
+
+def test_json_output_carries_the_stale_images(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert [row["project"] for row in payload["stale_images"]] == [
+        "/home/me/wotp",
+        "/home/me/wotp-be",
+    ]
+    assert payload["stale_images"][0]["image"] == "claude-agent-wotp"
+
+
+def test_json_output_distinguishes_an_empty_sweep_from_an_unrun_one(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """[] is the measured verdict that nothing is stale; null is no verdict at all."""
+    inspect_mock.build_report.return_value = _report(stale_images=[])
+    run(["--json"])
+    assert json.loads(_stdout(display_mock_service))["stale_images"] == []
+    display_mock_service.success.assert_not_called()
+
+
+def test_json_output_carries_the_project_image(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(project=_PROJECT)
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["project"]["image"] == "claude-agent-wrap"
+    assert payload["project"]["claude_version"] == "2.0.50"
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_json_output_nulls_the_project_when_there_is_none(display_mock_service: Mock) -> None:
+    run(["--json"])
+    assert json.loads(_stdout(display_mock_service))["project"] is None
 
 
 def test_json_output_still_parses_when_docker_is_down(
@@ -516,6 +1052,131 @@ def test_completion_offers_the_json_flag() -> None:
     assert "-j" in complete_fn(2, ["agent", "inspect", ""])
 
 
+def test_completion_offers_the_lite_flag() -> None:
+    _run_fn, complete_fn = COMMANDS["inspect"]
+    assert "--lite" in complete_fn(2, ["agent", "inspect", ""])
+    assert "-l" in complete_fn(2, ["agent", "inspect", ""])
+
+
 def test_completion_omits_an_already_used_flag() -> None:
     _run_fn, complete_fn = COMMANDS["inspect"]
     assert "--json" not in complete_fn(3, ["agent", "inspect", "--json", ""])
+
+
+def test_completion_omits_an_already_used_lite_flag() -> None:
+    """Both spellings hang off one action, so either present excludes the pair."""
+    _run_fn, complete_fn = COMMANDS["inspect"]
+    offered = complete_fn(3, ["agent", "inspect", "-l", ""])
+    assert "--lite" not in offered
+    assert "--json" in offered
+
+
+def test_interpreter_row_reports_the_provisioned_version(display_mock_service: Mock) -> None:
+    services.inspect_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "bootstrap" not in line
+
+
+def test_interpreter_row_flags_a_pin_the_bootstrap_has_not_caught_up_with(
+    display_mock_service: Mock,
+) -> None:
+    """Nothing else in the report would reveal that the two have diverged."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        python_version="3.14.7", python_pinned="3.15.0"
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "3.15.0" in line
+    assert "bin/agent-bootstrap" in line
+
+
+def test_interpreter_row_survives_an_unreadable_pin(display_mock_service: Mock) -> None:
+    """A missing python-pin.env must not make the row claim a mismatch."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        python_version="3.14.7", python_pinned=None
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "bootstrap" not in line
+
+
+_DEEP_STALE_IMAGES = [
+    StaleImageRow(
+        project="/home/me/work/wargaming/wotp",
+        image="claude-agent-wotp",
+        reason="its Dockerfile changed",
+    ),
+    StaleImageRow(
+        project="/home/me/work/personal/dotfiles",
+        image="claude-agent-dotfiles",
+        reason="its Dockerfile changed",
+    ),
+]
+
+
+def test_human_output_chops_the_stale_image_tree_into_a_narrow_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Too narrow for the tree even with IMAGE and REASON cut to their headers, so it chops.
+
+    Both folded siblings give up a segment, not just the wider one -- `personal/` and
+    `wargaming/` end at the same depth and in the order they started.
+    """
+    monkeypatch.setenv("COLUMNS", "35")
+    inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert labels == [
+        "/",
+        "└home/me/work/",
+        " ├personal/",
+        " │└dotfiles",
+        " └wargaming/",
+        "  └wotp",
+    ]
+
+
+def test_human_output_leaves_the_stale_image_tree_whole_when_cutting_is_enough(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The tree is chopped only when the tree is what does not fit.
+
+    A 60-column console has no room for the whole table, but trimming IMAGE and REASON
+    covers all of it -- and a chopped tree would have cost rows without saving a character
+    the prose columns were not already giving up.
+    """
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert labels == ["/", "└home/me/work/", " ├personal/dotfiles", " └wargaming/wotp"]
+
+
+def test_human_output_keeps_the_stale_image_tree_folded_when_chopping_would_not_help(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Splitting `home/me/` would indent the leaves that already set the width."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert [label for label in labels if label] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
+
+
+def test_human_output_keeps_the_stale_image_table_inside_a_narrow_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever chopping cannot fix, cutting does: no drawn line runs past the console."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    drawn = [
+        line for line in _stale_lines(display_mock_service) if line.startswith(("│", "┌", "├", "└"))
+    ]
+    assert {len(line) for line in drawn} == {60}

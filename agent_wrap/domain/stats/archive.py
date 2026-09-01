@@ -21,11 +21,9 @@ invariants matter here:
   ``price_buckets`` is applied fresh on every read. Nothing here may call it.
 """
 
-from __future__ import annotations
-
 import json
 from collections import defaultdict
-from datetime import timezone
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 from agent_wrap.domain.stats.constants import UNKNOWN_TIME_KEY
@@ -49,7 +47,7 @@ def archive_time_keys(ts: datetime | None) -> tuple[str, str]:
     """
     if ts is None:
         return UNKNOWN_TIME_KEY, UNKNOWN_TIME_KEY
-    utc = ts.astimezone(timezone.utc)
+    utc = ts.astimezone(UTC)
     return utc.strftime("%Y-%m-%d"), utc.strftime("%H")
 
 

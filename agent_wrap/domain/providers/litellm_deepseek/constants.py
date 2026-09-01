@@ -12,3 +12,9 @@ PRICING_FETCH_TIMEOUT = 15
 
 #: Minimum number of model entries expected in the pricing table.
 MIN_MODEL_COUNT = 2
+
+#: Weekdays DeepSeek's peak-hour rates apply to, as ``datetime.weekday()`` values
+#: (0=Monday ... 6=Sunday). Peak hours are billed at peak rate Monday through
+#: Friday only; weekends are off-peak all day. Hardcoded rather than scraped —
+#: the footnote's "Monday through Friday" is stable, unlike the hour ranges.
+PEAK_WEEKDAYS = frozenset({0, 1, 2, 3, 4})

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the `.agent_stats_leaf` transient-project grouping resolver."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import pytest
@@ -164,6 +162,21 @@ def test_orphaned_empty_without_central_dir(
     # No <tool_dir>/litellm-logs at all → nothing orphaned.
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
     assert stats_svc.orphaned_log_dirs([]) == []
+
+
+def test_orphaned_ignores_non_directory_entries(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
+) -> None:
+    # A stray file under <tool_dir>/litellm-logs is not a log dir and must be
+    # filtered out -- this pins the is_dir() check, which nothing else covered.
+    mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
+    _central(tmp_path, "hashA")
+    (tmp_path / LITELLM_LOGS_DIRNAME / "stray.txt").write_text("junk", encoding="utf-8")
+
+    orphaned = stats_svc.orphaned_log_dirs([])
+    assert orphaned == [tmp_path / LITELLM_LOGS_DIRNAME / "hashA"]
 
 
 def test_orphaned_ignores_deleted_project_symlink(

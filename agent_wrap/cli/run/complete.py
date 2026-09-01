@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Completion for ``agent run`` — flags first, file passthrough when exhausted."""
 
-from __future__ import annotations
-
 from agent_wrap.cli.run.run import build_parser
 from agent_wrap.lib.argparsing import unused_flags
 

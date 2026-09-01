@@ -1,15 +1,19 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.lib.utils."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from agent_wrap.lib.path_hash import project_path_hash
-from agent_wrap.lib.utils import directory_size, generate_uuid, is_truthy_env, sanitize_name
+from agent_wrap.lib.utils import (
+    directory_size,
+    generate_uuid,
+    is_truthy_env,
+    optional_truthy_env,
+    sanitize_name,
+)
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -96,6 +100,21 @@ def test_is_truthy_env_false(value: str) -> None:
 @pytest.mark.parametrize("value", ["1", "yes", "YES", "true", "TRUE", "anything"])
 def test_is_truthy_env_true(value: str) -> None:
     assert is_truthy_env(value) is True
+
+
+def test_optional_truthy_env_none_when_unset() -> None:
+    """An empty value reads as clearing the variable, not as asking for off."""
+    assert optional_truthy_env("") is None
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "FALSE", "NO", "False"])
+def test_optional_truthy_env_false(value: str) -> None:
+    assert optional_truthy_env(value) is False
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "YES", "true", "TRUE", "anything"])
+def test_optional_truthy_env_true(value: str) -> None:
+    assert optional_truthy_env(value) is True
 
 
 _VANISHED = "vanished"

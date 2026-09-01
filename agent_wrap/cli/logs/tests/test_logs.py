@@ -5,8 +5,6 @@ CLI-layer tests for agent_wrap.cli.logs — argument parsing and calling protoco
 in ``agent_wrap/cli/conftest.py``.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from agent_wrap.cli.logs.complete import complete as logs_complete
@@ -85,7 +83,11 @@ def test_run_foreground_dispatches_to_serve_foreground() -> None:
 
 def test_run_already_running_prints_connect_line_and_skips_spawn() -> None:
     """When a server is already running, print connect line and skip spawn."""
-    services.logs_service.running_server.return_value = {"pid": 1, "port": 9123}  # pyrefly: ignore [missing-attribute]
+    services.logs_service.running_server.return_value = {  # pyrefly: ignore [missing-attribute]
+        "pid": 1,
+        "port": 9123,
+        "starting": False,
+    }
     services.logs_service.connect_line.return_value = (  # pyrefly: ignore [missing-attribute]
         "LiteLLM log viewer running at http://127.0.0.1:9123"
     )
@@ -95,6 +97,21 @@ def test_run_already_running_prints_connect_line_and_skips_spawn() -> None:
     services.display_service.info.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         "LiteLLM log viewer running at http://127.0.0.1:9123"
     )
+
+
+def test_run_starting_server_prints_starting_line_and_skips_spawn() -> None:
+    """A claimed-but-not-listening viewer is reported as starting, not started again."""
+    services.logs_service.running_server.return_value = {  # pyrefly: ignore [missing-attribute]
+        "pid": 1,
+        "port": 9123,
+        "starting": True,
+    }
+    services.logs_service.starting_line.return_value = "viewer is starting"  # pyrefly: ignore [missing-attribute]
+
+    assert run(["--port", "8765"]) == 0
+    services.logs_service.spawn_background.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    services.logs_service.connect_line.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    services.display_service.info.assert_called_once_with("viewer is starting")  # pyrefly: ignore [missing-attribute]
 
 
 def test_run_spawns_when_not_running() -> None:

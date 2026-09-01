@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap.domain.providers.pricing and Provider.compute_cost."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.domain.providers.pricing import CostComputer, ModelKeyMatcher
@@ -108,7 +106,7 @@ def test_compute_cost_unknown_model_negligible_usage_returns_zero(
 ) -> None:
     provider = make_fake_provider(display_mock, flat={"claude-opus-4-8": _OPUS_RATES})
     # A handful of tokens against Opus 4.8 rates rounds down to $0.
-    cost = provider.compute_cost("claude-unknown-model", _usage(10, 5))
+    cost = provider.compute_cost("claude-unknown-model", _usage(10, 5), hour=0)
     assert cost == 0.0
 
 
@@ -116,7 +114,7 @@ def test_compute_cost_unknown_model_non_negligible_usage_returns_none(
     display_mock: Mock, make_fake_provider: Callable[..., FakeProvider]
 ) -> None:
     provider = make_fake_provider(display_mock, flat={"claude-opus-4-8": _OPUS_RATES})
-    cost = provider.compute_cost("claude-unknown-model", _usage(1000, 500))
+    cost = provider.compute_cost("claude-unknown-model", _usage(1000, 500), hour=0)
     assert cost is None
 
 
@@ -124,4 +122,4 @@ def test_compute_cost_no_pricing_table_returns_none(
     display_mock: Mock, make_fake_provider: Callable[..., FakeProvider]
 ) -> None:
     provider = make_fake_provider(display_mock, flat={})
-    assert provider.compute_cost("claude-opus-4-8", _usage(10, 5)) is None
+    assert provider.compute_cost("claude-opus-4-8", _usage(10, 5), hour=0) is None

@@ -1,11 +1,9 @@
 # This file has been edited with the assistance of an AI tool.
 """Unit tests for UsageTracker — daily usage tracking and usage.json writing."""
 
-from __future__ import annotations
-
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -20,6 +18,8 @@ from agent_wrap.domain.stats.service import StatsService
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    from pytest_mock import MockerFixture
 
 
 @pytest.fixture
@@ -48,6 +48,17 @@ def tracker(pricing: Mock, stats_service: StatsService, tmp_path: Path) -> Usage
 
 
 @pytest.fixture
+def scan_spy(stats_service: StatsService, mocker: MockerFixture) -> Mock:
+    """Spy on scan_day_file — records every scan while still returning real Buckets."""
+    return mocker.patch.object(
+        stats_service,
+        "scan_day_file",
+        autospec=True,
+        side_effect=stats_service.scan_day_file,
+    )
+
+
+@pytest.fixture
 def make_record() -> Callable[..., dict[str, Any]]:
     """Return a factory that builds a messages.jsonl record dict."""
 
@@ -61,7 +72,7 @@ def make_record() -> Callable[..., dict[str, Any]]:
         cache_creation: int = 0,
         start_ts: float | None = None,
     ) -> dict[str, Any]:
-        ts = start_ts if start_ts is not None else datetime.now(timezone.utc).timestamp()
+        ts = start_ts if start_ts is not None else datetime.now(UTC).timestamp()
         return {
             "status": status,
             "model": model,
@@ -114,7 +125,7 @@ def test_todays_records_are_counted(
 ) -> None:
     """A single file with today's records is scanned and its totals appear in output."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(
         mf,
         [
@@ -123,8 +134,7 @@ def test_todays_records_are_counted(
         ],
     )
 
-    changed = tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
-    assert changed is True
+    tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
     tracker.flush()
 
     data = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
@@ -142,7 +152,7 @@ def test_yesterdays_records_are_excluded(
 ) -> None:
     """Records from before today (per DAY_START_HOURS) are excluded."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    yesterday_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).timestamp()
+    yesterday_ts = (datetime.now(UTC) - timedelta(hours=48)).timestamp()
     write_messages_file(mf, [make_record(input_tokens=999, start_ts=yesterday_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -164,7 +174,7 @@ def test_unknown_cost_model_produces_question_mark(
     pricing.compute_cost.return_value = None
 
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -193,15 +203,18 @@ def test_unchanged_file_is_skipped(
     tmp_path: Path,
     make_record: Callable[..., dict[str, Any]],
     write_messages_file: Callable[[Path, list[dict[str, Any]]], None],
+    scan_spy: Mock,
 ) -> None:
-    """update_file returns False when the stat fingerprint hasn't changed."""
+    """update_file re-scans once and skips the file while its stat fingerprint holds."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
-    assert tracker.update_file(mf, info) is True  # first call — fingerprint stored
-    assert tracker.update_file(mf, info) is False  # same stat — skipped
+    tracker.update_file(mf, info)  # first call — scanned, fingerprint stored
+    assert scan_spy.call_count == 1
+    tracker.update_file(mf, info)  # same stat — skipped
+    assert scan_spy.call_count == 1
 
 
 def test_file_with_yesterdays_mtime_is_skipped(
@@ -209,16 +222,18 @@ def test_file_with_yesterdays_mtime_is_skipped(
     tmp_path: Path,
     make_record: Callable[..., dict[str, Any]],
     write_messages_file: Callable[[Path, list[dict[str, Any]]], None],
+    scan_spy: Mock,
 ) -> None:
     """A file whose mtime predates today's boundary is skipped without scanning."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=999, output_tokens=999, start_ts=now_ts)])
-    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    yesterday = datetime.now(UTC) - timedelta(days=1)
     os.utime(mf, (yesterday.timestamp(), yesterday.timestamp()))
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
-    assert tracker.update_file(mf, info) is False  # skipped — mtime from yesterday
+    tracker.update_file(mf, info)
+    assert scan_spy.call_count == 0  # skipped — mtime from yesterday
     tracker.flush()
     data = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
     assert data["in"] == 0
@@ -232,13 +247,13 @@ def test_file_touched_today_is_scanned(
 ) -> None:
     """After touching the file to today, it is scanned normally."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     os.utime(mf, (now.timestamp(), now.timestamp()))
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
-    assert tracker.update_file(mf, info) is True  # scanned — mtime is today
+    tracker.update_file(mf, info)  # scanned — mtime is today
     tracker.flush()
     data = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
     assert data["in"] == 100
@@ -251,7 +266,7 @@ def test_multiple_files_are_aggregated(
     write_messages_file: Callable[[Path, list[dict[str, Any]]], None],
 ) -> None:
     """Contributions from multiple files are merged into one total."""
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     for i, provider in enumerate(["litellm-bedrock", "litellm-dashscope"]):
         mf = tmp_path / "litellm-logs" / provider / f"sess-{i}" / "messages.jsonl"
         write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
@@ -276,7 +291,7 @@ def test_removed_file_contribution_is_dropped(
 ) -> None:
     """After remove_file, the file's contribution is gone."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=500, output_tokens=250, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -312,7 +327,7 @@ def test_flush_resets_on_rollover(
 ) -> None:
     """Flush clears state when the day has changed since last update."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -332,10 +347,11 @@ def test_reset_clears_state(
     tmp_path: Path,
     make_record: Callable[..., dict[str, Any]],
     write_messages_file: Callable[[Path, list[dict[str, Any]]], None],
+    scan_spy: Mock,
 ) -> None:
     """Reset clears all file buckets, fingerprints, and refreshes _today_key."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     info = (mf.stat().st_mtime_ns, mf.stat().st_size)
@@ -353,7 +369,9 @@ def test_reset_clears_state(
     assert data["requests"] == 0
 
     # Fingerprints cleared, so same stat triggers a re-scan.
-    assert tracker.update_file(mf, info) is True
+    scanned_before_reset = scan_spy.call_count
+    tracker.update_file(mf, info)
+    assert scan_spy.call_count == scanned_before_reset + 1
 
 
 def test_cache_creation_tokens_are_tracked(
@@ -364,7 +382,7 @@ def test_cache_creation_tokens_are_tracked(
 ) -> None:
     """Cache write tokens appear under cache_creation in output."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(
         mf,
         [
@@ -394,7 +412,7 @@ def test_updating_same_file_replaces_old_contribution(
 ) -> None:
     """Calling update_file twice with different stat replaces the old contribution."""
     mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
 
     tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
@@ -415,29 +433,89 @@ def test_updating_same_file_replaces_old_contribution(
     assert data["requests"] == 2
 
 
-def test_flush_touch_when_content_unchanged(tracker: UsageTracker, tmp_path: Path) -> None:
-    """flush(content_changed=False) touches the file without rewriting content."""
+def test_flush_touches_when_payload_unchanged(
+    tracker: UsageTracker, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """A second flush with the same payload touches the file without rewriting it."""
     output = tmp_path / "usage.json"
 
     # Initial write.
-    tracker.flush(content_changed=True)
+    tracker.flush()
     assert output.is_file()
     original_mtime = output.stat().st_mtime
     original_content = output.read_text()
 
-    # Touch-only: mtime changes but content is the same.
-    tracker.flush(content_changed=False)
+    write_spy = mocker.patch(
+        "agent_wrap.domain.logs.usage_tracker.atomic_write_json", autospec=True
+    )
+    tracker.flush()
+
+    write_spy.assert_not_called()
     assert output.stat().st_mtime >= original_mtime
     assert output.read_text() == original_content
 
 
-def test_touch_creates_file_if_missing(tracker: UsageTracker, tmp_path: Path) -> None:
+def test_flush_creates_file_if_missing(tracker: UsageTracker, tmp_path: Path) -> None:
     """Flush on a missing file does a full write so the file is valid JSON."""
     output = tmp_path / "usage.json"
 
-    assert not output.is_file()
-    tracker.flush(content_changed=False)
+    tracker.flush()
+    output.unlink()  # payload matches _last_output, but the file is gone
+
+    tracker.flush()
     assert output.is_file()
     assert output.stat().st_size > 0  # not an empty file — valid JSON
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["in"] == 0
+
+
+def test_flush_rewrites_payload_left_by_a_previous_run(
+    tracker: UsageTracker, tmp_path: Path
+) -> None:
+    """A payload written by an earlier run is replaced, not touched, on the first flush."""
+    output = tmp_path / "usage.json"
+    output.write_text(
+        json.dumps(
+            {
+                "in": 999,
+                "out": 888,
+                "cache": 0,
+                "cache_creation": 0,
+                "cost": "$9.99",
+                "requests": 7,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracker.flush()
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["in"] == 0
+    assert data["out"] == 0
+    assert data["requests"] == 0
+    assert data["cost"] == "$0.00"
+
+
+def test_flush_rewrites_after_rollover_with_no_rescan(
+    tracker: UsageTracker,
+    tmp_path: Path,
+    make_record: Callable[..., dict[str, Any]],
+    write_messages_file: Callable[[Path, list[dict[str, Any]]], None],
+) -> None:
+    """A rollover with no file activity zeroes the payload instead of touching it."""
+    mf = tmp_path / "litellm-logs" / "litellm-bedrock" / "sess-1" / "messages.jsonl"
+    now_ts = datetime.now(UTC).timestamp()
+    write_messages_file(mf, [make_record(input_tokens=100, output_tokens=50, start_ts=now_ts)])
+
+    tracker.update_file(mf, (mf.stat().st_mtime_ns, mf.stat().st_size))
+    tracker.flush()
+    assert json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))["in"] == 100
+
+    # Day rolls over and nothing is re-scanned — no update_file, no remove_file.
+    tracker._today_key = "2000-01-01"
+    tracker.flush()
+
+    data = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
+    assert data["in"] == 0
+    assert data["requests"] == 0

@@ -63,6 +63,14 @@ usual design in a few load-bearing ways:
   `DISABLE_AUTOUPDATER=1` in its place, so the CLI baked into the image still
   never tries to self-update.
 
+- **`autostart_logs_viewer = False`.** `agent run` starts the `agent logs` viewer so
+  the statusline has today's token and cost totals to read, but under this provider
+  the statusline never reads them: `ops/statusline.py` detects the passthrough via
+  `ANTHROPIC_BASE_URL` and renders `rate_limit_segment` -- subscription-seat
+  consumption -- in place of `usage_segment`. Starting a background HTTP server to
+  maintain a file nothing consults would be pure waste, and `agent logs` still starts
+  it on demand for browsing request logs.
+
 - **`compute_cost` is overridden directly, always returning `0.0`.** A
   subscription has no marginal per-token cost, so there is no rate table to
   maintain, and no dollar figure here would be truthful. Returning `0.0`
@@ -73,9 +81,7 @@ usual design in a few load-bearing ways:
   here.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_anthropic_sub.constants import (
@@ -94,10 +100,13 @@ class AnthropicSubProvider(Provider):
     master_key_prefix: ClassVar[str] = "sk-aw-ant-"
     secret_description: ClassVar[str] = ""
     disable_nonessential_traffic: ClassVar[bool] = False
+    autostart_logs_viewer: ClassVar[bool] = False
 
-    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:  # noqa: ARG002
+    @override
+    def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {}
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         # The PASSTHROUGH_PREFIX suffix is load-bearing — see its docstring in
         # constants.py. Claude Code appends "/v1/messages" to ANTHROPIC_BASE_URL,
@@ -118,12 +127,15 @@ class AnthropicSubProvider(Provider):
             "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
         }
 
+    @override
     def compute_cost(
         self,
-        model: str,  # noqa: ARG002
-        usage: TokenUsage,  # noqa: ARG002
+        model: str,
+        usage: TokenUsage,
         *,
-        refresh_pricing_data: bool = False,  # noqa: ARG002
+        hour: int | None,
+        weekday: int | None = None,
+        refresh_pricing_data: bool = False,
     ) -> float | None:
         """Report a known zero: subscription usage draws on the seat allowance, not per-token billing."""
         return 0.0

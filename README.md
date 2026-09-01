@@ -1,7 +1,7 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # claude-agent-wrap
 
-A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process (in the default provider), and lets each project customize its environment with a simple `Dockerfile.agent`.
+A Docker-based wrapper for the Claude Code CLI that isolates the agent in containers, keeps API credentials out of the agent process (in the default provider), and lets each project customize its environment with a simple `.claude-agent-wrap/Dockerfile` and an optional host-side startup script.
 
 It packages Claude Code into a reproducible container image and exposes a single command — `agent` — whose first argument is a verb (`run`, `rebuild`, `create`, `stats`, `logs`, `inspect`, `cleanup`, `update`, `secrets`) that selects the operation. Volume mounts, credentials, and per-project image customization are handled automatically. Model traffic is routed through a provider plugin — all shipped providers use a [LiteLLM](https://github.com/BerriAI/litellm) sidecar. See [Providers](docs/providers.md) for available options.
 
@@ -19,6 +19,12 @@ It packages Claude Code into a reproducible container image and exposes a single
 
 ## Quick Start
 
+Provision the pinned CPython the wrapper runs on (once per checkout — there is no fallback to a system `python3`, so `agent` refuses to run until this has happened):
+
+```bash
+/path/to/claude-agent-wrap/bin/agent-bootstrap
+```
+
 Source the wrapper in your shell (add it to `~/.bashrc` to make it permanent):
 
 ```bash
@@ -27,7 +33,7 @@ source /path/to/claude-agent-wrap/agent-wrap.bashrc
 
 This puts `bin/agent` on your `PATH` and enables tab-completion. (Programmatic callers that only need to launch `agent` can instead add `<repo>/bin` to `PATH` or symlink `bin/agent` onto an existing `PATH` directory — see [Shell Commands](docs/shell-commands.md).)
 
-Build the base image once:
+Build the base image once (optional — the first `agent run` does it for you):
 
 ```bash
 agent rebuild --full
@@ -47,11 +53,13 @@ See the [Getting Started](docs/getting-started.md) guide for full setup instruct
 .
 ├── .agent-launches/      # Project registry, encrypted secrets, usage archive, launch state (git-ignored)
 ├── .claude_config/       # Global Claude config (git-ignored)
+├── .python/              # The provisioned CPython `agent` runs on (git-ignored)
 ├── agent_wrap/           # Python orchestration (commands, providers, config)
-├── bin/                  # `agent` executable launcher
+├── bin/                  # `agent` executable launcher and `agent-bootstrap` provisioner
 ├── docs/                 # Documentation (linked from this file)
 ├── logs_page/            # Static web viewer served by `agent logs`
 ├── ops/                  # Base image, validator, status line, hooks, clipboard shim
 ├── scripts/              # Repo tooling (e.g. markdown-link validator)
-└── agent-wrap.bashrc     # PATH + tab-completion setup for `agent`
+├── agent-wrap.bashrc     # PATH + tab-completion setup for `agent`
+└── python-pin.env        # The pinned CPython version and its per-platform checksums
 ```

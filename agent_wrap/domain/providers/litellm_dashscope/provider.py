@@ -1,9 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM Dashscope provider — routes Claude Code through Alibaba Cloud DashScope."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, override
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
@@ -19,11 +17,13 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
     master_key_prefix: ClassVar[str] = "sk-ds-"
     secret_description: ClassVar[str] = "DashScope (Alibaba Cloud Model Studio) API Key"  # noqa: S105
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {
             "DASHSCOPE_API_KEY": secrets.get("api_key", ""),
         }
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {
             "ANTHROPIC_API_KEY": master_key,
@@ -39,7 +39,8 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
             "DISABLE_PROMPT_CACHING": "1",
         }
 
-    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:  # noqa: ARG002
+    @override
+    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
         """Return the tiered pricing table for DashScope models."""
         return {
             "qwen3.7-plus": [
@@ -92,8 +93,10 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
 
     # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 
+    @override
     def on_started(self, master_key: str) -> None:
         self._approve_master_key(master_key)
 
+    @override
     def on_stopping(self, master_key: str) -> None:
         self._unapprove_master_key(master_key)

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the sidecars domain."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -159,3 +157,18 @@ class RegistryState:
     by_container: dict[str, list[str]]
     #: instance ids queued for the shared sidecar lock.
     waiting: list[str]
+
+
+@dataclass(frozen=True)
+class LiveContainers:
+    """
+    Everything agent-wrap has running on this host right now, as a reporting snapshot.
+
+    "Running" is Docker's own state, so a stopped corpse is absent by construction --
+    the Telegram sidecar keeps one on purpose, and it must not read as work in
+    progress. Both lists empty is also what an unreachable daemon produces; see
+    ``SidecarService.live_containers``.
+    """
+
+    agents: list[AgentContainer]
+    sidecars: list[SidecarContainer]

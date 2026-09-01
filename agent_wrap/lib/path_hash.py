@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Stable path hashing."""
 
-from __future__ import annotations
-
 import hashlib
 from pathlib import Path
 

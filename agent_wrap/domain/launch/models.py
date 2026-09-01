@@ -1,7 +1,5 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Data models for the launch domain."""
-
-from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -12,11 +10,13 @@ if TYPE_CHECKING:
 
 
 class DockerfileDirectives(NamedTuple):
-    """Parsed directives from a Dockerfile.agent."""
+    """Parsed directives from a project Dockerfile."""
 
     agent_user: str
     port_args: list[str]
     extra_run_args: list[str]
+    #: Timeout for the project startup script, or None when startup is not enabled.
+    startup_timeout: float | None
 
 
 class HostNetworkResult(NamedTuple):

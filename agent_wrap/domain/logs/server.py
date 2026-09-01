@@ -1,12 +1,10 @@
 # This file has been edited with the assistance of an AI tool.
 """HTTP server and static asset serving for the logs web viewer."""
 
-from __future__ import annotations
-
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast, override
 from urllib.parse import parse_qs, urlparse
 
 from agent_wrap.constants import LOGS_CONTENT_TYPES, PORT_SCAN_LIMIT
@@ -55,7 +53,8 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
         """Single-threaded HTTP handler for the logs viewer."""
 
         # Silence per-request log lines to stderr
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        @override
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
         def _resolve_project(
@@ -68,7 +67,7 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
                 return None, None
             try:
                 project_id = int(raw)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self._send_json({"error": f"invalid project id: {raw!r}"}, 400)
                 return None, None
             logs_dirs = cache.get_logs_dirs(project_id)
@@ -155,7 +154,7 @@ def get_handler(pricing: PricingService, cache: LogsCache) -> type[BaseHTTPReque
             if raw_from is not None:
                 try:
                     from_val = int(raw_from)
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self._send_json({"error": f"invalid from value: {raw_from!r}"}, 400)
                     return
 
@@ -266,7 +265,7 @@ def bind_port(
     for _offset in range(PORT_SCAN_LIMIT):
         try:
             return ThreadingHTTPServer(("127.0.0.1", port), handler)
-        except OSError:  # noqa: PERF203
+        except OSError:
             port += 1
     msg = f"could not bind to any port in range [original, original+{PORT_SCAN_LIMIT})"
     raise RuntimeError(msg)

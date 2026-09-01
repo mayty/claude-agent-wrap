@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """CLI-layer tests for agent_wrap.cli.update — completion."""
 
-from __future__ import annotations
-
 from agent_wrap.cli.update.complete import complete as update_complete
 
 

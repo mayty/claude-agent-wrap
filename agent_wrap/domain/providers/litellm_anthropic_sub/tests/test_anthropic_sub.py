@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the litellm-anthropic-sub provider."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -177,6 +175,13 @@ def test_anthropic_sub_disables_nonessential_traffic_is_false(
     assert anthropic_sub.disable_nonessential_traffic is False
 
 
+def test_anthropic_sub_autostart_logs_viewer_is_false(
+    anthropic_sub: AnthropicSubProvider,
+):
+    """The statusline renders rate limits here, so usage.json has no reader to serve."""
+    assert anthropic_sub.autostart_logs_viewer is False
+
+
 def test_anthropic_sub_get_agent_env_pins_no_models(anthropic_sub: AnthropicSubProvider):
     env = anthropic_sub.get_agent_env("sk-aw-ant-abc123", "http://proxy:4000")
     assert "ANTHROPIC_MODEL" not in env
@@ -242,6 +247,6 @@ def test_anthropic_sub_compute_cost_is_always_zero(anthropic_sub: AnthropicSubPr
             "ephemeral_1h_input_tokens": 500_000,
         },
     }
-    cost = anthropic_sub.compute_cost(model, usage)
+    cost = anthropic_sub.compute_cost(model, usage, hour=0)
     assert cost == 0.0
     assert cost is not None

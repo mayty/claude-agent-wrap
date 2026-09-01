@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """
 Shared fixtures for all agent_wrap tests.
 
@@ -6,13 +6,16 @@ Placed at the package root so pytest discovers it for every test file
 under ``agent_wrap/**/tests/``.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.constants import (
+    AGENT_ASSETS_DIR,
+    AGENT_DOCKERFILE_NAME,
+    LEGACY_AGENT_DOCKERFILE_NAME,
+)
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.sidecars.service import SidecarService
@@ -104,16 +107,20 @@ class FakeProvider(Provider):
         self._flat = flat or {}
         self._tiered = tiered
 
+    @override
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
         return {"UPSTREAM_KEY": secrets.get("api_key", "")}
 
+    @override
     def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
         return {"API_KEY": master_key, "BASE_URL": base_url}
 
-    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:  # noqa: ARG002
+    @override
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         return self._flat
 
-    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:  # noqa: ARG002
+    @override
+    def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
         if self._tiered is None:
             raise NotImplementedError
         return self._tiered
@@ -135,10 +142,23 @@ def make_fake_provider() -> Callable[..., FakeProvider]:
 
 @pytest.fixture
 def write_dockerfile(tmp_path: Path) -> Callable[[str], Path]:
-    """Write content to a temporary Dockerfile.agent and return its path."""
+    """Write content to a temporary project Dockerfile and return its path."""
 
     def _write(content: str) -> Path:
-        p = tmp_path / "Dockerfile.agent"
+        p = tmp_path / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        return p
+
+    return _write
+
+
+@pytest.fixture
+def write_legacy_dockerfile(tmp_path: Path) -> Callable[[str], Path]:
+    """Write content to a temporary deprecated ``Dockerfile.agent`` and return its path."""
+
+    def _write(content: str) -> Path:
+        p = tmp_path / LEGACY_AGENT_DOCKERFILE_NAME
         p.write_text(content)
         return p
 

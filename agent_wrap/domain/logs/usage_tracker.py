@@ -1,10 +1,8 @@
 # This file has been created with the assistance of an AI tool.
 """Daily usage tracking for the logs viewer background thread."""
 
-from __future__ import annotations
-
 import contextlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import DAY_START_HOURS, GLOBAL_CONFIG_DIR
@@ -48,6 +46,11 @@ class UsageTracker:
         self._file_buckets: dict[Path, Bucket] = {}
         self._fingerprints: dict[Path, tuple[int, int]] = {}
 
+        # Last payload written to usage.json; None until this process writes one, so
+        # the first flush always rewrites — that is what clears a payload left behind
+        # by a previous run on an earlier day.
+        self._last_output: dict[str, int | str] | None = None
+
     # ------------------------------------------------------------------
     # Public API (called from LogsCache poll thread)
     # ------------------------------------------------------------------
@@ -62,46 +65,49 @@ class UsageTracker:
         self._file_buckets.clear()
         self._fingerprints.clear()
 
-    def update_file(self, file_path: Path, stat_info: tuple[int, int]) -> bool:
+    def update_file(self, file_path: Path, stat_info: tuple[int, int]) -> None:
         """
         Re-scan *file_path* for today's records if its stat fingerprint changed.
 
-        Returns True when the file was actually re-scanned, False when it was
-        skipped (fingerprint unchanged, or file mtime predates today's boundary).
+        The file is left alone when its fingerprint is unchanged, or when its mtime
+        predates today's day boundary (it then cannot hold today's records).
 
         The provider name is extracted from the path structure::
 
             <logs_dir>/<provider_name>/<session_id>/messages.jsonl
         """
         if self._fingerprints.get(file_path) == stat_info:
-            return False
+            return
 
         # If the file's mtime predates today's day boundary, it can't contain
         # today's records — store the fingerprint and skip I/O entirely.
         mtime_ns = stat_info[0]
-        mtime_dt = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=timezone.utc)
+        mtime_dt = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=UTC)
         if get_day(mtime_dt, DAY_START_HOURS).isoformat() < self._today_key:
             self._fingerprints[file_path] = stat_info
-            return False
+            return
 
         self._fingerprints[file_path] = stat_info
         provider = file_path.parent.parent.name
         bucket = self._stats.scan_day_file(provider, file_path, self._today_key)
         self._file_buckets[file_path] = bucket
-        return True
 
     def remove_file(self, file_path: Path) -> None:
         """Remove a deleted file's tracked contribution and fingerprint."""
         self._file_buckets.pop(file_path, None)
         self._fingerprints.pop(file_path, None)
 
-    def flush(self, *, content_changed: bool = True) -> None:
+    def flush(self) -> None:
         """
         Aggregate all tracked file contributions and write ``usage.json``.
 
-        When *content_changed* is False the file is only ``touch``-ed (mtime
-        updated) so consumers can still see the file is live; when True the
-        full JSON payload is atomically rewritten.
+        The payload is atomically rewritten whenever it differs from the one this
+        process last wrote, or the file is missing; otherwise the file is only
+        ``touch``-ed (mtime updated) so consumers can still see it is live. Because
+        the first flush of a process always writes, a payload left behind by an
+        earlier run — for a day that has since rolled over — is replaced rather than
+        touched, which would have kept the statusline reporting the previous day's
+        totals under "Today".
 
         Detects day rollover as a safety net (the caller is expected to handle
         rollover explicitly via :meth:`detect_rollover`, but if a tick straddles
@@ -119,7 +125,7 @@ class UsageTracker:
 
         cost_str = f"${total.cost:.2f}" if not total.cost_unknown else "?"
 
-        output = {
+        output: dict[str, int | str] = {
             "in": total.in_,
             "out": total.out,
             "cache": total.cr,
@@ -128,8 +134,9 @@ class UsageTracker:
             "requests": total.msgs,
         }
 
-        if content_changed or not self._output_path.exists():
+        if output != self._last_output or not self._output_path.exists():
             atomic_write_json(self._output_path, output)
+            self._last_output = output
         else:
             with contextlib.suppress(OSError):
                 self._output_path.touch()
@@ -140,4 +147,4 @@ class UsageTracker:
 
     @staticmethod
     def _current_day_key() -> str:
-        return get_day(datetime.now(timezone.utc), DAY_START_HOURS).isoformat()
+        return get_day(datetime.now(UTC), DAY_START_HOURS).isoformat()

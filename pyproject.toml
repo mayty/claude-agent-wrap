@@ -3,9 +3,9 @@
 [project]
 name = "agent-wrap"
 version = "0.0.0"
-requires-python = ">=3.10"
+requires-python = "==3.14.7"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=9.1.1,<10",
     "pytest-cov>=7.1.0,<8",
@@ -31,9 +31,10 @@ markers = []
 # ruff (linter + formatter)
 # ---------------------------------------------------------------------------
 [tool.ruff]
-target-version = "py310"
+target-version = "py314"
 line-length = 100
 src = ["."]
+extend-exclude = [".python"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -93,9 +94,6 @@ ignore = [
 
     # --- Project-specific ---
 
-    # CLI tool -- print is the primary output mechanism
-    "T201",
-
     # subprocess calls to docker/git are core functionality; inputs are controlled
     "S603",
     "S607",
@@ -125,9 +123,25 @@ ignore = [
     "INP001",  # not a package — plain dir of files mounted into the sidecar container
     "TC001",   # imports from the parent package are runtime dependencies in sidecar context
     "TC002",   # same — sidecar-deployed files import at runtime, not just type-checking
+    "T201",    # EC001 forbids importing agent_wrap here, so DisplayService is unreachable
 ]
 "scripts/**" = [
     "INP001",  # individual scripts, not package
+    "T201",    # standalone host-side linters; importing their own subject would couple them
+]
+# Every remaining T201 exemption below is an output path that deliberately does not go
+# through DisplayService. Everywhere else, user-facing output must use it.
+"agent_wrap/domain/display/service.py" = [
+    "T201",    # the display layer itself -- these prints are the abstraction
+]
+"agent_wrap/domain/display/spinner.py" = [
+    "T201",    # ditto: the spinner writes its own frames to stderr
+]
+"agent_wrap/domain/logs/daemon.py" = [
+    "T201",    # separate process; stdout is dup2'd to the daemon's own logfile
+]
+"agent_wrap/__main__.py" = [
+    "T201",    # shell tab-completion candidates: machine-readable stdout, not a message
 ]
 
 [tool.ruff.lint.isort]
@@ -137,6 +151,15 @@ known-first-party = ["agent_wrap"]
 ban-relative-imports = "all"
 
 [tool.ruff.format]
+# The carve-out regions are formatted separately, at their own lower target
+# version (see the carveout-check and format targets in the Makefile). At
+# target-version py314 the formatter strips the parentheses from
+# `except (A, B):` -- legal since PEP 758, and a SyntaxError on the older
+# interpreters these two regions actually run on.
+exclude = [
+    "ops/statusline.py",
+    "agent_wrap/domain/providers/litellm_runtime/**",
+]
 quote-style = "double"
 indent-style = "space"
 
@@ -181,7 +204,6 @@ project_includes = [
 # and an explicit path argument makes pyrefly ignore project_excludes entirely, so
 # those entries never took effect. The directory's flat sys.path imports are covered
 # by inline `# type: ignore` comments in the files themselves instead.
-python_version = "3.10"
+python_version = "3.14"
 
 [tool.pyrefly.errors]
-missing-override-decorator = false

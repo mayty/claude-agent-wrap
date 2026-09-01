@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the shared argparse helpers (parse_or_code / make_parser)."""
 
-from __future__ import annotations
-
 import argparse
 
 import pytest
@@ -135,3 +133,9 @@ def test_make_parser_prog_and_abbrev_disabled() -> None:
     assert parser.prog == "agent demo"
     # allow_abbrev=False: an unambiguous prefix must NOT match the long flag.
     assert parse_or_code(parser, ["--fl"]) == 1
+
+
+def test_make_parser_enables_choice_suggestions() -> None:
+    # Asserted as an attribute rather than by matching argparse's message text,
+    # which is CPython-internal wording. Off by default, so this pins the kwarg.
+    assert _parser().suggest_on_error is True

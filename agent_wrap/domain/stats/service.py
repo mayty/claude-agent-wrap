@@ -1,13 +1,11 @@
 # This file has been created with the assistance of an AI tool.
 """Token usage stats aggregation — domain service."""
 
-from __future__ import annotations
-
 import copy
 import shutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from functools import cache, partial
 from typing import TYPE_CHECKING
 
@@ -41,6 +39,8 @@ from agent_wrap.domain.stats.models import (
     DirResult,
     Group,
     GroupResult,
+    HourBuckets,
+    HourKey,
     OrphanedResult,
     ProjectRow,
     StatsReport,
@@ -100,8 +100,8 @@ class StatsService:
             from_iso=day_key,
             until_iso=day_key,
         )
-        by_day, _by_source = fold_raw_to_buckets(records, self._pricing)
-        price_buckets(by_day, self._pricing)
+        by_day_hour, _by_source = fold_raw_to_buckets(records, self._pricing)
+        by_day = price_buckets(by_day_hour, self._pricing)
 
         combined = self._pricing.new_bucket()
         for bucket in by_day.get(day_key, {}).values():
@@ -219,7 +219,7 @@ class StatsService:
         * a bound plus ``--days 0`` → open on the other side
         """
         if from_date is not None and until_date is not None and days_given:
-            return WindowError("usage: at most two of --from, --until, --days may be given")
+            return WindowError("at most two of --from, --until, --days may be given")
 
         # A count of 0 means "unlimited" — it imposes no bound on the open side.
         lo, hi = self._combine_bounds(from_date, until_date, days or None, days_given=days_given)
@@ -228,7 +228,7 @@ class StatsService:
         lo_iso = None if lo == date.min else lo.isoformat()
         hi_iso = None if hi == date.max else hi.isoformat()
         if lo_iso is not None and hi_iso is not None and lo_iso > hi_iso:
-            return WindowError("usage: --from date is after --until date")
+            return WindowError("--from date is after --until date")
         return lo_iso, hi_iso
 
     def _combine_bounds(
@@ -284,7 +284,7 @@ class StatsService:
     @staticmethod
     def now_utc() -> datetime:
         """Return the current UTC instant — the seam tests freeze for deterministic windows."""
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def build_report(self, projects: list[Path], args: UsageArgs) -> StatsReport:
         """
@@ -424,9 +424,13 @@ class StatsService:
                     last_ts = ts
                 all_records.extend(records)
 
-            by_day, by_source = fold_raw_to_buckets(all_records, self._pricing)
-            price_buckets(by_day, self._pricing, refresh_pricing_data=refresh_pricing_data)
-            price_buckets(by_source, self._pricing, refresh_pricing_data=refresh_pricing_data)
+            by_day_hour, by_source_hour = fold_raw_to_buckets(all_records, self._pricing)
+            by_day = price_buckets(
+                by_day_hour, self._pricing, refresh_pricing_data=refresh_pricing_data
+            )
+            by_source = price_buckets(
+                by_source_hour, self._pricing, refresh_pricing_data=refresh_pricing_data
+            )
             cache[logs_dir] = DirResult(sessions, last_ts, by_day, by_source)
         return cache
 
@@ -471,7 +475,11 @@ class StatsService:
             return []
         for child in children:
             try:
-                if not child.is_dir():
+                # Free: ``child`` came from ``iterdir()``, so ``.info`` answers from the
+                # cached scandir dirent instead of a ``stat()``. The ``except OSError``
+                # now guards only ``resolve()`` below — ``.info.is_dir()`` returns False
+                # on error rather than raising.
+                if not child.info.is_dir():
                     continue
                 if child.resolve() not in reachable:
                     orphaned.append(child)
@@ -695,8 +703,12 @@ class StatsService:
         )
 
         # Price while local, then merge — never the other way round.
-        price_buckets(local_by_day, self._pricing, refresh_pricing_data=refresh_pricing_data)
-        price_buckets(local_by_source, self._pricing, refresh_pricing_data=refresh_pricing_data)
+        local_by_day = price_buckets(
+            local_by_day, self._pricing, refresh_pricing_data=refresh_pricing_data
+        )
+        local_by_source = price_buckets(
+            local_by_source, self._pricing, refresh_pricing_data=refresh_pricing_data
+        )
 
         total = self._pricing.new_bucket()
         for day, by_model in local_by_day.items():
@@ -729,25 +741,26 @@ class StatsService:
         hours. Returned buckets carry no cost; the caller prices them.
         """
         archive = read_archive(AGENT_LAUNCHES_DIR / ORPHANED_ARCHIVE_FILENAME)
-        by_day: dict[str, dict[str, Bucket]] = {}
-        by_source_totals: dict[str, dict[str, Bucket]] = {}
+        by_day: HourBuckets = {}
+        by_source_totals: HourBuckets = {}
         last_ts: datetime | None = None
 
         for date_key, by_hour in archive.items():
-            for hour_key, by_model in by_hour.items():
-                dt = self._archived_hour_dt(date_key, hour_key)
+            for raw_hour, by_model in by_hour.items():
+                dt = self._archived_hour_dt(date_key, raw_hour)
                 day_key = get_day(dt, DAY_START_HOURS).isoformat() if dt else UNKNOWN_TIME_KEY
                 if not day_in_range(day_key, from_iso, until_iso):
                     continue
                 if dt is not None and (last_ts is None or dt > last_ts):
                     last_ts = dt
+                hour_key = HourKey(dt.weekday(), dt.hour) if dt is not None else HourKey(None, None)
                 for model, by_source in by_model.items():
                     for source, leaf in by_source.items():
                         bucket = self._bucket_from_leaf(leaf)
-                        by_day.setdefault(day_key, {}).setdefault(
+                        by_day.setdefault(day_key, {}).setdefault(hour_key, {}).setdefault(
                             model, self._pricing.new_bucket()
                         ).merge(bucket)
-                        by_source_totals.setdefault(source, {}).setdefault(
+                        by_source_totals.setdefault(source, {}).setdefault(hour_key, {}).setdefault(
                             model, self._pricing.new_bucket()
                         ).merge(bucket)
 
@@ -787,7 +800,7 @@ class StatsService:
         """
         try:
             year, month, day = (int(part) for part in date_key.split("-"))
-            return datetime(year, month, day, int(hour_key), tzinfo=timezone.utc)
+            return datetime(year, month, day, int(hour_key), tzinfo=UTC)
         except ValueError:
             return None
 

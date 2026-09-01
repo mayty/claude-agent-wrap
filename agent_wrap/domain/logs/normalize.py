@@ -1,14 +1,13 @@
 # This file has been created with the assistance of an AI tool.
 """Record normalization for the logs viewer."""
 
-from __future__ import annotations
-
 import json
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.logs.constants import ALIAS_NAME_RE, TITLE_RE
 from agent_wrap.domain.logs.hash_resolver import resolve_hashes
 from agent_wrap.domain.logs.models import ExtractedFields, NormalizedRecordBase
+from agent_wrap.lib.daytime import epoch_to_dt
 
 if TYPE_CHECKING:
     from agent_wrap.domain.pricing.service import PricingService
@@ -135,7 +134,11 @@ def enrich_with_costs(
     # Compute cost in USD when pricing data is available.
     cost = None
     if normalized["status"] == "success" and usage and model:
-        cost = pricing.compute_cost(provider, model, usage=norm_usage)
+        timing = normalized.get("timing") or {}
+        ts = epoch_to_dt(timing.get("start"))
+        hour = ts.hour if ts is not None else None
+        weekday = ts.weekday() if ts is not None else None
+        cost = pricing.compute_cost(provider, model, usage=norm_usage, hour=hour, weekday=weekday)
 
     return {
         "context_tokens": in_t,
@@ -179,7 +182,7 @@ def extract_alias(rec: LogRecord) -> str | None:
     stripped = content.strip()
     try:
         obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         match = ALIAS_NAME_RE.search(stripped)
         return match.group(1).strip() or None if match else None
     if isinstance(obj, dict):
@@ -201,7 +204,7 @@ def extract_title(rec: LogRecord) -> str | None:
     stripped = content.strip()
     try:
         obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         match = TITLE_RE.search(stripped)
         return match.group(1).strip() or None if match else None
     if isinstance(obj, dict):

@@ -1,7 +1,5 @@
-# This file has been created with the assistance of an AI tool.
-"""The `create` subcommand — scaffolds a Dockerfile.agent."""
-
-from __future__ import annotations
+# This file has been edited with the assistance of an AI tool.
+"""The `create` subcommand — scaffolds a project Dockerfile."""
 
 from typing import TYPE_CHECKING
 
@@ -12,7 +10,7 @@ if TYPE_CHECKING:
     import argparse
 
 USAGE = ""
-SUMMARY = "Scaffold Dockerfile.agent"
+SUMMARY = "Scaffold .claude-agent-wrap/Dockerfile"
 
 
 def build_parser() -> argparse.ArgumentParser:

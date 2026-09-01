@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """CLI-layer tests for agent_wrap.cli.cleanup — parsing, prompting, and reporting."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +11,7 @@ from agent_wrap.cli.cleanup.constants import CLEANUP_LABEL
 from agent_wrap.cli.cleanup.run import build_parser
 from agent_wrap.cli.cleanup.run import run as cleanup_run
 from agent_wrap.containers import services
+from agent_wrap.domain.build.models import ImageCleanupOutcome, ImageCleanupScope
 from agent_wrap.domain.stats.models import CleanupOutcome, CleanupResult, CleanupScope
 
 if TYPE_CHECKING:
@@ -55,6 +54,24 @@ def stats_mock() -> Mock:
     stats.cleanup_scope.return_value = _scope()  # pyrefly: ignore [missing-attribute]
     stats.run_cleanup.return_value = _outcome()  # pyrefly: ignore [missing-attribute]
     return stats
+
+
+@pytest.fixture(autouse=True)
+def build_mock() -> Mock:
+    """
+    Return the mocked BuildService, seeded as a host with no outdated images.
+
+    Autouse so the log-and-registry cases in this file describe exactly what they did
+    before images joined the command: every one of them runs against an empty image
+    scope. The image behaviour has its own file.
+    """
+    build = services.build_service
+    empty_scope = ImageCleanupScope(images=[], unattributable=0)
+    build.image_cleanup_scope.return_value = empty_scope  # pyrefly: ignore [missing-attribute]
+    build.remove_images.return_value = ImageCleanupOutcome(  # pyrefly: ignore [missing-attribute]
+        removed=[], skipped=[]
+    )
+    return build
 
 
 @pytest.fixture

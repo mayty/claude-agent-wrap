@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI argument parsing for the usage-stats subcommand."""
 
-from __future__ import annotations
-
 import argparse
 import re
 from datetime import datetime, timedelta
@@ -143,7 +141,7 @@ def parse_usage_args(
         try:
             compiled_pattern = re.compile(ns.pattern)
         except re.error as exc:
-            display.error(f"usage: invalid regex pattern: {exc}")
+            display.error(f"invalid regex pattern: {exc}")
             return None
 
     return UsageArgs(

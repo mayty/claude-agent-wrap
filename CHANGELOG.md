@@ -5,6 +5,16 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.10.0](releases/0.10.0.md) — 2026-09-01
+
+**Breaking:** the wrapper now runs a CPython version it pins itself, not the host's
+`python3`. Run `bin/agent-bootstrap` once in each checkout, or `agent` refuses to start. It
+also adds spell checking, per-project startup scripts, a launch-directory check, automatic
+image rebuilds, and image reclaim in `agent cleanup`. A project Dockerfile must now inherit
+from `claude-agent`; the first `agent run` rebuilds both images by itself. The
+`litellm-deepseek` provider now honours DeepSeek's peak and off-peak hours, and its default
+model mapping is updated.
+
 ## [0.9.0](releases/0.9.0.md) — 2026-08-14
 
 Adds a `litellm-anthropic-sub` provider that spends a claude.ai subscription rather than

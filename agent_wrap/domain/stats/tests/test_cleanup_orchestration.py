@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the cleanup scope/run cycle — what is surveyed, and what is mutated."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock

@@ -16,8 +16,6 @@ Subclasses override a handful of class attributes and two abstract env hooks; th
 wires them into a ``LiteLLMSidecarConfig`` in ``sidecar()``.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from functools import cache
 from pathlib import Path
@@ -79,6 +77,12 @@ class Provider(ABC):
     #: and other Anthropic-backed features — a provider whose users need those to keep
     #: working overrides this to False.
     disable_nonessential_traffic: ClassVar[bool] = True
+    #: Whether `agent run` starts the `agent logs` background viewer for this provider.
+    #: That viewer is the only writer of the usage totals the bundled statusline reads,
+    #: so leaving it down costs this provider's users their token/cost segment. A
+    #: provider whose statusline segment is fed from somewhere else -- a subscription
+    #: reports seat consumption, not spend -- overrides this to False.
+    autostart_logs_viewer: ClassVar[bool] = True
 
     # ------------------------------------------------------------------
     # Shared defaults (rarely overridden)
@@ -350,6 +354,8 @@ class Provider(ABC):
         model: str,
         usage: TokenUsage,
         *,
+        hour: int | None,  # noqa: ARG002
+        weekday: int | None = None,  # noqa: ARG002
         refresh_pricing_data: bool = False,
     ) -> float | None:
         """
@@ -359,6 +365,12 @@ class Provider(ABC):
         ``_get_tiered_pricing()`` or ``_get_pricing()``, strips context-length
         suffixes from *model*, prefix-matches against pricing keys, selects the
         appropriate tier, and computes the cost.
+
+        *hour* is the UTC hour the usage belongs to (the half-open interval
+        ``[hour, hour+1)``), or None when unknown. *weekday* is the UTC weekday
+        (``datetime.weekday()``: 0=Monday ... 6=Sunday), or None when unknown. The
+        flat default ignores both; a provider with time-of-day pricing overrides
+        this method to consume them.
 
         Subclasses can override this method to add custom logic (e.g., time-of-day
         multipliers).  *model* arrives already-normalized by ``PricingService``

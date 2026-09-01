@@ -29,9 +29,9 @@ Agent container (injected by `get_agent_env`):
 
 - `ANTHROPIC_API_KEY` — the sidecar's master key
 - `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm-deepseek:<port>`
-- `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` — `deepseek-v4-pro[1m]`
-- `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `deepseek-v4-flash[1m]`
-- `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-v4-flash[1m]`
+- `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `deepseek-v4-flash-vision-exp[1m]`
+- `ANTHROPIC_DEFAULT_OPUS_MODEL` — `deepseek-v4-pro[1m]`
+- `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-v4-flash-vision-exp[1m]`
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
 
 Sidecar container (injected by `get_sidecar_env`):
@@ -45,3 +45,5 @@ See [`config.yaml`](config.yaml) for the LiteLLM proxy config — model-pattern 
 ## Pricing
 
 Pricing used by `agent stats` is **live-scraped** from DeepSeek's public pricing page, cached for 7 days. If the scrape fails (page unreachable, or DeepSeek changes the page's markup), it silently falls back to the stale cache, or to unknown/`$0` cost if no cache exists yet.
+
+The scraped rates are DeepSeek's **peak-hour** rates; the page's peak-hours footnote is cached alongside them. Peak rates apply Monday through Friday (UTC) during the peak hours; off-peak usage — weekdays outside those hours, plus all of Saturday and Sunday — is billed at exactly half.

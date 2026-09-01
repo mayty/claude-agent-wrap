@@ -24,6 +24,13 @@ POLL_INTERVAL_SEC = 0.05
 # Global, gitignored runtime state for the background viewer.
 STATE_FILE_NAME = "logs-server.json"
 
+# Serializes the decide-then-spawn window so two launchers cannot both conclude that no
+# viewer is running and each start one. Held across a state read, a fork and one small
+# write -- never across the viewer's cold start -- so the timeout only has to cover
+# scheduling noise, and exceeding it means something is wrong rather than merely busy.
+SPAWN_LOCK_NAME = "logs-server.lock"
+SPAWN_LOCK_TIMEOUT_SEC = 5.0
+
 # Today's usage totals, written by UsageTracker and read by the bundled statusline
 # (as ~/.claude/usage.json inside the container — the same file via the bind mount).
 # Relative to GLOBAL_CONFIG_DIR.

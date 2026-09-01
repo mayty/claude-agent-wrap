@@ -21,10 +21,8 @@ one cell (``None`` / ``""``) instead of raising, because a diagnostic command mu
 still print the rest of the report.
 """
 
-from __future__ import annotations
-
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agent_wrap.constants import (
     CONTAINER_NAME_PREFIX,
@@ -58,7 +56,7 @@ class ContainerParsing:
         """Parse a ``{{json}}`` field expected to be an object; {} on anything else."""
         try:
             parsed: object = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             return {}
         if not isinstance(parsed, dict):
             return {}
@@ -69,7 +67,7 @@ class ContainerParsing:
         """Parse a ``{{json}}`` field expected to be an array; [] on anything else."""
         try:
             parsed: object = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             return []
         if not isinstance(parsed, list):
             return []
@@ -94,7 +92,7 @@ class ContainerParsing:
         started = parse_docker_timestamp(started_at)
         if started is None:
             return None
-        elapsed = (datetime.now(tz=timezone.utc) - started).total_seconds()
+        elapsed = (datetime.now(tz=UTC) - started).total_seconds()
         if elapsed < 0:
             return None
         return int(elapsed)

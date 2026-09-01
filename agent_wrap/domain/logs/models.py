@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Data models for the logs domain."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
 
@@ -13,10 +11,20 @@ if TYPE_CHECKING:
 
 
 class DaemonState(TypedDict):
-    """State of a running logs viewer daemon."""
+    """
+    State of a logs viewer daemon that is running or coming up.
+
+    *starting* is True between the spawn claim and the moment the viewer actually binds
+    its port: the claim is written by the spawning side as soon as it knows the pid, so a
+    concurrent launcher sees the slot taken instead of starting a second viewer. The
+    viewer itself clears the flag once it is listening, and corrects *port* at the same
+    time -- until then *port* is the port that was requested, not necessarily the one
+    finally bound.
+    """
 
     pid: int
     port: int
+    starting: bool
 
 
 class Fingerprint(TypedDict):
@@ -39,6 +47,9 @@ class ViewerState:
     running: bool
     pid: int | None
     port: int | None
+    #: True when the viewer's process is alive but has not bound its port yet, so
+    #: *running* is already True while nothing is listening. See :class:`DaemonState`.
+    starting: bool
     #: Size of the viewer's logfile in bytes, or None when it is absent.
     log_size: int | None
     #: Epoch seconds of the logfile's last write, or None when it is absent.

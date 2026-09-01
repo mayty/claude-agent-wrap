@@ -1,0 +1,272 @@
+#!/bin/sh
+# This file has been created with the assistance of an AI tool.
+#
+# agent-wrap: provisions the pinned CPython this wrapper runs on.
+#
+# The wrapper does not use the host's python3 -- bin/agent execs an interpreter
+# this script installs, so the pinned version is the only one the CLI ever runs
+# on. Deliberately POSIX sh with no Python of its own: it is what makes the host
+# requirement "curl + tar + a SHA-256 tool" instead of "some Python, we hope".
+#
+# Layout under the prefix (default <wrap_dir>/.python, gitignored):
+#   cpython-<ver>+<rel>-<target>/   an extracted, hash-verified interpreter tree
+#   venv-cpython-<ver>+<rel>-<target>/  dev tools, --dev only
+#   current                         one line: the slug bin/agent should exec
+#
+# `current` is a plain text file rather than a symlink on purpose. Replacing a
+# symlink-to-directory in POSIX sh is not portable -- `mv -f newlink oldlink`
+# moves the new link *inside* the target directory on both GNU and BSD, and the
+# fix (`mv -T`) does not exist on macOS. `mv tmp current` onto a regular file is
+# a true atomic rename(2) everywhere.
+#
+# Nothing is ever mutated in place and nothing is ever pruned: a logs daemon
+# started under an older interpreter keeps running from its own tree. To reclaim
+# the space, remove the whole prefix and re-run:
+#   rm -rf .python && bin/agent-bootstrap
+#
+# Usage: agent-bootstrap [--dev] [--force] [--prefix DIR]
+#   --dev         also build a venv and install the dev dependency group
+#   --force       provision even when the pin is already satisfied
+#   --prefix DIR  install under DIR instead of <wrap_dir>/.python
+#
+# Env:
+#   AGENT_PYTHON_TARBALL  use a pre-staged archive instead of downloading. Still
+#                         verified against the pin's SHA-256, so this is a
+#                         staging path for air-gapped hosts, not a way around
+#                         the pin.
+
+set -eu
+
+BASE_URL=https://github.com/astral-sh/python-build-standalone/releases/download
+
+die() {
+    printf 'agent-bootstrap: %s\n' "$*" >&2
+    exit 1
+}
+
+note() {
+    printf 'agent-bootstrap: %s\n' "$*"
+}
+
+# Resolve this script's real path, following symlinks. Kept deliberately
+# identical to the loop in bin/agent -- change one, change the other.
+src="$0"
+while [ -h "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    case "$src" in
+        /*) ;;
+        *) src="$dir/$src" ;;
+    esac
+done
+bin_dir=$(cd -P "$(dirname "$src")" && pwd)
+wrap_dir=$(dirname "$bin_dir")
+
+want_dev=0
+force=0
+prefix="$wrap_dir/.python"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dev) want_dev=1 ;;
+        --force) force=1 ;;
+        --prefix)
+            [ $# -ge 2 ] || die "--prefix needs a directory"
+            prefix="$2"
+            shift
+            ;;
+        --prefix=*) prefix=${1#--prefix=} ;;
+        -h|--help)
+            sed -n '27,36p' "$src" | sed -e 's/^#$//' -e 's/^# //'
+            exit 0
+            ;;
+        *) die "unknown argument: $1 (try --help)" ;;
+    esac
+    shift
+done
+
+[ -f "$wrap_dir/python-pin.env" ] || die "missing pin file: $wrap_dir/python-pin.env"
+# shellcheck disable=SC1091
+. "$wrap_dir/python-pin.env"
+[ -n "${AGENT_PY_VERSION:-}" ] || die "python-pin.env sets no AGENT_PY_VERSION"
+[ -n "${AGENT_PY_RELEASE:-}" ] || die "python-pin.env sets no AGENT_PY_RELEASE"
+
+# --- target resolution ------------------------------------------------------
+# The arch name is per-OS, not universal: Linux reports aarch64 where macOS
+# reports arm64, and both map to the same python-build-standalone target.
+os=$(uname -s)
+machine=$(uname -m)
+case "$os" in
+    Linux)
+        platform=unknown-linux-gnu
+        # python-build-standalone's -unknown-linux-gnu builds are glibc-linked.
+        # On musl they fail to exec with a bewildering "not found", so say so.
+        for loader in /lib/ld-musl-*; do
+            [ -e "$loader" ] && die "musl libc detected ($loader); only glibc hosts are supported"
+            break
+        done
+        ;;
+    Darwin) platform=apple-darwin ;;
+    *) die "unsupported OS: $os (supported: Linux, Darwin)" ;;
+esac
+case "$machine" in
+    x86_64|amd64) cpu=x86_64 ;;
+    aarch64|arm64) cpu=aarch64 ;;
+    *) die "unsupported architecture: $machine (supported: x86_64, aarch64/arm64)" ;;
+esac
+target="$cpu-$platform"
+
+slug="cpython-$AGENT_PY_VERSION+$AGENT_PY_RELEASE-$target"
+asset="$slug-install_only_stripped.tar.gz"
+tree="$prefix/$slug"
+venv="$prefix/venv-$slug"
+
+sha_var="SHA256_$(printf '%s' "$target" | tr - _)"
+eval "want_sha=\${$sha_var:-}"
+[ -n "$want_sha" ] || die "python-pin.env carries no hash for $target ($sha_var)"
+
+# Already satisfied? Checked twice: once before taking the lock, so the common case
+# costs a couple of stats and no network, and again after acquiring it, so a process
+# that queued behind a concurrent bootstrap does not redo the work that bootstrap
+# just finished.
+pin_satisfied() {
+    [ "$force" -eq 0 ] || return 1
+    [ -x "$tree/bin/python3" ] || return 1
+    [ -f "$prefix/current" ] || return 1
+    read -r installed < "$prefix/current" || return 1
+    [ "$installed" = "$slug" ] || return 1
+    [ "$want_dev" -eq 0 ] || [ -x "$venv/bin/python3" ] || return 1
+    return 0
+}
+
+if pin_satisfied; then
+    exit 0
+fi
+
+# --- tool probes ------------------------------------------------------------
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | sed 's/.*= *//'
+    else
+        die "no SHA-256 tool found (need sha256sum, shasum or openssl)"
+    fi
+}
+
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$2" "$1"
+    else
+        die "no downloader found (need curl or wget)"
+    fi
+}
+
+command -v tar >/dev/null 2>&1 || die "tar not found"
+
+# --- lock -------------------------------------------------------------------
+# mkdir, not flock: macOS ships no flock(1). The pid file is what makes a lock
+# left behind by a SIGKILL recoverable -- the startup-script path can kill this
+# script's whole process group, and a lock nobody can break would wedge every
+# future bootstrap on the host.
+mkdir -p "$prefix"
+lock="$prefix/.lock"
+waited=0
+while ! mkdir "$lock" 2>/dev/null; do
+    owner=$(cat "$lock/pid" 2>/dev/null || echo "")
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+        [ "$waited" -eq 0 ] && note "waiting for another bootstrap (pid $owner)"
+        waited=$((waited + 1))
+        [ "$waited" -lt 600 ] || die "bootstrap pid $owner has held the lock for 10 minutes"
+        sleep 1
+    else
+        note "removing a stale lock left by pid ${owner:-unknown}"
+        rm -rf "$lock"
+    fi
+done
+printf '%s\n' "$$" > "$lock/pid"
+
+if pin_satisfied; then
+    rm -rf "$lock"
+    exit 0
+fi
+
+tmp="$prefix/.tmp.$$"
+cleanup() {
+    rm -rf "$tmp" "$lock"
+}
+trap cleanup EXIT INT TERM HUP
+mkdir -p "$tmp"
+
+# --- fetch and verify -------------------------------------------------------
+if [ -n "${AGENT_PYTHON_TARBALL:-}" ]; then
+    [ -f "$AGENT_PYTHON_TARBALL" ] || die "AGENT_PYTHON_TARBALL is not a file: $AGENT_PYTHON_TARBALL"
+    tarball="$AGENT_PYTHON_TARBALL"
+    note "using staged archive $tarball"
+else
+    tarball="$tmp/$asset"
+    note "downloading CPython $AGENT_PY_VERSION for $target"
+    fetch "$BASE_URL/$AGENT_PY_RELEASE/$asset" "$tarball"
+fi
+
+got_sha=$(sha256_of "$tarball")
+if [ "$got_sha" != "$want_sha" ]; then
+    die "SHA-256 mismatch for $asset
+  expected $want_sha
+  got      $got_sha"
+fi
+
+# --- extract ----------------------------------------------------------------
+# Unpack beside the destination and rename, so a partially written tree is
+# never visible under its final name. The archive's top level is `python/`.
+if [ ! -x "$tree/bin/python3" ]; then
+    rm -rf "$tree"
+    tar -xzf "$tarball" -C "$tmp"
+    [ -x "$tmp/python/bin/python3" ] || die "$asset did not contain python/bin/python3"
+    mv "$tmp/python" "$tree"
+fi
+"$tree/bin/python3" -c 'import sys; sys.exit(0)' \
+    || die "the extracted interpreter does not run on this host"
+
+# --- publish ----------------------------------------------------------------
+# Before the dev venv, deliberately. The interpreter is what `agent` needs, and it
+# is now verified and in place; a later pip failure must leave a working CLI and
+# break only `make check`, not both.
+printf '%s\n' "$slug" > "$tmp/current"
+mv "$tmp/current" "$prefix/current"
+note "CPython $AGENT_PY_VERSION ready at $tree"
+
+# --- dev venv ---------------------------------------------------------------
+# --dev only, so the end-user path never needs pip, PyPI or ensurepip. Installs
+# the dependency group alone: installing the project would put a second copy of
+# agent_wrap in site-packages for PYTHONPATH to shadow.
+if [ "$want_dev" -eq 1 ]; then
+    note "installing the dev dependency group"
+    "$tree/bin/python3" -m venv "$tmp/venv"
+    "$tmp/venv/bin/python3" -m pip install \
+        --group "$wrap_dir/pyproject.toml:dev" \
+        --only-binary=:all: \
+        --disable-pip-version-check \
+        --quiet
+    # pip bakes the interpreter's absolute path into the shebang of every console
+    # script it writes, and this venv is built under $tmp -- so `pytest`, `pip` and
+    # friends would land pointing at a directory this script is about to delete.
+    # Repointing them happens here, before the rename, to keep the invariant that
+    # nothing half-finished is ever visible under the final name. `sed -i` is out:
+    # BSD sed requires an argument to it and GNU sed forbids one.
+    for script in "$tmp"/venv/bin/*; do
+        [ -f "$script" ] || continue
+        IFS= read -r shebang < "$script" || continue
+        case $shebang in "#!$tmp/venv/bin/"*) ;; *) continue ;; esac
+        # cp first, then truncate it by redirection: that carries the executable
+        # bit over without a chmod that a umask could water down.
+        cp -p "$script" "$script.repointed"
+        sed "1s|^#!$tmp/venv/bin/|#!$venv/bin/|" "$script" > "$script.repointed"
+        mv "$script.repointed" "$script"
+    done
+    rm -rf "$venv"
+    mv "$tmp/venv" "$venv"
+fi

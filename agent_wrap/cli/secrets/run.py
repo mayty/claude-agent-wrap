@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """``agent secrets check|set|clear <sidecar>`` and ``agent secrets cleanup``."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from agent_wrap.containers import services
@@ -46,13 +44,24 @@ class _SecretsActions:
             dsp.info(f"Sidecar '{sidecar_name}' declares no secrets.")
             return 0
 
+        # The whole report goes to stdout so the columns stay aligned and the rows stay
+        # in declaration order; a severity tag on the MISSING rows alone would indent
+        # them past the OK rows, and splitting the two across streams reorders them
+        # under a pipe. The verdict is what carries the severity.
         width = max(map(len, report.entries))
         for namespaced, present in report.entries.items():
             if present:
                 dsp.success(f"{namespaced:{width}s}  OK")
             else:
-                dsp.error(f"{namespaced:{width}s}  MISSING")
-        return 0 if report.all_present else 1
+                dsp.info(f"{namespaced:{width}s}  MISSING")
+        if not report.all_present:
+            missing = [key for key, present in report.entries.items() if not present]
+            dsp.error(
+                f"{len(missing)} of {len(report.entries)} secrets missing for "
+                f"'{sidecar_name}'\nRun 'agent secrets set {sidecar_name}' to set them."
+            )
+            return 1
+        return 0
 
     @staticmethod
     def set(sidecar_name: str) -> int:

@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data types for the display service."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 if TYPE_CHECKING:

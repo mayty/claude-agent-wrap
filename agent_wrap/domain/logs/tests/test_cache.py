@@ -1,17 +1,18 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for the LogsCache — in-memory cache and background FS watcher."""
 
-from __future__ import annotations
-
 import json
+import os
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock
 
 import pytest
 
+import agent_wrap.domain.logs.usage_tracker as usage_tracker_mod
 import agent_wrap.domain.stats.service as stats_mod
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
@@ -111,9 +112,7 @@ _CWD = Path()
 
 
 @pytest.fixture
-def started_cache(
-    pricing: PricingService, config_mock: ConfigService
-) -> Generator[LogsCache, None, None]:
+def started_cache(pricing: PricingService, config_mock: ConfigService) -> Generator[LogsCache]:
     stats = Mock(spec=StatsService)
     stats.resolve_group.return_value = (_CWD, ".", False)
     stats.orphaned_log_dirs.return_value = cast("list[Path]", [])
@@ -302,7 +301,7 @@ def test_oserror_handled_gracefully_during_poll(
         original_iterdir = Path.iterdir
         _simulated_msg = "Simulated"
 
-        def _failing_iterdir(self_path: Path) -> Generator[Path, None, None]:
+        def _failing_iterdir(self_path: Path) -> Generator[Path]:
             if self_path == logs_target:
                 raise OSError(_simulated_msg)
             yield from original_iterdir(self_path)
@@ -524,6 +523,108 @@ def test_usage_tracker_responds_to_file_changes(
         cache._poll_once()
         updated = json.loads(usage_path.read_text(encoding="utf-8"))
         assert updated["requests"] > initial["requests"]
+    finally:
+        cache.stop()
+
+
+def test_poll_once_rewrites_stale_usage_json_when_no_activity(
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """A day with no records overwrites a previous day's payload instead of touching it."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    yesterday = time.time() - 36 * 3600
+    project = tmp_path / "testproj"
+    old_record = {
+        "status": "success",
+        "model": "m",
+        "timing": {"start": yesterday},
+        "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
+    }
+    sdir = write_session(project, "litellm-bedrock", "sess-1", [old_record])
+    os.utime(sdir / "messages.jsonl", (yesterday, yesterday))
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    # Yesterday's payload, as a previous daemon run would have left it behind.
+    usage_path = tmp_path / ".claude" / "usage.json"
+    usage_path.parent.mkdir(parents=True, exist_ok=True)
+    usage_path.write_text(
+        json.dumps(
+            {
+                "in": 100,
+                "out": 50,
+                "cache": 0,
+                "cache_creation": 0,
+                "cost": "$1.23",
+                "requests": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        cache._poll_once()
+
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+        assert data["in"] == 0
+        assert data["out"] == 0
+        assert data["requests"] == 0
+        assert data["cost"] == "$0.00"
+    finally:
+        cache.stop()
+
+
+def test_poll_once_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """A rollover past the day boundary with no new records zeroes the payload."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    today_record = {
+        "status": "success",
+        "model": "m",
+        "timing": {"start": time.time()},
+        "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
+    }
+    write_session(project, "litellm-bedrock", "sess-1", [today_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    usage_path = tmp_path / ".claude" / "usage.json"
+    try:
+        cache._poll_once()
+        assert json.loads(usage_path.read_text(encoding="utf-8"))["requests"] == 1
+
+        # Move the tracker's clock a day forward, leaving the log file untouched —
+        # the daemon's first tick past the day boundary on an idle machine.
+        fake_datetime = mocker.patch.object(usage_tracker_mod, "datetime", autospec=True)
+        fake_datetime.now.return_value = datetime.now(UTC) + timedelta(days=1)
+        fake_datetime.fromtimestamp.side_effect = datetime.fromtimestamp
+
+        cache._poll_once()
+
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+        assert data["in"] == 0
+        assert data["out"] == 0
+        assert data["requests"] == 0
+        assert data["cost"] == "$0.00"
     finally:
         cache.stop()
 

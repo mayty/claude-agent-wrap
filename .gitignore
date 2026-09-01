@@ -1,6 +1,7 @@
 .idea
 .claude_config
 .agent-launches/
+/.python/
 *.pyc
 __pycache__
 agent_wrap/domain/providers/*/lock
@@ -13,3 +14,4 @@ agent_wrap/domain/providers/*/pricing.json
 .coverage
 /litellm-logs
 .telegram-sidecar/
+.vscode

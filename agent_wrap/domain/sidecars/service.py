@@ -8,12 +8,15 @@ subpackage accesses sidecar functionality through an injected
 (``base``, ``litellm``, ``telegram``, ``tracker``) directly.
 """
 
-from __future__ import annotations
-
 import operator
 from typing import TYPE_CHECKING, Any
 
-from agent_wrap.constants import CONTAINER_NAME_PREFIX, ROLE_LABEL, ROLE_VALUE
+from agent_wrap.constants import (
+    CONTAINER_NAME_PREFIX,
+    ROLE_LABEL,
+    ROLE_VALUE,
+    RUNNING_STATUS,
+)
 from agent_wrap.domain.sidecars.constants import (
     AGENT_INSPECT_TEMPLATE,
     SIDECAR_INSPECT_TEMPLATE,
@@ -22,12 +25,17 @@ from agent_wrap.domain.sidecars.discovery import ContainerRows
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import (
     LiteLLMSidecarConfig,
+    LiveContainers,
     RegistryState,
     TelegramSidecarConfig,
 )
 from agent_wrap.domain.sidecars.telegram import TelegramSidecar
 from agent_wrap.domain.sidecars.tracker import SidecarTracker
-from agent_wrap.lib.docker_utils import inspect_containers, list_container_names
+from agent_wrap.lib.docker_utils import (
+    daemon_reachable,
+    inspect_containers,
+    list_container_names,
+)
 from agent_wrap.lib.flock import live_lock_ids
 
 if TYPE_CHECKING:
@@ -144,4 +152,26 @@ class SidecarService:
         return sorted(
             (row for row in rows if row is not None),
             key=operator.attrgetter("image", "cwd", "name"),
+        )
+
+    def live_containers(self, tool_dir: Path) -> LiveContainers:
+        """
+        Every agent container and sidecar Docker currently reports as running.
+
+        Gated on ``daemon_reachable`` first because ``list_container_names`` returns []
+        both for "nothing matched" and for "docker is unavailable", and a caller that
+        refuses to act while something is live must not read the second as the first.
+        An unreachable daemon is then reported as nothing running rather than as
+        unknown: a host whose Docker is down has no agent left to protect, and treating
+        it as live would leave the wrapper permanently unable to update itself there.
+
+        Unlike :meth:`registry_state` this asks Docker rather than the flock registry,
+        so it also sees an agent whose registration has already been cleared while its
+        container is still shutting down -- teardown clears registrations first.
+        """
+        if not daemon_reachable():
+            return LiveContainers(agents=[], sidecars=[])
+        return LiveContainers(
+            agents=[c for c in self.list_agent_containers(tool_dir) if c.status == RUNNING_STATUS],
+            sidecars=[c for c in self.list_sidecar_containers() if c.status == RUNNING_STATUS],
         )

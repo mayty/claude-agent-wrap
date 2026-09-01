@@ -12,14 +12,12 @@ Locking and the start/stop decision are the runner's concern (one shared lock
 + one ``SidecarTracker``); this class only ensures/stops its container.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, override
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -47,20 +45,24 @@ class TelegramSidecar(Sidecar):
     # --- Sidecar interface properties ---
 
     @property
+    @override
     def container_name(self) -> str:
         # One container name for every provider, so the runner refcounts this sidecar
         # across all of them — correct, since it is genuinely one shared container.
         return self.config.container_name
 
     @property
+    @override
     def cold_start_time(self) -> float:
         return self.config.cold_start_time
 
     @property
+    @override
     def short_circuit_time(self) -> float:
         return self.config.short_circuit_time
 
     @classmethod
+    @override
     def required_secrets(cls) -> list[tuple[str, str]]:
         return [
             ("TelegramBotToken", "Telegram Bot Token (from @BotFather)"),
@@ -69,6 +71,7 @@ class TelegramSidecar(Sidecar):
 
     # --- Public: prepare / ensure ---
 
+    @override
     def prepare(self) -> None:
         """Pull the sidecar image lock-free, before the runner takes the shared lock."""
         if self.config.headless:
@@ -80,9 +83,12 @@ class TelegramSidecar(Sidecar):
         )
         _, rc = docker_run("pull", self.config.image, capture=False, timeout=600)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to pull image {self.config.image}"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to pull image {self.config.image}"
+            )
+            raise SystemExit(1)
 
+    @override
     def ensure(
         self,
         *,
@@ -150,6 +156,7 @@ class TelegramSidecar(Sidecar):
 
     # --- Public: release ---
 
+    @override
     def release(self) -> None:
         """
         Gracefully stop and remove the sidecar container.
@@ -190,25 +197,31 @@ class TelegramSidecar(Sidecar):
             return
         _, rc = docker_run("network", "create", self.config.network_name)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to create docker network {self.config.network_name}"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to create docker network "
+                f"{self.config.network_name}"
+            )
+            raise SystemExit(1)
 
     def _attach_to_network(self, network: str) -> None:
         _, rc = docker_run("network", "inspect", network)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) does not exist"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) "
+                "does not exist"
+            )
+            raise SystemExit(1)
 
         if self._is_on_network(network):
             return
 
         _, rc = docker_run("network", "connect", network, self.config.container_name)
         if rc != 0:
-            msg = (
+            self._display.error(
                 f"{TELEGRAM_SIDECAR_LABEL}: failed to attach "
                 f"{self.config.container_name} to network '{network}'"
             )
-            raise SystemExit(msg)
+            raise SystemExit(1)
 
     def _is_on_network(self, network: str) -> bool:
         fmt = "{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}"
@@ -241,7 +254,7 @@ class TelegramSidecar(Sidecar):
             docker_run("rm", "-f", self.config.container_name)
 
         # Prepare log directory and LOG_LOCATION
-        dt = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
+        dt = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
         log_dir = self.config.log_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         log_filename = f"{dt}.log"
@@ -273,8 +286,10 @@ class TelegramSidecar(Sidecar):
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:
-            msg = f"{TELEGRAM_SIDECAR_LABEL}: failed to start {self.config.container_name}"
-            raise SystemExit(msg)
+            self._display.error(
+                f"{TELEGRAM_SIDECAR_LABEL}: failed to start {self.config.container_name}"
+            )
+            raise SystemExit(1)
 
     def _health_poll(self) -> bool:
         def poll() -> tuple[PollResult, str]:
@@ -376,5 +391,6 @@ class TelegramSidecar(Sidecar):
 
         return args
 
+    @override
     def on_exit(self) -> None:
         self._unregister()

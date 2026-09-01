@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 #
-# Validates a Dockerfile.agent against the agent-wrap contract BEFORE the
+# Validates a project Dockerfile against the agent-wrap contract BEFORE the
 # user is asked to rebuild. Catches the failure modes that `docker build`
 # cannot surface on its own:
 #
 #   1. hadolint — generic Dockerfile hygiene.
 #   2. Wrapper contract checks — agent-name format, WORKDIR, agent-run-args
-#      quoting, HOST_UID/GID declarations.
-#   3. Base-image user probe — uses `crane` to fetch the base image's
-#      /etc/passwd from the registry (no Docker daemon) and verifies the
-#      expected in-container user actually exists, so a successful build
+#      quoting, agent-enable-startup value, HOST_UID/GID declarations.
+#   3. Base image — the final FROM must be the wrapper's `claude-agent`, and
+#      the expected in-container user must exist in it, so a successful build
 #      can't produce an image that fails at launch time.
 #
-# Usage: validate-dockerfile-agent [path/to/Dockerfile.agent]
+# Usage: validate-dockerfile-agent [path/to/Dockerfile]
+#
+# With no argument, .claude-agent-wrap/Dockerfile is validated, falling back to
+# the deprecated ./Dockerfile.agent.
 #
 # Exit codes:
 #   0 — validation passed (warnings allowed)
@@ -22,7 +24,28 @@
 
 set -uo pipefail
 
-DOCKERFILE="${1:-Dockerfile.agent}"
+ASSETS_DIR=".claude-agent-wrap"
+CURRENT_DOCKERFILE="$ASSETS_DIR/Dockerfile"
+LEGACY_DOCKERFILE="Dockerfile.agent"
+STARTUP_SCRIPT="$ASSETS_DIR/startup.sh"
+
+is_legacy=0
+if [ "$#" -gt 0 ]; then
+    DOCKERFILE="$1"
+    [ "$(basename "$DOCKERFILE")" = "$LEGACY_DOCKERFILE" ] && is_legacy=1
+elif [ -f "$CURRENT_DOCKERFILE" ] && [ -f "$LEGACY_DOCKERFILE" ]; then
+    echo "validate-dockerfile-agent: both '$CURRENT_DOCKERFILE' and legacy" >&2
+    echo "  '$LEGACY_DOCKERFILE' exist — delete '$LEGACY_DOCKERFILE'" >&2
+    exit 2
+elif [ -f "$CURRENT_DOCKERFILE" ]; then
+    DOCKERFILE="$CURRENT_DOCKERFILE"
+elif [ -f "$LEGACY_DOCKERFILE" ]; then
+    DOCKERFILE="$LEGACY_DOCKERFILE"
+    is_legacy=1
+else
+    echo "validate-dockerfile-agent: no '$CURRENT_DOCKERFILE' in $(pwd)" >&2
+    exit 2
+fi
 
 if [ ! -f "$DOCKERFILE" ]; then
     echo "validate-dockerfile-agent: '$DOCKERFILE' not found" >&2
@@ -35,6 +58,10 @@ warnings=0
 err()  { echo "ERROR: $*" >&2; errors=$((errors+1)); }
 warn() { echo "WARN:  $*" >&2; warnings=$((warnings+1)); }
 info() { echo "INFO:  $*" >&2; }
+
+if [ "$is_legacy" -eq 1 ]; then
+    warn "'$LEGACY_DOCKERFILE' is deprecated — move it to '$CURRENT_DOCKERFILE'"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Generic Dockerfile lint (hadolint)
@@ -99,30 +126,83 @@ if grep -qE '\$\{?HOST_GID\}?' "$DOCKERFILE" \
     warn "HOST_GID is referenced but 'ARG HOST_GID' is not declared — the value will be empty at build time"
 fi
 
+# --- # agent-enable-startup: new location only, boolean word or positive seconds
+startup_raw=$(grep -oE '^#[[:space:]]*agent-enable-startup:[[:space:]]*\S+' "$DOCKERFILE" \
+              | head -n1 | sed -E 's/^#[[:space:]]*agent-enable-startup:[[:space:]]*//')
+startup_enabled=0
+if [ -n "$startup_raw" ]; then
+    startup_value=$(echo "$startup_raw" | tr '[:upper:]' '[:lower:]')
+    if [ "$is_legacy" -eq 1 ]; then
+        err "'# agent-enable-startup:' is only supported in '$CURRENT_DOCKERFILE' — move '$LEGACY_DOCKERFILE' there to use a startup script"
+    fi
+    case "$startup_value" in
+        true|yes|on)
+            startup_enabled=1
+            ;;
+        false|no|off)
+            ;;
+        0)
+            err "agent-enable-startup value '0' is not a timeout — write 'false' to disable startup scripts"
+            ;;
+        1)
+            startup_enabled=1
+            warn "agent-enable-startup value '1' reads as a boolean but is parsed as a 1-second timeout — write 'true' for the default budget"
+            ;;
+        *)
+            if [[ "$startup_value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                startup_enabled=1
+            else
+                err "agent-enable-startup value '$startup_raw' is not understood — use 'true'/'false' or a positive number of seconds"
+            fi
+            ;;
+    esac
+fi
+
+# --- the script and the directive must agree, or nothing happens at launch
+if [ "$startup_enabled" -eq 1 ] && [ ! -f "$STARTUP_SCRIPT" ]; then
+    warn "agent-enable-startup is on but '$STARTUP_SCRIPT' does not exist"
+fi
+if [ "$startup_enabled" -eq 0 ] && [ -f "$STARTUP_SCRIPT" ]; then
+    if [ "$is_legacy" -eq 1 ]; then
+        warn "'$STARTUP_SCRIPT' exists but startup scripts need '# agent-enable-startup: true' in '$CURRENT_DOCKERFILE' — move '$LEGACY_DOCKERFILE' there to use it"
+    else
+        warn "'$STARTUP_SCRIPT' exists but is not enabled — add '# agent-enable-startup: true' to '$DOCKERFILE'"
+    fi
+fi
+if [ -f "$STARTUP_SCRIPT" ] && ! head -c 2 "$STARTUP_SCRIPT" | grep -q '^#!'; then
+    info "'$STARTUP_SCRIPT' has no shebang; it will run under /bin/sh (add '#!/usr/bin/env bash' for bash features)"
+fi
+
 # ---------------------------------------------------------------------------
-# 3. Base-image user probe
+# 3. Base image and its user
 #
-# Use the *last* FROM (final stage) to determine what /etc/passwd will look
-# like at build start. Always probe — even when the Dockerfile.agent has
-# useradd/adduser steps — because the directive and the useradd target can
-# disagree (e.g. '# agent-user: alice' + 'RUN adduser bob'), and that
-# mismatch produces a broken image that the wrapper still can't launch.
+# The *last* FROM (final stage) is what the tag ends up containing, so it is
+# the one that must be `claude-agent`: the wrapper stamps the base image's id
+# onto every project image and rebuilds when the two diverge, which is only
+# answerable for an image that actually inherits from the base. Earlier stages
+# of a multi-stage build may use any image at all.
+#
+# The user is then checked against what the base provides — even when this file
+# has useradd/adduser steps, because the directive and the useradd target can
+# disagree (e.g. '# agent-user: alice' + 'RUN adduser bob'), and that mismatch
+# produces a broken image that the wrapper still can't launch.
 #
 # Resolution:
-#   - expected user found in base               → pass (info).
-#   - not in base, but a useradd/adduser step
+#   - final FROM is not claude-agent            → error.
+#   - expected user is 'ubuntu'                 → pass (info).
+#   - another user, but a useradd/adduser step
 #     creates it                                → warn (agent should
 #                                                  double-check the
 #                                                  useradd spelling/flags).
-#   - not in base and not created by this file  → error.
+#   - another user, not created by this file    → error.
 # ---------------------------------------------------------------------------
 base_image=$(grep -iE '^FROM[[:space:]]+' "$DOCKERFILE" \
              | tail -n1 | awk '{print $2}')
 
-# Short-circuit: when FROM is the local 'claude-agent' image (no registry),
-# `crane` can't probe it. The wrapper owns the base Dockerfile and bakes in
-# user 'ubuntu', so we hardcode that fact here. If the base ever switches
-# users, this branch updates in the same change as the base Dockerfile.
+# The base is a locally built image, so there is no registry to probe. The
+# wrapper owns the base Dockerfile and bakes in user 'ubuntu', so we hardcode
+# that fact here. If the base ever switches users, this branch updates in the
+# same change as the base Dockerfile.
 is_local_base=0
 if [[ "$base_image" =~ ^claude-agent(:.*)?$ ]]; then
     is_local_base=1
@@ -154,40 +234,8 @@ elif [ "$is_local_base" = "1" ]; then
     else
         err "Base 'claude-agent' provides user 'ubuntu' only, but '# agent-user: $expected_user' was set. Add a 'RUN useradd $expected_user' step in this Dockerfile.agent or remove the agent-user directive."
     fi
-elif ! command -v crane >/dev/null 2>&1; then
-    warn "crane not installed; cannot probe base image '$base_image' for user '$expected_user'"
 else
-    info "Probing base image '$base_image' for user '$expected_user' (via crane)"
-    passwd_contents=$(crane export "$base_image" - 2>/dev/null \
-                      | tar -xO --occurrence=1 etc/passwd 2>/dev/null)
-    if [ -z "$passwd_contents" ]; then
-        warn "could not read /etc/passwd from '$base_image' (image may be distroless, scratch-based, or unreachable) — cannot verify user '$expected_user'"
-    elif echo "$passwd_contents" | grep -qE "^${expected_user}:"; then
-        info "user '$expected_user' exists in base image '$base_image'"
-    elif [ "$expected_is_created" = "1" ]; then
-        warn "user '$expected_user' is not in base image '$base_image' but a useradd/adduser step in this Dockerfile.agent appears to create it — double-check the useradd command actually produces a login user named '$expected_user' with a writable /home/$expected_user (the wrapper mounts to that path)."
-    else
-        # Candidate non-root users from /etc/passwd in the base image.
-        base_candidates=$(echo "$passwd_contents" \
-            | awk -F: '$3 >= 1000 && $3 < 65534 {print "    " $1 " (uid " $3 ", from base)"}')
-        # Plus any users this Dockerfile.agent creates but that don't match
-        # the directive — those are likely the intended target.
-        file_candidates=""
-        if [ -n "$created_users" ]; then
-            file_candidates=$(echo "$created_users" \
-                | awk '{print "    " $1 " (created by this Dockerfile.agent)"}')
-        fi
-        candidates="${base_candidates}${base_candidates:+${file_candidates:+$'\n'}}${file_candidates}"
-        msg="user '$expected_user' does NOT exist in base image '$base_image' and is not created by this Dockerfile.agent."
-        if [ -n "$candidates" ]; then
-            msg="$msg Candidate users:
-$candidates
-Either change the base image, add a 'RUN useradd ${expected_user}' step, or set '# agent-user: <one of the above>'."
-        else
-            msg="$msg No non-root users (UID >= 1000) found in the base either — add a 'RUN useradd ${expected_user}' step, or pick a different base image."
-        fi
-        err "$msg"
-    fi
+    err "final FROM is '$base_image', but a project image must inherit from the wrapper's base image. Change the last FROM to 'FROM claude-agent' (earlier stages of a multi-stage build may use any image)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -197,6 +245,7 @@ echo
 echo "Declared agent-name:  ${name:-<unset>}"
 echo "Declared agent-user:  ${declared_user:-<unset, defaults to ubuntu>}"
 echo "Base image (FROM):    ${base_image:-<none>}"
+echo "Startup script:       $([ "$startup_enabled" -eq 1 ] && echo "enabled (${startup_raw})" || echo "disabled")"
 echo "Wrapper expects HOME=/home/${expected_user} inside the container."
 echo
 

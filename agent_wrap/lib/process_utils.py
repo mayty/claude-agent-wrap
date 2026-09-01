@@ -1,8 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Generic process-related utilities."""
 
-from __future__ import annotations
-
 import contextlib
 import os
 from pathlib import Path

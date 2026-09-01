@@ -1,35 +1,21 @@
 # This file has been edited with the assistance of an AI tool.
 """Docker-related utility functions."""
 
-from __future__ import annotations
-
 import json
 import os
-import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
+from typing import NamedTuple
 
 from agent_wrap.lib.utils import is_truthy_env
-
-# Docker emits RFC3339 with nanosecond precision and a literal "Z"
-# (e.g. "2026-07-30T09:39:12.123456789Z"). Split off the fractional part so it can be
-# truncated to the 6 digits datetime accepts.
-_TIMESTAMP_RE = re.compile(
-    r"^(?P<base>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
-    r"(?:\.(?P<frac>\d+))?"
-    r"(?P<tz>Z|[+-]\d{2}:?\d{2})?$"
-)
 
 # What docker reports for a timestamp that never happened (e.g. StartedAt on a
 # container that was created but never started). It parses fine and would yield a
 # ~2000-year uptime, so it is mapped to None instead.
 _ZERO_TIMESTAMP_YEAR = 1
-
-# Maximum fractional digits datetime.fromisoformat accepts.
-_MAX_FRACTIONAL_DIGITS = 6
 
 
 def is_wsl() -> bool:
@@ -73,7 +59,7 @@ def docker_run(
             text=True,
             timeout=timeout,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError:
         return "", 1
     stdout = result.stdout.strip() if result.stdout is not None else ""
     return stdout, result.returncode
@@ -141,46 +127,173 @@ def inspect_containers(names: list[str], template: str) -> tuple[list[str], int]
     return [line for line in stdout.splitlines() if line.strip()], rc
 
 
+def list_images(
+    *filters: str, template: str, reference: str = "", digests: bool = False
+) -> list[str]:
+    """
+    List local images matching every ``docker image ls --filter`` expression given.
+
+    *template* is a Go template rendered once per image; it must keep each image on a
+    single line or the caller's field split breaks. *reference* narrows the listing to
+    one repository (``docker image ls <repo>`` lists every tag of it), which is how a
+    caller asks about a specific upstream image rather than the whole local store.
+
+    *digests* passes ``--digests``, and a *template* naming ``{{.Digest}}`` must set it:
+    the flag is what populates that field, so without it docker renders ``<none>`` for
+    every row rather than failing on the template. With it on, an image carrying several
+    repo digests renders one row per digest.
+
+    Returns [] when nothing matches or docker is unavailable — indistinguishable here on
+    purpose, matching :func:`list_container_names`, so callers that care about the
+    difference use :func:`daemon_reachable`.
+    """
+    args = ["image", "ls", "--format", template]
+    if digests:
+        args.append("--digests")
+    for expr in filters:
+        args.extend(["--filter", expr])
+    if reference:
+        args.append(reference)
+    stdout, rc = docker_run(*args)
+    if rc != 0:
+        return []
+    return [line for line in stdout.splitlines() if line.strip()]
+
+
+def inspect_images(names: list[str], template: str) -> list[str]:
+    """
+    Batch-inspect image *names* with a Go *template*, returning its output lines.
+
+    ``image inspect`` for the same reason :func:`inspect_containers` uses ``container
+    inspect``: plain ``inspect`` matches either kind and would answer about the wrong
+    object. One docker call for the whole batch, so *template* must render each image on
+    a single line.
+
+    Unlike :func:`inspect_containers` the rc is dropped: every caller here is enriching a
+    listing it already has, and an image that vanished between the two calls is a row to
+    leave alone rather than a failure to report.
+    """
+    if not names:
+        return []
+    stdout, _ = docker_run("image", "inspect", "--format", template, *names)
+    return [line for line in stdout.splitlines() if line.strip()]
+
+
+def remove_image(ref: str) -> bool:
+    """
+    Remove the image *ref* names, reporting whether docker did it.
+
+    Deliberately without ``--force``: docker refuses to remove an image a container still
+    references, and that refusal is the safety net a caller wants reported rather than
+    overridden. A False therefore means "still there, and docker had a reason" — the
+    caller decides whether that is worth surfacing.
+    """
+    _, rc = docker_run("rmi", ref, timeout=60)
+    return rc == 0
+
+
+class ImageRef(NamedTuple):
+    """
+    The three parts of an image reference, any of which may be absent ("").
+
+    ``repository`` keeps any registry host and namespace ("ghcr.io/berriai/litellm"), so
+    it compares directly against what ``docker image ls`` renders for ``{{.Repository}}``.
+    """
+
+    repository: str
+    tag: str
+    digest: str
+
+
+def parse_image_ref(ref: str) -> ImageRef:
+    """
+    Split an image reference into repository, tag and digest.
+
+    Handles the fully qualified ``repo:tag@sha256:...`` the wrapper pins its sidecars
+    with, as well as the plainer ``repo``, ``repo:tag`` and ``repo@sha256:...``.
+
+    The tag is separated on the *last* colon, and only when no ``/`` follows it, so a
+    registry port ("localhost:5000/img") is not mistaken for a tag.
+    """
+    remainder, _, digest = ref.partition("@")
+    repository, sep, tag = remainder.rpartition(":")
+    if not sep or "/" in tag:
+        return ImageRef(repository=remainder, tag="", digest=digest)
+    return ImageRef(repository=repository, tag=tag, digest=digest)
+
+
 def parse_docker_timestamp(raw: str) -> datetime | None:
     """
     Parse a docker RFC3339 timestamp into a UTC-aware datetime, or None if unusable.
 
-    Written out rather than handed to ``datetime.fromisoformat`` because the supported
-    floor is Python 3.10, which accepts neither a trailing ``Z``, nor a colon-less UTC
-    offset (``+0200``), nor docker's nanosecond precision (it wants exactly 3 or 6
-    fractional digits). Fractional digits are truncated, not rounded — sub-microsecond
-    precision is meaningless for the uptimes this feeds.
+    ``fromisoformat`` handles every shape docker emits: a trailing ``Z``, a colon-less
+    offset (``+0200``), and nanosecond precision (truncated to microseconds, which is
+    ample for the uptimes this feeds), so no hand-rolled normalizing is needed.
 
-    Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None.
+    Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None,
+    and so does a bare date: ``fromisoformat`` would happily read it as midnight, but
+    docker never emits one, so it means the caller was handed something else.
     """
-    match = _TIMESTAMP_RE.match(raw.strip())
-    if match is None:
+    text = raw.strip()
+    if "T" not in text and " " not in text:
         return None
-
-    frac = (match.group("frac") or "")[:_MAX_FRACTIONAL_DIGITS]
-    tz = match.group("tz") or "Z"
-    if tz != "Z" and ":" not in tz:
-        tz = f"{tz[:3]}:{tz[3:]}"
-    normalized = match.group("base")
-    if frac:
-        normalized += f".{frac}"
-    normalized += "+00:00" if tz == "Z" else tz
-
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.year <= _ZERO_TIMESTAMP_YEAR:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def image_exists(image: str) -> bool:
     """Check if a Docker image exists locally."""
     _, rc = docker_run("image", "inspect", image, timeout=10)
     return rc == 0
+
+
+class ImageStamp(NamedTuple):
+    """
+    Identity and labels of a local image, read in a single inspect.
+
+    ``labels`` carries what docker reports on ``Config.Labels``, which *includes* every
+    label inherited through ``FROM`` -- a derived image cannot be told apart from its
+    parent by a label the parent set. Callers that care must know which image class they
+    are reading a given label off.
+    """
+
+    #: The image's content id, e.g. "sha256:...".
+    id: str
+    #: Labels, or {} when the image declares none.
+    labels: dict[str, str]
+
+
+def image_stamp(image: str) -> ImageStamp | None:
+    """
+    Id and labels of *image*, or None when it is absent or docker is unreachable.
+
+    Doubles as the existence probe, so a caller that wants both facts pays one docker
+    call rather than three. Labels come back as JSON rather than through
+    ``{{index .Config.Labels "k"}}``, which renders an absent key and an empty value
+    identically -- and absence is a state of its own here ("built before stamping").
+    Unparseable label JSON degrades to {} rather than to None: the image is genuinely
+    there, and an unreadable label reads as a label that was never set.
+    """
+    stdout, rc = docker_run(
+        "image", "inspect", "--format", "{{.Id}} {{json .Config.Labels}}", image, timeout=10
+    )
+    if rc != 0 or not stdout:
+        return None
+    image_id, _, raw_labels = stdout.partition(" ")
+    try:
+        parsed = json.loads(raw_labels)
+    except json.JSONDecodeError:
+        return ImageStamp(id=image_id, labels={})
+    if not isinstance(parsed, dict):
+        return ImageStamp(id=image_id, labels={})
+    return ImageStamp(id=image_id, labels={str(k): str(v) for k, v in parsed.items()})
 
 
 def image_claude_version(image: str) -> str | None:
@@ -212,7 +325,7 @@ def image_claude_version(image: str) -> str | None:
         data = json.loads(stdout)
         package = data.get("dependencies", {}).get("@anthropic-ai/claude-code", {})
         return package.get("version")
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         return None
 
 
@@ -309,3 +422,115 @@ def get_tty_args() -> list[str]:
     if sys.stdin.isatty():
         return ["-it"]
     return ["-i"]
+
+
+class MountSpec(NamedTuple):
+    """
+    One mount declared on a ``docker run`` command line.
+
+    ``source`` is the host side exactly as it was authored, and only when the spec
+    names a host path at all: named and anonymous volumes carry ``None``. It is left
+    unresolved on purpose -- the caller knows which directory a relative path is
+    resolved against, and nothing here rewrites what the author wrote.
+    """
+
+    source: str | None
+    target: str
+    read_only: bool
+
+
+# How docker itself tells a host path from a volume name in a short-form spec: a
+# volume name may not contain "/", so anything starting with one of these is a bind
+# source. "~" is not in the list for docker (which rejects such a spec outright); it
+# is recorded here so callers can point out that no shell is involved to expand it.
+_HOST_PATH_PREFIXES = ("/", "./", "../", "~")
+
+# Flag -> spec syntax. Every one of these also accepts a --flag=value form.
+_MOUNT_FLAGS = {
+    "-v": "short",
+    "--volume": "short",
+    "--mount": "mount",
+    "--tmpfs": "tmpfs",
+}
+
+
+class _MountSpecParser:
+    """Parsers for the individual ``docker run`` mount spec syntaxes."""
+
+    @staticmethod
+    def short_form(spec: str) -> MountSpec | None:
+        """Parse a ``-v``/``--volume`` spec: ``[src:]dst[:opts]``."""
+        source_text, _, remainder = spec.partition(":")
+        if not remainder:
+            # Anonymous volume -- container side only.
+            return MountSpec(source=None, target=spec, read_only=False)
+        target, _, opts_text = remainder.partition(":")
+        if ":" in opts_text:
+            return None  # more fields than src:dst:opts -- docker will reject it
+        source = source_text if source_text.startswith(_HOST_PATH_PREFIXES) else None
+        return MountSpec(source=source, target=target, read_only="ro" in opts_text.split(","))
+
+    @staticmethod
+    def mount_form(spec: str) -> MountSpec | None:
+        """
+        Parse a ``--mount`` spec: comma-separated ``key=value`` pairs.
+
+        Splitting on "," naively mis-reads the nested comma syntax of
+        ``volume-opt=o=addr=...``, which only ever appears on ``type=volume`` mounts --
+        those contribute no host source, so the misread costs nothing.
+        """
+        fields: dict[str, str] = {}
+        for field in spec.split(","):
+            key, _, value = field.partition("=")
+            fields[key.strip().lower()] = value.strip()
+
+        target = fields.get("target") or fields.get("destination") or fields.get("dst")
+        if not target:
+            return None
+
+        source = fields.get("source") or fields.get("src")
+        if (
+            fields.get("type", "volume") != "bind"
+            or not source
+            or not source.startswith(_HOST_PATH_PREFIXES)
+        ):
+            source = None
+
+        raw_ro = fields.get("readonly", fields.get("ro"))
+        read_only = raw_ro is not None and raw_ro.lower() not in ("false", "0")
+        return MountSpec(source=source, target=target, read_only=read_only)
+
+
+def parse_mount_specs(args: list[str]) -> list[MountSpec]:
+    """
+    Extract every mount declared in a list of ``docker run`` flags.
+
+    Recognizes ``-v``/``--volume``, ``--mount`` and ``--tmpfs``, in both the
+    ``--flag value`` and ``--flag=value`` spellings. Unparseable specs are dropped
+    rather than reported: docker is the authority on what it accepts, and this parser
+    exists only to decide which host paths to pre-create.
+    """
+    specs: list[MountSpec] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if kind := _MOUNT_FLAGS.get(arg):
+            value = args[index + 1] if index + 1 < len(args) else ""
+            index += 2
+        else:
+            name, sep, rest = arg.partition("=")
+            kind = _MOUNT_FLAGS.get(name) if sep else None
+            value = rest
+            index += 1
+        if not kind or not value:
+            continue
+
+        if kind == "short":
+            spec = _MountSpecParser.short_form(value)
+        elif kind == "mount":
+            spec = _MountSpecParser.mount_form(value)
+        else:
+            spec = MountSpec(source=None, target=value, read_only=False)
+        if spec is not None:
+            specs.append(spec)
+    return specs

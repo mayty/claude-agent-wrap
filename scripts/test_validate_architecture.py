@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for scripts/validate-architecture.py."""
 
-from __future__ import annotations
-
 import importlib.util
 import sys
 from pathlib import Path
@@ -359,7 +357,6 @@ def test_edge_case_standard_library_import_ignored(make: _Maker) -> None:
     make.write(
         "agent_wrap/domain/build/foo.py",
         """\
-        from __future__ import annotations
         from typing import TYPE_CHECKING
         import os
         """,
@@ -443,6 +440,44 @@ def test_rule_d_skips_test_files(make: _Maker) -> None:
     make.write("agent_wrap/domain/stats/tests/test_scan.py", "class Row(NamedTuple):\n    a: int\n")
     fp = make.root / "agent_wrap" / "domain" / "stats" / "tests" / "test_scan.py"
     assert "ED001" not in _violation_codes(check_file(fp))
+
+
+# --- Rule G: no __future__ annotations import --------------------------------
+
+
+def test_rule_g_future_annotations_flagged(make: _Maker) -> None:
+    make.write(
+        "agent_wrap/domain/stats/scan.py",
+        "from __future__ import annotations\n\nimport os\n",
+    )
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EG001" in _violation_codes(check_file(fp))
+
+
+def test_rule_g_other_future_imports_not_flagged(make: _Maker) -> None:
+    """Only the annotations feature is redundant; the rule must not over-reach."""
+    make.write("agent_wrap/domain/stats/scan.py", "from __future__ import division\n")
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
+    assert "EG001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_g_litellm_runtime_exempt(make: _Maker) -> None:
+    """The carve-out runs on a pre-PEP-649 interpreter and still needs the import."""
+    make.write(
+        "agent_wrap/domain/providers/litellm_runtime/callback.py",
+        "from __future__ import annotations\n",
+    )
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_runtime" / "callback.py"
+    assert "EG001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_g_applies_to_tests_too(make: _Maker) -> None:
+    make.write(
+        "agent_wrap/domain/stats/tests/test_scan.py",
+        "from __future__ import annotations\n",
+    )
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "tests" / "test_scan.py"
+    assert "EG001" in _violation_codes(check_file(fp))
 
 
 # --- Rule F: enums belong in constants.py -----------------------------------

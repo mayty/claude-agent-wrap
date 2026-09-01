@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the stats domain."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
@@ -67,7 +65,7 @@ class DirResult(NamedTuple):
     by_source: dict[str, dict[str, Bucket]]
 
 
-ScanCache = dict["Path", DirResult]
+type ScanCache = dict[Path, DirResult]
 
 
 # A raw record returned by scan workers. Workers produce these without any
@@ -172,14 +170,30 @@ class ArchiveLeaf(TypedDict):
 # ``get_day``/``DAY_START_HOURS`` happens at read time. Records with no
 # timestamp use ``"?"`` for both, matching ``day_in_range``'s synthetic key.
 # Hours are a dict rather than a list because most hours in a day are empty.
-ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
+type ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
+
+
+# The pre-collapse bucket key carrying the UTC instant a bucket's usage falls into.
+# Weekday uses ``datetime.weekday()`` (0=Monday ... 6=Sunday); hour is the UTC hour
+# (0-23). Both are None for records with no timestamp, so providers with
+# time-of-day pricing can charge the conservative peak rate when the instant is
+# unknown.
+class HourKey(NamedTuple):
+    weekday: int | None
+    hour: int | None
+
+
+# Buckets keyed outer → hour → model, produced before pricing collapses the hour
+# axis. The outer key is a stats day (by_day) or a usage source (by_source); the
+# inner key is an :class:`HourKey` so both weekday and UTC hour survive to pricing.
+HourBuckets = dict[str, dict[HourKey, dict[str, "Bucket"]]]
 
 
 # Archived usage materialized into priceable buckets, before it is merged into
 # the shared stats totals. *last_ts* is the newest in-window archived hour.
 class ArchivedBuckets(NamedTuple):
-    by_day: dict[str, dict[str, Bucket]]
-    by_source: dict[str, dict[str, Bucket]]
+    by_day: HourBuckets
+    by_source: HourBuckets
     last_ts: datetime | None
 
 

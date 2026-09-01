@@ -17,8 +17,6 @@ The public entry point is :func:`priority_lock`, dispatched on
 :class:`Priority`.
 """
 
-from __future__ import annotations
-
 import time
 from contextlib import AbstractContextManager, contextmanager
 from enum import Enum, auto

@@ -26,8 +26,6 @@ Two directory-level probes read a whole directory of such files:
   nothing, so a read-only caller cannot reap state it merely looked at.
 """
 
-from __future__ import annotations
-
 import contextlib
 import fcntl
 import time

@@ -1,24 +1,22 @@
 # This file has been edited with the assistance of an AI tool.
 """Background-process lifecycle for the logs viewer."""
 
-from __future__ import annotations
-
 import json
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     LOGS_TOOL_DIR_ENV,
 )
 from agent_wrap.domain.logs.constants import LOG_DEBUG, STATE_FILE_NAME
+from agent_wrap.domain.logs.models import DaemonState
 
 if TYPE_CHECKING:
     from datetime import timedelta
-
-    from agent_wrap.domain.logs.models import DaemonState
+    from typing import Self
 
 
 def state_dir() -> Path:
@@ -33,28 +31,42 @@ def state_file() -> Path:
 
 
 def read_state() -> DaemonState | None:
-    """Read the viewer state file, or None when missing/corrupt."""
+    """
+    Read the viewer state file, or None when missing/corrupt.
+
+    The result is built key by key rather than cast wholesale, so a state file written
+    before ``starting`` existed still reads cleanly -- it means "was listening when
+    written", which is exactly False.
+    """
     try:
         raw = state_file().read_text(encoding="utf-8")
     except OSError:
         return None
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None
     if (
         isinstance(data, dict)
         and isinstance(data.get("pid"), int)
         and isinstance(data.get("port"), int)
     ):
-        return cast("DaemonState", data)
+        return DaemonState(
+            pid=data["pid"], port=data["port"], starting=bool(data.get("starting", False))
+        )
     return None
 
 
-def write_state(pid: int, port: int) -> None:
-    """Write viewer state to the state file."""
+def write_state(pid: int, port: int, *, starting: bool = False) -> None:
+    """
+    Write viewer state to the state file.
+
+    *starting* marks a claim staked before the viewer is listening; the viewer clears it
+    by rewriting the file once it has bound its port.
+    """
     state_dir().mkdir(parents=True, exist_ok=True)
-    state_file().write_text(json.dumps({"pid": pid, "port": port}, indent=2), encoding="utf-8")
+    payload = {"pid": pid, "port": port, "starting": starting}
+    state_file().write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 class _LogSpan:
@@ -76,7 +88,7 @@ class _LogSpan:
         self._threshold = threshold
         self._start = time.monotonic()
 
-    def __enter__(self) -> _LogSpan:  # noqa: PYI034 — `Self` needs py3.11+, target is py3.10
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:

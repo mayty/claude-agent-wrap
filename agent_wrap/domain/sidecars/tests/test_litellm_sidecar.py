@@ -1,8 +1,6 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for agent_wrap/domain/sidecars/litellm.py."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
@@ -47,6 +45,11 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
 
 def _sidecar(tmp_path: Path, **overrides: object) -> LiteLLMSidecar:
     return LiteLLMSidecar(_config(tmp_path, **overrides), display_service=Mock(spec=DisplayService))
+
+
+def _last_error(sc: LiteLLMSidecar) -> str:
+    """Return the message of the most recent ``display.error`` call on *sc*."""
+    return str(sc._display.error.call_args.args[0])  # pyrefly: ignore [missing-attribute]
 
 
 _DOCKER = "agent_wrap.domain.sidecars.litellm.docker_run"
@@ -172,8 +175,9 @@ def test_connectivity_bridge_sidecar_host_netns_no_ip_raises(
     sc._master_key = "sk-test-abc"
     sc._port = 48620
     mocker.patch.object(sc, "_sidecar_ip_on_network", return_value="")
-    with pytest.raises(SystemExit, match="no IP"):
+    with pytest.raises(SystemExit):
         sc._build_connectivity_args("bridge", agent_in_host_netns=True, agent_network=None)
+    assert "no IP" in _last_error(sc)
 
 
 def test_connectivity_bridge_sidecar_no_agent_network(tmp_path: Path) -> None:
@@ -310,8 +314,10 @@ def test_ensure_health_fail_raises(tmp_path: Path, mocker: pytest_mock.MockFixtu
 
 
 def test_ensure_bridge_not_supported(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="bridge is not supported"):
-        _sidecar(tmp_path).ensure(use_host_net=False, agent_network="bridge")
+    sc = _sidecar(tmp_path)
+    with pytest.raises(SystemExit):
+        sc.ensure(use_host_net=False, agent_network="bridge")
+    assert "bridge is not supported" in _last_error(sc)
 
 
 def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -467,8 +473,9 @@ def test_ensure_image_pull_fails_raises(tmp_path: Path, mocker: pytest_mock.Mock
     sc = _sidecar(tmp_path)
     mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
     mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    with pytest.raises(SystemExit, match="failed to pull"):
+    with pytest.raises(SystemExit):
         sc._ensure_image()
+    assert "failed to pull" in _last_error(sc)
 
 
 def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -542,9 +549,11 @@ def test_start_with_no_secrets_declared(tmp_path: Path, mocker: pytest_mock.Mock
 
 
 def test_start_missing_config_raises(tmp_path: Path) -> None:
-    # No config.yaml written → _config_path raises.
-    with pytest.raises(SystemExit, match="config not found"):
-        _sidecar(tmp_path)._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
+    # No config.yaml written → _config_path aborts.
+    sc = _sidecar(tmp_path)
+    with pytest.raises(SystemExit):
+        sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
+    assert "config not found" in _last_error(sc)
 
 
 def test_recover_master_key_success(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -627,8 +636,9 @@ def test_recover_port_unusable_value_raises(
     """
     sc = _sidecar(tmp_path)
     mocker.patch(_DOCKER, autospec=True, return_value=(env_output, 0))
-    with pytest.raises(SystemExit, match="AGENT_WRAP_SIDECAR_PORT not recoverable"):
+    with pytest.raises(SystemExit):
         sc._recover_port()
+    assert "AGENT_WRAP_SIDECAR_PORT not recoverable" in _last_error(sc)
 
 
 def test_recover_port_container_gone_raises(
@@ -636,8 +646,9 @@ def test_recover_port_container_gone_raises(
 ) -> None:
     sc = _sidecar(tmp_path)
     mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    with pytest.raises(SystemExit, match="AGENT_WRAP_SIDECAR_PORT not recoverable"):
+    with pytest.raises(SystemExit):
         sc._recover_port()
+    assert "AGENT_WRAP_SIDECAR_PORT not recoverable" in _last_error(sc)
 
 
 def test_recover_port_error_names_the_remedy(
@@ -646,8 +657,9 @@ def test_recover_port_error_names_the_remedy(
     """The abort is a hard stop, so it must tell the user how to clear the container."""
     sc = _sidecar(tmp_path)
     mocker.patch(_DOCKER, autospec=True, return_value=("ENV1=val\n", 0))
-    with pytest.raises(SystemExit, match="docker rm -f agent-wrap-litellm-test"):
+    with pytest.raises(SystemExit):
         sc._recover_port()
+    assert "docker rm -f agent-wrap-litellm-test" in _last_error(sc)
 
 
 def test_start_passes_the_resolved_port_to_the_proxy_and_the_health_cmd(

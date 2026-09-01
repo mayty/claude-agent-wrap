@@ -7,12 +7,9 @@ _agent_record_project, and related config-prep helpers. Uses stdlib json
 instead of jq.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,10 +19,17 @@ from agent_wrap.constants import (
     LITELLM_LOGS_DIRNAME,
     OPS_DIR,
     PROJECT_REGISTRY_FILENAME,
+    SPELLCHECK_CHECKER,
+    SPELLCHECK_ENABLED_OVERRIDE,
+    SPELLCHECK_LANG,
+    SPELLCHECK_LANG_OVERRIDE,
     TOOL_DIR,
+    WORKSPACE_MOUNT,
 )
 from agent_wrap.domain.config.project_registry import ProjectRegistry
+from agent_wrap.exceptions import HostMountError
 from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
+from agent_wrap.lib.docker_utils import parse_mount_specs
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
@@ -39,7 +43,7 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         if not text.strip():
             return {}
         return json.loads(text)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
 
 
@@ -75,6 +79,57 @@ class ConfigService:
             "type": "command",
             "command": "/opt/agent-wrap/statusline.py",
         }
+        atomic_write_json(settings_path, data)
+
+    def _ensure_spellcheck(self, settings_path: Path) -> None:
+        """
+        Idempotently configure Claude Code's prompt spell checking.
+
+        The feature only reads this tier -- a ``spellcheck`` block in a project's
+        ``.claude/settings.json`` is ignored outright -- so the wrapper-global user
+        settings are the only place it can be turned on from.
+
+        With no block present, one is written: on, ``hunspell``, and the dictionary list
+        in force. With a block already there, the file wins and it is left alone, except
+        that an explicitly set ``AGENT_SPELLCHECK`` / ``AGENT_SPELLCHECK_LANG`` overrides
+        the corresponding key on every launch -- otherwise the env vars would be inert
+        the moment a previous launch had written the block. Keys the user added by hand
+        (``color``, a different ``checker``) are always preserved, and the file is
+        rewritten only when a value actually changed.
+
+        If the file is empty or missing, creates it with {}.
+        If the JSON is malformed, does nothing.
+        """
+        if not settings_path.exists() or settings_path.stat().st_size == 0:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text("{}\n")
+
+        data = _load_json(settings_path)
+        if data is None:
+            return  # malformed JSON -- don't clobber
+
+        block = data.get("spellcheck")
+        if block is None:
+            data["spellcheck"] = {
+                "enabled": SPELLCHECK_ENABLED_OVERRIDE is not False,
+                "checker": SPELLCHECK_CHECKER,
+                "language": SPELLCHECK_LANG,
+            }
+            atomic_write_json(settings_path, data)
+            return
+
+        if not isinstance(block, dict):
+            return  # someone's hand-written value, of a shape we won't second-guess
+
+        updated = dict(block)
+        if SPELLCHECK_ENABLED_OVERRIDE is not None:
+            updated["enabled"] = SPELLCHECK_ENABLED_OVERRIDE
+        if SPELLCHECK_LANG_OVERRIDE is not None:
+            updated["language"] = SPELLCHECK_LANG_OVERRIDE
+        if updated == block:
+            return
+
+        data["spellcheck"] = updated
         atomic_write_json(settings_path, data)
 
     def _ensure_telegram_hooks(self, settings_path: Path) -> None:
@@ -125,7 +180,7 @@ class ConfigService:
         template_path = OPS_DIR / "default-CLAUDE.md"
         target = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
         if not target.exists() and template_path.exists():
-            shutil.copy2(template_path, target)
+            template_path.copy(target, preserve_metadata=True)
 
     # global / per-project config
 
@@ -138,7 +193,7 @@ class ConfigService:
         Prepare the global config directory for agent launch.
 
         Creates the directory structure, secures config files, injects
-        statusline and telegram hooks, and copies default-CLAUDE.md.
+        statusline, spell checking and telegram hooks, and copies default-CLAUDE.md.
         """
         global_config_dir = GLOBAL_CONFIG_DIR
         claude_dir = global_config_dir / ".claude"
@@ -157,6 +212,7 @@ class ConfigService:
 
         settings_path = claude_dir / "settings.json"
         self._ensure_statusline(settings_path)
+        self._ensure_spellcheck(settings_path)
 
         if telegram_available:
             self._ensure_telegram_hooks(settings_path)
@@ -207,7 +263,97 @@ class ConfigService:
             for src in old_memory_dir.iterdir():
                 dst = new_memory_dir / src.name
                 if not dst.exists():
-                    shutil.move(str(src), str(dst))
+                    src.move(dst)
+
+    def prepare_declared_mounts(self, run_args: list[str], project_dir: Path) -> None:
+        """
+        Pre-create the host side of every mount a project Dockerfile declares.
+
+        Same rationale as :meth:`prepare_project_dirs`, applied to the mounts an image
+        author asked for via ``agent-run-args``: whatever docker has to materialize
+        itself lands as ``root:root`` and the agent cannot write it. One spec can call for
+        two *different* host paths: the bind *source*, and -- when the container-side
+        target sits under ``/workspace`` -- the mountpoint docker needs inside the bind
+        mount of the project, which is what makes an anonymous
+        ``-v /workspace/node_modules`` volume leave a root-owned directory behind. A spec
+        whose source already exists can still need that second path created.
+
+        A read-only source is never invented: an author who wrote ``:ro`` asked for
+        content that already exists, so a missing one fails the launch instead of
+        silently mounting an empty directory. Everything is reported at once, and
+        nothing is created until the whole declaration checks out.
+
+        Author-supplied tokens are passed to docker untouched, so this resolves paths
+        exactly the way docker will: absolute as written, relative against the directory
+        the launch runs from. ``~`` is left to fail on docker's side -- no shell is
+        involved to expand it -- with a warning that says so.
+        """
+        specs = parse_mount_specs(run_args)
+
+        missing = [
+            spec
+            for spec in specs
+            if spec.read_only
+            and (source := self._mount_source_path(spec.source, project_dir)) is not None
+            and not source.exists()
+        ]
+        if missing:
+            listed = "\n".join(f"  {spec.source} -> {spec.target}" for spec in missing)
+            msg = (
+                "the project Dockerfile declares read-only mounts whose host source"
+                " does not exist:\n"
+                f"{listed}\n"
+                "Create each path on the host, or drop ':ro' to have it created automatically."
+            )
+            raise HostMountError(msg)
+
+        for spec in specs:
+            if spec.source is not None and spec.source.startswith("~"):
+                self._display.warning(
+                    f"Mount source '{spec.source}' in agent-run-args is passed to docker verbatim"
+                    " — '~' is not expanded because no shell is involved. Use an absolute path."
+                )
+                continue
+            source = self._mount_source_path(spec.source, project_dir)
+            if source is not None and not source.exists():
+                self._make_mount_path(source, as_file=False)
+            self._prepare_mountpoint(spec.target, source, project_dir)
+
+    def _mount_source_path(self, source: str | None, project_dir: Path) -> Path | None:
+        """Resolve a declared bind source, or None when the spec has no usable host path."""
+        if source is None or source.startswith("~"):
+            return None
+        return (project_dir / source).resolve()
+
+    def _prepare_mountpoint(self, target: str, source: Path | None, project_dir: Path) -> None:
+        """Create the host-side mountpoint for a target nested under ``/workspace``."""
+        prefix = f"{WORKSPACE_MOUNT}/"
+        stripped = target.rstrip("/")
+        if not stripped.startswith(prefix):
+            return
+
+        root = project_dir.resolve()
+        point = (root / stripped[len(prefix) :]).resolve()
+        if not point.is_relative_to(root) or point.exists():
+            return
+        # Node type is read off the source, never guessed from the path's shape: docker
+        # refuses to mount a file onto a directory ("are you trying to mount a directory
+        # onto a file (or vice-versa)?"), so a file source needs a file here. Volumes,
+        # tmpfs and directory binds all need a directory -- as does a source the caller
+        # just created, since those are always created as directories.
+        self._make_mount_path(point, as_file=source is not None and source.is_file())
+
+    def _make_mount_path(self, path: Path, *, as_file: bool) -> None:
+        """Create *path* as the host user, translating failures into HostMountError."""
+        try:
+            if as_file:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            else:
+                path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            msg = f"cannot create host mount path '{path}' from the project Dockerfile: {e}"
+            raise HostMountError(msg) from e
 
     def link_litellm_logs(self, project_dir: Path) -> None:
         """
