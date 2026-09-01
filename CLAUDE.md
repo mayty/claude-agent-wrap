@@ -68,7 +68,10 @@ A `Makefile` provides all QA targets. Follow these rules:
   `.claude-agent-wrap/Dockerfile`, `pyproject.toml` or `dev` dependency group are **not**
   reasons to bump — they reach one image, applied by an `agent rebuild` here. There is
   deliberately no `make` check: one bump per release is enough, and not every
-  base-affecting change is statically detectable.
+  base-affecting change is statically detectable. The base image builds *with* docker's
+  layer cache, so the bump is also what forces its cached `scaffold` stage — apt,
+  NodeSource, hadolint, crane — to be fetched again; it travels to that stage as the
+  `BUILD_ITERATION` build arg.
 - **Never import a private (`_`-prefixed) name from another module.** If a name is
   intended for import outside its defining module, it must be public (no underscore).
   Ruff's `SLF001` only catches `obj._attr` access, not `from module import _name`,

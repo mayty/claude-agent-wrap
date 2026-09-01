@@ -24,11 +24,15 @@ from agent_wrap.constants import (
     UpdateCheck,
 )
 from agent_wrap.domain.build.constants import (
+    BASE_BUILD_CACHE_NOTE,
     BASE_FROM_RE,
+    BUILD_ITERATION_BUILD_ARG,
     BUILD_LOCK_NAME,
     BUILD_REASON_TEXT,
+    CLAUDE_CACHE_BUST_BUILD_ARG,
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     FROM_RE,
+    PROJECT_BUILD_CACHE_NOTE,
     STARTUP_FALSY_WORDS,
     STARTUP_TRUTHY_WORDS,
     BuildReason,
@@ -48,6 +52,7 @@ from agent_wrap.lib.docker_utils import (
     image_stamp,
 )
 from agent_wrap.lib.flock import file_lock, try_file_lock
+from agent_wrap.lib.utils import generate_uuid
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -83,15 +88,36 @@ class BuildService:
 
         *labels* are stamped with ``--label`` rather than a ``LABEL`` instruction so no
         project Dockerfile has to cooperate to be trackable.
+
+        The base image is the only build that uses docker's layer cache. Its recipe is
+        this repo's own ``ops/Dockerfile``, split so that everything expensive and stable
+        sits in the ``scaffold`` stage: ``BUILD_ITERATION`` invalidates that stage when the
+        wrapper says the recipe moved, and a per-build ``CLAUDE_CACHE_BUST`` invalidates
+        the final stage every time, so a base build always lands the day's Claude Code
+        release without re-running apt. A project Dockerfile is somebody else's file under
+        no such contract, and ``agent rebuild`` is the verb for applying edits that nothing
+        hashes -- it keeps ``--no-cache``. The two cache build args are base-only for the
+        same reason: on the other side there is no cache to steer, only an
+        unconsumed-build-arg warning.
         """
         label_args: list[str] = []
         for key, value in labels.items():
             label_args.extend(["--label", f"{key}={value}"])
+        cache_args = (
+            [
+                "--build-arg",
+                f"{BUILD_ITERATION_BUILD_ARG}={DOCKER_BUILD_ITERATION}",
+                "--build-arg",
+                f"{CLAUDE_CACHE_BUST_BUILD_ARG}={generate_uuid()}",
+            ]
+            if image == BASE_IMAGE_NAME
+            else ["--no-cache"]
+        )
         result = subprocess.run(
             [
                 "docker",
                 "build",
-                "--no-cache",
+                *cache_args,
                 *host_network_build_args(),
                 "--build-arg",
                 f"HOST_UID={os.getuid()}",
@@ -465,17 +491,16 @@ class BuildService:
         """
         Announce one build, with the reason that triggered it, and run it.
 
-        The ``--no-cache`` note rides along on the reason line because an auto-build is
-        wall clock the user did not ask for; a forced ``agent rebuild`` prints no reason
-        line and needs no such warning.
+        The cache note rides along on the reason line because an auto-build is wall clock
+        the user did not ask for, and the two image kinds cost very different amounts; a
+        forced ``agent rebuild`` prints no reason line and needs no such warning.
         """
-        described = f"base {image}" if image == BASE_IMAGE_NAME else image
+        is_base = image == BASE_IMAGE_NAME
+        described = f"base {image}" if is_base else image
         self._display.banner(f"Building {described} from {dockerfile}")
         if reason in BUILD_REASON_TEXT:
-            self._display.info(
-                f"    reason: {self._reason_text(reason, base_stamp)}; this build runs "
-                f"with --no-cache and re-runs every RUN step"
-            )
+            note = BASE_BUILD_CACHE_NOTE if is_base else PROJECT_BUILD_CACHE_NOTE
+            self._display.info(f"    reason: {self._reason_text(reason, base_stamp)}; {note}")
         return self._docker_build(dockerfile, image, context, labels=labels)
 
     def _reason_text(self, reason: BuildReason, base_stamp: ImageStamp | None) -> str:

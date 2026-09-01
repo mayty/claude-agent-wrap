@@ -19,6 +19,8 @@ Every agent starts from `claude-agent`, built from [ops/Dockerfile](../ops/Docke
 | `git config --system --add safe.directory /workspace` | Lets git operate on `/workspace` despite the UID/GID remapping described in [Build Args](#build-args) |
 | `ENTRYPOINT ["claude"]` | The container runs Claude Code by default |
 
+The file is two stages: `scaffold` holds everything above except the CLI and is reused from docker's layer cache between builds, and `agent` installs the Claude Code CLI and is never cached. New work belongs in the stage that matches its cost — put anything expensive and stable in `scaffold`, and only things that must be re-fetched on every build after it. See [Build caching](#build-caching).
+
 ## When to customize
 
 Most projects run `agent run` directly against the base image — no customization needed. Add a `.claude-agent-wrap/Dockerfile` when your project depends on tools the base image doesn't include, for example:
@@ -82,7 +84,13 @@ FROM claude-agent
 COPY --from=builder /tool /usr/local/bin/
 ```
 
-Every build passes `--no-cache` to `docker build` — there is no Docker layer caching, so every `RUN` step re-executes on every rebuild. That cost now falls on a launch as well as on an explicit rebuild, which is why a build the wrapper starts on your behalf says so and names the reason.
+## Build caching
+
+The base image builds **with** docker's layer cache; your project image builds with `--no-cache`.
+
+[ops/Dockerfile](../ops/Dockerfile) is split in two for that reason: a `scaffold` stage (apt packages, Node.js, dictionaries, `hadolint`/`crane`) that is reused between builds, and an `agent` stage that reinstalls the Claude Code CLI every time — the wrapper hands it a `CLAUDE_CACHE_BUST` whose value differs on every build, so that layer never hits the cache and a base rebuild always lands the current release. The scaffold is invalidated when `ops/Dockerfile` is edited or when the wrapper's `DOCKER_BUILD_ITERATION` is bumped, which reaches the stage as a `BUILD_ITERATION` build arg. Between bumps, a base rebuild no longer re-runs `apt-get install`; to throw the cached scaffold away by hand, run `docker builder prune` (BuildKit) or `docker image prune` (classic builder) before rebuilding.
+
+Your `.claude-agent-wrap/Dockerfile` is never cached. `agent rebuild` exists to apply edits that nothing hashes, so every `RUN` step in it re-executes on every rebuild. That cost falls on a launch as well as on an explicit rebuild, which is why a build the wrapper starts on your behalf says so and names the reason.
 
 ## Validating the project Dockerfile
 

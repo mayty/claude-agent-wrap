@@ -18,7 +18,13 @@ from agent_wrap.constants import (
     BuildForce,
     UpdateCheck,
 )
-from agent_wrap.domain.build.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS
+from agent_wrap.domain.build.constants import (
+    BASE_BUILD_CACHE_NOTE,
+    BUILD_ITERATION_BUILD_ARG,
+    CLAUDE_CACHE_BUST_BUILD_ARG,
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    PROJECT_BUILD_CACHE_NOTE,
+)
 from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.display.service import DisplayService
@@ -144,6 +150,11 @@ def _labels_for(mock_run: pytest_mock.MockType, image: str) -> dict[str, str]:
             continue
         return dict(argv[i + 1].split("=", 1) for i, arg in enumerate(argv) if arg == "--label")
     return {}
+
+
+def _build_args_in(argv: list[str]) -> dict[str, str]:
+    """Return the ``--build-arg`` pairs in one ``docker build`` argv."""
+    return dict(argv[i + 1].split("=", 1) for i, arg in enumerate(argv) if arg == "--build-arg")
 
 
 CURRENT_BASE = ImageStamp(id=BASE_ID, labels={BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION)})
@@ -315,7 +326,6 @@ def test_ensure_images_honours_force(  # noqa: PLR0913
 
 
 @pytest.mark.usefixtures("docker_up")
-@pytest.mark.usefixtures("docker_up")
 def test_ensure_images_forces_the_base_when_it_is_the_only_image(
     mocker: pytest_mock.MockFixture,
     build_svc: BuildService,
@@ -329,13 +339,14 @@ def test_ensure_images_forces_the_base_when_it_is_the_only_image(
     assert _built_images(docker_build) == [BASE_IMAGE_NAME]
 
 
+@pytest.mark.usefixtures("docker_up")
 def test_ensure_images_explains_an_automatic_rebuild(
     mocker: pytest_mock.MockFixture,
     build_svc: BuildService,
     base_resolved: ResolvedImage,
     docker_build: pytest_mock.MockType,
 ) -> None:
-    """An auto-build spends minutes the user did not ask for; it has to say why."""
+    """An auto-build spends wall clock the user did not ask for; it has to say why."""
     _stamps(mocker, STALE_BASE)
 
     build_svc.ensure_images(base_resolved, force=BuildForce.NONE)
@@ -343,6 +354,24 @@ def test_ensure_images_explains_an_automatic_rebuild(
     assert _built_images(docker_build) == [BASE_IMAGE_NAME]
     reason = build_svc._display.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "build iteration" in reason
+    assert BASE_BUILD_CACHE_NOTE in reason
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_explains_an_automatic_project_rebuild(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """A project image is still uncached, so it must not inherit the base's cheaper note."""
+    _stamps(mocker, CURRENT_BASE, FOREIGN_PROJECT)
+
+    build_svc.ensure_images(project_resolved, force=BuildForce.NONE)
+
+    assert _built_images(docker_build) == ["claude-agent-t"]
+    reason = build_svc._display.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert PROJECT_BUILD_CACHE_NOTE in reason
     assert "--no-cache" in reason
 
 
@@ -587,6 +616,58 @@ def test_docker_build_splices_spellcheck_lang(
     argv = mock_run.call_args[0][0]
     assert "SPELLCHECK_LANG=en_US,ru_RU" in argv
     assert argv[argv.index("SPELLCHECK_LANG=en_US,ru_RU") - 1] == "--build-arg"
+
+
+def test_docker_build_caches_the_base(
+    build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    # The whole point of the two-stage ops/Dockerfile: the scaffold must be allowed to
+    # come from the layer cache, steered by the iteration rather than by --no-cache.
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mocker.patch("agent_wrap.domain.build.service.generate_uuid", autospec=True, return_value="tok")
+
+    build_svc._docker_build(tmp_path / "Dockerfile", BASE_IMAGE_NAME, tmp_path, labels={})
+
+    argv = mock_run.call_args[0][0]
+    assert "--no-cache" not in argv
+    build_args = _build_args_in(argv)
+    assert build_args[BUILD_ITERATION_BUILD_ARG] == str(DOCKER_BUILD_ITERATION)
+    assert build_args[CLAUDE_CACHE_BUST_BUILD_ARG] == "tok"
+
+
+def test_docker_build_never_caches_a_project_image(
+    build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    # A project Dockerfile is under no such contract, and nothing hashes it: --no-cache is
+    # the only thing that makes `agent rebuild` apply an edit the user just made.
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    mock_run.return_value.returncode = 0
+
+    build_svc._docker_build(tmp_path / "Dockerfile", "claude-agent-t", tmp_path, labels={})
+
+    argv = mock_run.call_args[0][0]
+    assert "--no-cache" in argv
+    build_args = _build_args_in(argv)
+    assert BUILD_ITERATION_BUILD_ARG not in build_args
+    assert CLAUDE_CACHE_BUST_BUILD_ARG not in build_args
+
+
+def test_docker_build_token_differs_between_base_builds(
+    build_svc: BuildService, tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    # This is the assertion that actually protects the goal: a token that repeated would
+    # let the CLI layer cache, and a base rebuild would stop picking up the day's release.
+    mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
+    mock_run.return_value.returncode = 0
+
+    build_svc._docker_build(tmp_path / "Dockerfile", BASE_IMAGE_NAME, tmp_path, labels={})
+    build_svc._docker_build(tmp_path / "Dockerfile", BASE_IMAGE_NAME, tmp_path, labels={})
+
+    tokens = [
+        _build_args_in(call[0][0])[CLAUDE_CACHE_BUST_BUILD_ARG] for call in mock_run.call_args_list
+    ]
+    assert tokens[0] != tokens[1]
 
 
 def test_docker_build_no_host_network_by_default(

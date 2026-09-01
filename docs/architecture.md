@@ -209,6 +209,9 @@ so the two never have to share the more conservative number.
   iteration label is only ever read off the base image. The iteration and `BuildForce` both
   live in the *root* `agent_wrap/constants.py` for the same reason `UpdateCheck` does:
   `launch` and `build` both name them, and a runtime cross-domain import would trip EA001.
+  The label is how a host *detects* that its base image is behind; the identically-valued
+  `BUILD_ITERATION` build arg is how a bump *reaches* the cached `scaffold` stage of
+  `ops/Dockerfile`, which the base image builds with docker's layer cache on.
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
 - **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.

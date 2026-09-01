@@ -85,7 +85,13 @@ BASE_IMAGE_NAME = "claude-agent"
 # image is rebuilt by an `agent rebuild` in that project. One bump per release is enough,
 # and nothing enforces it: not every base-affecting change is statically detectable. See
 # CLAUDE.md, "Development workflow".
-DOCKER_BUILD_ITERATION = 1
+#
+# The value travels twice, and both trips matter. As BUILD_ITERATION_LABEL it is how a
+# host *detects* that its base image is behind; as the BUILD_ITERATION build arg it is how
+# a bump *reaches* the cached `scaffold` stage of ops/Dockerfile. Because the base builds
+# with docker's layer cache on, a bump is the only thing that forces its apt, NodeSource,
+# hadolint and crane layers to be fetched again.
+DOCKER_BUILD_ITERATION = 2
 
 # Filename of the project registry that `agent run` appends to on every launch, and
 # that `agent stats` / the logs viewer read. Lives in AGENT_LAUNCHES_DIR.

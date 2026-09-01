@@ -27,6 +27,27 @@ BASE_FROM_RE = re.compile(rf"^{BASE_IMAGE_NAME}(:.*)?$")
 # staleness questions are asked *inside* it -- see BuildService.ensure_images.
 BUILD_LOCK_NAME = "build.lock"
 
+# Build args that steer the base image's layer cache, both consumed by ops/Dockerfile.
+# BUILD_ITERATION invalidates the cached `scaffold` stage when the wrapper says its recipe
+# moved; CLAUDE_CACHE_BUST carries a value that differs on every build, which is what
+# keeps the Claude Code CLI layer out of the cache. Both are *referenced* by a RUN in the
+# Dockerfile rather than merely declared: BuildKit invalidates on an arg's first use, the
+# classic builder on its declaration, and only referencing them behaves the same on both.
+BUILD_ITERATION_BUILD_ARG = "BUILD_ITERATION"
+CLAUDE_CACHE_BUST_BUILD_ARG = "CLAUDE_CACHE_BUST"
+
+# The note appended to the "reason:" line, saying what an auto-build is about to cost.
+# One per image kind, because the honest answer differs: the base image builds with
+# docker's layer cache on, so its scaffolding re-runs only when the recipe moved, while a
+# project image still builds with --no-cache and re-runs everything. Deliberately not
+# tailored per reason -- only ITERATION_CHANGED guarantees a cold scaffold, since a
+# deleted or pre-stamping image leaves the build cache itself intact.
+BASE_BUILD_CACHE_NOTE = (
+    "its scaffolding layers are reused from the docker cache when they are still current, "
+    "and only the Claude Code CLI is always reinstalled -- minutes if the cache is cold"
+)
+PROJECT_BUILD_CACHE_NOTE = "this build runs with --no-cache and re-runs every RUN step"
+
 
 class BuildReason(Enum):
     """Why an image is about to be built."""
