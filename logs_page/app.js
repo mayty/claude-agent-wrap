@@ -485,9 +485,7 @@ async function tick(s) {
         state.pendingHashes = new Set();  // clear; resolveRecord repopulates
         state.reqs = state.rawReqs.map(r => resolveRecord(r, strings));
         if (!hasPendingHashes()) state.pendingHashes = null;
-        const scrollTop = chatBody().scrollTop;
-        renderStream();
-        requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+        renderStreamPreservingScroll();
       }
       state.fp = fp;
       renderChatHead();
@@ -509,7 +507,6 @@ async function tick(s) {
     // If the total count is less than what we already have, records were
     // deleted or the session was rebuilt — do a full re-fetch and rebuild.
     if (meta && meta.count < state.reqs.length) {
-      const scrollTop = chatBody().scrollTop;
       const fullResp = await fetch(`/api/session?${sessionQuery(s)}`);
       if (!fullResp.ok) return;
       const full = await readNDJSONStream(fullResp);
@@ -522,14 +519,13 @@ async function tick(s) {
       state.session_meta = full.meta || state.session_meta;
       state.fp = fp;
       updateSessionListItem(full.meta);
-      renderStream();
-      requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+      renderStreamPreservingScroll();
       return;
     }
 
     // Normal append path: only new records were returned.
     const body = chatBody();
-    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    const atBottom = isChatAtBottom();
     // Insert before the sticky scroll-to-bottom wrapper (rather than
     // appending after it) so it stays the last element in flow — position:
     // sticky only tracks the viewport bottom while it has no later siblings.
@@ -2243,7 +2239,7 @@ function insertMarkers(groups) {
 function applyTabFilter(tab) {
   // Capture whether user was at the bottom before changing the view.
   const body = chatBody();
-  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  const atBottom = isChatAtBottom();
 
   // Remove previous sub-tab visibility classes (only matches elements that
   // have it — typically few, from the previous sub-tab view).
@@ -2331,6 +2327,29 @@ function renderStream() {
   ensureScrollButton();
 }
 
+// Rebuild the whole stream while keeping the reader where they were. A reader
+// following the newest turn stays pinned to the bottom: the rebuild usually
+// makes the stream taller (a resolved hash placeholder becomes its real text),
+// so restoring the old offset would leave them just above the new bottom and
+// silently end auto-following. Anyone who has scrolled up keeps their offset.
+function renderStreamPreservingScroll() {
+  // Probe before renderStream() clears innerHTML, which resets scrollTop to 0.
+  const atBottom = isChatAtBottom();
+  const scrollTop = chatBody().scrollTop;
+  renderStream();
+  requestAnimationFrame(() => {
+    const body = chatBody();
+    // Instant, not the smooth scrollToBottom(): scrollTop is 0 after the wipe,
+    // so a smooth scroll would animate the whole history past the reader on
+    // every poll. The assignment also cancels any smooth scroll applyTabFilter()
+    // started from inside renderStream().
+    body.scrollTop = atBottom ? body.scrollHeight : scrollTop;
+    // A scrollTop write that changes nothing emits no scroll event, so refresh
+    // the buttons by hand rather than relying on the listener.
+    updateScrollButtons();
+  });
+}
+
 // Home/End scroll the request pop-up when it is open, otherwise the session
 // chat. Plain keypress only — leave modified combos (e.g. Ctrl+Home) alone.
 document.addEventListener("keydown", (e) => {
@@ -2349,10 +2368,22 @@ document.addEventListener("keydown", (e) => {
 // very bottom, giving the user a one-click way to jump back to the newest turn.
 // ---------------------------------------------------------------------------
 
+// Distance from an edge, in px, still counted as being *at* that edge —
+// absorbs sub-pixel rounding and the height of the sticky button wrappers.
+const SCROLL_EDGE_PX = 40;
+
+// Whether the reader is following the newest turn. Recomputed on demand: no
+// state tracks it, so anything that rebuilds the stream must probe *before*
+// the rebuild (renderStream() clears innerHTML, which resets scrollTop to 0).
+function isChatAtBottom() {
+  const body = chatBody();
+  return body.scrollHeight - body.scrollTop - body.clientHeight < SCROLL_EDGE_PX;
+}
+
 function updateScrollButtons() {
   const body = chatBody();
-  const atTop = body.scrollTop < 40;
-  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  const atTop = body.scrollTop < SCROLL_EDGE_PX;
+  const atBottom = isChatAtBottom();
   const toTop = body.querySelector(".scroll-to-top-btn");
   const toBot = body.querySelector(".scroll-to-bottom-btn");
   if (toTop) toTop.classList.toggle("visible", !atTop);
