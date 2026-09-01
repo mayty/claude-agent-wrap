@@ -251,6 +251,22 @@ if [ "$want_dev" -eq 1 ]; then
         --only-binary=:all: \
         --disable-pip-version-check \
         --quiet
+    # pip bakes the interpreter's absolute path into the shebang of every console
+    # script it writes, and this venv is built under $tmp -- so `pytest`, `pip` and
+    # friends would land pointing at a directory this script is about to delete.
+    # Repointing them happens here, before the rename, to keep the invariant that
+    # nothing half-finished is ever visible under the final name. `sed -i` is out:
+    # BSD sed requires an argument to it and GNU sed forbids one.
+    for script in "$tmp"/venv/bin/*; do
+        [ -f "$script" ] || continue
+        IFS= read -r shebang < "$script" || continue
+        case $shebang in "#!$tmp/venv/bin/"*) ;; *) continue ;; esac
+        # cp first, then truncate it by redirection: that carries the executable
+        # bit over without a chmod that a umask could water down.
+        cp -p "$script" "$script.repointed"
+        sed "1s|^#!$tmp/venv/bin/|#!$venv/bin/|" "$script" > "$script.repointed"
+        mv "$script.repointed" "$script"
+    done
     rm -rf "$venv"
     mv "$tmp/venv" "$venv"
 fi
