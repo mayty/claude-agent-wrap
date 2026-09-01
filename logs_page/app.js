@@ -679,6 +679,66 @@ function appendThinkingBlock(tb, parent) {
   replaceLoadingPlaceholders(box);
 }
 
+// Append one image block. Shared by top-level `image` content blocks and the ones
+// nested inside a tool_result (what an image Read returns). A base64 payload is
+// long enough to be stored as a hash pointer, so the data may still be an
+// unresolved placeholder on first paint — emit the placeholder in its own text
+// node instead of a broken <img> and let replaceLoadingPlaceholders() turn it into
+// a spinner; the pending-hash refetch re-renders with the real image.
+function appendImageBlock(source, parent) {
+  if (!source || !source.data) return;
+  const box = el("div", "block-image");
+  if (source.data === LOADING_PLACEHOLDER || /^hash:[a-f0-9]{64}$/.test(source.data)) {
+    box.appendChild(el("div", "meta", LOADING_PLACEHOLDER));
+    parent.appendChild(box);
+    return;
+  }
+  const img = el("img", "content-image");
+  img.src = "data:" + (source.media_type || "image/png") + ";base64," + source.data;
+  img.alt = "Image";
+  img.title = "Click to view full size";
+  img.onclick = function(e) { e.stopPropagation(); showImageOverlay(img.src); };
+  box.appendChild(img);
+  parent.appendChild(box);
+}
+
+// Fill a tool_result box with its content. The content is usually an *array* of
+// blocks; walking it rather than JSON-stringifying the lot is what lets an image
+// Read show its picture, keeps text results readable as text instead of escaped
+// JSON, and leaves a hash placeholder alone in its own text node where the
+// spinner swap can find it.
+function appendToolResultBody(content, box) {
+  if (typeof content === "string" || !Array.isArray(content) || !content.length) {
+    box.appendChild(Object.assign(el("pre"), { textContent: asText(content) }));
+    return;
+  }
+  // With more than one block, give each text block its own box so adjacent blocks
+  // stay distinguishable — the same convention renderContent() uses below.
+  const multi = content.length > 1;
+  const addText = (text) => {
+    const pre = Object.assign(el("pre"), { textContent: text });
+    if (multi) {
+      const sub = el("div", "block-text");
+      sub.appendChild(pre);
+      box.appendChild(sub);
+    } else {
+      box.appendChild(pre);
+    }
+  };
+  for (const block of content) {
+    if (block == null) continue;
+    if (typeof block === "string") {
+      addText(block);
+    } else if (block.type === "image") {
+      appendImageBlock(block.source, box);
+    } else if (!block.type || block.type === "text") {
+      addText(asText(block.text));
+    } else {
+      addText(asText(block));
+    }
+  }
+}
+
 function renderContent(content, parent) {
   if (typeof content === "string") {
     parent.appendChild(Object.assign(el("pre"), { textContent: content }));
@@ -718,22 +778,12 @@ function renderContent(content, parent) {
     } else if (type === "tool_result") {
       const box = el("div", "block-tool_result");
       box.appendChild(el("div", "block-label", "tool_result"));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(block.content) }));
+      appendToolResultBody(block.content, box);
       parent.appendChild(box);
     } else if (type === "thinking") {
       appendThinkingBlock(block, parent);
     } else if (type === "image") {
-      const src = block.source;
-      if (src && src.data) {
-        const box = el("div", "block-image");
-        const img = el("img", "content-image");
-        img.src = "data:" + (src.media_type || "image/png") + ";base64," + src.data;
-        img.alt = "Image";
-        img.title = "Click to view full size";
-        img.onclick = function(e) { e.stopPropagation(); showImageOverlay(img.src); };
-        box.appendChild(img);
-        parent.appendChild(box);
-      }
+      appendImageBlock(block.source, parent);
     } else {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", type));
