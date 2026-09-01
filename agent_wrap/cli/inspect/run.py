@@ -5,7 +5,7 @@ import dataclasses
 import json
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.inspect.constants import INSPECT_LABEL, USAGE_TEXT
+from agent_wrap.cli.inspect.constants import INSPECT_LABEL, NO_STALE_IMAGES, USAGE_TEXT
 from agent_wrap.cli.inspect.render import render
 from agent_wrap.containers import services
 from agent_wrap.lib.argparsing import make_parser, parse_or_code
@@ -65,6 +65,13 @@ def run(args: list[str]) -> int:
     else:
         for line in render(report, dsp):
             dsp.info(line)
+        # The one green line in the report, printed here for the same reason the warnings
+        # below are: `render` returns unstyled lines, and colour outside a table cell has
+        # no route through a line list. `is not None` is load-bearing -- an empty list is
+        # the measured verdict that nothing is stale, while None means the sweep never ran
+        # and has nothing to claim either way.
+        if report.stale_images is not None and not report.stale_images:
+            dsp.success(NO_STALE_IMAGES)
         # Warnings go through display.warning rather than riding the report's line list:
         # they belong on stderr, so a redirected report stays machine-readable and the
         # severity survives being piped.

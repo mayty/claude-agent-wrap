@@ -16,6 +16,7 @@ from agent_wrap.constants import (
     AUTOSTART_LOGS_ENV,
     LEGACY_AGENT_DOCKERFILE_NAME,
     STATE_FILES,
+    BuildForce,
     UpdateCheck,
 )
 from agent_wrap.domain.build.models import DockerfileAgentInfo, ResolvedImage
@@ -58,6 +59,9 @@ if TYPE_CHECKING:
 def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
     """Return a LaunchService with spec-mocked dependencies."""
     build_svc = mocker.Mock(spec=BuildService)
+    # Every launch goes through ensure_images now, and a bare Mock return value would
+    # compare unequal to 0 and abort each test at that gate.
+    build_svc.ensure_images.return_value = 0
     sidecar_svc = mocker.Mock(spec=SidecarService)
     return LaunchService(
         config_service=mocker.Mock(spec=ConfigService),
@@ -156,6 +160,42 @@ def test_launch_non_headless_update_check_proceed_continues(launch_svc: LaunchSe
     launch_svc._updates.check_updates.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
+def test_launch_builds_a_missing_or_stale_image(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    """The launch asks for the images it is about to run rather than checking for them."""
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
+    resolved = ResolvedImage(
+        image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
+    )
+    launch_svc._build_service.resolve_image.return_value = resolved  # pyrefly: ignore [missing-attribute]
+    # Stop the launch on the very next step, so this test says nothing about the rest.
+    launch_svc._config.prepare_declared_mounts.side_effect = HostMountError("stop here")  # pyrefly: ignore [missing-attribute]
+
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 1
+
+    launch_svc._build_service.ensure_images.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        resolved, force=BuildForce.NONE
+    )
+
+
+def test_launch_aborts_when_the_image_cannot_be_built(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    """A failed build already printed docker's diagnostics; its rc is the launch's rc."""
+    mocker.patch.object(Path, "cwd", return_value=tmp_path)
+    launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
+        image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
+    )
+    launch_svc._build_service.ensure_images.return_value = 2  # pyrefly: ignore [missing-attribute]
+
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 2
+
+    launch_svc._build_service.parse_dockerfile_agent.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
 def test_launch_unknown_provider_reports_clean_error(
     tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
@@ -163,11 +203,6 @@ def test_launch_unknown_provider_reports_clean_error(
     launch_svc._updates.check_updates.return_value = UpdateCheck.PROCEED  # pyrefly: ignore [missing-attribute]
     launch_svc._build_service.resolve_image.return_value = ResolvedImage(  # pyrefly: ignore [missing-attribute]
         image="claude-agent", dockerfile=tmp_path / "Dockerfile", context=tmp_path
-    )
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.image_exists",
-        return_value=True,
-        autospec=True,
     )
     launch_svc._provider_service.get_provider.side_effect = ProviderNotFoundError(  # pyrefly: ignore [missing-attribute]
         "Unknown provider: bogus\nAvailable: litellm-bedrock"
@@ -965,11 +1000,6 @@ def test_launch_declared_mount_failure_aborts_before_sidecars(
     launch_svc._config.prepare_declared_mounts.side_effect = HostMountError(  # pyrefly: ignore [missing-attribute]
         "read-only mounts whose host source does not exist"
     )
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.image_exists",
-        return_value=True,
-        autospec=True,
-    )
     run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
 
     rc = launch_svc.launch(use_base=False, claude_args=[])
@@ -997,11 +1027,6 @@ def test_launch_passes_declared_run_args_to_config(
     )
     launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
         extra_run_args=["-v", "/workspace/node_modules"]
-    )
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.image_exists",
-        return_value=True,
-        autospec=True,
     )
     # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
     # declaration rather than on get_provider, which now runs before that phase.
@@ -1119,11 +1144,6 @@ def _stub_launch_up_to_prepare(
     launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
         startup_timeout=startup_timeout
     )
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.image_exists",
-        return_value=True,
-        autospec=True,
-    )
     # priority_lock opens these for real, so a Mock path will not do.
     trk = mocker.Mock(spec=SidecarTracker)
     trk.lock_path = tmp_path / "sidecars.lock"
@@ -1202,11 +1222,6 @@ def test_launch_base_flag_neither_runs_nor_warns_about_startup(
         image="claude-agent",
         dockerfile=tmp_path / "Dockerfile",
         context=tmp_path,
-    )
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.image_exists",
-        return_value=True,
-        autospec=True,
     )
     # Stop launch() just past the Dockerfile phase. The sentinel sits on the sidecar
     # declaration rather than on get_provider, which now runs before that phase.

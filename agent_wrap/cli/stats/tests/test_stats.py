@@ -15,7 +15,7 @@ from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.pricing.models import Bucket
-from agent_wrap.domain.stats.models import StatsReport
+from agent_wrap.domain.stats.models import ProjectRow, StatsReport
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -265,3 +265,101 @@ def test_complete_after_date_value() -> None:
 def test_complete_pattern_value_prev_returns_empty() -> None:
     result = stats_complete(3, ["agent", "stats", "-p", ""])
     assert result == []
+
+
+def _tree_row(path: str) -> ProjectRow:
+    """One project row, identical but for its path — the tree only reads the shape."""
+    b = Bucket()
+    b.add(
+        {
+            "input_tokens": 1000,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {},
+        },
+        0.0,
+    )
+    return {
+        "path": Path(path),
+        "exists": True,
+        "sessions": 3,
+        "last_ts": datetime(2026, 8, 30, tzinfo=UTC),
+        "total": b,
+        "cost": 6.0,
+    }
+
+
+_TREE_PATHS = [
+    "/home/me/work/wargaming/wotp",
+    "/home/me/work/wargaming/wotp-be",
+    "/home/me/work/personal/dotfiles",
+    "/srv/deploy",
+]
+
+
+def _project_labels(out: str) -> list[str]:
+    """
+    Return the PROJECT cell of every Projects-table body row.
+
+    Rejoined from the right, because the tree prefixes are drawn with "│" -- the same glyph
+    the table uses as its column separator, so a plain split oversplits exactly that cell.
+    With no per-day usage there is no By-day table, so every row here is a project row.
+    """
+    rows = [line for line in out.split("\n") if line.startswith("│")][1:]
+    return ["│".join(line.split("│")[1:-9])[1:].rstrip() for line in rows]
+
+
+def test_render_leaves_the_project_tree_folded_on_a_wide_console(
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing overflows, so the shared prefix stays stated once."""
+    monkeypatch.setenv("COLUMNS", "200")
+    out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    assert "└home/me/work/" in _project_labels(out)
+
+
+def test_render_chops_the_project_tree_to_fit_a_narrow_console(
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fold that made one node wide is given back a segment at a time."""
+    monkeypatch.setenv("COLUMNS", "100")
+    labels = _project_labels(
+        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    )
+    assert "└home/me/work/" in labels
+    assert " ├personal/" in labels
+    assert " │└dotfiles" in labels
+
+
+def test_render_overflows_rather_than_truncate_a_figure(
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Below the width its numeric columns need, the Projects table runs past the edge.
+
+    Deliberately: the tree is already as narrow as it goes, and every column left holds a
+    date or a figure. Half of one of those reads as a wrong number rather than a shortened
+    one, so nothing here is nominated as safe to cut and the line is simply long.
+    """
+    monkeypatch.setenv("COLUMNS", "85")
+    out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    drawn = [line for line in out.split("\n") if line.startswith(("│", "┌", "├", "└"))]
+    assert max(len(line) for line in drawn) > 85
+    assert not any("…" in line for line in drawn)
+
+
+def test_render_reports_the_same_totals_however_far_the_tree_was_chopped(
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chopping rearranges the label column and nothing else."""
+
+    def root_figures(columns: str) -> list[str]:
+        monkeypatch.setenv("COLUMNS", columns)
+        out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        root = [line for line in out.split("\n") if line.startswith("│")][1]
+        return [cell.strip() for cell in root.split("│")[-9:-1]]
+
+    wide, narrow = root_figures("200"), root_figures("85")
+    assert wide == narrow
+    assert wide[0] == "12"

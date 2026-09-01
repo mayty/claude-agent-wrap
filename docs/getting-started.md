@@ -26,14 +26,6 @@ source /path/to/claude-agent-wrap/agent-wrap.bashrc
 
 This adds `bin/agent` to your `PATH` and registers tab-completion. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required. See [Shell Commands](shell-commands.md).
 
-Build the base image:
-
-```bash
-agent rebuild --full
-```
-
-This creates a `claude-agent` image. Your host UID/GID are passed in as build args (`HOST_UID`/`HOST_GID`) so the container can write to mounted directories without permission issues.
-
 ## Usage
 
 From any project directory, run:
@@ -47,3 +39,16 @@ If a `.claude-agent-wrap/Dockerfile` exists in the current directory but you wan
 ```bash
 agent run --base [claude-code-args...]
 ```
+
+### Rebuilding an image
+
+There is nothing to build up front. `agent run` builds the `claude-agent` base image on a host that has none, and rebuilds either image when the wrapper's own build recipe has moved past it — so the first launch on a new host is slow and the rest are not.
+
+Two things it cannot see for you, and both are an [`agent rebuild`](shell-commands.md#agent-rebuild):
+
+```bash
+agent rebuild --full   # take a new Claude Code release
+agent rebuild          # apply your own .claude-agent-wrap/Dockerfile edits
+```
+
+A new Claude Code release announces itself in the statusline while you work, bottom-right and in yellow: `↑ 2.0.51 available`. The CLI is installed into the image at build time, so `agent rebuild --full` is how you take it — it rebuilds the base image and then the project image on top. (`agent inspect` reports the same comparison on its image rows, for when you are not in a session.) The plain `agent rebuild` is for the other case: nothing hashes your project Dockerfile, so an edit to it reaches the image only through an explicit rebuild.

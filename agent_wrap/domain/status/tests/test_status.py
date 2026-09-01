@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME
-from agent_wrap.domain.build.models import ResolvedImage
+from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage, StaleProjectImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.logs.models import ViewerState
@@ -19,6 +19,7 @@ from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.sidecars.models import AgentContainer, RegistryState, SidecarContainer
 from agent_wrap.domain.sidecars.service import SidecarService
+from agent_wrap.domain.status.models import StaleImageRow
 from agent_wrap.domain.status.service import InspectService
 from agent_wrap.domain.updates.models import WrapperRevision
 from agent_wrap.domain.updates.service import UpdateService
@@ -171,6 +172,10 @@ def config_mock(mocker: pytest_mock.MockFixture, tmp_path: Path) -> Mock:
 def build_mock(mocker: pytest_mock.MockFixture) -> Mock:
     mock = mocker.create_autospec(BuildService, instance=True)
     mock.resolve_image.return_value = _PROJECT_IMAGE
+    mock.stale_summary.return_value = ImageStaleness(base="", project="")
+    # Seeded explicitly: autospec would leave this a Mock, and the report iterates it.
+    no_stale_images: list[StaleProjectImage] = []
+    mock.stale_project_images.return_value = no_stale_images
     return mock
 
 
@@ -458,6 +463,33 @@ def test_report_is_json_serialisable(service: InspectService) -> None:
     assert json.loads(payload)["environment"]["base_image_version"] == "2.0.50"
 
 
+def test_report_carries_the_staleness_the_build_service_reports(
+    service: InspectService, build_mock: Mock
+) -> None:
+    """One verdict, produced by the service that acts on it, reaching both image rows."""
+    build_mock.stale_summary.return_value = ImageStaleness(
+        base="the build iteration changed", project="its base moved"
+    )
+
+    report = service.build_report()
+
+    assert report.environment.base_image_stale_reason == "the build iteration changed"
+    assert report.project is not None
+    assert report.project.stale_reason == "its base moved"
+
+
+def test_report_reports_no_staleness_when_docker_is_down(
+    service: InspectService, build_mock: Mock, docker_probes: dict[str, Mock]
+) -> None:
+    """An unreachable daemon cannot be asked, and must not be reported as an answer."""
+    docker_probes["reachable"].return_value = False
+
+    report = service.build_report()
+
+    build_mock.stale_summary.assert_not_called()
+    assert report.environment.base_image_stale_reason == ""
+
+
 def test_environment_row_includes_base_image_version(
     service: InspectService, docker_probes: dict[str, Mock]
 ) -> None:
@@ -653,6 +685,54 @@ def test_lite_keeps_the_container_listings(service: InspectService, sidecar_mock
     sidecar_mock.list_sidecar_containers.assert_called_once_with()
     assert report.sidecars
     assert report.agents
+
+
+def test_lite_skips_the_stale_image_sweep(service: InspectService, build_mock: Mock) -> None:
+    report = service.build_report(lite=True)
+    build_mock.stale_project_images.assert_not_called()
+    assert report.stale_images is None
+
+
+def test_stale_image_sweep_is_asked_about_every_registered_project(
+    service: InspectService, build_mock: Mock, config_mock: Mock
+) -> None:
+    """The sweep answers for the whole registry, not for the cwd it was launched from."""
+    service.build_report()
+    build_mock.stale_project_images.assert_called_once_with(
+        config_mock.read_project_paths.return_value
+    )
+
+
+def test_stale_image_rows_carry_string_paths(
+    service: InspectService, build_mock: Mock, tmp_path: Path
+) -> None:
+    """A Path anywhere in the report would break --json with no type error to warn about."""
+    build_mock.stale_project_images.return_value = [
+        StaleProjectImage(project=tmp_path / "a", image="claude-agent-a", reason="the base moved")
+    ]
+
+    report = service.build_report()
+
+    assert report.stale_images == [
+        StaleImageRow(project=str(tmp_path / "a"), image="claude-agent-a", reason="the base moved")
+    ]
+    json.dumps(dataclasses.asdict(report))
+
+
+def test_stale_image_sweep_reports_an_empty_verdict_when_nothing_is_stale(
+    service: InspectService,
+) -> None:
+    """[] is measured good news; None would say the sweep never ran."""
+    assert service.build_report().stale_images == []
+
+
+def test_stale_image_sweep_is_skipped_when_docker_is_down(
+    service: InspectService, build_mock: Mock, docker_probes: dict[str, Mock]
+) -> None:
+    docker_probes["reachable"].return_value = False
+    report = service.build_report()
+    build_mock.stale_project_images.assert_not_called()
+    assert report.stale_images is None
 
 
 def test_lite_is_recorded_on_the_report(service: InspectService) -> None:

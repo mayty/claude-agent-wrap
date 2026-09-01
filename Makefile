@@ -28,6 +28,10 @@ PYTHON := .python/venv-$(PY_SLUG)/bin/python3
 #   docker run --rm claude-agent python3 -V                     -> 3.12.3
 #   docker exec agent-wrap-litellm-<provider> \
 #     sh -c 'readlink -f /proc/1/exe; /proc/1/exe -V'            -> 3.13.15
+# 3.12 stays the statusline's floor even though THIS project's own dev container
+# fronts that python3 with the pinned interpreter on PATH (see
+# .claude-agent-wrap/Dockerfile): every other project's container has only the
+# base image's apt python3, which is where the statusline has to keep running.
 CARVEOUT_STATUSLINE_PATHS   := ops/statusline.py
 CARVEOUT_STATUSLINE_VERSION := 3.12
 CARVEOUT_RUNTIME_PATHS      := agent_wrap/domain/providers/litellm_runtime/*.py

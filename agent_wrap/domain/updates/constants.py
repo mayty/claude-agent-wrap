@@ -3,11 +3,6 @@
 
 from enum import Enum
 
-REBUILD_FILES = {
-    "agent_wrap/__main__.py",
-    "ops/Dockerfile",
-}
-
 RESOURCE_FILES = {
     "agent-wrap.bashrc",
 }

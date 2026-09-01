@@ -20,6 +20,7 @@ from agent_wrap.domain.status.models import (
     ProjectImageRow,
     ProviderRow,
     SidecarRow,
+    StaleImageRow,
     StorageRow,
     ViewerRow,
     WrapperRow,
@@ -67,6 +68,7 @@ _PROJECT = ProjectImageRow(
     present=True,
     claude_version="2.0.50",
     claude_update_available=False,
+    stale_reason="",
 )
 
 
@@ -85,6 +87,7 @@ def _report(  # noqa: PLR0913
     python_pinned: str | None = "3.14.7",
     viewer: ViewerRow | None = None,
     logs_autostart: AutostartRow | None = None,
+    stale_images: list[StaleImageRow] | None = None,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -128,6 +131,7 @@ def _report(  # noqa: PLR0913
             base_image_version="2.0.50",
             latest_claude_version=None,
             claude_update_available=False,
+            base_image_stale_reason="",
             network_name="agent-wrap-net",
             network_present=True,
             host_network_requested=False,
@@ -138,6 +142,7 @@ def _report(  # noqa: PLR0913
         ),
         storage=StorageRow(logs_bytes=logs_bytes, projects_registered=24, projects_stale=2),
         project=project,
+        stale_images=stale_images,
         lite=lite,
         warnings=warnings or [],
     )
@@ -172,10 +177,16 @@ def _warnings(dsp: Mock) -> list[str]:
 
 
 def _details_lines(dsp: Mock) -> list[str]:
-    """Return the rendered details table, from its title to the end of the output."""
+    """
+    Return the rendered details table, from its title to its closing border.
+
+    Bounded at the border rather than at the end of the output: the stale-image table can
+    follow it, and its box-drawing lines would otherwise be counted as this table's.
+    """
     lines = _lines(dsp)
     start = next(i for i, line in enumerate(lines) if line.startswith("Details:"))
-    return lines[start:]
+    end = next(i for i, line in enumerate(lines[start:], start) if line.startswith("\u2514"))
+    return lines[start : end + 1]
 
 
 # --- parsing ---
@@ -441,7 +452,26 @@ def test_human_output_flags_a_project_image_that_was_never_built(
     )
     run([])
     out = _stdout(display_mock_service)
-    assert "claude-agent-wrap MISSING (run `agent rebuild`)" in out
+    assert "claude-agent-wrap MISSING (built on the next `agent run`)" in out
+
+
+def test_human_output_flags_an_image_the_next_launch_will_rebuild(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Present is not the same as current, and the report has to say which."""
+    report = _report(project=dataclasses.replace(_PROJECT, stale_reason="its base moved"))
+    inspect_mock.build_report.return_value = dataclasses.replace(
+        report,
+        environment=dataclasses.replace(
+            report.environment, base_image_stale_reason="the build iteration changed"
+        ),
+    )
+    run([])
+    out = _stdout(display_mock_service)
+    assert "claude-agent present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
+    assert "the build iteration changed" in out
+    assert "claude-agent-wrap present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
+    assert "its base moved" in out
 
 
 def test_human_output_flags_a_stale_project_image(
@@ -498,6 +528,7 @@ def test_human_output_closes_a_lite_report_with_what_it_skipped(
     out = _stdout(display_mock_service)
     assert "npm-registry version check" in out
     assert "logs-size walk" in out
+    assert "stale-image sweep" in out
 
 
 @pytest.mark.usefixtures("inspect_mock")
@@ -686,6 +717,202 @@ def test_human_output_never_prescribes_cleanup(
     assert "agent cleanup" not in _stdout(display_mock_service)
 
 
+_STALE_IMAGES = [
+    StaleImageRow(
+        project="/home/me/wotp",
+        image="claude-agent-wotp",
+        reason="the base image claude-agent is not the one it was built on",
+    ),
+    StaleImageRow(
+        project="/home/me/wotp-be",
+        image="claude-agent-wotp",
+        reason="the base image claude-agent is not the one it was built on",
+    ),
+]
+
+
+def _stale_lines(dsp: Mock) -> list[str]:
+    """Return the rendered stale-image table, from its title to the end of the output."""
+    lines = _lines(dsp)
+    start = next(i for i, line in enumerate(lines) if line.startswith("Stale images"))
+    return lines[start:]
+
+
+def _stale_body(dsp: Mock) -> list[str]:
+    """Return the stale-image table's content rows -- borders and the header dropped."""
+    return [line for line in _stale_lines(dsp) if line.startswith("│")][1:]
+
+
+def _stale_cells(line: str) -> list[str]:
+    """
+    Split one stale-image row into its three cells.
+
+    The PROJECT cell is rejoined from the right, because the tree prefixes are drawn with
+    "│" -- the same glyph the table uses as its column separator, so a plain split
+    oversplits exactly that cell. Only its one pad space is dropped, not its whole
+    indent: the leading blanks of a tree prefix are what say how deep the row sits.
+    """
+    parts = line.split("│")
+    return ["│".join(parts[1:-3])[1:].rstrip(), parts[-3].strip(), parts[-2].strip()]
+
+
+def test_human_output_lists_stale_images_one_row_per_project(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Two projects on one image are two rows -- the project is what the reader acts on."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    table = _stale_lines(display_mock_service)
+    assert table[0] == "Stale images (2):"
+    assert sum(line.count("claude-agent-wotp") for line in table) == 2
+    assert any("wotp-be" in line for line in table)
+
+
+def test_human_output_renders_the_stale_image_projects_as_a_tree(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """The shared prefix is stated once, as a directory row, the way `agent stats` does."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    body = _stale_body(display_mock_service)
+    assert [_stale_cells(line)[0] for line in body] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
+
+
+def test_human_output_leaves_a_stale_image_directory_row_blank(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """A directory has no image to rebuild and no reason to report."""
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    rows = [_stale_cells(line) for line in _stale_body(display_mock_service)]
+    assert [cells[1:] for cells in rows if cells[0].endswith("/")] == [["", ""], ["", ""]]
+
+
+def test_human_output_keeps_a_project_less_stale_image_row(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """It names no path and cannot be placed in the tree, but the title still counts it."""
+    inspect_mock.build_report.return_value = _report(
+        stale_images=[
+            *_STALE_IMAGES,
+            StaleImageRow(project="", image="claude-agent-huh", reason="who knows"),
+        ]
+    )
+    run([])
+    table = _stale_lines(display_mock_service)
+    assert table[0] == "Stale images (3):"
+    row = next(line for line in table if "claude-agent-huh" in line)
+    assert _stale_cells(row)[0] == "?"
+
+
+def test_human_output_orders_the_stale_image_columns(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    header = next(line for line in _stale_lines(display_mock_service) if "PROJECT" in line)
+    assert [cell.strip() for cell in header.split("\u2502") if cell.strip()] == [
+        "PROJECT",
+        "IMAGE",
+        "REASON",
+    ]
+
+
+#: The longest build reason there is, at 121 characters (BuildReason.UNSTAMPED).
+_LONG_REASON = (
+    "it was built before agent-wrap stamped its images, so it cannot be checked -- "
+    "this is a one-time rebuild after the upgrade"
+)
+
+
+def _one_long_reason() -> list[StaleImageRow]:
+    return [StaleImageRow(project="/home/me/wotp", image="claude-agent-wotp", reason=_LONG_REASON)]
+
+
+def test_human_output_keeps_a_long_stale_image_reason_whole_when_it_fits(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The reported bug: the reason used to be cut to a fixed 72 at any console width.
+
+    Nothing decides how wide a cell may be except the console, so a console with room for
+    all 121 characters prints all 121.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
+    assert _LONG_REASON in body
+    assert "\u2026" not in body
+
+
+def test_human_output_trims_a_long_stale_image_reason_to_the_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Too narrow for the whole reason, so its tail goes -- the head still identifies it."""
+    monkeypatch.setenv("COLUMNS", "100")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
+    assert "before agent-wrap stamped its images" in body
+    assert "\u2026" in body
+    assert _LONG_REASON not in body
+
+
+def test_human_output_never_trims_the_stale_image_project(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path is what the reader acts on; the tree is chopped rather than cut short."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
+    run([])
+    projects = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert not any("\u2026" in project for project in projects)
+    assert "wotp" in projects[-1]
+
+
+def test_json_output_keeps_a_long_stale_image_reason_whole(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """Trimming is a table concern; a machine consumer gets the reason in full."""
+    long_reason = "x" * 200
+    inspect_mock.build_report.return_value = _report(
+        stale_images=[StaleImageRow(project="/p", image="claude-agent-p", reason=long_reason)]
+    )
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert payload["stale_images"][0]["reason"] == long_reason
+
+
+def test_human_output_says_so_in_green_when_no_image_is_stale(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """The one section whose empty state is good news, so it is said rather than tabulated."""
+    inspect_mock.build_report.return_value = _report(stale_images=[])
+    run([])
+    display_mock_service.success.assert_called_once()
+    assert "up to date" in display_mock_service.success.call_args.args[0]
+    assert "Stale images" not in _stdout(display_mock_service)
+
+
+def test_human_output_has_no_stale_image_section_when_the_sweep_did_not_run(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """None is not the empty list: an unrun sweep has no verdict to report either way."""
+    inspect_mock.build_report.return_value = _report(stale_images=None)
+    run([])
+    display_mock_service.success.assert_not_called()
+    assert "Stale images" not in _stdout(display_mock_service)
+
+
+def test_human_output_omits_the_green_line_when_an_image_is_stale(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    display_mock_service.success.assert_not_called()
+
+
 # --- json output ---
 
 
@@ -715,6 +942,30 @@ def test_json_output_carries_the_lite_marker_and_nulls(
     assert payload["lite"] is True
     assert payload["storage"]["logs_bytes"] is None
     assert payload["environment"]["latest_claude_version"] is None
+    assert payload["stale_images"] is None
+
+
+def test_json_output_carries_the_stale_images(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run(["--json"])
+    payload = json.loads(_stdout(display_mock_service))
+    assert [row["project"] for row in payload["stale_images"]] == [
+        "/home/me/wotp",
+        "/home/me/wotp-be",
+    ]
+    assert payload["stale_images"][0]["image"] == "claude-agent-wotp"
+
+
+def test_json_output_distinguishes_an_empty_sweep_from_an_unrun_one(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    """[] is the measured verdict that nothing is stale; null is no verdict at all."""
+    inspect_mock.build_report.return_value = _report(stale_images=[])
+    run(["--json"])
+    assert json.loads(_stdout(display_mock_service))["stale_images"] == []
+    display_mock_service.success.assert_not_called()
 
 
 def test_json_output_carries_the_project_image(
@@ -828,3 +1079,81 @@ def test_interpreter_row_survives_an_unreadable_pin(display_mock_service: Mock) 
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "bootstrap" not in line
+
+
+_DEEP_STALE_IMAGES = [
+    StaleImageRow(
+        project="/home/me/work/wargaming/wotp",
+        image="claude-agent-wotp",
+        reason="its Dockerfile changed",
+    ),
+    StaleImageRow(
+        project="/home/me/work/personal/dotfiles",
+        image="claude-agent-dotfiles",
+        reason="its Dockerfile changed",
+    ),
+]
+
+
+def test_human_output_chops_the_stale_image_tree_into_a_narrow_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Too narrow for the tree even with IMAGE and REASON cut to their headers, so it chops.
+
+    Both folded siblings give up a segment, not just the wider one -- `personal/` and
+    `wargaming/` end at the same depth and in the order they started.
+    """
+    monkeypatch.setenv("COLUMNS", "35")
+    inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert labels == [
+        "/",
+        "└home/me/work/",
+        " ├personal/",
+        " │└dotfiles",
+        " └wargaming/",
+        "  └wotp",
+    ]
+
+
+def test_human_output_leaves_the_stale_image_tree_whole_when_cutting_is_enough(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The tree is chopped only when the tree is what does not fit.
+
+    A 60-column console has no room for the whole table, but trimming IMAGE and REASON
+    covers all of it -- and a chopped tree would have cost rows without saving a character
+    the prose columns were not already giving up.
+    """
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert labels == ["/", "└home/me/work/", " ├personal/dotfiles", " └wargaming/wotp"]
+
+
+def test_human_output_keeps_the_stale_image_tree_folded_when_chopping_would_not_help(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Splitting `home/me/` would indent the leaves that already set the width."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
+    assert [label for label in labels if label] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
+
+
+def test_human_output_keeps_the_stale_image_table_inside_a_narrow_console(
+    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever chopping cannot fix, cutting does: no drawn line runs past the console."""
+    monkeypatch.setenv("COLUMNS", "60")
+    inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
+    run([])
+    drawn = [
+        line for line in _stale_lines(display_mock_service) if line.startswith(("│", "┌", "├", "└"))
+    ]
+    assert {len(line) for line in drawn} == {60}

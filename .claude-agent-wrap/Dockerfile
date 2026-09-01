@@ -1,5 +1,4 @@
 # agent-name: agent-wrap
-# agent-enable-startup: 600
 # The container gets its OWN provisioned interpreter at the SAME path the host
 # uses. This project's directory is the wrapper's own tool directory, so the
 # host's .python/ is bind-mounted in at /workspace/.python — and on a macOS host
@@ -28,9 +27,22 @@ RUN mkdir -p /workspace/.python && chown ubuntu:ubuntu /workspace/.python
 
 # The chmod covers a host uid that is not 1000: nothing writes into the tree at
 # runtime, so read+execute for everyone is enough.
+#
+# `venv-current` is what puts the pinned interpreter on PATH below, so that a bare
+# `python`/`python3` is it and not the base image's apt python3.12. The venv's own
+# directory name embeds the pin AND the python-build-standalone target triple, and
+# ENV cannot be computed from a RUN -- so the slug is resolved once here, the same
+# way `current` itself is the tree's answer to "which slug".
 USER ubuntu
 RUN /tmp/agent-wrap/bin/agent-bootstrap --dev --prefix /workspace/.python \
+    && ln -s "venv-$(cat /workspace/.python/current)" /workspace/.python/venv-current \
     && chmod -R a+rX /workspace/.python
+
+# Through the symlinked directory, pyvenv.cfg still sits one level above the
+# interpreter, so this is the venv the Makefile's $(PYTHON) is -- dev dependencies
+# importable, and pytest/ruff/pyrefly/coverage on PATH as commands too.
+ENV PATH=/workspace/.python/venv-current/bin:$PATH
+
 USER root
 RUN rm -rf /tmp/agent-wrap
 

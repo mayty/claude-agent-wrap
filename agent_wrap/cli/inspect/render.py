@@ -2,13 +2,18 @@
 """
 Terminal rendering for the inspect command.
 
-Three tables: the sidecar containers, the agent containers, and everything else. That
-last one — ``Details`` — is a table rather than a block of ``Label: value`` lines so the
-whole report reads as one kind of output, and its three concerns (logs, secrets,
-wrapper/host) are separated by dividers rather than left to run together.
+Four tables: the sidecar containers, the agent containers, everything else, and the
+registered projects whose own image is already stale. ``Details`` — the third — is a table
+rather than a block of ``Label: value`` lines so the whole report reads as one kind of
+output, and its three concerns (logs, secrets, wrapper/host) are separated by dividers
+rather than left to run together. The fourth closes the report because its empty state is
+a green line ``run.py`` prints in its place, and only a trailing section can be replaced
+that way.
 
 Each renderer returns lines rather than printing, so ``run.py`` owns all output and the
-whole report can be assembled before anything reaches the terminal.
+whole report can be assembled before anything reaches the terminal. That is also why the
+one green line in the report is not built here: an unstyled line list has nowhere to carry
+it, and ``DisplayService.success`` prints rather than returning.
 
 Colour carries one meaning throughout: green confirms something is ready, yellow flags
 something the user may want to act on (a container not running, a stale image, a missing
@@ -19,8 +24,9 @@ not set is dim rather than yellow for the same reason: `agent run` prompts for t
 the next launch, so it is a state to know about and not a fault to go and fix.
 
 Rows that have nothing to say are omitted rather than filled in: a project that declares
-no Dockerfile gets no ``project image`` row at all. A lite report closes with one line
-naming what it skipped, instead of marking each row the omission touched.
+no Dockerfile gets no ``project image`` row at all, and a stale-image table with no rows
+is not drawn empty. A lite report closes with one line naming what it skipped, instead of
+marking each row the omission touched.
 """
 
 from typing import TYPE_CHECKING
@@ -38,11 +44,15 @@ from agent_wrap.cli.inspect.constants import (
     PROJECT_IMAGE_LABEL,
     SIDECAR_ALIGNS,
     SIDECAR_HEADERS,
+    STALE_IMAGES_ALIGNS,
+    STALE_IMAGES_ELIDE,
+    STALE_IMAGES_HEADERS,
     UNKNOWN,
 )
 from agent_wrap.constants import AUTOSTART_LOGS_ENV, DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem
+from agent_wrap.lib.path_tree import build_path_tree, expand_widest_chain, walk_path_tree
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.models import RowItemOrDivider
@@ -55,10 +65,12 @@ if TYPE_CHECKING:
         ProjectImageRow,
         ProviderRow,
         SidecarRow,
+        StaleImageRow,
         StorageRow,
         ViewerRow,
         WrapperRow,
     )
+    from agent_wrap.lib.path_tree import PathTreeLine, PathTreeNode
 
 #: Divider sentinel understood by ``DisplayService.render_table``.
 
@@ -97,6 +109,24 @@ class Cells:
         return image.split("@", 1)[0].rsplit("/", 1)[-1] or UNKNOWN
 
     @staticmethod
+    def stale_row(line: PathTreeLine[StaleImageRow]) -> RowItem:
+        """
+        Build one stale-images row from a walked tree line.
+
+        A structural line stands for a directory and says nothing else: it has no image to
+        rebuild and no reason to report, so the two remaining cells stay empty rather than
+        carrying a subtotal nobody would act on.
+        """
+        row = line.node.row
+        if row is None:
+            return RowItem(cells=[line.label, "", ""], style=Ansi.DIM, prefix_len=line.prefix_len)
+        return RowItem(
+            cells=[line.label, row.image, row.reason],
+            style=Ansi.BOLD_YELLOW,
+            prefix_len=line.prefix_len,
+        )
+
+    @staticmethod
     def row_style(status: str) -> Ansi:
         """Flag anything not running; leave a healthy row unstyled."""
         return Ansi.NONE if status == RUNNING_STATUS else Ansi.BOLD_YELLOW
@@ -108,7 +138,7 @@ class Cells:
 
 
 class Tables:
-    """The two container tables."""
+    """The two container tables, and the fleet-wide stale-image table under them."""
 
     @staticmethod
     def sidecars(rows: list[SidecarRow], queued: list[str], display: DisplayService) -> list[str]:
@@ -191,6 +221,98 @@ class Tables:
         return display.render_table(
             f"Agents ({len(rows)}):", headers, list(AGENT_ALIGNS), body, 1, shared
         )
+
+    @staticmethod
+    def stale_images(rows: list[StaleImageRow] | None, display: DisplayService) -> list[str]:
+        """
+        Render one row per registered project whose own image is already stale.
+
+        Returns nothing for both of the empty cases, which are different facts and are
+        both reported elsewhere: None means the sweep did not run (lite mode says so on its
+        closing line; an unreachable daemon is already the report's headline), and an empty
+        list is the good news ``run.py`` prints in green instead of an empty table.
+
+        ``PROJECT`` is a path tree rather than a column of absolute paths, the same
+        rendering `agent stats` gives its projects: registered projects cluster under a few
+        parents, so the shared prefix is worth stating once instead of once per row. The
+        column is measured rather than capped, and chopped down to the console when the
+        measurement does not fit -- the fold that states a shared prefix once is the same
+        fold that makes one node very wide, so it is undone a segment at a time until the
+        table fits.
+
+        Chopping comes first because it costs nothing but height. Only once the tree is as
+        narrow as it goes do ``IMAGE`` and ``REASON`` start giving up characters and ending
+        in an ellipsis, and ``PROJECT`` never does: a path is what the reader acts on, and
+        half of one identifies nothing. ``-j``/``--json`` carries every reason in full
+        whatever the console does here.
+
+        Every project row is yellow, unlike the container tables where the style
+        distinguishes rows from each other: here it is the whole table that is the
+        actionable finding, and a plain row would read as a project that is fine. The
+        directory rows the tree adds are the exception, dim and blank across the other two
+        columns: they are scaffolding, and a directory is not a thing to go and rebuild.
+
+        The title counts projects, not lines, so it keeps agreeing with ``--json`` however
+        the tree comes out.
+        """
+        if not rows:
+            return []
+
+        placed = [row for row in rows if row.project]
+        unplaceable = [row for row in rows if not row.project]
+        root = build_path_tree([(row.project, row) for row in placed]) if placed else None
+        headers = list(STALE_IMAGES_HEADERS)
+
+        def measure() -> tuple[list[RowItemOrDivider], list[int]]:
+            """Return the body as the tree stands now, plus the widths of its other columns."""
+            body = Tables.stale_body(root, unplaceable)
+            return body, display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
+
+        # Chop the tree only while the tree is the thing that does not fit -- that is what
+        # `table_overflow` reports once told which columns can be cut instead. Then `elide`
+        # cuts those. Both are no-ops when there is no terminal width to respect.
+        body, shared = measure()
+        while (
+            root is not None
+            and display.table_overflow(headers, body, 1, shared, elide=STALE_IMAGES_ELIDE)
+            and expand_widest_chain(root)
+        ):
+            body, shared = measure()
+
+        return display.render_table(
+            f"Stale images ({len(rows)}):",
+            headers,
+            list(STALE_IMAGES_ALIGNS),
+            body,
+            1,
+            shared,
+            elide=STALE_IMAGES_ELIDE,
+        )
+
+    @staticmethod
+    def stale_body(
+        root: PathTreeNode[StaleImageRow] | None, unplaceable: list[StaleImageRow]
+    ) -> list[RowItemOrDivider]:
+        """
+        Lay the stale-image rows out under the tree, rebuildable as the tree is chopped.
+
+        A row whose project is empty names no path and cannot be placed in the tree.
+        Dropping it would leave the title counting a row nothing shows, so it is listed flat
+        underneath, the way `agent stats` hangs its `<orphaned>` row off the root.
+        """
+        body: list[RowItemOrDivider] = []
+        if root is not None:
+            body.append(RowItem(cells=[root.name, "", ""], style=Ansi.DIM, prefix_len=0))
+            body.extend(Cells.stale_row(line) for line in walk_path_tree(root))
+        body.extend(
+            RowItem(
+                cells=[UNKNOWN, row.image, row.reason],
+                style=Ansi.BOLD_YELLOW,
+                prefix_len=0,
+            )
+            for row in unplaceable
+        )
+        return body
 
 
 class Details:
@@ -345,20 +467,28 @@ class Details:
         """
         Whether the base image exists, which Claude Code it carries, and if that is stale.
 
-        Yellow when absent (a rebuild is needed) or behind the registry (an update is
-        available); plain when present and current, including when the registry was not
-        consulted at all — ``--lite`` leaves the latest version unknown, and an unknown
-        latest must never look like an update.
+        Yellow when absent, when the next launch would rebuild it, or when it is behind the
+        registry (an update is available); plain when present and current, including when
+        the registry was not consulted at all — ``--lite`` leaves the latest version
+        unknown, and an unknown latest must never look like an update.
+
+        Absence is no longer an instruction: ``agent run`` builds a missing image itself,
+        so the row says when that will happen rather than what to type.
         """
         if not environment.base_image_present:
             return Cells.row(
                 "base image",
-                f"{environment.base_image} MISSING (run `agent rebuild --full`)",
+                f"{environment.base_image} MISSING (built on the next `agent run`)",
                 Ansi.BOLD_YELLOW,
             )
         state = f"{environment.base_image} present"
         if environment.base_image_version:
             state += f" (Claude Code v{environment.base_image_version})"
+        if environment.base_image_stale_reason:
+            state += (
+                f" -- STALE, rebuilt on the next `agent run`: {environment.base_image_stale_reason}"
+            )
+            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
         if environment.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
             return Cells.row("base image", state, Ansi.BOLD_YELLOW)
@@ -387,7 +517,7 @@ class Details:
             return [
                 Cells.row(
                     PROJECT_IMAGE_LABEL,
-                    f"{project.image} MISSING (run `agent rebuild`)",
+                    f"{project.image} MISSING (built on the next `agent run`)",
                     Ansi.BOLD_YELLOW,
                 )
             ]
@@ -395,6 +525,9 @@ class Details:
         if project.claude_version:
             state += f" (Claude Code v{project.claude_version})"
         style = Ansi.NONE
+        if project.stale_reason:
+            state += f" -- STALE, rebuilt on the next `agent run`: {project.stale_reason}"
+            style = Ansi.BOLD_YELLOW
         if project.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
             style = Ansi.BOLD_YELLOW
@@ -481,8 +614,16 @@ def render(report: InspectReport, display: DisplayService) -> list[str]:
 
     lines.extend(Details.table(report, display))
     if report.lite:
-        # One closing line rather than a marker on each affected row: the two skipped
-        # steps are a property of the run, and naming them once keeps the tables reading
-        # the same in both modes.
+        # One closing line rather than a marker on each affected row: the skipped steps are
+        # a property of the run, and naming them once keeps the tables reading the same in
+        # both modes.
         lines.append(LITE_NOTE)
+
+    # Last, and never in lite mode, so it can never collide with the note above. The
+    # position is also what lets `run.py` print the green "nothing is stale" line in its
+    # place: colour outside a table cell has no route through a line list.
+    stale = Tables.stale_images(report.stale_images, display)
+    if stale:
+        lines.append("")
+        lines.extend(stale)
     return lines

@@ -24,6 +24,7 @@ from agent_wrap.constants import (
     TELEGRAM_SIDECAR_NAME,
     TOOL_DIR,
     WORKSPACE_MOUNT,
+    BuildForce,
     UpdateCheck,
 )
 from agent_wrap.domain.launch.constants import (
@@ -138,9 +139,12 @@ class LaunchService:
             self._display.error(str(e))
             return 1
 
-        if not docker_utils.image_exists(resolved.image):
-            self._display.error(self._get_image_missing_error(resolved.image, use_base=use_base))
-            return 1
+        # Builds whatever is missing or stale, so there is no "not found" abort here any
+        # more: a launch that cannot get an image cannot proceed at all, and the build's
+        # own output is a better diagnostic than any message this could print.
+        build_rc = self._build_service.ensure_images(resolved, force=BuildForce.NONE)
+        if build_rc != 0:
+            return build_rc
 
         # Both failures here mean "the project Dockerfile asks for something we cannot
         # give", and both abort before any sidecar work has started.
@@ -725,8 +729,3 @@ class LaunchService:
             self._display.warning(
                 f"sidecar.on_exit() failed for {type(sidecar).__name__}, continuing with release"
             )
-
-    def _get_image_missing_error(self, image: str, *, use_base: bool) -> str:
-        if use_base:
-            return f"base image '{image}' not found. Run 'agent rebuild --full' to build it."
-        return f"image '{image}' not found. Run 'agent rebuild' in this directory to build it."

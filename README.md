@@ -33,7 +33,7 @@ source /path/to/claude-agent-wrap/agent-wrap.bashrc
 
 This puts `bin/agent` on your `PATH` and enables tab-completion. (Programmatic callers that only need to launch `agent` can instead add `<repo>/bin` to `PATH` or symlink `bin/agent` onto an existing `PATH` directory — see [Shell Commands](docs/shell-commands.md).)
 
-Build the base image once:
+Build the base image once (optional — the first `agent run` does it for you):
 
 ```bash
 agent rebuild --full

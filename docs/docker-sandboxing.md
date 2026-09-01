@@ -19,6 +19,8 @@ Every agent starts from `claude-agent`, built from [ops/Dockerfile](../ops/Docke
 | `git config --system --add safe.directory /workspace` | Lets git operate on `/workspace` despite the UID/GID remapping described in [Build Args](#build-args) |
 | `ENTRYPOINT ["claude"]` | The container runs Claude Code by default |
 
+The file is two stages: `scaffold` holds everything above except the CLI and is reused from docker's layer cache between builds, and `agent` installs the Claude Code CLI and is never cached. New work belongs in the stage that matches its cost — put anything expensive and stable in `scaffold`, and only things that must be re-fetched on every build after it. See [Build caching](#build-caching).
+
 ## When to customize
 
 Most projects run `agent run` directly against the base image — no customization needed. Add a `.claude-agent-wrap/Dockerfile` when your project depends on tools the base image doesn't include, for example:
@@ -69,13 +71,30 @@ agent rebuild
 
 The resulting image is tagged `claude-agent-<name>` and `agent run` will pick it up automatically whenever you invoke it from that directory. There's no need to redeclare the base toolchain — it's inherited from `claude-agent` via `FROM`.
 
-If the base `claude-agent` image hasn't been built yet on this host, run `agent rebuild --full` once — it builds the base first, then the project image.
+The base image does not have to exist first: if it is missing, `agent rebuild` — and `agent run` — builds it before the project image. What still needs the explicit `agent rebuild` above is an edit to *this* file: nothing hashes it, so the wrapper cannot tell that the image no longer matches. Everything the wrapper *can* see it acts on by itself, so see [`agent run`](shell-commands.md#agent-run) for when a launch rebuilds an image on your behalf.
 
-`agent rebuild` always passes `--no-cache` to `docker build` — there is no Docker layer caching, so every `RUN` step re-executes on every rebuild.
+**The final `FROM` must be `claude-agent`.** Anything else is refused by `agent run`, `agent rebuild` and the validator below. This is what makes the project image's freshness answerable at all: the wrapper stamps the base image's Docker ID onto every project image it builds and rebuilds when the two diverge, and an image built on some other base could never be told apart from a current one. Earlier stages of a multi-stage build are exempt — they produce throwaway artifacts, not the image that gets launched:
+
+```dockerfile
+# agent-name: myproj
+FROM golang:1.23 AS builder
+RUN go build -o /tool ./cmd/tool
+
+FROM claude-agent
+COPY --from=builder /tool /usr/local/bin/
+```
+
+## Build caching
+
+The base image builds **with** docker's layer cache; your project image builds with `--no-cache`.
+
+[ops/Dockerfile](../ops/Dockerfile) is split in two for that reason: a `scaffold` stage (apt packages, Node.js, dictionaries, `hadolint`/`crane`) that is reused between builds, and an `agent` stage that reinstalls the Claude Code CLI every time — the wrapper hands it a `CLAUDE_CACHE_BUST` whose value differs on every build, so that layer never hits the cache and a base rebuild always lands the current release. The scaffold is invalidated when `ops/Dockerfile` is edited or when the wrapper's `DOCKER_BUILD_ITERATION` is bumped, which reaches the stage as a `BUILD_ITERATION` build arg. Between bumps, a base rebuild no longer re-runs `apt-get install`; to throw the cached scaffold away by hand, run `docker builder prune` (BuildKit) or `docker image prune` (classic builder) before rebuilding.
+
+Your `.claude-agent-wrap/Dockerfile` is never cached. `agent rebuild` exists to apply edits that nothing hashes, so every `RUN` step in it re-executes on every rebuild. That cost falls on a launch as well as on an explicit rebuild, which is why a build the wrapper starts on your behalf says so and names the reason.
 
 ## Validating the project Dockerfile
 
-Always run the validator after creating or editing the project Dockerfile, before running `agent rebuild`:
+Always run the validator after creating or editing the project Dockerfile, before running `agent rebuild` or `agent run`:
 
 ```bash
 /opt/agent-wrap/validate-dockerfile-agent              # validates ./.claude-agent-wrap/Dockerfile
@@ -204,8 +223,8 @@ instead. See [Volume Mounts](volume-mounts.md#declared-by-the-project-dockerfile
 
 ## Build Args
 
-`agent rebuild` always passes `--build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)`. These are *available* build args: a project Dockerfile that needs them at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory) can declare `ARG HOST_UID` / `ARG HOST_GID` and consume them. The shipped base image does **not** bake in a per-host UID — it runs as the default `ubuntu` user. Per-user isolation happens at runtime: against a non-rootless Docker daemon, every `docker run` is invoked with `--user $(id -u):$(id -g)`, so the agent process matches the host user's UID/GID regardless of what is baked into the image. Under rootless Docker the flag is `--user 0:0` instead — the daemon maps container-root to the host user, which writes bind-mounted files as the host user and also overrides any non-root `USER` baked into an image (otherwise that user maps to an unprivileged subuid that cannot write host-owned mounts).
+Every build the wrapper runs passes `--build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g)`. These are *available* build args: a project Dockerfile that needs them at build time (e.g., to create a matching `/etc/passwd` entry or `chown` a directory) can declare `ARG HOST_UID` / `ARG HOST_GID` and consume them. The shipped base image does **not** bake in a per-host UID — it runs as the default `ubuntu` user. Per-user isolation happens at runtime: against a non-rootless Docker daemon, every `docker run` is invoked with `--user $(id -u):$(id -g)`, so the agent process matches the host user's UID/GID regardless of what is baked into the image. Under rootless Docker the flag is `--user 0:0` instead — the daemon maps container-root to the host user, which writes bind-mounted files as the host user and also overrides any non-root `USER` baked into an image (otherwise that user maps to an unprivileged subuid that cannot write host-owned mounts).
 
 ## Security Note
 
-`agent-run-args` is a pass-through to `docker run`, so a third-party project Dockerfile can request `--privileged`, host bind mounts, etc. `agent-enable-startup` goes further: it runs a shell script from the repo on your host, outside the container, before the agent starts. Audit `.claude-agent-wrap/` in full — comment directives and `startup.sh` as well as `RUN` instructions — before building or launching someone else's agent.
+`agent-run-args` is a pass-through to `docker run`, so a third-party project Dockerfile can request `--privileged`, host bind mounts, etc. `agent-enable-startup` goes further: it runs a shell script from the repo on your host, outside the container, before the agent starts. Audit `.claude-agent-wrap/` in full — comment directives and `startup.sh` as well as `RUN` instructions — before building or launching someone else's agent. Note that `agent run` now *builds* what it needs, so launching and building are one act: there is no longer a step at which you have seen the Dockerfile execute but not the startup script.

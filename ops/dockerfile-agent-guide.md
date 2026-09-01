@@ -24,6 +24,8 @@ FROM claude-agent
 # project-specific RUN steps here
 ```
 
+The final `FROM` **must** be `claude-agent` — the wrapper refuses to build or launch a project image that inherits from anything else, because it tracks freshness by the base image ID it stamps on each build. Earlier stages of a multi-stage build may use any image, so `FROM golang:1.23 AS builder` followed by `FROM claude-agent` and a `COPY --from=builder` is fine.
+
 Set a literal name in the `# agent-name:` directive (lowercase, matching `[a-z0-9_.-]+`); it cannot reference a build-time variable. The launcher exposes the resolved name as the `$AGENT_NAME` env var at *runtime* inside the container, not during the image build. Do **not** use `workspace`: that's the in-container mount path, not the project name.
 
 ## Directives
@@ -118,14 +120,14 @@ Rules to write it against:
 
 ## Validating the project Dockerfile
 
-**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `.claude-agent-wrap/Dockerfile`, before telling the user to run `agent rebuild`.** It catches mistakes that `docker build` alone won't — most importantly, base images that don't contain the expected user. It also checks the `agent-enable-startup` value and whether the directive and `startup.sh` agree.
+**Always run `/opt/agent-wrap/validate-dockerfile-agent` after you create or edit `.claude-agent-wrap/Dockerfile`, before telling the user to run `agent rebuild`.** It catches mistakes that `docker build` alone won't — most importantly a final `FROM` that is not `claude-agent`, and an `# agent-user:` the base image does not provide. It also checks the `agent-enable-startup` value and whether the directive and `startup.sh` agree.
 
 ```sh
 /opt/agent-wrap/validate-dockerfile-agent              # validates ./.claude-agent-wrap/Dockerfile
 /opt/agent-wrap/validate-dockerfile-agent path/to/file  # validates specific file
 ```
 
-Exit codes: `0` pass (warnings allowed), `1` errors, `2` no file to validate — either none exists, or both `.claude-agent-wrap/Dockerfile` and a legacy `Dockerfile.agent` do and the ambiguity has to be resolved first. Fix any errors before rebuild.
+Exit codes: `0` pass (warnings allowed), `1` errors, `2` no file to validate — either none exists, or both `.claude-agent-wrap/Dockerfile` and a legacy `Dockerfile.agent` do and the ambiguity has to be resolved first. Fix any errors before rebuild — `agent run` builds too, so an unfixed error blocks a launch as well.
 
 ## Notes
 

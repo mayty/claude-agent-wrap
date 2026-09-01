@@ -14,7 +14,6 @@ from agent_wrap.constants import (
 )
 from agent_wrap.domain.updates.constants import (
     BOOTSTRAP_FILES,
-    REBUILD_FILES,
     RESOURCE_FILES,
     MdPropagation,
     MdState,
@@ -205,11 +204,6 @@ class _GitOps:
             display.warning("re-source agent-wrap.bashrc to apply latest changes")
         else:
             display.success("no re-source needed")
-
-        if changed & REBUILD_FILES:
-            display.warning("run 'agent rebuild' to apply latest changes")
-        else:
-            display.success("no re-build needed")
 
         if changed & BOOTSTRAP_FILES:
             display.warning("the pinned CPython moved — re-provisioning")

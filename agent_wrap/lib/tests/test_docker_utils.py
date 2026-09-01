@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.lib.docker_utils import (
+    ImageStamp,
     daemon_reachable,
     docker_run,
     get_container_uid,
@@ -15,12 +16,14 @@ from agent_wrap.lib.docker_utils import (
     host_network_build_args,
     image_claude_version,
     image_exists,
+    image_stamp,
     inspect_containers,
     is_newer_version,
     is_rootless,
     is_wsl,
     latest_claude_version,
     list_container_names,
+    list_images,
     parse_docker_timestamp,
     parse_mount_specs,
 )
@@ -114,6 +117,47 @@ def test_image_exists_file_not_found(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.side_effect = FileNotFoundError()
     assert image_exists("missing") is False
+
+
+def test_image_stamp_reads_id_and_labels(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = 'sha256:abc {"agent-wrap.build-iteration":"2"}'
+    assert image_stamp("claude-agent") == ImageStamp(
+        id="sha256:abc", labels={"agent-wrap.build-iteration": "2"}
+    )
+
+
+def test_image_stamp_treats_no_labels_as_an_empty_mapping(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Docker renders an unlabelled image's Config.Labels as JSON null."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = "sha256:abc null"
+    assert image_stamp("claude-agent") == ImageStamp(id="sha256:abc", labels={})
+
+
+def test_image_stamp_returns_none_for_an_absent_image(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 1
+    mock_run.return_value.stdout = ""
+    assert image_stamp("nope") is None
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["sha256:abc {not json", "sha256:abc", 'sha256:abc ["a","b"]'],
+    ids=["malformed", "no-labels-field", "not-a-mapping"],
+)
+def test_image_stamp_keeps_the_id_when_labels_cannot_be_read(
+    mocker: pytest_mock.MockFixture, stdout: str
+) -> None:
+    """The image is genuinely there; an unreadable label reads as one never set."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = stdout
+    assert image_stamp("claude-agent") == ImageStamp(id="sha256:abc", labels={})
 
 
 def test_image_claude_version_returns_version_on_success(
@@ -417,6 +461,56 @@ def test_inspect_containers_empty_on_missing_docker(mocker: pytest_mock.MockFixt
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.side_effect = FileNotFoundError()
     assert inspect_containers(["a"], "{{.Name}}") == ([], 1)
+
+
+def test_list_images_parses_lines(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "claude-agent\tlatest\nclaude-agent-web\tlatest\n"
+    mock_run.return_value.returncode = 0
+    assert list_images(template="{{.Repository}}\t{{.Tag}}") == [
+        "claude-agent\tlatest",
+        "claude-agent-web\tlatest",
+    ]
+
+
+def test_list_images_passes_every_filter_and_keeps_the_reference_last(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """``docker image ls`` takes its repository as a positional, so no flag may follow it."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = ""
+    mock_run.return_value.returncode = 0
+    list_images("dangling=true", "label=a=b", template="{{.ID}}", reference="ghcr.io/x/y")
+    argv = mock_run.call_args[0][0]
+    assert argv[:5] == ["docker", "image", "ls", "--format", "{{.ID}}"]
+    assert argv.count("--filter") == 2
+    assert "dangling=true" in argv
+    assert "label=a=b" in argv
+    assert argv[-1] == "ghcr.io/x/y"
+
+
+def test_list_images_asks_for_digests_only_when_requested(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """--digests is what populates {{.Digest}}; without it docker renders <none> per row."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = ""
+    mock_run.return_value.returncode = 0
+
+    list_images(template="{{.Digest}}", reference="ghcr.io/x/y", digests=True)
+    argv = mock_run.call_args[0][0]
+    assert "--digests" in argv
+    assert argv[-1] == "ghcr.io/x/y"
+
+    list_images(template="{{.ID}}")
+    assert "--digests" not in mock_run.call_args[0][0]
+
+
+def test_list_images_empty_on_failure(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "claude-agent\tlatest"
+    mock_run.return_value.returncode = 1
+    assert list_images(template="{{.Repository}}\t{{.Tag}}") == []
 
 
 # --- parse_docker_timestamp ---

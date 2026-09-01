@@ -36,6 +36,23 @@ class UpdateCheck(Enum):
     BLOCKED = auto()
 
 
+class BuildForce(Enum):
+    """
+    What ``BuildService.ensure_images`` must build regardless of staleness.
+
+    Lives here rather than in the build subpackage for the same reason as
+    ``UpdateCheck``: ``launch`` has to name a member when it asks for the images it is
+    about to run, and a runtime cross-domain import would trip rule EA001.
+    """
+
+    #: ``agent run`` — build only what is missing or stale.
+    NONE = auto()
+    #: ``agent rebuild`` — always rebuild the project image; ensure the base.
+    PROJECT = auto()
+    #: ``agent rebuild --full`` — always rebuild both.
+    ALL = auto()
+
+
 TOOL_DIR = Path(__file__).parent.parent.resolve()
 GLOBAL_CONFIG_DIR = TOOL_DIR / ".claude_config"
 AGENT_LAUNCHES_DIR = TOOL_DIR / ".agent-launches"
@@ -57,6 +74,24 @@ PYTHON_POINTER_FILE = PYTHON_DIR / "current"
 
 # Genuine strings (not paths)
 BASE_IMAGE_NAME = "claude-agent"
+
+# Bumped by hand when a change to the *base image's* recipe has to invalidate every such
+# image already on disk -- ops/Dockerfile, or the build args _docker_build passes. `agent
+# run` compares this against BUILD_ITERATION_LABEL on the local base image and rebuilds it
+# -- and every project image on top of it -- when the two differ.
+#
+# Scope is the wrapper as a tool, on every host that runs it. A change to one project's
+# own .claude-agent-wrap/Dockerfile, this repo's included, is not a reason to bump: that
+# image is rebuilt by an `agent rebuild` in that project. One bump per release is enough,
+# and nothing enforces it: not every base-affecting change is statically detectable. See
+# CLAUDE.md, "Development workflow".
+#
+# The value travels twice, and both trips matter. As BUILD_ITERATION_LABEL it is how a
+# host *detects* that its base image is behind; as the BUILD_ITERATION build arg it is how
+# a bump *reaches* the cached `scaffold` stage of ops/Dockerfile. Because the base builds
+# with docker's layer cache on, a bump is the only thing that forces its apt, NodeSource,
+# hadolint and crane layers to be fetched again.
+DOCKER_BUILD_ITERATION = 2
 
 # Filename of the project registry that `agent run` appends to on every launch, and
 # that `agent stats` / the logs viewer read. Lives in AGENT_LAUNCHES_DIR.
@@ -280,6 +315,23 @@ ROLE_VALUE = BASE_IMAGE_NAME
 #: Docker label carrying an agent's instance id — the flock registry's key, and the
 #: key the stale per-instance state sweep matches live containers on.
 INSTANCE_ID_LABEL = "agent-wrap.instance-id"
+
+#: Image label carrying DOCKER_BUILD_ITERATION as of the build. Stamped on every image the
+#: wrapper builds, but read only off the *base* image: docker merges Config.Labels through
+#: FROM, so a project image's copy is inherited from the base and says nothing about the
+#: project image itself.
+BUILD_ITERATION_LABEL = "agent-wrap.build-iteration"
+#: Image label carrying the base image's docker Id as of the project build. An absent label
+#: means the image predates stamping and has to be rebuilt once.
+BASE_IMAGE_ID_LABEL = "agent-wrap.base-image-id"
+#: Image label carrying the tag an image was built as -- "claude-agent" or
+#: "claude-agent-<name>". Unlike the two labels above, its value is *rewritten* on every
+#: wrapper build, so a wrapper image's copy always names itself rather than an ancestor.
+#: That is what makes it the only usable handle on a *superseded* build: docker takes the
+#: repository as well as the tag away when an image loses it, and `agent cleanup` has
+#: nothing else left to match on. Presence still proves nothing about ownership -- docker
+#: merges Config.Labels through FROM, so an image built on a wrapper image inherits it too.
+IMAGE_NAME_LABEL = "agent-wrap.image"
 
 LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"

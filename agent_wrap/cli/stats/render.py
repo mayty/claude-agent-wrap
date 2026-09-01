@@ -31,6 +31,7 @@ from agent_wrap.constants import DIVIDER, ORPHANED_LABEL
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.lib.path_tree import expand_widest_chain
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -262,21 +263,36 @@ def render_core(  # noqa: PLR0913
     total_aligns = ["<", ">", "<", *shared_aligns]
 
     tree_root = build_project_tree(rows)
-    display_rows = flatten_tree(tree_root, display=display)
-
-    total_body = _build_total_body(tree_root, display_rows, display, orphaned)
 
     # === By-day table: models (in window) + per-day (in window) + TOTAL ===
     recent_headers = ["MODEL / DATE", *shared_headers]
     recent_aligns = ["<", *shared_aligns]
 
+    # Built before the Projects body because it does not depend on the project tree, and
+    # the fit loop below rebuilds that body several times.
     recent_body = _build_recent_body(totals_by_day_by_model, cost_fn, build_model_section, display)
 
-    # === Shared widths for the trailing six numeric columns ===
-    shared_widths = display.compute_shared_widths(
-        [(total_headers, total_body, 3), (recent_headers, recent_body, 1)],
-        n_shared,
-    )
+    def measure() -> tuple[list[RowItemOrDivider], list[int]]:
+        """Return the Projects body as the tree stands now, and the widths it shares."""
+        body = _build_total_body(
+            tree_root, flatten_tree(tree_root, display=display), display, orphaned
+        )
+        return body, display.compute_shared_widths(
+            [(total_headers, body, 3), (recent_headers, recent_body, 1)],
+            n_shared,
+        )
+
+    # Chop the tree down until the table fits the console: `_compress` folds a chain nothing
+    # branches on into one very wide node, which is exactly the shape that overflows, and
+    # splitting it back out spends a line of height to buy a segment of width. Ends when the
+    # table fits, when there is no terminal width to respect, or when the tree is as narrow
+    # as it goes -- and then the table simply overflows, because every remaining column
+    # holds a date or a figure and half of one of those is worse than a long line.
+    total_body, shared_widths = measure()
+    while display.table_overflow(
+        total_headers, total_body, 3, shared_widths
+    ) and expand_widest_chain(tree_root):
+        total_body, shared_widths = measure()
 
     lines: list[str] = []
     lines.extend(

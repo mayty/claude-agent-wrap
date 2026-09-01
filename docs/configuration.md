@@ -143,7 +143,7 @@ AGENT_SPELLCHECK_LANG=en_GB,de_DE agent run
 
 The same value does two jobs, and that is deliberate:
 
-- **At build time** it is passed to `ops/Dockerfile` as the `SPELLCHECK_LANG` build arg, which installs one dictionary package per entry. Changing the list therefore needs an `agent rebuild --full`.
+- **At build time** it is passed to `ops/Dockerfile` as the `SPELLCHECK_LANG` build arg, which installs one dictionary package per entry. Changing the list therefore needs an `agent rebuild --full`, and needs it explicitly: the value lives in your environment rather than in the image, so the automatic rebuild `agent run` performs cannot see that it moved.
 - **At launch time** it is written into `spellcheck.language`, with the same override-vs-seed semantics as `AGENT_SPELLCHECK` above.
 
 Deriving both from one variable is what keeps them in sync. A `language` naming a dictionary that was never installed makes hunspell fail to start, and spell checking then stays off for the whole session with only a debug-log line to say why.
