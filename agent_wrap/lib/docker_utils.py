@@ -127,6 +127,101 @@ def inspect_containers(names: list[str], template: str) -> tuple[list[str], int]
     return [line for line in stdout.splitlines() if line.strip()], rc
 
 
+def list_images(
+    *filters: str, template: str, reference: str = "", digests: bool = False
+) -> list[str]:
+    """
+    List local images matching every ``docker image ls --filter`` expression given.
+
+    *template* is a Go template rendered once per image; it must keep each image on a
+    single line or the caller's field split breaks. *reference* narrows the listing to
+    one repository (``docker image ls <repo>`` lists every tag of it), which is how a
+    caller asks about a specific upstream image rather than the whole local store.
+
+    *digests* passes ``--digests``, and a *template* naming ``{{.Digest}}`` must set it:
+    the flag is what populates that field, so without it docker renders ``<none>`` for
+    every row rather than failing on the template. With it on, an image carrying several
+    repo digests renders one row per digest.
+
+    Returns [] when nothing matches or docker is unavailable — indistinguishable here on
+    purpose, matching :func:`list_container_names`, so callers that care about the
+    difference use :func:`daemon_reachable`.
+    """
+    args = ["image", "ls", "--format", template]
+    if digests:
+        args.append("--digests")
+    for expr in filters:
+        args.extend(["--filter", expr])
+    if reference:
+        args.append(reference)
+    stdout, rc = docker_run(*args)
+    if rc != 0:
+        return []
+    return [line for line in stdout.splitlines() if line.strip()]
+
+
+def inspect_images(names: list[str], template: str) -> list[str]:
+    """
+    Batch-inspect image *names* with a Go *template*, returning its output lines.
+
+    ``image inspect`` for the same reason :func:`inspect_containers` uses ``container
+    inspect``: plain ``inspect`` matches either kind and would answer about the wrong
+    object. One docker call for the whole batch, so *template* must render each image on
+    a single line.
+
+    Unlike :func:`inspect_containers` the rc is dropped: every caller here is enriching a
+    listing it already has, and an image that vanished between the two calls is a row to
+    leave alone rather than a failure to report.
+    """
+    if not names:
+        return []
+    stdout, _ = docker_run("image", "inspect", "--format", template, *names)
+    return [line for line in stdout.splitlines() if line.strip()]
+
+
+def remove_image(ref: str) -> bool:
+    """
+    Remove the image *ref* names, reporting whether docker did it.
+
+    Deliberately without ``--force``: docker refuses to remove an image a container still
+    references, and that refusal is the safety net a caller wants reported rather than
+    overridden. A False therefore means "still there, and docker had a reason" — the
+    caller decides whether that is worth surfacing.
+    """
+    _, rc = docker_run("rmi", ref, timeout=60)
+    return rc == 0
+
+
+class ImageRef(NamedTuple):
+    """
+    The three parts of an image reference, any of which may be absent ("").
+
+    ``repository`` keeps any registry host and namespace ("ghcr.io/berriai/litellm"), so
+    it compares directly against what ``docker image ls`` renders for ``{{.Repository}}``.
+    """
+
+    repository: str
+    tag: str
+    digest: str
+
+
+def parse_image_ref(ref: str) -> ImageRef:
+    """
+    Split an image reference into repository, tag and digest.
+
+    Handles the fully qualified ``repo:tag@sha256:...`` the wrapper pins its sidecars
+    with, as well as the plainer ``repo``, ``repo:tag`` and ``repo@sha256:...``.
+
+    The tag is separated on the *last* colon, and only when no ``/`` follows it, so a
+    registry port ("localhost:5000/img") is not mistaken for a tag.
+    """
+    remainder, _, digest = ref.partition("@")
+    repository, sep, tag = remainder.rpartition(":")
+    if not sep or "/" in tag:
+        return ImageRef(repository=remainder, tag="", digest=digest)
+    return ImageRef(repository=repository, tag=tag, digest=digest)
+
+
 def parse_docker_timestamp(raw: str) -> datetime | None:
     """
     Parse a docker RFC3339 timestamp into a UTC-aware datetime, or None if unusable.

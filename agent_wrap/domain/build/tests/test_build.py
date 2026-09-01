@@ -14,6 +14,7 @@ from agent_wrap.constants import (
     BASE_IMAGE_NAME,
     BUILD_ITERATION_LABEL,
     DOCKER_BUILD_ITERATION,
+    IMAGE_NAME_LABEL,
     LEGACY_AGENT_DOCKERFILE_NAME,
     BuildForce,
     UpdateCheck,
@@ -281,8 +282,29 @@ def test_ensure_images_stamps_the_project_with_the_rebuilt_base_id(
 
     assert _labels_for(docker_build, "claude-agent-t")[BASE_IMAGE_ID_LABEL] == NEW_BASE_ID
     assert _labels_for(docker_build, BASE_IMAGE_NAME) == {
-        BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION)
+        BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION),
+        IMAGE_NAME_LABEL: BASE_IMAGE_NAME,
     }
+
+
+@pytest.mark.usefixtures("docker_up")
+def test_ensure_images_stamps_each_image_with_its_own_name(
+    mocker: pytest_mock.MockFixture,
+    build_svc: BuildService,
+    project_resolved: ResolvedImage,
+    docker_build: pytest_mock.MockType,
+) -> None:
+    """
+    Every build records the tag it was built as, which is the only handle a superseded
+    image keeps: docker takes the repository away with the tag, so `agent cleanup` has
+    nothing else to match an untagged leftover on.
+    """
+    _stamps(mocker, STALE_BASE, CURRENT_PROJECT)
+
+    build_svc.ensure_images(project_resolved, force=BuildForce.NONE)
+
+    assert _labels_for(docker_build, BASE_IMAGE_NAME)[IMAGE_NAME_LABEL] == BASE_IMAGE_NAME
+    assert _labels_for(docker_build, "claude-agent-t")[IMAGE_NAME_LABEL] == "claude-agent-t"
 
 
 @pytest.mark.usefixtures("docker_up")

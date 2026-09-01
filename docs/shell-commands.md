@@ -11,7 +11,7 @@
 | `stats` | Aggregate token usage and cost |
 | `logs` | Browse LiteLLM request logs in a local web viewer |
 | `inspect` | Report the current state: sidecars, agents, providers, host facts |
-| `cleanup` | Delete leftover logs and registry entries from removed projects |
+| `cleanup` | Delete leftover logs, registry entries and outdated docker images |
 | `update` | Pull latest wrapper source |
 | `secrets` | Manage encrypted sidecar/provider secrets |
 
@@ -145,18 +145,36 @@ Exits `1` when the Docker daemon cannot be reached, after printing every section
 agent cleanup [-n|--dry-run]
 ```
 
-Removes the two kinds of leftover state that accumulate when a registered project is deleted or renamed, both of which [`agent stats`](#agent-stats) already reports but never cleans up:
+Removes the three kinds of leftover state that accumulate as projects are deleted or renamed and images are rebuilt. The first two are things [`agent stats`](#agent-stats) already reports but never cleans up; the third overlaps what [`agent inspect`](#agent-inspect) reports as stale:
 
 - **Orphaned log dirs** — `<wrap-dir>/litellm-logs/<hash>/` directories no longer reachable from any registered project's `.claude/litellm-logs` symlink. These hold the raw per-request JSONL and are what actually consumes disk.
 - **Stale registry entries** — lines in `<wrap-dir>/.agent-launches/projects.txt` whose project directory no longer has a logs directory (shown as `(missing)` in the stats tree).
+- **Outdated docker images** — see [Outdated images](#outdated-images) below.
 
-Prints how many log dirs it would delete and roughly how much space that frees, then asks for confirmation — it proceeds only on `y`, and cancels on anything else (including a non-interactive stdin). On success it prints a one-line summary with the space actually reclaimed, never the stats table.
+Prints how many log dirs it would delete and roughly how much space that frees, tables every image it would remove, then asks for confirmation **once** covering all of it — it proceeds only on `y`, and cancels on anything else (including a non-interactive stdin). On success it prints a one-line summary with the space actually reclaimed and the number of images removed, never the stats table.
+
+### Outdated images
+
+Four kinds of image qualify. Ownership is decided by **name**, never by a label being present: docker merges `Config.Labels` through `FROM`, so an image you build on `claude-agent` carries the wrapper's labels too, and everything built before 0.10.0 carries none at all.
+
+- **Superseded builds** — untagged (`<none>`) images left behind whenever a tag is rebuilt, including by a manual [`agent rebuild`](#agent-rebuild). Docker takes the repository away along with the tag, so there would be no name left to match on; each wrapper build therefore records the tag it was built as in an `agent-wrap.image` label, and an untagged image carrying one is by definition not the live image for that name. This is usually the largest reclaim.
+- **Orphaned project images** — `claude-agent-<name>` tags that no registered project resolves to any more, because the project was deleted or changed its `# agent-name:`.
+- **Stale project images** — images a launch would rebuild anyway, exactly as `agent inspect` reports them. Removing one defers no work that was not already owed, and the preview says so in a note under the table whenever it lists one. Note that right after a wrapper release bumps `DOCKER_BUILD_ITERATION`, *every* project image reads as stale, so a cleanup then removes all of them.
+- **Superseded sidecar images** — previously pulled LiteLLM/Telegram images left resident after the wrapper's pinned digest moved. A row whose digest docker does not know is left alone rather than guessed at.
+
+Three things are never removed:
+
+- **The base `claude-agent` image**, even when it is stale. Every project image descends from it, so `docker rmi` would merely untag it — reclaiming nothing, creating a fresh untagged image, and leaving the next launch a cold-scaffold rebuild.
+- **Images a container still references.** Removal never passes `--force`, so docker's refusal stands; each one is reported as a warning and the rest of the run continues.
+- **Untagged images carrying no `agent-wrap.image` label.** A wrapper build from before that label existed (pre-0.10.0) and a leftover from your own unrelated `docker build` are indistinguishable, so they are counted and pointed at `docker image prune` instead. The one-time rebuild every image gets on the first 0.10.0 launch is what stamps the label, so this only ever describes leftovers already on disk before that.
+
+Sizes are shown per image as docker reports them and are deliberately never totalled: images share layers, so a sum would overstate the reclaim badly. Two caveats worth knowing: a project directory that cannot be read (an unmounted drive, say) contributes no claimed name, so its image reads as orphaned — the cost is one rebuild, and every row is listed before you confirm. And an untagged image *you* built `FROM claude-agent-<name>` inherits the label and is swept with the rest. Nothing happens at all when the Docker daemon is unreachable.
 
 Usage is preserved before deletion, so cleaning up does not make historical spend disappear from `agent stats`. Each dir's token counts are merged into an archive at `<wrap-dir>/.agent-launches/orphaned-usage-archive.json`, keyed by UTC date → hour → model → usage source. Deletion is a per-directory two-phase commit: the merged counts are written to a `*.new.json` staging file, the directory is removed, and only then is the staging file promoted over the real archive. A directory that cannot be deleted is therefore never archived — it simply shows up again next run rather than being counted twice. If the final promotion fails, the command stops and tells you the `mv` to run by hand.
 
 The archive deliberately stores raw UTC hours and no cost. Day bucketing (see [`AGENT_DAY_START_UTC`](configuration.md#agent_day_start_utc-stats-day-boundary-offset)) and pricing are re-derived on every `agent stats` run, so changing your day boundary or a provider's prices afterwards still reports archived spend correctly.
 
-- **`-n`/`--dry-run`** — prints the same counts and size estimate, then exits. Never prompts and never deletes or rewrites anything.
+- **`-n`/`--dry-run`** — prints the same counts, size estimate and image table, then exits. Never prompts and never deletes, removes or rewrites anything.
 
 ## `agent secrets`
 

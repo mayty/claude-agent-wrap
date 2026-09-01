@@ -324,6 +324,14 @@ BUILD_ITERATION_LABEL = "agent-wrap.build-iteration"
 #: Image label carrying the base image's docker Id as of the project build. An absent label
 #: means the image predates stamping and has to be rebuilt once.
 BASE_IMAGE_ID_LABEL = "agent-wrap.base-image-id"
+#: Image label carrying the tag an image was built as -- "claude-agent" or
+#: "claude-agent-<name>". Unlike the two labels above, its value is *rewritten* on every
+#: wrapper build, so a wrapper image's copy always names itself rather than an ancestor.
+#: That is what makes it the only usable handle on a *superseded* build: docker takes the
+#: repository as well as the tag away when an image loses it, and `agent cleanup` has
+#: nothing else left to match on. Presence still proves nothing about ownership -- docker
+#: merges Config.Labels through FROM, so an image built on a wrapper image inherits it too.
+IMAGE_NAME_LABEL = "agent-wrap.image"
 
 LITELLM_SIDECAR_LABEL = "litellm-sidecar"
 TELEGRAM_SIDECAR_LABEL = "telegram-sidecar"

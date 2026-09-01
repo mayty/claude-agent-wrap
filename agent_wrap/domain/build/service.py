@@ -1,6 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """Docker image building domain service."""
 
+import json
 import os
 import re
 import subprocess
@@ -15,6 +16,7 @@ from agent_wrap.constants import (
     BASE_IMAGE_NAME,
     BUILD_ITERATION_LABEL,
     DOCKER_BUILD_ITERATION,
+    IMAGE_NAME_LABEL,
     LEGACY_AGENT_DOCKERFILE_NAME,
     OPS_DIR,
     SPELLCHECK_BUILD_ARG,
@@ -31,16 +33,31 @@ from agent_wrap.domain.build.constants import (
     BUILD_REASON_TEXT,
     CLAUDE_CACHE_BUST_BUILD_ARG,
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DOCKER_NONE,
     FROM_RE,
+    PINNED_SIDECAR_IMAGES,
     PROJECT_BUILD_CACHE_NOTE,
+    SHORT_IMAGE_ID_LEN,
+    SIDECAR_IMAGE_FIELDS,
+    SIDECAR_IMAGE_TEMPLATE,
     STARTUP_FALSY_WORDS,
     STARTUP_TRUTHY_WORDS,
+    TAGGED_IMAGE_FIELDS,
+    TAGGED_IMAGE_TEMPLATE,
+    UNTAGGED_IMAGE_FIELDS,
+    UNTAGGED_IMAGE_TEMPLATE,
+    WRAPPER_IMAGE_PREFIX,
     BuildReason,
+    ImageCleanupReason,
 )
 from agent_wrap.domain.build.models import (
     DockerfileAgentInfo,
     DockerfileLocation,
+    ImageCleanupOutcome,
+    ImageCleanupScope,
     ImageStaleness,
+    ProjectImageVerdict,
+    RemovableImage,
     ResolvedImage,
     StaleProjectImage,
 )
@@ -50,6 +67,10 @@ from agent_wrap.lib.docker_utils import (
     daemon_reachable,
     host_network_build_args,
     image_stamp,
+    inspect_images,
+    list_images,
+    parse_image_ref,
+    remove_image,
 )
 from agent_wrap.lib.flock import file_lock, try_file_lock
 from agent_wrap.lib.utils import generate_uuid
@@ -403,7 +424,10 @@ class BuildService:
                 TOOL_DIR,
                 base_reason,
                 base_stamp,
-                labels={BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION)},
+                labels={
+                    BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION),
+                    IMAGE_NAME_LABEL: BASE_IMAGE_NAME,
+                },
             )
             if rc != 0:
                 return rc
@@ -428,6 +452,7 @@ class BuildService:
             labels={
                 BUILD_ITERATION_LABEL: str(DOCKER_BUILD_ITERATION),
                 BASE_IMAGE_ID_LABEL: base_stamp.id if base_stamp else "",
+                IMAGE_NAME_LABEL: resolved.image,
             },
         )
 
@@ -558,17 +583,51 @@ class BuildService:
           full -- neither is answerable from where this sweep stands.
 
         A stale base short-circuits every project image to "the base moved", which
-        :meth:`_project_reason` already does without a docker call. The verdict is
-        memoised per image tag, so projects sharing an ``# agent-name:`` cost one inspect
-        between them rather than one each.
+        :meth:`_project_reason` already does without a docker call.
         """
         if not daemon_reachable():
             return []  # an unreachable daemon is not evidence that anything is stale
+        verdicts, base_stamp = self._sweep_project_reasons(project_dirs)
+        rows: list[StaleProjectImage] = []
+        for verdict in verdicts:
+            reason = verdict.reason
+            if reason is None or reason is BuildReason.MISSING:
+                continue
+            rows.append(
+                StaleProjectImage(
+                    project=verdict.project,
+                    image=verdict.image,
+                    reason=self._reason_text(reason, base_stamp),
+                )
+            )
+        return rows
+
+    def _sweep_project_reasons(
+        self, project_dirs: list[Path]
+    ) -> tuple[list[ProjectImageVerdict], ImageStamp | None]:
+        """
+        Judge every project image in *project_dirs*, and return the base stamp used.
+
+        One row per readable project that targets an image of its own; a project that
+        declares no Dockerfile is absent because its target is the base, whose staleness is
+        one fact about this host rather than one per project that inherits it. Callers that
+        need the base in a set of names add it themselves.
+
+        The verdict is memoised per image tag, so projects sharing an ``# agent-name:`` cost
+        one inspect between them rather than one each. Unfiltered on purpose: the reporting
+        caller wants only the non-current rows, while the cleanup caller needs the current
+        ones too -- those are the tags that are *claimed*, and dropping them would leave a
+        live project's image looking like nobody's.
+
+        The base stamp rides along because :meth:`_reason_text` needs it and re-reading it
+        would cost a second inspect for the same answer. Assumes a reachable daemon; every
+        caller has already established that.
+        """
         base_stamp = image_stamp(BASE_IMAGE_NAME)
         base_reason = self._base_reason(base_stamp, force=BuildForce.NONE, is_target=False)
 
         reasons: dict[str, BuildReason | None] = {}
-        rows: list[StaleProjectImage] = []
+        verdicts: list[ProjectImageVerdict] = []
         for project_dir in project_dirs:
             resolved = self._resolve_quietly(project_dir)
             if resolved is None or resolved.image == BASE_IMAGE_NAME:
@@ -580,17 +639,12 @@ class BuildService:
                     base_rebuilt=base_reason is not None,
                     force=BuildForce.NONE,
                 )
-            reason = reasons[resolved.image]
-            if reason is None or reason is BuildReason.MISSING:
-                continue
-            rows.append(
-                StaleProjectImage(
-                    project=project_dir,
-                    image=resolved.image,
-                    reason=self._reason_text(reason, base_stamp),
+            verdicts.append(
+                ProjectImageVerdict(
+                    project=project_dir, image=resolved.image, reason=reasons[resolved.image]
                 )
             )
-        return rows
+        return verdicts, base_stamp
 
     def _resolve_quietly(self, project_dir: Path) -> ResolvedImage | None:
         """
@@ -605,6 +659,235 @@ class BuildService:
             return self.resolve_image(project_dir=project_dir, warn=False)
         except SystemExit, OSError:
             return None
+
+    def image_cleanup_scope(self, project_dirs: list[Path]) -> ImageCleanupScope:
+        """
+        Survey every image on this host that is no longer needed, removing nothing.
+
+        The read-only half of ``agent cleanup``'s image handling, in the same spirit as
+        :meth:`stale_summary` -- a survey the user confirms before :meth:`remove_images`
+        acts on exactly the list returned here.
+
+        Ownership is decided by **name**, never by a label being present: docker merges
+        ``Config.Labels`` through ``FROM``, so a user's own image built on a wrapper image
+        carries the wrapper's labels too, and everything built before the wrapper started
+        stamping carries none. Four kinds come back:
+
+        * a *superseded* build -- untagged and carrying ``IMAGE_NAME_LABEL``. An untagged
+          image can never be the live one, since "live" means a tag points at it, so no id
+          comparison is needed and none is done. Deliberately not required to name a tag
+          that still exists: a superseded predecessor of a tag an earlier cleanup already
+          removed would otherwise sit on disk forever;
+        * an *orphaned* project image -- a ``claude-agent-<name>`` tag no readable
+          registered project resolves to. A project whose directory cannot be read
+          contributes no claimed name, so its image reads as orphaned; the cost of that is
+          one rebuild, and every row is shown before anything is confirmed;
+        * a *stale* project image -- one a launch would rebuild anyway, so removing it
+          defers no work that was not already owed;
+        * a *superseded sidecar* -- a pulled image in a pinned repository whose digest is
+          not the pinned one. An unknown digest is left alone rather than guessed at.
+
+        The base image is never a candidate, even when stale: every project image descends
+        from it, so ``docker rmi`` would merely untag it -- reclaiming nothing, creating a
+        fresh untagged image, and leaving the next launch a cold-scaffold rebuild.
+        """
+        if not daemon_reachable():
+            # Nothing is provably outdated when nothing can be asked. This is also what
+            # makes the command harmless inside an agent container, which mounts no socket.
+            return ImageCleanupScope(images=[], unattributable=0)
+
+        superseded, unattributable = self._superseded_images()
+        candidates: dict[str, RemovableImage] = {}
+        for image in superseded:
+            candidates.setdefault(image.ref, image)
+        for image in self._orphaned_and_stale_images(project_dirs):
+            candidates.setdefault(image.ref, image)
+        for image in self._superseded_sidecar_images():
+            candidates.setdefault(image.ref, image)
+        return ImageCleanupScope(images=list(candidates.values()), unattributable=unattributable)
+
+    def _superseded_images(self) -> tuple[list[RemovableImage], int]:
+        """
+        Untagged wrapper builds naming the tag they were built as, and the count of the rest.
+
+        Two docker calls for the whole set: one listing of every untagged image, one batched
+        inspect that reads their labels. Both halves fall out of the same partition, which
+        is why the count comes back here rather than from a second pair of calls.
+
+        Those without ``IMAGE_NAME_LABEL`` are only counted. A wrapper build from before the
+        label existed and a leftover from the user's own unrelated ``docker build`` are
+        indistinguishable, and guessing would delete somebody else's image -- so the count
+        exists to let the summary name ``docker image prune`` once instead of leaving that
+        disk unexplained.
+
+        Labels come back as JSON for the reason ``image_stamp`` does it that way: an image
+        with no labels at all renders ``null`` rather than tripping the template.
+        """
+        sizes: dict[str, str] = {}
+        for row in list_images("dangling=true", template=UNTAGGED_IMAGE_TEMPLATE):
+            fields = row.split("\t")
+            if len(fields) == UNTAGGED_IMAGE_FIELDS:
+                sizes[fields[0]] = fields[1]
+        if not sizes:
+            return [], 0
+
+        # The listing renders 12-hex short ids while the inspect answers with the full
+        # "sha256:..." form, so both sides are keyed on the same truncation. Order cannot be
+        # relied on: an image that vanished between the two calls is skipped, not reported.
+        recorded: dict[str, str] = {}
+        for line in inspect_images(list(sizes), "{{.Id}}\t{{json .Config.Labels}}"):
+            full_id, _, raw_labels = line.partition("\t")
+            name = self._image_name_label(raw_labels)
+            if name:
+                recorded[full_id.removeprefix("sha256:")[:SHORT_IMAGE_ID_LEN]] = name
+
+        rows = [
+            RemovableImage(
+                ref=short_id,
+                display=short_id,
+                image_id=short_id,
+                size=size,
+                reason=ImageCleanupReason.SUPERSEDED,
+                detail=recorded[short_id[:SHORT_IMAGE_ID_LEN]],
+            )
+            for short_id, size in sizes.items()
+            if short_id[:SHORT_IMAGE_ID_LEN] in recorded
+        ]
+        return rows, len(sizes) - len(rows)
+
+    def _image_name_label(self, raw_labels: str) -> str:
+        """
+        Read ``IMAGE_NAME_LABEL`` out of a rendered ``{{json .Config.Labels}}``, or "".
+
+        Unparseable or non-object JSON reads as "no label", which is the same verdict an
+        absent one gets: either way there is no name to attribute the image by.
+        """
+        try:
+            parsed = json.loads(raw_labels)
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        return str(parsed.get(IMAGE_NAME_LABEL, ""))
+
+    def _orphaned_and_stale_images(self, project_dirs: list[Path]) -> list[RemovableImage]:
+        """
+        Tagged wrapper images that no project claims, or that a launch would rebuild.
+
+        Both verdicts come off one sweep and one listing, and orphaned wins on overlap: an
+        image nobody builds is a stronger statement than one that is merely behind, and
+        saying "stale" of a deleted project's image would misdescribe why it is going.
+        """
+        verdicts, base_stamp = self._sweep_project_reasons(project_dirs)
+        claimed = {BASE_IMAGE_NAME} | {verdict.image for verdict in verdicts}
+        stale = {
+            verdict.image: verdict
+            for verdict in verdicts
+            if verdict.reason is not None and verdict.reason is not BuildReason.MISSING
+        }
+
+        rows: list[RemovableImage] = []
+        for line in list_images(template=TAGGED_IMAGE_TEMPLATE):
+            fields = line.split("\t")
+            if len(fields) != TAGGED_IMAGE_FIELDS:
+                continue
+            repository, tag, image_id, size = fields
+            if not self._is_wrapper_image(repository) or repository == BASE_IMAGE_NAME:
+                continue
+            ref = repository if tag == DOCKER_NONE else f"{repository}:{tag}"
+            if repository not in claimed:
+                rows.append(
+                    RemovableImage(
+                        ref=ref,
+                        display=ref,
+                        image_id=image_id,
+                        size=size,
+                        reason=ImageCleanupReason.ORPHANED,
+                        detail=repository,
+                    )
+                )
+            elif verdict := stale.get(repository):
+                reason = verdict.reason
+                rows.append(
+                    RemovableImage(
+                        ref=ref,
+                        display=ref,
+                        image_id=image_id,
+                        size=size,
+                        reason=ImageCleanupReason.STALE,
+                        # Narrowed by the `stale` comprehension above; the fallback keeps
+                        # the type checker honest without inventing a second reason line.
+                        detail=self._reason_text(reason, base_stamp) if reason else "",
+                    )
+                )
+        return rows
+
+    def _is_wrapper_image(self, repository: str) -> bool:
+        """
+        Whether a local repository name is one the wrapper tags into.
+
+        The wrapper only ever builds ``claude-agent`` and ``claude-agent-<name>``, and never
+        into a registry, so a ``/`` rules a repository out however it is spelled -- and a
+        name that merely *contains* the prefix is somebody else's.
+        """
+        if "/" in repository:
+            return False
+        return repository == BASE_IMAGE_NAME or repository.startswith(WRAPPER_IMAGE_PREFIX)
+
+    def _superseded_sidecar_images(self) -> list[RemovableImage]:
+        """
+        Report pulled sidecar images that are not the digest the wrapper pins.
+
+        One listing per pinned repository, asking for ``--digests`` because the template
+        names ``{{.Digest}}`` and the flag is what fills it in. A row whose digest docker
+        does not know is left alone: the wrapper pulls by digest, so an unknown one means
+        the image came from somewhere else, and a tag comparison there would be a guess
+        about somebody else's image rather than a verdict about ours.
+        """
+        rows: list[RemovableImage] = []
+        for pinned in PINNED_SIDECAR_IMAGES:
+            ref = parse_image_ref(pinned)
+            for line in list_images(
+                template=SIDECAR_IMAGE_TEMPLATE, reference=ref.repository, digests=True
+            ):
+                fields = line.split("\t")
+                if len(fields) != SIDECAR_IMAGE_FIELDS:
+                    continue
+                repository, _, image_id, digest, size = fields
+                if repository != ref.repository:
+                    continue
+                if digest in (DOCKER_NONE, "", ref.digest):
+                    continue
+                rows.append(
+                    RemovableImage(
+                        ref=f"{repository}@{digest}",
+                        display=f"{repository}@{digest}",
+                        image_id=image_id,
+                        size=size,
+                        reason=ImageCleanupReason.SUPERSEDED_SIDECAR,
+                        detail=pinned,
+                    )
+                )
+        return rows
+
+    def remove_images(self, scope: ImageCleanupScope) -> ImageCleanupOutcome:
+        """
+        Remove every image in *scope*, reporting what went and what docker refused.
+
+        Takes the scope from a prior :meth:`image_cleanup_scope` call so the list a user
+        confirmed is the list acted on -- no re-survey, no TOCTOU gap.
+
+        A refusal is not a failure to abort on. ``remove_image`` never forces, so the usual
+        refusal is an image a running container still references, and the run should
+        continue and report it rather than stop or override it. An image that another row
+        already took with it reads as removed for the same reason: docker deleting a shared
+        parent is the outcome that was asked for.
+        """
+        removed: list[RemovableImage] = []
+        skipped: list[RemovableImage] = []
+        for image in scope.images:
+            (removed if remove_image(image.ref) else skipped).append(image)
+        return ImageCleanupOutcome(removed=removed, skipped=skipped)
 
     def _do_rebuild(self, *, full: bool) -> int:
         """Perform the actual rebuild. Returns exit code."""

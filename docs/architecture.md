@@ -212,6 +212,23 @@ so the two never have to share the more conservative number.
   The label is how a host *detects* that its base image is behind; the identically-valued
   `BUILD_ITERATION` build arg is how a bump *reaches* the cached `scaffold` stage of
   `ops/Dockerfile`, which the base image builds with docker's layer cache on.
+
+  A third label, `agent-wrap.image`, records the tag each image was built *as*. It is the
+  one stamp whose value is rewritten on every wrapper build rather than inherited, so a
+  wrapper image's copy always names itself — which makes it the only usable handle on a
+  *superseded* build, since docker takes the repository away along with the tag and leaves
+  nothing else to match an untagged leftover on. Presence still proves nothing about
+  ownership (labels merge through `FROM` like any other), so the tagged half of the sweep
+  matches on the repository name instead and only the untagged half reads this label.
+- **Image disposal**: the build domain owns removing images as well as creating them —
+  `BuildService.image_cleanup_scope` / `remove_images`, which `agent cleanup` composes
+  alongside the stats domain's log and registry cleanup in `cli/cleanup/run.py`. It is the
+  only place that knows the wrapper's image naming, and the sidecar pins it compares
+  against (`LITELLM_IMAGE`, `TELEGRAM_IMAGE`) are read from the *root* `constants.py` where
+  `launch`, `sidecars` and `providers` already name them, so no runtime cross-domain import
+  is needed. The generic docker verbs it stands on (`list_images`, `inspect_images`,
+  `remove_image`, `parse_image_ref`) live in `lib/docker_utils.py`; every wrapper-specific
+  judgement about which of those results matter stays in the domain.
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
 - **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.
