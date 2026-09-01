@@ -181,6 +181,24 @@ class DisplayService:
             file=sys.stderr,
         )
 
+    def alert(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
+        """
+        Print *message* to stderr, tagged ``[WARNING]``, with red styling (TTY only).
+
+        The loud warning: a caution the reader is expected to act on rather than note in
+        passing, which is why it takes `error`'s colour and `warning`'s tag. A plain
+        `error` would be wrong for one — it precedes a prompt the reader may well answer
+        yes to, so nothing has failed yet — and `warning`'s yellow is too quiet for it.
+        """
+        print(
+            _TextStyler.color(
+                _TextStyler.prefixed(message, WARNING_PREFIX), Ansi.BOLD_RED, stream=sys.stderr
+            ),
+            end=end,
+            flush=flush,
+            file=sys.stderr,
+        )
+
     def success(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stdout with green styling (TTY only)."""
         print(_TextStyler.color(message, Ansi.BOLD_GREEN), end=end, flush=flush)

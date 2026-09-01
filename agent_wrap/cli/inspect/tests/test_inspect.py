@@ -9,6 +9,7 @@ import pytest
 
 from agent_wrap.cli.constants import COMMANDS
 from agent_wrap.cli.inspect.run import build_parser, run
+from agent_wrap.constants import SKIP_SAFETY_CHECK_ENV
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.status.models import (
@@ -88,6 +89,7 @@ def _report(  # noqa: PLR0913
     viewer: ViewerRow | None = None,
     logs_autostart: AutostartRow | None = None,
     stale_images: list[StaleImageRow] | None = None,
+    safety_check_enabled: bool = True,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -136,6 +138,7 @@ def _report(  # noqa: PLR0913
             network_present=True,
             host_network_requested=False,
             host_network_effective=False,
+            safety_check_enabled=safety_check_enabled,
             day_start_hours=day_start_hours,
             day_start_overridden=day_start_overridden,
             day_start_timezone=day_start_timezone,
@@ -349,6 +352,7 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
         "base image",
         "network",
         "host network",
+        "directory guard",
         "day boundary",
     ):
         assert label in out
@@ -373,6 +377,25 @@ def test_human_output_reports_a_starting_viewer_without_a_connect_line(
     out = _stdout(display_mock_service)
     assert "starting" in out
     assert "http://127.0.0.1" not in out
+
+
+def _guard_row(dsp: Mock) -> str:
+    """Return the rendered `directory guard` row."""
+    return next(line for line in _stdout(dsp).splitlines() if "directory guard" in line)
+
+
+@pytest.mark.usefixtures("inspect_mock")
+def test_human_output_reports_the_directory_guard_on(display_mock_service: Mock) -> None:
+    run([])
+    assert "on" in _guard_row(display_mock_service)
+
+
+def test_human_output_reports_the_directory_guard_off_by_env(
+    inspect_mock: Mock, display_mock_service: Mock
+) -> None:
+    inspect_mock.build_report.return_value = _report(safety_check_enabled=False)
+    run([])
+    assert f"OFF ({SKIP_SAFETY_CHECK_ENV})" in _guard_row(display_mock_service)
 
 
 def test_human_output_reports_autostart_off_by_env(

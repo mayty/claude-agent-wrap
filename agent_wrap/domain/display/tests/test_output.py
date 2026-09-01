@@ -48,6 +48,25 @@ def test_warning_is_tagged_and_yellow_on_a_tty(
     assert capsys.readouterr().err == f"{Ansi.BOLD_YELLOW}{WARNING_PREFIX}{MESSAGE}{Ansi.RESET}\n"
 
 
+def test_alert_carries_the_warning_tag_in_red_on_a_tty(
+    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+) -> None:
+    """The loud warning: `warning`'s tag, `error`'s colour."""
+    mocker.patch("sys.stderr.isatty", return_value=True)
+    ds.alert(MESSAGE)
+    assert capsys.readouterr().err == f"{Ansi.BOLD_RED}{WARNING_PREFIX}{MESSAGE}{Ansi.RESET}\n"
+
+
+def test_alert_keeps_its_tag_off_a_tty(
+    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+) -> None:
+    mocker.patch("sys.stderr.isatty", return_value=False)
+    ds.alert(MESSAGE)
+    err = capsys.readouterr().err
+    assert err == f"{WARNING_PREFIX}{MESSAGE}\n"
+    assert "\033[" not in err
+
+
 def test_continuation_lines_align_under_the_error_tag(
     mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
 ) -> None:

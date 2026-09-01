@@ -15,6 +15,7 @@ from agent_wrap.constants import (
     AGENT_DOCKERFILE_NAME,
     AUTOSTART_LOGS_ENV,
     LEGACY_AGENT_DOCKERFILE_NAME,
+    SKIP_SAFETY_CHECK_ENV,
     STATE_FILES,
     BuildForce,
     UpdateCheck,
@@ -126,6 +127,189 @@ def test_resolve_secrets_found_no_prompt(
     )
     assert result == {"Key1": "stored-value"}
     launch_svc._secrets.read.assert_called_once_with("test:Key1", "desc", prompt_on_missing=False)
+
+
+SYSTEM_CWDS = (
+    "/",
+    "/tmp",  # noqa: S108
+    "/usr",
+    "/etc",
+    "/var",
+    "/mnt",
+    "/mnt/c",
+    "/mnt/c/Windows",
+    "/mnt/c/Program Files",
+    "/media/usb",
+)
+HOME_CWDS = (
+    "/home",
+    "/home/other",
+    "/root",
+    "/mnt/c/Users",
+    "/mnt/c/Users/other",
+    "/mnt/d/Users/other",
+)
+PROJECT_CWDS = (
+    "/home/me/projects/foo",
+    "/mnt/c/Users/me/dev/foo",
+    "/usr/local/src/proj",
+    "/tmp/scratch-repo",  # noqa: S108
+    "/srv/www/site",
+)
+
+
+@pytest.fixture
+def guard_can_prompt(mocker: pytest_mock.MockFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Put the working-directory guard on its interactive path.
+
+    pytest replaces stdin with a stub whose isatty() is False, which the guard reads as
+    "nobody here to ask" and refuses on — so a test that wants the prompt has to say so.
+    The opt-out variable is cleared for a related reason: inherited from the surrounding
+    shell it would skip the guard before it ever looked at the directory.
+    """
+    mocker.patch("sys.stdin.isatty", return_value=True)
+    monkeypatch.delenv(SKIP_SAFETY_CHECK_ENV, raising=False)
+
+
+@pytest.mark.usefixtures("guard_can_prompt")
+@pytest.mark.parametrize(
+    ("cwd", "hazard"),
+    [
+        *[(p, "a system directory") for p in SYSTEM_CWDS],
+        *[(p, "a home directory") for p in HOME_CWDS],
+    ],
+)
+def test_launch_declining_the_directory_guard_starts_nothing(
+    mocker: pytest_mock.MockFixture, launch_svc: LaunchService, cwd: str, hazard: str
+) -> None:
+    """A declined launch must not have resolved, autostarted or built anything first."""
+    mocker.patch.object(Path, "cwd", return_value=Path(cwd))
+
+    launch_svc._display.prompt_confirm.return_value = False  # pyrefly: ignore [missing-attribute]
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 0
+
+    warned = launch_svc._display.alert.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert cwd in warned
+    assert hazard in warned
+    launch_svc._provider_service.get_provider.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    launch_svc._logs.autostart.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.usefixtures("guard_can_prompt")
+@pytest.mark.parametrize("cwd", PROJECT_CWDS)
+def test_launch_directory_guard_passes_a_project_directory(
+    mocker: pytest_mock.MockFixture, launch_svc: LaunchService, cwd: str
+) -> None:
+    """One level only: a project nested under a home or a system root is nobody's mistake."""
+    mocker.patch.object(Path, "cwd", return_value=Path(cwd))
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # pyrefly: ignore [missing-attribute]
+
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 1
+
+    launch_svc._display.alert.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    launch_svc._display.prompt_confirm.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.usefixtures("guard_can_prompt")
+@pytest.mark.parametrize("depth", [0, 1, 2])
+def test_launch_directory_guard_catches_a_home_no_glob_can_spell(
+    mocker: pytest_mock.MockFixture, tmp_path: Path, launch_svc: LaunchService, depth: int
+) -> None:
+    """$HOME and every ancestor of it, wherever the host chooses to keep it."""
+    home = tmp_path / "srv" / "accounts" / "me"
+    mocker.patch.object(Path, "home", return_value=home)
+    mocker.patch.object(Path, "cwd", return_value=home.parents[depth - 1] if depth else home)
+
+    launch_svc._display.prompt_confirm.return_value = False  # pyrefly: ignore [missing-attribute]
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 0
+
+    warned = launch_svc._display.alert.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "a home directory" in warned
+
+
+@pytest.mark.usefixtures("guard_can_prompt")
+def test_launch_confirming_the_directory_guard_continues(
+    mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    """Answering yes is the whole override; the pipeline runs on unchanged."""
+    mocker.patch.object(Path, "cwd", return_value=Path("/home/other"))
+    launch_svc._display.prompt_confirm.return_value = True  # pyrefly: ignore [missing-attribute]
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # pyrefly: ignore [missing-attribute]
+
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 1
+
+    launch_svc._display.prompt_confirm.assert_called_once()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_directory_guard_refuses_a_headless_launch(
+    mocker: pytest_mock.MockFixture, monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
+) -> None:
+    """No is the default, so an unanswerable prompt is a refusal — and it names the way out."""
+    monkeypatch.delenv(SKIP_SAFETY_CHECK_ENV, raising=False)
+    mocker.patch("sys.stdin.isatty", return_value=True)
+    mocker.patch.object(Path, "cwd", return_value=Path("/home/other"))
+
+    assert launch_svc.launch(use_base=False, claude_args=["-p", "hi"]) == 1
+
+    refusal = launch_svc._display.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert "/home/other" in refusal
+    assert SKIP_SAFETY_CHECK_ENV in refusal
+    launch_svc._display.prompt_confirm.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_directory_guard_refuses_a_launch_with_no_terminal(
+    mocker: pytest_mock.MockFixture, monkeypatch: pytest.MonkeyPatch, launch_svc: LaunchService
+) -> None:
+    """A piped launch is as unanswerable as a headless one, with no flag to give it away."""
+    monkeypatch.delenv(SKIP_SAFETY_CHECK_ENV, raising=False)
+    mocker.patch("sys.stdin.isatty", return_value=False)
+    mocker.patch.object(Path, "cwd", return_value=Path("/home/other"))
+
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 1
+
+    refusal = launch_svc._display.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    assert SKIP_SAFETY_CHECK_ENV in refusal
+    launch_svc._display.prompt_confirm.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.parametrize("cwd", ["/home/other", "/srv/www/site"])
+def test_launch_directory_guard_opt_out_announces_itself_every_launch(
+    mocker: pytest_mock.MockFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    launch_svc: LaunchService,
+    cwd: str,
+) -> None:
+    """Including from a directory the guard would have passed: a stale export must not go quiet."""
+    monkeypatch.setenv(SKIP_SAFETY_CHECK_ENV, "1")
+    mocker.patch.object(Path, "cwd", return_value=Path(cwd))
+    launch_svc._build_service.resolve_image.side_effect = SystemExit("boom")  # pyrefly: ignore [missing-attribute]
+
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 1
+
+    warnings = launch_svc._display.warning.call_args_list  # pyrefly: ignore [missing-attribute]
+    notices = [c[0][0] for c in warnings if SKIP_SAFETY_CHECK_ENV in c[0][0]]
+    assert len(notices) == 1
+    launch_svc._display.alert.assert_not_called()  # pyrefly: ignore [missing-attribute]
+    launch_svc._display.prompt_confirm.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.usefixtures("guard_can_prompt")
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_launch_directory_guard_ignores_a_falsy_opt_out(
+    mocker: pytest_mock.MockFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    launch_svc: LaunchService,
+    value: str,
+) -> None:
+    monkeypatch.setenv(SKIP_SAFETY_CHECK_ENV, value)
+    mocker.patch.object(Path, "cwd", return_value=Path("/home/other"))
+
+    launch_svc._display.prompt_confirm.return_value = False  # pyrefly: ignore [missing-attribute]
+    assert launch_svc.launch(use_base=False, claude_args=[]) == 0
+
+    launch_svc._display.alert.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
 def test_launch_headless_skips_update_check(launch_svc: LaunchService) -> None:

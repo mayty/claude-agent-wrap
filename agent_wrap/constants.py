@@ -207,6 +207,12 @@ AGENT_WRAP_MOUNT = "/opt/agent-wrap"
 # ``ConfigService.prepare_declared_mounts``.
 WORKSPACE_MOUNT = "/workspace"
 
+# Opt-out for the working-directory safeguard on `agent run`, which questions a launch from
+# a home directory or a system root -- see SYSTEM_CWD_GLOBS in
+# ``agent_wrap/domain/launch/constants.py``. Truthy per ``is_truthy_env``. Read by the
+# launcher that acts on it and by `agent inspect`, which reports whether it is in effect.
+SKIP_SAFETY_CHECK_ENV = "AGENT_SKIP_SAFETY_CHECK"
+
 # Per-project state files mounted into the agent container. Only append-only files
 # belong here: a single-file bind mount pins the inode, so any writer that replaces
 # the file via rename() -- or unlinks it -- fails with EBUSY. Claude Code's PID-keyed

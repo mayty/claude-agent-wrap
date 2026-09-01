@@ -57,6 +57,23 @@ Set `AGENT_SKIP_UPDATE_CHECK=1` (or any non-empty value other than `0`/`false`/`
 
 Only `agent run` and `agent rebuild` perform the check. Every other verb (`stats`, `logs`, `inspect`, `cleanup`, `create`, `secrets`, and `update` itself) does not.
 
+## `AGENT_SKIP_SAFETY_CHECK` (directory safeguard opt-out)
+
+`agent run` refuses, by default, to treat a home directory or a system root as a project. Everything under the working directory is mounted at `/workspace` and a `.claude/` state tree is written into it, so such a launch hands the agent far more context than anyone means to and writes wrapper state over whatever is already there — in `$HOME`, your own `~/.claude`. The launch names the directory in red and asks `Launch here anyway? [y/N]`: **No is the default**, Enter cancels (exit 0), and nothing — no image resolve, no logs viewer, no sidecar — has happened yet at that point. A launch with nobody to answer, meaning headless (`-p`/`--print`/`--bare`/`--safe-mode`) or stdin not a terminal, is refused with exit 1 instead of prompted.
+
+Two classes of directory trigger it. **System roots** match exactly and never their children:
+
+```
+/  /bin  /boot  /dev  /etc  /lib  /media  /media/*  /mnt  /mnt/*
+/mnt/*/Windows  /mnt/*/Program Files  /opt  /proc  /run  /sbin  /srv  /sys  /tmp  /usr  /var
+```
+
+`/mnt/*` is a whole WSL drive (`/mnt/c`) and `/media/*` a mounted volume. **Home directories** are `$HOME` and every ancestor of it (so `/home/me`, `/home` and `/` on a typical Linux host; `/Users/me` and `/Users` on macOS; `/mnt/c/Users/me` and `/mnt/c/Users` for a WSL-rooted home), plus `/home` and any directory directly inside it, `/root`, and any Windows profile root on any WSL drive (`/mnt/<drive>/Users`, `/mnt/<drive>/Users/<anyone>`). Everything is one level deep only: `~/projects/thing`, `/mnt/c/Users/me/dev/thing`, `/usr/local/src/thing` and `/tmp/scratch-repo` are ordinary project directories and are never questioned.
+
+Set `AGENT_SKIP_SAFETY_CHECK=1` (or any non-empty value other than `0`/`false`/`no`) to disable the safeguard. It is read before the directory is even looked at, and it is what a script or a fleet launcher that genuinely belongs in such a directory needs, since those are refused rather than prompted. **Every** launch made with it set prints `[WARNING] working-directory safety check disabled by AGENT_SKIP_SAFETY_CHECK.` first, whatever the directory — a variable exported once in a shell profile should not go quiet.
+
+Only `agent run` performs the check; no other verb mounts the working directory. [`agent inspect`](shell-commands.md#agent-inspect) reports the result as a `directory guard` row in its details table: `on`, or `OFF (AGENT_SKIP_SAFETY_CHECK)` once you have set the variable. The row reports the setting and nothing more — whether a given directory would be questioned is answered by `agent run` itself, at the moment it matters.
+
 ## `AGENT_EXPECTED_QUEUE_DEPTH` (parallel-launch tuning)
 
 Each `agent run` briefly coordinates with any other simultaneous launches while a sidecar is started or torn down. `AGENT_EXPECTED_QUEUE_DEPTH` is the expected number of agents queued behind that coordination at once; it sizes how long a launch waits before treating itself as genuinely stuck rather than merely queued.

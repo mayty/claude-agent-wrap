@@ -49,7 +49,13 @@ from agent_wrap.cli.inspect.constants import (
     STALE_IMAGES_HEADERS,
     UNKNOWN,
 )
-from agent_wrap.constants import AUTOSTART_LOGS_ENV, DIVIDER, NO_HEALTHCHECK, RUNNING_STATUS
+from agent_wrap.constants import (
+    AUTOSTART_LOGS_ENV,
+    DIVIDER,
+    NO_HEALTHCHECK,
+    RUNNING_STATUS,
+    SKIP_SAFETY_CHECK_ENV,
+)
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem
 from agent_wrap.lib.path_tree import build_path_tree, expand_widest_chain, walk_path_tree
@@ -423,6 +429,13 @@ class Details:
             *Details.project_image_rows(project, environment),
             Details.network_row(environment),
             Cells.row("host network", host_net, host_net_style),
+            # Two states, and neither is an anomaly: an unset variable is the guard doing
+            # its job, and a set one is a choice its owner made. Nothing can ignore it, so
+            # there is no requested-but-IGNORED reading to flag the way the row above has.
+            Cells.row(
+                "directory guard",
+                "on" if environment.safety_check_enabled else f"OFF ({SKIP_SAFETY_CHECK_ENV})",
+            ),
             Cells.row("day boundary", Details.day_boundary(environment)),
         ]
 
