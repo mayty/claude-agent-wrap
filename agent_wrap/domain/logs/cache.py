@@ -231,22 +231,21 @@ class LogsCache:
         Fingerprint comparison is owned by ``UsageTracker.update_file`` — every
         file in *new_manifest* is offered and the tracker decides whether to
         re-scan.  Deletions are detected via set difference on the manifest keys.
+        Whether ``usage.json`` is rewritten or merely touched is decided by
+        ``flush`` from the aggregated payload itself.
         """
         tracker = self._usage_tracker
 
         if tracker.detect_rollover():
             tracker.reset()
 
-        content_changed = False
-
         for path, stat_info in new_manifest.items():
-            content_changed |= tracker.update_file(path, stat_info)
+            tracker.update_file(path, stat_info)
 
         for path in set(old_manifest) - set(new_manifest):
             tracker.remove_file(path)
-            content_changed = True
 
-        tracker.flush(content_changed=content_changed)
+        tracker.flush()
 
     def _gather_directory_manifest(
         self,

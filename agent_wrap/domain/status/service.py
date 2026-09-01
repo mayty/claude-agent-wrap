@@ -51,6 +51,7 @@ from agent_wrap.constants import (
     LITELLM_LOGS_DIRNAME,
     PYTHON_PIN_FILE,
     SIDECAR_NETWORK_NAME,
+    SKIP_SAFETY_CHECK_ENV,
     TOOL_DIR,
 )
 from agent_wrap.domain.status.constants import (
@@ -499,6 +500,8 @@ class InspectService:
 
         ``AGENT_USE_HOST_NETWORK`` is reported as requested-vs-effective because it is
         silently ignored off WSL, which otherwise looks like the setting not working.
+        ``AGENT_SKIP_SAFETY_CHECK`` needs no such split — nothing overrides it — so it is
+        reported as the one thing there is to say: whether the guard is still on.
         """
         requested = is_truthy_env(os.environ.get(HOST_NETWORK_ENV, ""))
         day_start_overridden = bool(os.environ.get(DAY_START_ENV))
@@ -514,6 +517,7 @@ class InspectService:
             network_present=network_present,
             host_network_requested=requested,
             host_network_effective=requested and docker_utils.is_wsl(),
+            safety_check_enabled=not is_truthy_env(os.environ.get(SKIP_SAFETY_CHECK_ENV, "")),
             day_start_hours=DAY_START_HOURS,
             day_start_overridden=day_start_overridden,
             day_start_timezone=day_start_timezone,

@@ -163,6 +163,10 @@ class EnvironmentRow:
     host_network_requested: bool
     #: Whether it will actually take effect — it is honored only on WSL.
     host_network_effective: bool
+    #: Whether the next ``agent run`` would check its working directory, i.e. whether
+    #: AGENT_SKIP_SAFETY_CHECK is unset or falsey. Nothing can ignore this one, so unlike
+    #: host networking there is no effective-versus-requested to report.
+    safety_check_enabled: bool
     #: Hours past UTC midnight a stats "day" begins.
     day_start_hours: int
     #: Whether that came from AGENT_DAY_START_UTC rather than the host's local offset.

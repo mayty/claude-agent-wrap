@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME
+from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME, SKIP_SAFETY_CHECK_ENV
 from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage, StaleProjectImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
@@ -420,6 +420,29 @@ def test_host_network_effective_on_wsl(
     monkeypatch.setenv("AGENT_USE_HOST_NETWORK", "1")
     docker_probes["is_wsl"].return_value = True
     assert service.build_report().environment.host_network_effective is True
+
+
+def test_directory_guard_is_on_when_the_opt_out_is_unset(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(SKIP_SAFETY_CHECK_ENV, raising=False)
+    assert service.build_report().environment.safety_check_enabled is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_directory_guard_stays_on_for_a_falsey_opt_out(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """An exported-but-empty variable reads as unset, matching the launcher's own reading."""
+    monkeypatch.setenv(SKIP_SAFETY_CHECK_ENV, value)
+    assert service.build_report().environment.safety_check_enabled is True
+
+
+def test_directory_guard_reports_itself_disabled(
+    service: InspectService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SKIP_SAFETY_CHECK_ENV, "1")
+    assert service.build_report().environment.safety_check_enabled is False
 
 
 def test_day_start_override_is_reported(

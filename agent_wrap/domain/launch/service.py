@@ -1,6 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """Agent launch orchestration domain service."""
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ from agent_wrap.constants import (
     ROLE_LABEL,
     ROLE_VALUE,
     SIDECAR_NETWORK_NAME,
+    SKIP_SAFETY_CHECK_ENV,
     STATE_FILES,
     TELEGRAM_IMAGE,
     TELEGRAM_SIDECAR_NAME,
@@ -31,11 +33,13 @@ from agent_wrap.domain.launch.constants import (
     EXPECTED_QUEUE_DEPTH,
     EXTERNAL_STATE_MOUNTS,
     HEADLESS_FLAGS,
+    HOME_CWD_GLOBS,
     INSTANCE_DIR_NAME,
     INSTANCE_STATE_FILES,
     INSTANCE_STATE_MOUNTS,
     INSTANCE_SWEEP_GRACE_SECONDS,
     STATE_MOUNTS,
+    SYSTEM_CWD_GLOBS,
 )
 from agent_wrap.domain.launch.models import (
     DockerfileDirectives,
@@ -107,15 +111,23 @@ class LaunchService:
 
     # Public entry point
 
-    def launch(self, *, use_base: bool, claude_args: list[str]) -> int:  # noqa: PLR0911
+    def launch(self, *, use_base: bool, claude_args: list[str]) -> int:  # noqa: C901, PLR0911
         """
-        Full launch pipeline: update check, image resolve, sidecar setup, docker run, cleanup.
+        Full launch pipeline: pre-flight, image resolve, sidecar setup, docker run, cleanup.
 
-        The return count is inherent: this is a linear pipeline of abort points, and each
-        one is a distinct user-facing failure that must not be collapsed into a generic
-        error.
+        The return count, and the branch count with it, is inherent: this is a linear
+        pipeline of abort points, and each one is a distinct user-facing failure that must
+        not be collapsed into a generic error. The two pre-flight gates stay separate rather
+        than merging into one because the logs viewer's autostart belongs between them —
+        see :meth:`_maybe_autostart_logs`.
         """
         headless = self._is_headless(claude_args)
+
+        # Ahead of everything, the autostart included: a launch the user is about to decline
+        # must not leave a background logs viewer behind it.
+        cwd_code = self._cwd_guard_exit_code(headless=headless)
+        if cwd_code is not None:
+            return cwd_code
 
         # The provider is resolved first because the logs viewer's autostart is gated on
         # it, and that autostart wants to be the very first thing this launch does: the
@@ -272,6 +284,74 @@ class LaunchService:
                 "Today's usage will be missing from the statusline; "
                 "run `agent logs` to start it by hand."
             )
+
+    def _cwd_hazard(self, cwd: Path) -> str | None:
+        """
+        Name what makes *cwd* a bad place to launch from, or None when it is fine.
+
+        System roots are tested first, so a path both sets could claim — ``/mnt``,
+        ``/mnt/c`` — is reported as the drive it is rather than as somebody's home. $HOME
+        and its ancestors come last and are the runtime half of HOME_CWD_GLOBS: they cover a
+        home this module cannot spell as a glob, a macOS ``/Users/me`` or a Windows profile
+        reached through WSL, and cost nothing when a glob has already matched. A HOME that
+        cannot be resolved is simply one rule fewer.
+        """
+        if any(cwd.full_match(glob) for glob in SYSTEM_CWD_GLOBS):
+            return "a system directory"
+        if any(cwd.full_match(glob) for glob in HOME_CWD_GLOBS):
+            return "a home directory"
+        with contextlib.suppress(OSError, RuntimeError):
+            home = Path.home().resolve()
+            if cwd == home or cwd in home.parents:
+                return "a home directory"
+        return None
+
+    def _cwd_guard_exit_code(self, *, headless: bool) -> int | None:
+        """
+        Confirm or refuse a launch from a directory that is not a project; None to proceed.
+
+        Everything under the working directory is mounted at the workspace and a `.claude`
+        state tree is written into it, so launching from a home or a system root hands the
+        agent a whole machine to read and drops wrapper state on top of whatever lives
+        there — for $HOME, the user's own Claude Code config. Both are done by the time the
+        agent starts and neither is undone by quitting it, which is why this is a pre-flight
+        rather than something to notice later.
+
+        No is the default, and a launch with nobody to ask is a No: headless and piped
+        invocations are refused outright rather than prompted, leaving SKIP_SAFETY_CHECK_ENV
+        as the way to drive one from such a directory on purpose. That escape hatch
+        announces itself on every launch, whatever the directory — a variable exported once
+        in a shell profile must not then go quiet.
+        """
+        if is_truthy_env(os.environ.get(SKIP_SAFETY_CHECK_ENV, "")):
+            self._display.warning(
+                f"working-directory safety check disabled by {SKIP_SAFETY_CHECK_ENV}."
+            )
+            return None
+
+        cwd = Path.cwd()
+        hazard = self._cwd_hazard(cwd)
+        if hazard is None:
+            return None
+
+        if headless or not sys.stdin.isatty():
+            self._display.error(
+                f"refusing to launch in {cwd}: it is {hazard}, not a project, and there is "
+                f"no terminal here to confirm from.\n"
+                f"Set {SKIP_SAFETY_CHECK_ENV}=1 to launch here anyway."
+            )
+            return 1
+
+        self._display.alert(
+            f"{cwd} is {hazard}, not a project.\n"
+            f"Everything under it would be mounted at {WORKSPACE_MOUNT} — probably far more "
+            f"context than you meant to hand an agent — and a .claude state tree would be "
+            f"written into {cwd / '.claude'}, over anything already there."
+        )
+        if self._display.prompt_confirm("Launch here anyway? [y/N]"):
+            return None
+        self._display.info("Launch cancelled.")
+        return 0
 
     def _update_check_exit_code(self, *, headless: bool) -> int | None:
         """

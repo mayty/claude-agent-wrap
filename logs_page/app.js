@@ -485,9 +485,7 @@ async function tick(s) {
         state.pendingHashes = new Set();  // clear; resolveRecord repopulates
         state.reqs = state.rawReqs.map(r => resolveRecord(r, strings));
         if (!hasPendingHashes()) state.pendingHashes = null;
-        const scrollTop = chatBody().scrollTop;
-        renderStream();
-        requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+        renderStreamPreservingScroll();
       }
       state.fp = fp;
       renderChatHead();
@@ -509,7 +507,6 @@ async function tick(s) {
     // If the total count is less than what we already have, records were
     // deleted or the session was rebuilt — do a full re-fetch and rebuild.
     if (meta && meta.count < state.reqs.length) {
-      const scrollTop = chatBody().scrollTop;
       const fullResp = await fetch(`/api/session?${sessionQuery(s)}`);
       if (!fullResp.ok) return;
       const full = await readNDJSONStream(fullResp);
@@ -522,14 +519,13 @@ async function tick(s) {
       state.session_meta = full.meta || state.session_meta;
       state.fp = fp;
       updateSessionListItem(full.meta);
-      renderStream();
-      requestAnimationFrame(() => { chatBody().scrollTop = scrollTop; });
+      renderStreamPreservingScroll();
       return;
     }
 
     // Normal append path: only new records were returned.
     const body = chatBody();
-    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    const atBottom = isChatAtBottom();
     // Insert before the sticky scroll-to-bottom wrapper (rather than
     // appending after it) so it stays the last element in flow — position:
     // sticky only tracks the viewport bottom while it has no later siblings.
@@ -679,6 +675,66 @@ function appendThinkingBlock(tb, parent) {
   replaceLoadingPlaceholders(box);
 }
 
+// Append one image block. Shared by top-level `image` content blocks and the ones
+// nested inside a tool_result (what an image Read returns). A base64 payload is
+// long enough to be stored as a hash pointer, so the data may still be an
+// unresolved placeholder on first paint — emit the placeholder in its own text
+// node instead of a broken <img> and let replaceLoadingPlaceholders() turn it into
+// a spinner; the pending-hash refetch re-renders with the real image.
+function appendImageBlock(source, parent) {
+  if (!source || !source.data) return;
+  const box = el("div", "block-image");
+  if (source.data === LOADING_PLACEHOLDER || /^hash:[a-f0-9]{64}$/.test(source.data)) {
+    box.appendChild(el("div", "meta", LOADING_PLACEHOLDER));
+    parent.appendChild(box);
+    return;
+  }
+  const img = el("img", "content-image");
+  img.src = "data:" + (source.media_type || "image/png") + ";base64," + source.data;
+  img.alt = "Image";
+  img.title = "Click to view full size";
+  img.onclick = function(e) { e.stopPropagation(); showImageOverlay(img.src); };
+  box.appendChild(img);
+  parent.appendChild(box);
+}
+
+// Fill a tool_result box with its content. The content is usually an *array* of
+// blocks; walking it rather than JSON-stringifying the lot is what lets an image
+// Read show its picture, keeps text results readable as text instead of escaped
+// JSON, and leaves a hash placeholder alone in its own text node where the
+// spinner swap can find it.
+function appendToolResultBody(content, box) {
+  if (typeof content === "string" || !Array.isArray(content) || !content.length) {
+    box.appendChild(Object.assign(el("pre"), { textContent: asText(content) }));
+    return;
+  }
+  // With more than one block, give each text block its own box so adjacent blocks
+  // stay distinguishable — the same convention renderContent() uses below.
+  const multi = content.length > 1;
+  const addText = (text) => {
+    const pre = Object.assign(el("pre"), { textContent: text });
+    if (multi) {
+      const sub = el("div", "block-text");
+      sub.appendChild(pre);
+      box.appendChild(sub);
+    } else {
+      box.appendChild(pre);
+    }
+  };
+  for (const block of content) {
+    if (block == null) continue;
+    if (typeof block === "string") {
+      addText(block);
+    } else if (block.type === "image") {
+      appendImageBlock(block.source, box);
+    } else if (!block.type || block.type === "text") {
+      addText(asText(block.text));
+    } else {
+      addText(asText(block));
+    }
+  }
+}
+
 function renderContent(content, parent) {
   if (typeof content === "string") {
     parent.appendChild(Object.assign(el("pre"), { textContent: content }));
@@ -718,22 +774,12 @@ function renderContent(content, parent) {
     } else if (type === "tool_result") {
       const box = el("div", "block-tool_result");
       box.appendChild(el("div", "block-label", "tool_result"));
-      box.appendChild(Object.assign(el("pre"), { textContent: asText(block.content) }));
+      appendToolResultBody(block.content, box);
       parent.appendChild(box);
     } else if (type === "thinking") {
       appendThinkingBlock(block, parent);
     } else if (type === "image") {
-      const src = block.source;
-      if (src && src.data) {
-        const box = el("div", "block-image");
-        const img = el("img", "content-image");
-        img.src = "data:" + (src.media_type || "image/png") + ";base64," + src.data;
-        img.alt = "Image";
-        img.title = "Click to view full size";
-        img.onclick = function(e) { e.stopPropagation(); showImageOverlay(img.src); };
-        box.appendChild(img);
-        parent.appendChild(box);
-      }
+      appendImageBlock(block.source, parent);
     } else {
       const box = el("div", "block-tool_use");
       box.appendChild(el("div", "block-label", type));
@@ -2193,7 +2239,7 @@ function insertMarkers(groups) {
 function applyTabFilter(tab) {
   // Capture whether user was at the bottom before changing the view.
   const body = chatBody();
-  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  const atBottom = isChatAtBottom();
 
   // Remove previous sub-tab visibility classes (only matches elements that
   // have it — typically few, from the previous sub-tab view).
@@ -2281,6 +2327,29 @@ function renderStream() {
   ensureScrollButton();
 }
 
+// Rebuild the whole stream while keeping the reader where they were. A reader
+// following the newest turn stays pinned to the bottom: the rebuild usually
+// makes the stream taller (a resolved hash placeholder becomes its real text),
+// so restoring the old offset would leave them just above the new bottom and
+// silently end auto-following. Anyone who has scrolled up keeps their offset.
+function renderStreamPreservingScroll() {
+  // Probe before renderStream() clears innerHTML, which resets scrollTop to 0.
+  const atBottom = isChatAtBottom();
+  const scrollTop = chatBody().scrollTop;
+  renderStream();
+  requestAnimationFrame(() => {
+    const body = chatBody();
+    // Instant, not the smooth scrollToBottom(): scrollTop is 0 after the wipe,
+    // so a smooth scroll would animate the whole history past the reader on
+    // every poll. The assignment also cancels any smooth scroll applyTabFilter()
+    // started from inside renderStream().
+    body.scrollTop = atBottom ? body.scrollHeight : scrollTop;
+    // A scrollTop write that changes nothing emits no scroll event, so refresh
+    // the buttons by hand rather than relying on the listener.
+    updateScrollButtons();
+  });
+}
+
 // Home/End scroll the request pop-up when it is open, otherwise the session
 // chat. Plain keypress only — leave modified combos (e.g. Ctrl+Home) alone.
 document.addEventListener("keydown", (e) => {
@@ -2299,10 +2368,22 @@ document.addEventListener("keydown", (e) => {
 // very bottom, giving the user a one-click way to jump back to the newest turn.
 // ---------------------------------------------------------------------------
 
+// Distance from an edge, in px, still counted as being *at* that edge —
+// absorbs sub-pixel rounding and the height of the sticky button wrappers.
+const SCROLL_EDGE_PX = 40;
+
+// Whether the reader is following the newest turn. Recomputed on demand: no
+// state tracks it, so anything that rebuilds the stream must probe *before*
+// the rebuild (renderStream() clears innerHTML, which resets scrollTop to 0).
+function isChatAtBottom() {
+  const body = chatBody();
+  return body.scrollHeight - body.scrollTop - body.clientHeight < SCROLL_EDGE_PX;
+}
+
 function updateScrollButtons() {
   const body = chatBody();
-  const atTop = body.scrollTop < 40;
-  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  const atTop = body.scrollTop < SCROLL_EDGE_PX;
+  const atBottom = isChatAtBottom();
   const toTop = body.querySelector(".scroll-to-top-btn");
   const toBot = body.querySelector(".scroll-to-bottom-btn");
   if (toTop) toTop.classList.toggle("visible", !atTop);

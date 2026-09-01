@@ -65,3 +65,46 @@ INSTANCE_SWEEP_GRACE_SECONDS = 3600
 #: Claude Code flags marking a non-interactive invocation — the Telegram sidecar and the
 #: self-update prompt are both skipped under these.
 HEADLESS_FLAGS = frozenset({"-p", "--print", "--bare", "--safe-mode"})
+
+# Directories that are not projects, matched against the launch's working directory with
+# Path.full_match(). A `*` there never crosses a separator, which is what gives these
+# their one-level reach.
+#
+# System roots are matched exactly and never their children: /usr/local/src/proj and
+# /tmp/scratch-repo are perfectly ordinary project directories, and only the root itself
+# is the mistake. `/mnt/*` is a whole WSL drive (/mnt/c), `/media/*` a mounted volume.
+SYSTEM_CWD_GLOBS = (
+    "/",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/media",
+    "/media/*",
+    "/mnt",
+    "/mnt/*",
+    "/mnt/*/Windows",
+    "/mnt/*/Program Files",
+    "/opt",
+    "/proc",
+    "/run",
+    "/sbin",
+    "/srv",
+    "/sys",
+    "/tmp",  # noqa: S108
+    "/usr",
+    "/var",
+)
+
+# Home roots, checked after SYSTEM_CWD_GLOBS so that a shared prefix (/mnt, /mnt/c) is
+# reported as the drive it is rather than as somebody's home. `$HOME` and its ancestors
+# are added at runtime, which is what covers a home the wrapper cannot spell here -- a
+# macOS /Users/me, or a Windows profile reached through WSL.
+HOME_CWD_GLOBS = (
+    "/home",
+    "/home/*",
+    "/root",
+    "/mnt/*/Users",
+    "/mnt/*/Users/*",
+)
