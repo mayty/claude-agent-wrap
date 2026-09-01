@@ -14,6 +14,7 @@ class Ansi(StrEnum):
     BOLD_YELLOW = "\033[1;33m"
     BOLD_RED = "\033[1;31m"
     CYAN = "\033[36m"
+    MAGENTA = "\033[35m"
     DIM = "\033[90m"
 
     # Cursor/line control (not SGR — don't append 'm')

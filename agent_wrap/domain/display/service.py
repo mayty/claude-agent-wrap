@@ -204,8 +204,13 @@ class DisplayService:
         print(_TextStyler.color(message, Ansi.BOLD_GREEN), end=end, flush=flush)
 
     def banner(self, text: str) -> None:
-        """Print a banner line to stdout."""
-        self.info(f"--- {text} ---")
+        """
+        Print a banner line to stdout, marked ``>`` and styled purple (TTY only).
+
+        The marker sits inside the colour span but is plain text, so a redirect or a pipe
+        keeps it once colour is stripped — the same division of labour as `error`'s tag.
+        """
+        self.info(_TextStyler.color(f"> {text}", Ansi.MAGENTA, stream=sys.stdout))
 
     def newline(self) -> None:
         """Print a blank line to stdout."""
