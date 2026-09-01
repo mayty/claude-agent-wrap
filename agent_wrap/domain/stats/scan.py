@@ -14,6 +14,8 @@ from agent_wrap.domain.stats.format_utils import day_in_range
 from agent_wrap.domain.stats.models import (
     AccumulatedRecord,
     DirResult,
+    HourBuckets,
+    HourKey,
     RawFileResult,
     RawRecord,
     ScanProjectResult,
@@ -239,28 +241,34 @@ def scan_session_file(
 def fold_raw_to_buckets(
     records: list[RawRecord],
     pricing: PricingService,
-) -> tuple[dict[str, dict[str, Bucket]], dict[str, dict[str, Bucket]]]:
+) -> tuple[HourBuckets, HourBuckets]:
     """
-    Fold raw worker records into Bucket-keyed dicts using *pricing*.
+    Fold raw worker records into hour-keyed Bucket dicts using *pricing*.
 
     Normalizes model names and constructs Buckets via ``pricing.new_bucket()``,
-    so all pricing-domain work stays in the master process.
+    so all pricing-domain work stays in the master process. The raw UTC weekday
+    and hour are preserved on the bucket key so ``price_buckets`` can price each
+    hour at its own rate before collapsing the axis.
 
-    Returns ``(by_day, by_source)`` where *by_day* is ``{day: {model: Bucket}}``
-    and *by_source* is ``{source: {model: Bucket}}``. Both inner dicts use
+    Returns ``(by_day, by_source)`` where *by_day* is
+    ``{day: {hour: {model: Bucket}}}`` and *by_source* is
+    ``{source: {hour: {model: Bucket}}}``. Both inner dicts use
     ``"provider/model"`` display-model keys, so ``price_buckets`` works on either.
     """
-    by_day: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
-    by_source: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
+    by_day = defaultdict(lambda: defaultdict(lambda: defaultdict(pricing.new_bucket)))
+    by_source = defaultdict(lambda: defaultdict(lambda: defaultdict(pricing.new_bucket)))
     for rec in records:
         provider, _, model = rec.display_model.partition("/")
         norm_model = pricing.normalize_model(model) or model
         norm_display = f"{provider}/{norm_model}"
-        by_day[rec.day_key][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
-        by_source[rec.source][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
+        hour_key = (
+            HourKey(rec.ts.weekday(), rec.ts.hour) if rec.ts is not None else HourKey(None, None)
+        )
+        by_day[rec.day_key][hour_key][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
+        by_source[rec.source][hour_key][norm_display].add(rec.usage, 0.0, unrecorded=rec.unrecorded)
     return (
-        {d: dict(m) for d, m in by_day.items()},
-        {s: dict(m) for s, m in by_source.items()},
+        {d: {h: dict(m) for h, m in by_hour.items()} for d, by_hour in by_day.items()},
+        {s: {h: dict(m) for h, m in by_hour.items()} for s, by_hour in by_source.items()},
     )
 
 
@@ -277,32 +285,49 @@ def merge_by_day(dst: dict[str, dict[str, Bucket]], src: dict[str, dict[str, Buc
 
 
 def price_buckets(
-    by_day: dict[str, dict[str, Bucket]],
+    buckets: HourBuckets,
     pricing: PricingService,
     *,
     refresh_pricing_data: bool = False,
-) -> None:
-    """Fill in costs for every Bucket in *by_day* using *pricing*."""
-    for by_model in by_day.values():
-        for display_model, bucket in by_model.items():
-            provider, _, model = display_model.partition("/")
-            usage: TokenUsage = {
-                "input_tokens": bucket.in_,
-                "output_tokens": bucket.out,
-                "cache_creation_input_tokens": bucket.cw,
-                "cache_creation": {
-                    "ephemeral_5m_input_tokens": bucket.cw_5m,
-                    "ephemeral_1h_input_tokens": bucket.cw_1h,
-                },
-                "cache_read_input_tokens": bucket.cr,
-            }
-            cost = pricing.compute_cost(
-                provider, model, usage=usage, refresh_pricing_data=refresh_pricing_data
-            )
-            if cost is None:
-                bucket.cost_unknown = True
-            else:
-                bucket.cost += cost
+) -> dict[str, dict[str, Bucket]]:
+    """
+    Price every Bucket in *buckets*, then collapse the hour/weekday axis.
+
+    Each ``(outer_key, (weekday, hour), model)`` bucket is priced at its own UTC
+    weekday and hour, then merged into the ``{outer_key: {model: Bucket}}`` shape
+    the rest of the stats pipeline consumes. Pricing before collapsing is what
+    keeps a day's usage from being priced at a single representative instant.
+    """
+    collapsed: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
+    for outer_key, by_hour in buckets.items():
+        for hour_key, by_model in by_hour.items():
+            weekday, hour = hour_key
+            for display_model, bucket in by_model.items():
+                provider, _, model = display_model.partition("/")
+                usage: TokenUsage = {
+                    "input_tokens": bucket.in_,
+                    "output_tokens": bucket.out,
+                    "cache_creation_input_tokens": bucket.cw,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": bucket.cw_5m,
+                        "ephemeral_1h_input_tokens": bucket.cw_1h,
+                    },
+                    "cache_read_input_tokens": bucket.cr,
+                }
+                cost = pricing.compute_cost(
+                    provider,
+                    model,
+                    usage=usage,
+                    hour=hour,
+                    weekday=weekday,
+                    refresh_pricing_data=refresh_pricing_data,
+                )
+                if cost is None:
+                    bucket.cost_unknown = True
+                else:
+                    bucket.cost += cost
+                collapsed[outer_key][display_model].merge(bucket)
+    return {k: dict(v) for k, v in collapsed.items()}
 
 
 # Parallel scan
@@ -403,9 +428,9 @@ def scan_logs_dir(
             last_ts = ts
         all_records.extend(records)
 
-    by_day, by_source = fold_raw_to_buckets(all_records, pricing)
-    price_buckets(by_day, pricing, refresh_pricing_data=refresh_pricing_data)
-    price_buckets(by_source, pricing, refresh_pricing_data=refresh_pricing_data)
+    by_day_hour, by_source_hour = fold_raw_to_buckets(all_records, pricing)
+    by_day = price_buckets(by_day_hour, pricing, refresh_pricing_data=refresh_pricing_data)
+    by_source = price_buckets(by_source_hour, pricing, refresh_pricing_data=refresh_pricing_data)
     return DirResult(sessions, last_ts, by_day, by_source)
 
 

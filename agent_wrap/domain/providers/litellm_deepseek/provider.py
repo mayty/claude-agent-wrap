@@ -13,6 +13,7 @@ from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
 from agent_wrap.domain.providers.litellm_deepseek.constants import (
     MIN_MODEL_COUNT,
+    PEAK_WEEKDAYS,
     PRICING_CACHE_TTL_SECONDS,
     PRICING_FETCH_TIMEOUT,
     PRICING_PAGE_URL,
@@ -20,6 +21,8 @@ from agent_wrap.domain.providers.litellm_deepseek.constants import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from agent_wrap.domain.pricing.models import TokenUsage
 
 
 class _DeepSeekPricing:
@@ -66,24 +69,47 @@ class _DeepSeekPricing:
         return models
 
     @staticmethod
-    def fill_price_column(
-        prices: dict[str, dict[str, float]],
-        models: list[str],
-        row_html: str,
-        label: str,
-        field: str,
-    ) -> None:
-        """Extract dollar amounts from *row_html* and assign to *field* per model."""
-        if label not in row_html:
-            return
-        amounts = _DeepSeekPricing.extract_dollar_amounts(row_html)
-        for i, model in enumerate(models):
-            if i < len(amounts):
-                prices[model][field] = amounts[i]
+    def _metric_field(row_html: str) -> str | None:
+        """Map a pricing-row metric label to its flat-table field, or None."""
+        if "CACHE HIT" in row_html:
+            return "cr"
+        if "CACHE MISS" in row_html:
+            return "in"
+        if "OUTPUT" in row_html:
+            return "out"
+        return None
+
+    @staticmethod
+    def _extract_peak_prices(models: list[str], rows: list[str]) -> dict[str, dict[str, float]]:
+        """Fill *models*' peak rates from the OFF-PEAK/PEAK row pairs in *rows*."""
+        prices: dict[str, dict[str, float]] = {
+            m: {"in": 0.0, "out": 0.0, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.0} for m in models
+        }
+
+        # "PEAK" is a substring of "OFF-PEAK", so check off-peak first.
+        current_field: str | None = None
+        for row in rows:
+            if "OFF-PEAK" in row:
+                current_field = _DeepSeekPricing._metric_field(row)
+            elif current_field is not None and "PEAK" in row:
+                amounts = _DeepSeekPricing.extract_dollar_amounts(row)
+                for i, model in enumerate(models):
+                    if i < len(amounts):
+                        prices[model][current_field] = amounts[i]
+                current_field = None
+        return prices
 
     @staticmethod
     def parse_pricing_page(page_html: str) -> dict[str, dict[str, float]]:
-        """Parse the DeepSeek pricing page HTML into a flat pricing table."""
+        """
+        Parse the DeepSeek pricing page HTML into a flat **peak-rate** table.
+
+        Each metric is priced in a paired OFF-PEAK / PEAK pair of rows: the
+        OFF-PEAK row carries the metric label (in a ``rowspan`` cell) and the PEAK
+        row that follows it carries only the peak dollar amounts. Only the PEAK
+        amounts are captured — off-peak is exactly half of peak, which the provider
+        derives at cost time.
+        """
         table_m = re.search(r"<table[^>]*>(.*?)</table>", page_html, re.DOTALL)
         if not table_m:
             return {}
@@ -95,14 +121,7 @@ class _DeepSeekPricing:
         if len(models) < MIN_MODEL_COUNT:
             return {}
 
-        prices: dict[str, dict[str, float]] = {
-            m: {"in": 0.0, "out": 0.0, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.0} for m in models
-        }
-
-        for row in rows:
-            _DeepSeekPricing.fill_price_column(prices, models, row, "CACHE HIT", "cr")
-            _DeepSeekPricing.fill_price_column(prices, models, row, "CACHE MISS", "in")
-            _DeepSeekPricing.fill_price_column(prices, models, row, "OUTPUT TOKENS", "out")
+        prices = _DeepSeekPricing._extract_peak_prices(models, rows)
 
         # Sanity check: every model must have a positive input price
         for model, row_data in list(prices.items()):
@@ -111,10 +130,32 @@ class _DeepSeekPricing:
         return prices
 
     @staticmethod
+    def extract_peak_hours(page_html: str) -> frozenset[int] | None:
+        """
+        Parse the peak-hours footnote into a set of UTC hours, or None.
+
+        The page's footnote reads e.g. "Peak hours are 01:00 - 04:00 and
+        06:00 - 10:00 UTC", which expands to the half-open intervals ``[1, 4)``
+        and ``[6, 10)`` — the hours ``{1, 2, 3, 6, 7, 8, 9}``. Returns None when
+        the footnote or any time range is absent, so callers can fall back to
+        charging peak rates.
+        """
+        m = re.search(r"Peak hours are\s+([^.]*?)\s*UTC", page_html)
+        if not m:
+            return None
+        ranges = re.findall(r"(\d{1,2}):\d{2}\s*-\s*(\d{1,2}):\d{2}", m.group(1))
+        if not ranges:
+            return None
+        hours: set[int] = set()
+        for start, end in ranges:
+            hours.update(range(int(start), int(end)))
+        return frozenset(hours)
+
+    @staticmethod
     def load_prices(
         cache_path: Path, *, refresh_pricing_data: bool = False
     ) -> dict[str, dict[str, float]]:
-        """Return cached or freshly-scraped DeepSeek pricing."""
+        """Return cached or freshly-scraped DeepSeek pricing (peak rates)."""
         cached: dict[str, Any] | None = None
         if cache_path.is_file():
             try:
@@ -134,6 +175,7 @@ class _DeepSeekPricing:
         try:
             page = _DeepSeekPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             prices = _DeepSeekPricing.parse_pricing_page(page)
+            peak_hours = _DeepSeekPricing.extract_peak_hours(page)
         except urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError:
             if cached is not None:
                 return cached.get("prices") or {}
@@ -144,21 +186,35 @@ class _DeepSeekPricing:
                 return cached.get("prices") or {}
             return {}
 
-        # Persist the freshly-scraped table
+        # Persist the freshly-scraped table (plus peak hours, when the page says)
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
+            doc: dict[str, Any] = {"fetched_at": time.time(), "prices": prices}
+            if peak_hours is not None:
+                doc["peak_hours"] = sorted(peak_hours)
             cache_path.write_text(
-                json.dumps(
-                    {"fetched_at": time.time(), "prices": prices},
-                    indent=2,
-                    sort_keys=True,
-                ),
+                json.dumps(doc, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
         except OSError:
             pass
 
         return prices
+
+    @staticmethod
+    def load_peak_hours(cache_path: Path) -> frozenset[int] | None:
+        """Return the cached peak hours (UTC), or None when unknown or absent."""
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        except OSError, json.JSONDecodeError:
+            return None
+        hours = cached.get("peak_hours")
+        if not isinstance(hours, list):
+            return None
+        try:
+            return frozenset(int(hour) for hour in hours)
+        except TypeError, ValueError:
+            return None
 
 
 class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
@@ -177,11 +233,11 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         return {
             "ANTHROPIC_API_KEY": master_key,
             "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+            "ANTHROPIC_MODEL": "deepseek-v4-flash-vision-exp[1m]",
             "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash[1m]",
-            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash-vision-exp[1m]",
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
 
@@ -190,6 +246,36 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         """Return the cached DeepSeek pricing table, scraping if stale."""
         cache_path = self._state_dir() / "pricing.json"
         return _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)
+
+    @override
+    def compute_cost(
+        self,
+        model: str,
+        usage: TokenUsage,
+        *,
+        hour: int | None,
+        weekday: int | None = None,
+        refresh_pricing_data: bool = False,
+    ) -> float | None:
+        """
+        Compute cost at peak rates, halved for off-peak or weekend usage.
+
+        The scraped table holds DeepSeek's peak-hour rates; off-peak is exactly
+        half. Peak rates apply Monday through Friday (``PEAK_WEEKDAYS``) during
+        the peak hours — weekends are off-peak all day. When *hour* or *weekday*
+        is None (timestamp unknown) or the peak-hours list is unknown, the peak
+        rate is charged — never under-report.
+        """
+        cost = super().compute_cost(
+            model, usage, hour=hour, refresh_pricing_data=refresh_pricing_data
+        )
+        if cost is None or hour is None or weekday is None:
+            return cost
+        peak_hours = _DeepSeekPricing.load_peak_hours(self._state_dir() / "pricing.json")
+        if peak_hours is None:
+            return cost
+        is_peak = weekday in PEAK_WEEKDAYS and hour in peak_hours
+        return cost if is_peak else cost / 2
 
     # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 

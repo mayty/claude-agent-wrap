@@ -133,6 +133,8 @@ class AnthropicSubProvider(Provider):
         model: str,
         usage: TokenUsage,
         *,
+        hour: int | None,
+        weekday: int | None = None,
         refresh_pricing_data: bool = False,
     ) -> float | None:
         """Report a known zero: subscription usage draws on the seat allowance, not per-token billing."""

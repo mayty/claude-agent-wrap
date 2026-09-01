@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-l",
         "--lite",
         action="store_true",
-        help="Skip the npm-registry version check and the logs-size walk.",
+        help="Skip the npm-registry version check, the logs-size walk, and the stale-image sweep.",
     )
     return parser
 
