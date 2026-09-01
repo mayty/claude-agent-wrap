@@ -206,14 +206,14 @@ class _DeepSeekPricing:
         """Return the cached peak hours (UTC), or None when unknown or absent."""
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             return None
         hours = cached.get("peak_hours")
         if not isinstance(hours, list):
             return None
         try:
             return frozenset(int(hour) for hour in hours)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
 
@@ -247,6 +247,7 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         cache_path = self._state_dir() / "pricing.json"
         return _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)
 
+    @override
     def compute_cost(
         self,
         model: str,

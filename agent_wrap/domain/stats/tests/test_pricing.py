@@ -226,7 +226,7 @@ def test_price_buckets_prices_per_hour_and_collapses() -> None:
             usage=usage,
             source="native",
             unrecorded=False,
-            ts=datetime(2026, 7, 20, 6, tzinfo=timezone.utc),
+            ts=datetime(2026, 7, 20, 6, tzinfo=UTC),
         ),
         RawRecord(
             day_key="2026-07-20",
@@ -234,7 +234,7 @@ def test_price_buckets_prices_per_hour_and_collapses() -> None:
             usage=usage,
             source="native",
             unrecorded=False,
-            ts=datetime(2026, 7, 20, 10, tzinfo=timezone.utc),
+            ts=datetime(2026, 7, 20, 10, tzinfo=UTC),
         ),
     ]
 
