@@ -5,7 +5,7 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.10.0](releases/0.10.0.md) — 2026-08-28
+## [0.10.0](releases/0.10.0.md) — 2026-09-01
 
 **Breaking:** the wrapper now runs a CPython version that it pins itself, not the host's
 `python3`. Run `bin/agent-bootstrap` one time in each checkout, or `agent` refuses to
