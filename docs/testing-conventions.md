@@ -39,6 +39,11 @@ How tests are organized, mocked, and written in this project. All code contribut
 - Never use bare `mocker.Mock()`, `mocker.MagicMock()`, or
   `type("MockName", (), {})()`.
 - For subprocess results, use `mocker.Mock(spec=["returncode", "stdout", "stderr"])`.
+- For a third-party library, patch it where the module under test names it
+  (`agent_wrap.domain.sidecars.telegram.httpx2.post`), not at its source — and prefer
+  constructing the library's real value objects over mocking them. An `httpx2.Response`
+  built with its originating `Request` attached costs less than teaching a mock to
+  imitate one, and it exercises the real `raise_for_status`.
 
 ## Fixtures (not helpers)
 

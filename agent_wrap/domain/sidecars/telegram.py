@@ -14,10 +14,10 @@ Locking and the start/stop decision are the runner's concern (one shared lock
 
 import contextlib
 import json
-import urllib.error
-import urllib.request
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, override
+
+import httpx2
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -323,46 +323,42 @@ class TelegramSidecar(Sidecar):
         body = json.dumps(
             {"agent_id": self.config.instance_id, "agent_name": self.config.agent_name}
         ).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
-                data = json.loads(resp.read())
-                token = data.get("auth_token", "")
-                if not token:
-                    self._display.warning(
-                        f"{TELEGRAM_SIDECAR_LABEL}: /register returned no auth_token"
-                    )
-                return token
-        except (
-            urllib.error.URLError,
-            urllib.error.HTTPError,
-            OSError,
-            json.JSONDecodeError,
-        ) as exc:
+            # raise_for_status, because httpx2 hands back a 4xx/5xx as an ordinary
+            # response -- without it a rejected registration would look like a
+            # successful one that merely returned no token.
+            response = httpx2.post(
+                url,
+                content=body,
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+            response.raise_for_status()
+            data = json.loads(response.content)
+        except (httpx2.HTTPError, OSError, json.JSONDecodeError) as exc:
             self._display.warning(f"{TELEGRAM_SIDECAR_LABEL}: /register failed ({exc})")
             return ""
+
+        token = data.get("auth_token", "")
+        if not token:
+            self._display.warning(f"{TELEGRAM_SIDECAR_LABEL}: /register returned no auth_token")
+        return token
 
     def _unregister(self) -> None:
         """POST /unregister — tear down this agent's session. Best-effort."""
         if not self._auth_token:
             return
         url = f"http://127.0.0.1:{self.config.internal_port}/unregister"
-        req = urllib.request.Request(
-            url,
-            data=b"",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._auth_token}",
-            },
-            method="POST",
-        )
-        with contextlib.suppress(urllib.error.URLError, urllib.error.HTTPError, OSError):
-            urllib.request.urlopen(req, timeout=5)  # noqa: S310
+        with contextlib.suppress(httpx2.HTTPError, OSError):
+            httpx2.post(
+                url,
+                content=b"",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._auth_token}",
+                },
+                timeout=5,
+            )
 
     # --- Internal: connectivity ---
 

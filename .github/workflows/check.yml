@@ -15,29 +15,53 @@ jobs:
   # provision it — so the bootstrap is exercised on every push and cannot rot
   # unnoticed. No setup-python and no version matrix: bin/agent execs one pinned
   # interpreter, so testing any other would be testing something nobody runs.
+  #
+  # Both provisioning modes run, in this order for a reason. The bare bootstrap goes
+  # first, before uv is anywhere on PATH, which is what keeps the shipped path honest:
+  # bin/requirements.txt installed by pip under --require-hashes, on a runner that could
+  # not have used uv if it wanted to. `make install` (bin/agent-bootstrap --dev) then
+  # publishes the venv the checks actually run on, from uv.lock.
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Provision the pinned CPython
-        run: ./bin/agent-bootstrap --dev
+      - name: Provision the pinned CPython and its dependencies
+        run: ./bin/agent-bootstrap
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.9"
+
+      - name: Provision the dev environment
+        run: make install
 
       - name: Run checks
         run: make check
 
   # The only thing that exercises aarch64, Darwin, and the BSD userland the
   # bootstrap has to cope with: the arm64 -> aarch64 name difference, `shasum`
-  # standing in for `sha256sum`, and BSD `mv`. Non-blocking for now — it is here
-  # to report on a platform that has never been tested, not to gate merges on it.
+  # standing in for `sha256sum`, and BSD `mv`. It now also covers the wheel half of
+  # the story — the constraints resolve and install on a second platform, which is
+  # the coverage the pip step most needs. Non-blocking for now — it is here to report
+  # on a platform that has never been tested, not to gate merges on it.
   bootstrap-macos:
     runs-on: macos-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
-      - name: Provision the pinned CPython
-        run: ./bin/agent-bootstrap --dev
+      - name: Provision the pinned CPython and its dependencies
+        run: ./bin/agent-bootstrap
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.9"
+
+      - name: Provision the dev environment
+        run: make install
 
       - name: Verify the pin resolved
         run: make python-check

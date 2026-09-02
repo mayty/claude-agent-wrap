@@ -3,20 +3,20 @@
 # Strict targets (for CI): lintcheck format-check test typecheck markdown-check arch-check check-executables
 # Fix targets (for dev):    lint, format
 
-.PHONY: test lint lintcheck format format-check typecheck markdown-check arch-check check-executables python-check carveout-check check
+.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check check-executables python-check carveout-check constraints-check dump-prod-constraints check
 
-# Every target runs on the interpreter bin/agent-bootstrap provisioned, never on
-# the host's python3 -- that is the whole point of owning the interpreter, and a
-# `python3` fallback here would quietly undo it. One relative path is correct in
-# all three contexts: on the host, in CI, and in the dev container, whose own
-# .python/ tree shadows the host's at the same path (see .claude-agent-wrap/Dockerfile).
-# Unprovisioned, PY_SLUG is empty and python-check says so in one line.
-PY_SLUG := $(shell [ -f .python/current ] && cat .python/current)
+# Every target runs on the venv bin/agent-bootstrap provisioned, never on the host's
+# python3 -- that is the whole point of owning the interpreter, and a `python3`
+# fallback here would quietly undo it. One relative path is correct in all three
+# contexts: on the host, in CI, and in the dev container, whose own .python/ tree
+# shadows the host's at the same path (see .claude-agent-wrap/Dockerfile).
+# Unprovisioned, PY_VENV is empty and python-check says so in one line.
+PY_VENV := $(shell [ -f .python/current-venv ] && cat .python/current-venv)
 # `:=`, not `?=`: an exported PYTHON in the developer's environment (node-gyp and
 # friends claim that name) must not silently redirect the QA targets off the pinned
 # interpreter. A deliberate one-off is unaffected -- `make PYTHON=... test` overrides
 # this regardless of the operator.
-PYTHON := .python/venv-$(PY_SLUG)/bin/python3
+PYTHON := .python/$(PY_VENV)/bin/python3
 
 # The two regions that do NOT run on the pinned interpreter, and the floor each
 # must stay inside. ops/statusline.py runs on the agent container's python3;
@@ -41,6 +41,17 @@ CARVEOUT_RUNTIME_VERSION    := 3.13
 # git's recorded modes would be circular — a dropped bit flips git to 100644
 # too, so the comparison would always pass and catch nothing.
 EXECUTABLES := bin/agent bin/agent-bootstrap ops/statusline.py ops/telegram-notify.sh ops/validate-dockerfile-agent ops/wl-paste-shim
+
+# The contributor entry point, and the only spelling of it: docs, CI, the dev container
+# and python-check's own failure messages all say `make install`. Deliberately thin --
+# bin/agent-bootstrap --dev owns the work, because the provisioner the shipped CLI depends
+# on has to stay runnable on a host with neither make nor a checkout of this file. Takes
+# no prefix argument: every caller provisions into the checkout's own .python/.
+#
+# The one target that must not name $(PYTHON) or $(PY_VENV). Both are `:=` and resolve at
+# parse time, so on the unprovisioned checkout this target exists to fix, they are empty.
+install:
+	bin/agent-bootstrap --dev
 
 test:
 	$(PYTHON) -m pytest --cov=agent_wrap
@@ -98,17 +109,21 @@ check-executables:
 # touches only one of them would leave the two describing different interpreters.
 python-check:
 	@if [ ! -x "$(PYTHON)" ]; then \
-		if [ -z "$(PY_SLUG)" ]; then \
-			printf 'No provisioned interpreter. Run: %s/bin/agent-bootstrap --dev\n' "$$PWD" >&2; \
+		if [ -z "$(PY_VENV)" ]; then \
+			printf 'No provisioned interpreter. Run: make install\n' >&2; \
 		else \
-			printf '%s is missing. Run: %s/bin/agent-bootstrap --dev\n' "$(PYTHON)" "$$PWD" >&2; \
+			printf '%s is missing. Run: make install\n' "$(PYTHON)" >&2; \
 		fi; \
+		exit 1; \
+	fi
+	@if ! $(PYTHON) -m pytest --version >/dev/null 2>&1; then \
+		printf 'The venv has no dev tooling. Run: make install\n' >&2; \
 		exit 1; \
 	fi
 	@. ./python-pin.env; \
 	running=$$($(PYTHON) -c 'import sys; print(sys.version.split()[0])'); \
 	if [ "$$running" != "$$AGENT_PY_VERSION" ]; then \
-		printf '%s is Python %s, but python-pin.env pins %s -> bin/agent-bootstrap\n' \
+		printf '%s is Python %s, but python-pin.env pins %s -> make install\n' \
 			"$(PYTHON)" "$$running" "$$AGENT_PY_VERSION" >&2; \
 		exit 1; \
 	fi; \
@@ -137,4 +152,46 @@ carveout-check:
 	$(call carveout_legs,$(CARVEOUT_STATUSLINE_PATHS),$(CARVEOUT_STATUSLINE_VERSION))
 	$(call carveout_legs,$(CARVEOUT_RUNTIME_PATHS),$(CARVEOUT_RUNTIME_VERSION))
 
-check: python-check lintcheck format-check test typecheck markdown-check arch-check carveout-check check-executables
+# The exported constraint set, to stdout. `--no-header` is what makes the output a
+# pure function of uv.lock: uv's own header stamps the invoking command line into the
+# file, including the -o path, so a check that exported anywhere else would see a
+# phantom diff forever. The provenance line is written by dump-prod-constraints below
+# instead, where it is a fixed string both targets can reproduce.
+CONSTRAINTS_HEADER := \# Generated from uv.lock by `make dump-prod-constraints` -- do not edit.
+CONSTRAINTS_EXPORT := uv export --locked --quiet --no-dev --no-emit-project --no-header --format requirements.txt
+
+# Regenerate the constraints the bootstrap installs. Read-only over uv.lock by
+# design: --locked asserts the lock is already current and refuses to re-resolve, so
+# changing a dependency is always two deliberate steps -- `uv add` / `uv lock` first,
+# then this. A lock that drifted from pyproject.toml fails here loudly instead of
+# being silently repaired into whatever today's index happens to offer.
+# uv is a developer tool only; nothing on the end-user path needs it.
+# Written via a temp file and renamed, not straight to the destination: `>` truncates
+# before uv runs, so a refusal (a stale lock, no network) would otherwise leave behind
+# a header and nothing else -- a constraints file that installs no dependencies at all.
+dump-prod-constraints:
+	@command -v uv >/dev/null 2>&1 || { printf 'uv not found. See docs/getting-started.md\n' >&2; exit 1; }
+	@{ printf '%s\n' '$(CONSTRAINTS_HEADER)'; $(CONSTRAINTS_EXPORT); } > bin/requirements.txt.tmp \
+		|| { rm -f bin/requirements.txt.tmp; exit 1; }
+	@mv bin/requirements.txt.tmp bin/requirements.txt
+	@printf 'wrote bin/requirements.txt\n'
+
+# Two legs, because there are two ways to forget. `uv lock --check` catches a
+# pyproject.toml edit that was never locked; the diff catches a lock that was never
+# dumped. Neither re-resolves, so the rolling exclude-newer window cannot make this
+# fail spuriously -- uv records the span (P7D), not a resolved instant.
+#
+# Compares content, not `git status`: the answer must be the same whether the
+# regenerated file has been committed yet or not, so that the natural order --
+# uv lock, make dump-prod-constraints, make check, commit -- passes at every step.
+constraints-check:
+	@command -v uv >/dev/null 2>&1 || { printf 'uv not found. See docs/getting-started.md\n' >&2; exit 1; }
+	uv lock --check
+	@{ printf '%s\n' '$(CONSTRAINTS_HEADER)'; $(CONSTRAINTS_EXPORT); } \
+		| diff -u bin/requirements.txt - > /dev/null || { \
+		printf 'bin/requirements.txt does not match uv.lock.\n' >&2; \
+		printf 'Run: make dump-prod-constraints\n' >&2; \
+		exit 1; \
+	}
+
+check: python-check constraints-check lintcheck format-check test typecheck markdown-check arch-check carveout-check check-executables

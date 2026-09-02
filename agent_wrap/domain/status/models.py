@@ -138,6 +138,11 @@ class WrapperRow:
     #: caught up with the pin -- the interpreter still works, but it is not the one
     #: this revision of the wrapper is meant to run on.
     python_pinned: str | None
+    #: False when the published venv was built from a different bin/requirements.txt
+    #: than the one now on disk, i.e. dependencies have moved and the bootstrap has not
+    #: been re-run. `agent update` re-runs it automatically, so this catches the manual
+    #: `git pull`. None when it cannot be determined (no venv pointer, unreadable file).
+    deps_current: bool | None
 
 
 @dataclass(frozen=True)

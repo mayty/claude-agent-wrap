@@ -57,9 +57,32 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 A `Makefile` provides all QA targets. Follow these rules:
 
 - **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
+- **Save `agent rebuild` for the end of the session.** `make install` updates the venv
+  this session runs on, so nothing is blocked in the meantime. But the container's
+  `.python/` is an anonymous volume on a `--rm` container: it dies with the session, and
+  only a rebuild bakes the change into the image for future sessions and for other agents
+  running concurrently. So raise it once, while wrapping up — never mid-task, and never as
+  the fix for something `make install` already fixed.
 - **Prefer `make *` targets over running tools directly.** Use `make test`, `make lint`, `make format`, `make lintcheck`, `make typecheck`.
 - **Fix lint/format errors with `make` first.** Auto-fix via `make lint` or `make format` before manual edits.
-- **Never `pip install` dependencies.** Add them to the `dev` dependency group (`[dependency-groups]`) in `pyproject.toml` and prompt the user to run `agent rebuild` — `bin/agent-bootstrap` installs the group during the image build. The host runtime stays stdlib-only: `[project]` declares no `dependencies`.
+- **Never `pip install` dependencies ad-hoc.** `uv` owns resolution, and it is a
+  developer tool only — end users get pip against a hash-pinned export.
+  - *Runtime* dependency: add it to `[project].dependencies` in `pyproject.toml` as a
+    range (`x>=y`, never a pin), then `uv lock`, then `make dump-prod-constraints`.
+    `pyproject.toml`, `uv.lock` **and** `bin/requirements.txt` are one unit: a change to
+    any of them is unfinished until all three agree, and `make constraints-check` (part
+    of `make check`) fails while they drift.
+  - *Dev tooling*: add it to the `dev` dependency group (`[dependency-groups]`), then
+    `uv lock`. No constraints dump — the group never ships.
+  - Either way, `make install` applies it immediately and that is the whole of it: the
+    new dependency is importable and `make check` runs against it without a rebuild.
+  - `make install` is the only dev-environment command: it is `bin/agent-bootstrap --dev`,
+    which provisions the pinned interpreter and then syncs prod dependencies *and* the dev
+    group out of `uv.lock` in one step. A bare `bin/agent-bootstrap` (no `--dev`) is the
+    end-user path — pip against `bin/requirements.txt`, no dev group, no `uv` required —
+    and is what `agent update` re-provisions with.
+  - The two carve-out regions (`ops/statusline.py`, `providers/litellm_runtime/`) run on
+    other interpreters with no access to that venv and stay stdlib-only permanently.
 - **Bump `DOCKER_BUILD_ITERATION` (in `agent_wrap/constants.py`) once per release in which
   the base image's recipe changed** — that is `ops/Dockerfile`, or the build args
   `BuildService._docker_build` passes. Every host's next `agent run` then rebuilds its

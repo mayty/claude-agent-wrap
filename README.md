@@ -55,7 +55,7 @@ See the [Getting Started](docs/getting-started.md) guide for full setup instruct
 ├── .claude_config/       # Global Claude config (git-ignored)
 ├── .python/              # The provisioned CPython `agent` runs on (git-ignored)
 ├── agent_wrap/           # Python orchestration (commands, providers, config)
-├── bin/                  # `agent` executable launcher and `agent-bootstrap` provisioner
+├── bin/                  # `agent` launcher, `agent-bootstrap` provisioner, `requirements.txt`
 ├── docs/                 # Documentation (linked from this file)
 ├── logs_page/            # Static web viewer served by `agent logs`
 ├── ops/                  # Base image, validator, status line, hooks, clipboard shim

@@ -4,6 +4,24 @@
 name = "agent-wrap"
 version = "0.0.0"
 requires-python = "==3.14.7"
+# First-degree runtime dependencies, as ranges. Exact versions live in uv.lock and
+# in the exported bin/requirements.txt -- never here. See CLAUDE.md for the flow.
+dependencies = [
+    "httpx2>=2.12",
+]
+
+# ---------------------------------------------------------------------------
+# uv (dependency resolution -- developer machines and CI only)
+# ---------------------------------------------------------------------------
+[tool.uv]
+# The project is never installed: bin/agent puts the checkout on PYTHONPATH, and an
+# installed copy in site-packages would shadow it. Declaring this is also what lets
+# uv lock a project that deliberately carries no [build-system].
+package = false
+# A cooldown, not a pin: a release has to survive a week on PyPI before this project
+# will resolve to it. Deliberately declared here rather than in a uv.toml or on the
+# command line, so every developer machine and CI resolve against the same value.
+exclude-newer = "7 days"
 
 [dependency-groups]
 dev = [

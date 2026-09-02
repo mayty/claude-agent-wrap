@@ -13,6 +13,12 @@ TIMEZONE_ENV = "AGENT_TIMEZONE"
 #: reported as requested-vs-effective rather than as a single flag.
 HOST_NETWORK_ENV = "AGENT_USE_HOST_NETWORK"
 
+#: What ``.python/current-venv`` reads when it names a venv provisioned by
+#: ``bin/agent-bootstrap --dev``. That venv is named for the interpreter alone, so unlike
+#: the venvs the shipped CLI runs on it carries no constraints hash for _deps_current to
+#: compare against.
+DEV_VENV_SUFFIX = "-dev"
+
 #: Message reported when the Docker daemon does not answer.
 DOCKER_UNREACHABLE = (
     "Docker is not reachable — container state is unavailable. "

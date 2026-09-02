@@ -6,10 +6,10 @@
 # bashrc adds bin/ to PATH) or directly (e.g. from a subprocess / cron job).
 # POSIX sh — works under any caller shell.
 #
-# The interpreter is the pinned one bin/agent-bootstrap provisions, addressed by
-# path. There is deliberately no fallback to the host's python3: a fallback is a
-# floor in disguise, and the whole reason for provisioning is to stop the oldest
-# distro anyone runs from deciding what this code may use.
+# The interpreter is the venv bin/agent-bootstrap provisions on top of the pinned
+# CPython, addressed by path. There is deliberately no fallback to the host's
+# python3: a fallback is a floor in disguise, and the whole reason for provisioning
+# is to stop the oldest distro anyone runs from deciding what this code may use.
 
 # Resolve this script's real path, following symlinks (portable; readlink -f
 # is unavailable on some platforms).
@@ -25,16 +25,17 @@ done
 bin_dir=$(cd -P "$(dirname "$src")" && pwd)
 wrap_dir=$(dirname "$bin_dir")
 
-# `current` names the interpreter directory to use; see bin/agent-bootstrap for
-# why it is a text file and not a symlink. `read` is a builtin, so the completion
-# path — which runs on every TAB — pays no fork for this. The [ -f ] guard is what
-# keeps the shell from writing its own "cannot open" line to stderr.
+# `current-venv` names the venv directory to use -- the interpreter plus its locked
+# dependencies; see bin/agent-bootstrap for why it is a text file and not a symlink.
+# `read` is a builtin, so the completion path — which runs on every TAB — pays no
+# fork for this. The [ -f ] guard is what keeps the shell from writing its own
+# "cannot open" line to stderr.
 py_root="$wrap_dir/.python"
-slug=""
-[ -f "$py_root/current" ] && read -r slug < "$py_root/current"
-py="$py_root/$slug/bin/python3"
+venv_slug=""
+[ -f "$py_root/current-venv" ] && read -r venv_slug < "$py_root/current-venv"
+py="$py_root/$venv_slug/bin/python3"
 
-if [ -z "$slug" ] || [ ! -x "$py" ]; then
+if [ -z "$venv_slug" ] || [ ! -x "$py" ]; then
     # Completion must stay silent: agent-wrap.bashrc discards this script's stderr
     # and exit code, and anything on stdout would be offered as a candidate.
     [ -n "${AGENT_COMPLETE:-}" ] && exit 0
@@ -42,7 +43,7 @@ if [ -z "$slug" ] || [ ! -x "$py" ]; then
     # script, or the logs daemon, it is the only thing anyone will see, so it
     # names the absolute path of the one command that fixes it.
     printf '%s\n' \
-        "agent-wrap: no provisioned CPython (first run, or the checkout moved)." \
+        "agent-wrap: not provisioned (first run, or the checkout moved)." \
         "Run: $bin_dir/agent-bootstrap" >&2
     exit 1
 fi

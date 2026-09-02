@@ -3,11 +3,11 @@
 
 import json
 import tempfile
-import urllib.error
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
+import httpx2
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
@@ -50,7 +50,7 @@ def _sidecar(display: DisplayService | None = None, **overrides: object) -> Tele
 _SECRETS = {"TelegramBotToken": "test-bot-token", "TelegramChatId": "test-chat-id"}
 _DOCKER = "agent_wrap.domain.sidecars.telegram.docker_run"
 _IMAGE_EXISTS = "agent_wrap.domain.sidecars.telegram.image_exists"
-_URLOPEN = "urllib.request.urlopen"
+_HTTPX_POST = "agent_wrap.domain.sidecars.telegram.httpx2.post"
 
 
 def test_config_fields() -> None:
@@ -315,70 +315,76 @@ def test_health_poll_unhealthy(mocker: pytest_mock.MockFixture) -> None:
     mock_spin.assert_called_once()
 
 
+def _response(status: int, payload: object = None) -> httpx2.Response:
+    """
+    Build a real Response rather than a mock.
+
+    raise_for_status needs the originating request to be attached, and building the
+    genuine article costs less than teaching a mock to imitate one.
+    """
+    content = b"" if payload is None else json.dumps(payload).encode()
+    return httpx2.Response(
+        status,
+        content=content,
+        request=httpx2.Request("POST", "http://127.0.0.1:9999/register"),
+    )
+
+
 def test_register_success(mocker: pytest_mock.MockFixture) -> None:
-    # urlopen response mock — needs dunder methods for context-manager
-    # protocol, which spec= lists cannot provide. MagicMock is used
-    # intentionally here, with a spec= listing the known attributes.
-    mock_resp = mocker.MagicMock(spec=["read", "__enter__", "__exit__"])
-    mock_resp.read.return_value = json.dumps({"auth_token": "tok-abc-123"}).encode()
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen = mocker.patch(_URLOPEN, return_value=mock_resp)
+    mock_post = mocker.patch(
+        _HTTPX_POST, autospec=True, return_value=_response(200, {"auth_token": "tok-abc-123"})
+    )
 
     token = _sidecar()._register()
     assert token == "tok-abc-123"
 
     # Verify the payload sent to the sidecar
-    req = mock_urlopen.call_args[0][0]
-    sent_body = json.loads(req.data)
+    sent_body = json.loads(mock_post.call_args.kwargs["content"])
     assert sent_body["agent_id"] == "test-inst"
     assert sent_body["agent_name"] == "test-agent"
 
 
 def test_register_missing_token(mocker: pytest_mock.MockFixture) -> None:
-    # urlopen response mock — needs dunder methods for context-manager
-    # protocol, which spec= lists cannot provide. MagicMock is used
-    # intentionally here, with a spec= listing the known attributes.
-    mock_resp = mocker.MagicMock(spec=["read", "__enter__", "__exit__"])
-    mock_resp.read.return_value = json.dumps({}).encode()
-    mock_resp.__enter__.return_value = mock_resp
-    mocker.patch(_URLOPEN, return_value=mock_resp)
+    mocker.patch(_HTTPX_POST, autospec=True, return_value=_response(200, {}))
 
     token = _sidecar()._register()
     assert token == ""
 
 
 def test_register_http_error(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_URLOPEN, side_effect=urllib.error.URLError("timeout"))
+    mocker.patch(_HTTPX_POST, autospec=True, side_effect=httpx2.ConnectError("timeout"))
+
+    token = _sidecar()._register()
+    assert token == ""
+
+
+def test_register_treats_a_rejected_status_as_failure(mocker: pytest_mock.MockFixture) -> None:
+    """httpx2 returns a 5xx as an ordinary response, so raise_for_status is load-bearing."""
+    mocker.patch(_HTTPX_POST, autospec=True, return_value=_response(500, {"auth_token": "nope"}))
 
     token = _sidecar()._register()
     assert token == ""
 
 
 def test_unregister_sends_auth_header(mocker: pytest_mock.MockFixture) -> None:
-    # urlopen response mock — needs dunder methods for context-manager
-    # protocol, which spec= lists cannot provide. MagicMock is used
-    # intentionally here, with a spec= listing the known attributes.
-    mock_resp = mocker.MagicMock(spec=["read", "__enter__", "__exit__"])
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen = mocker.patch(_URLOPEN, return_value=mock_resp)
+    mock_post = mocker.patch(_HTTPX_POST, autospec=True, return_value=_response(200))
 
     sc = _sidecar()
     sc._auth_token = "tok-xyz"
     sc._unregister()
 
-    mock_urlopen.assert_called_once()
-    req = mock_urlopen.call_args[0][0]
-    assert req.get_header("Authorization") == "Bearer tok-xyz"
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer tok-xyz"
 
 
 def test_unregister_no_token_skips(mocker: pytest_mock.MockFixture) -> None:
-    mock_urlopen = mocker.patch(_URLOPEN)
+    mock_post = mocker.patch(_HTTPX_POST, autospec=True)
     _sidecar()._unregister()
-    mock_urlopen.assert_not_called()
+    mock_post.assert_not_called()
 
 
 def test_unregister_swallows_errors(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_URLOPEN, side_effect=urllib.error.URLError("timeout"))
+    mocker.patch(_HTTPX_POST, autospec=True, side_effect=httpx2.ConnectError("timeout"))
     sc = _sidecar()
     sc._auth_token = "tok-err"
     sc._unregister()  # Should not raise
