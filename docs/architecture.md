@@ -165,7 +165,19 @@ per-platform SHA-256 in `python-pin.env`) and, on top of it, a venv holding the 
 third-party dependencies. `bin/agent` execs *the venv*. There is deliberately no fallback
 to the host's `python3`: a fallback would be a floor in disguise, and the point of owning
 the interpreter is that the oldest distro anyone runs no longer decides what this code may
-use. `requires-python` pins that exact version, and `make python-check` fails when the two
+use.
+
+**`bin/agent` provisions on demand.** When the venv pointer names nothing runnable — a first
+run, or a checkout that moved — the launcher runs the bootstrap itself rather than exiting
+with instructions, then re-reads the pointer and execs. The bootstrap is non-interactive,
+idempotent and lock-serialised, so there is no decision to hand back to a human; it is the
+same reasoning behind `UpdateService._reprovision_interpreter`, which runs it unconditionally
+after a HEAD-advancing update. Two deliberate carve-outs: the launcher calls the *plain*
+bootstrap, never `--dev` (`--dev` needs `uv`, and this is the end-user path), and it skips
+provisioning entirely under `AGENT_COMPLETE`, because `agent-wrap.bashrc` discards the
+completion subshell's stderr and exit code and would offer any stdout as a candidate. The
+bootstrap's progress is redirected to stderr so a verb's stdout stays clean for whatever is
+parsing it. `scripts/test_agent_launcher.py` covers all of this against a stub bootstrap. `requires-python` pins that exact version, and `make python-check` fails when the two
 files disagree or when the running interpreter is not the pinned one.
 
 **Dependencies are declared once and pinned twice.** `[project].dependencies` holds

@@ -19,12 +19,6 @@ It packages Claude Code into a reproducible container image and exposes a single
 
 ## Quick Start
 
-Provision the pinned CPython the wrapper runs on (once per checkout — there is no fallback to a system `python3`, so `agent` refuses to run until this has happened):
-
-```bash
-/path/to/claude-agent-wrap/bin/agent-bootstrap
-```
-
 Source the wrapper in your shell (add it to `~/.bashrc` to make it permanent):
 
 ```bash

@@ -10,6 +10,12 @@
 # CPython, addressed by path. There is deliberately no fallback to the host's
 # python3: a fallback is a floor in disguise, and the whole reason for provisioning
 # is to stop the oldest distro anyone runs from deciding what this code may use.
+#
+# When that venv is missing -- a first run, or a checkout that moved -- this script
+# runs the bootstrap itself rather than telling the user to. The bootstrap is
+# non-interactive, idempotent, and serialised against concurrent runs by its own
+# lock, so there is nothing here for a human to decide. Shell completion is the one
+# exception, for the reason given below.
 
 # Resolve this script's real path, following symlinks (portable; readlink -f
 # is unavailable on some platforms).
@@ -28,24 +34,61 @@ wrap_dir=$(dirname "$bin_dir")
 # `current-venv` names the venv directory to use -- the interpreter plus its locked
 # dependencies; see bin/agent-bootstrap for why it is a text file and not a symlink.
 # `read` is a builtin, so the completion path — which runs on every TAB — pays no
-# fork for this. The [ -f ] guard is what keeps the shell from writing its own
-# "cannot open" line to stderr.
+# fork for this, and neither does wrapping it in a function. The [ -f ] guard is
+# what keeps the shell from writing its own "cannot open" line to stderr.
+#
+# A function because it runs twice: once to read what is already published, and
+# again after a bootstrap has published something new.
 py_root="$wrap_dir/.python"
-venv_slug=""
-[ -f "$py_root/current-venv" ] && read -r venv_slug < "$py_root/current-venv"
-py="$py_root/$venv_slug/bin/python3"
+resolve_venv() {
+    venv_slug=""
+    [ -f "$py_root/current-venv" ] && read -r venv_slug < "$py_root/current-venv"
+    py="$py_root/$venv_slug/bin/python3"
+}
+
+resolve_venv
 
 if [ -z "$venv_slug" ] || [ ! -x "$py" ]; then
     # Completion must stay silent: agent-wrap.bashrc discards this script's stderr
-    # and exit code, and anything on stdout would be offered as a candidate.
+    # and exit code, and anything on stdout would be offered as a candidate. So it
+    # does not provision either -- a TAB press is no place to spend a 34MB download
+    # whose progress the shell would swallow. An unprovisioned checkout falls back
+    # to filename completion, which is what the bashrc already does on empty output.
     [ -n "${AGENT_COMPLETE:-}" ] && exit 0
-    # This message is load-bearing. For a shell completion, a project startup
-    # script, or the logs daemon, it is the only thing anyone will see, so it
-    # names the absolute path of the one command that fixes it.
+
+    # The bootstrap's own progress says what it is doing; this says why it is
+    # happening at all, which is the part someone who just typed `agent run` lacks.
     printf '%s\n' \
-        "agent-wrap: not provisioned (first run, or the checkout moved)." \
-        "Run: $bin_dir/agent-bootstrap" >&2
-    exit 1
+        "agent-wrap: not provisioned (first run, or the checkout moved); provisioning now." >&2
+
+    # Plain, never --dev: --dev needs uv on PATH, and this is the end-user path.
+    #
+    # The redirection is load-bearing. The bootstrap reports progress on stdout, and
+    # this script's stdout belongs to the verb about to be exec'd -- anything parsing
+    # that output must not have to filter provisioning chatter out of it. The
+    # bootstrap's own fatal errors already go to stderr.
+    #
+    # `if !` rather than comparing $? to 1: the bootstrap runs under `set -e`, so an
+    # unguarded failure surfaces *that* command's status. The contract is non-zero.
+    if ! "$bin_dir/agent-bootstrap" >&2; then
+        # Load-bearing, same as before. For a project startup script or any other
+        # non-interactive caller this is the only thing anyone will see, so it names
+        # the absolute path of the one command to re-run by hand.
+        printf '%s\n' \
+            "agent-wrap: provisioning failed." \
+            "Run: $bin_dir/agent-bootstrap" >&2
+        exit 1
+    fi
+
+    # `current-venv` is published last and atomically, so re-reading it is what turns
+    # "the bootstrap exited 0" into "there is an interpreter here to exec".
+    resolve_venv
+    if [ -z "$venv_slug" ] || [ ! -x "$py" ]; then
+        printf '%s\n' \
+            "agent-wrap: still not provisioned after running the bootstrap." \
+            "Run: $bin_dir/agent-bootstrap" >&2
+        exit 1
+    fi
 fi
 
 exec env PYTHONPATH="$wrap_dir" "$py" -m agent_wrap "$@"
