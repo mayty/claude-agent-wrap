@@ -63,14 +63,23 @@ OPS_DIR = TOOL_DIR / "ops"
 # or on ``agent-wrap.bashrc`` having been sourced.
 AGENT_BINARY_PATH = TOOL_DIR / "bin" / "agent"
 
-# The provisioned CPython. ``bin/agent`` execs ``PYTHON_DIR / <pointer> / bin/python3``,
-# where the pointer is a one-line text file rather than a symlink (see bin/agent-bootstrap
-# for why). None of this is ever mounted into a container: _build_volume_mounts exposes
-# only OPS_DIR and the .claude_config/.claude state dirs.
+# The provisioned CPython and the venv layered on top of it. ``bin/agent`` execs
+# ``PYTHON_DIR / <current-venv> / bin/python3`` -- the venv, not the bare tree, because
+# that is where the locked third-party dependencies live. Both pointers are one-line text
+# files rather than symlinks (see bin/agent-bootstrap for why). ``current`` names the
+# interpreter tree; ``current-venv`` names a venv whose directory name also encodes the
+# SHA-256 of the constraints file it was built from, so a dependency change publishes a
+# new directory instead of mutating the live one. The exception is the contributor venv
+# ``bin/agent-bootstrap --dev`` maintains, which ends in ``-dev`` and holds uv.lock
+# instead -- see DEV_VENV_SUFFIX in the status domain, the one place that has to tell.
+# None of this is ever mounted into a container: _build_volume_mounts exposes only
+# OPS_DIR and the .claude_config/.claude state dirs.
 AGENT_BOOTSTRAP_PATH = TOOL_DIR / "bin" / "agent-bootstrap"
 PYTHON_PIN_FILE = TOOL_DIR / "python-pin.env"
+PYTHON_CONSTRAINTS_FILE = TOOL_DIR / "bin" / "requirements.txt"
 PYTHON_DIR = TOOL_DIR / ".python"
 PYTHON_POINTER_FILE = PYTHON_DIR / "current"
+PYTHON_VENV_POINTER_FILE = PYTHON_DIR / "current-venv"
 
 # Genuine strings (not paths)
 BASE_IMAGE_NAME = "claude-agent"

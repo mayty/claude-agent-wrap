@@ -1,13 +1,12 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM Bedrock provider — routes Claude Code through AWS Bedrock."""
 
-import gzip
 import html
 import json
 import time
-import urllib.error
-import urllib.request
 from typing import TYPE_CHECKING, Any, ClassVar, override
+
+import httpx2
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,18 +31,21 @@ class _BedrockPricing:
 
     @staticmethod
     def http_get(url: str) -> bytes:
-        req = urllib.request.Request(  # noqa: S310
+        """
+        Fetch *url* and return its raw bytes.
+
+        ``raise_for_status`` is not optional here: unlike urlopen, httpx2 returns a 4xx
+        or 5xx as an ordinary response, so without it an error page would be handed to
+        the scrapers below and parsed as pricing.
+        """
+        response = httpx2.get(
             url,
-            headers={
-                "User-Agent": "agent-wrap/agent_usage",
-                "Accept-Encoding": "gzip",
-            },
+            headers={"User-Agent": "agent-wrap/agent_usage"},
+            timeout=PRICING_FETCH_TIMEOUT,
+            follow_redirects=True,
         )
-        with urllib.request.urlopen(req, timeout=PRICING_FETCH_TIMEOUT) as resp:  # noqa: S310
-            data = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip":
-                data = gzip.decompress(data)
-            return data
+        response.raise_for_status()
+        return response.content
 
     @staticmethod
     def scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[str]]]:
@@ -131,7 +133,7 @@ class _BedrockPricing:
             page = _BedrockPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             data = json.loads(_BedrockPricing.http_get(PRICING_DATA_URL))
             prices = _BedrockPricing.build_pricing_table(page, data, DEFAULT_REGION_LABEL)
-        except urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError:
+        except httpx2.HTTPError, OSError, json.JSONDecodeError:
             if cached:
                 return cached.get("prices") or {}
             return {}

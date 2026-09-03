@@ -835,3 +835,62 @@ def test_apply_reports_an_unrunnable_bootstrap(
 
     assert update_svc.apply("origin/main") == 0
     assert "Permission denied" in display_mock.error.call_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"python-pin.env"},
+        {"bin/agent-bootstrap"},
+        {"bin/requirements.txt"},
+    ],
+)
+def test_print_status_announces_a_reprovision_for_every_bootstrap_file(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    changed: set[str],
+) -> None:
+    """Constraints belong in that set too: stale ones leave new code importing nothing."""
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.resolve_ref", autospec=True, return_value="ref"
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.changed_files",
+        autospec=True,
+        return_value=changed,
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.handle_claude_md_propagation",
+        autospec=True,
+        return_value=MdPropagation.UNCHANGED,
+    )
+
+    _GitOps.print_status("aaa111", "bbb222", MdState.MATCHES, display_mock)
+
+    warnings = [call.args[0] for call in display_mock.warning.call_args_list]
+    assert any("re-provisioning" in text for text in warnings)
+
+
+def test_print_status_stays_quiet_when_no_bootstrap_file_moved(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+) -> None:
+    """The common update touches none of them, and must not suggest work that is not needed."""
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.resolve_ref", autospec=True, return_value="ref"
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.changed_files",
+        autospec=True,
+        return_value={"README.md"},
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.handle_claude_md_propagation",
+        autospec=True,
+        return_value=MdPropagation.UNCHANGED,
+    )
+
+    _GitOps.print_status("aaa111", "bbb222", MdState.MATCHES, display_mock)
+
+    successes = [call.args[0] for call in display_mock.success.call_args_list]
+    assert "no re-provision needed" in successes

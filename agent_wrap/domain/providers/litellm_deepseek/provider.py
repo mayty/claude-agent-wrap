@@ -1,13 +1,12 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM DeepSeek provider — routes Claude Code through DeepSeek provider."""
 
-import gzip
 import json
 import re
 import time
-import urllib.error
-import urllib.request
 from typing import TYPE_CHECKING, Any, ClassVar, override
+
+import httpx2
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
@@ -30,21 +29,21 @@ class _DeepSeekPricing:
 
     @staticmethod
     def http_get(url: str) -> bytes:
-        """Fetch *url* and return its raw bytes."""
-        req = urllib.request.Request(  # noqa: S310
+        """
+        Fetch *url* and return its raw bytes.
+
+        ``raise_for_status`` is not optional here: unlike urlopen, httpx2 returns a 4xx
+        or 5xx as an ordinary response, so without it an error page would be handed to
+        the parser below and scraped as pricing.
+        """
+        response = httpx2.get(
             url,
-            headers={
-                "User-Agent": "agent-wrap/agent_usage",
-                "Accept-Encoding": "gzip",
-            },
+            headers={"User-Agent": "agent-wrap/agent_usage"},
+            timeout=PRICING_FETCH_TIMEOUT,
+            follow_redirects=True,
         )
-        with urllib.request.urlopen(  # noqa: S310
-            req, timeout=PRICING_FETCH_TIMEOUT
-        ) as resp:
-            data = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip":
-                data = gzip.decompress(data)
-            return data
+        response.raise_for_status()
+        return response.content
 
     @staticmethod
     def extract_dollar_amounts(text: str) -> list[float]:
@@ -176,7 +175,7 @@ class _DeepSeekPricing:
             page = _DeepSeekPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
             prices = _DeepSeekPricing.parse_pricing_page(page)
             peak_hours = _DeepSeekPricing.extract_peak_hours(page)
-        except urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError:
+        except httpx2.HTTPError, OSError, json.JSONDecodeError:
             if cached is not None:
                 return cached.get("prices") or {}
             return {}

@@ -4,14 +4,36 @@
 name = "agent-wrap"
 version = "0.0.0"
 requires-python = "==3.14.7"
+# First-degree runtime dependencies, as ranges. Exact versions live in uv.lock and
+# in the exported bin/requirements.txt -- never here. See CLAUDE.md for the flow.
+dependencies = [
+    "httpx2>=2.12.0",
+]
 
+# ---------------------------------------------------------------------------
+# uv (dependency resolution -- developer machines and CI only)
+# ---------------------------------------------------------------------------
+[tool.uv]
+# The project is never installed: bin/agent puts the checkout on PYTHONPATH, and an
+# installed copy in site-packages would shadow it. Declaring this is also what lets
+# uv lock a project that deliberately carries no [build-system].
+package = false
+# A cooldown, not a pin: a release has to survive a week on PyPI before this project
+# will resolve to it. Deliberately declared here rather than in a uv.toml or on the
+# command line, so every developer machine and CI resolve against the same value.
+exclude-newer = "7 days"
+
+# Floors only, like the runtime dependencies above: uv.lock pins the exact versions and
+# exclude-newer holds back anything younger than a week, so an upper bound would gate
+# nothing here -- it would only stop `make upgrade-deps` from ever seeing a new major.
+# `make upgrade-deps` rewrites these floors, so each one records what was last locked.
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1,<10",
-    "pytest-cov>=7.1.0,<8",
-    "pytest-mock>=3.15.1,<4",
-    "ruff>=0.16.1,<1",
-    "pyrefly>=1.2.0,<2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.16.4",
+    "pyrefly>=1.2.0",
 ]
 
 # ---------------------------------------------------------------------------

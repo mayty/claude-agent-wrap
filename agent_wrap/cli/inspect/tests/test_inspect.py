@@ -86,6 +86,7 @@ def _report(  # noqa: PLR0913
     warnings: list[str] | None = None,
     python_version: str | None = "3.14.7",
     python_pinned: str | None = "3.14.7",
+    deps_current: bool | None = True,
     viewer: ViewerRow | None = None,
     logs_autostart: AutostartRow | None = None,
     stale_images: list[StaleImageRow] | None = None,
@@ -126,6 +127,7 @@ def _report(  # noqa: PLR0913
             dirty=False,
             python_version=python_version,
             python_pinned=python_pinned,
+            deps_current=deps_current,
         ),
         environment=EnvironmentRow(
             base_image="claude-agent",
@@ -1180,3 +1182,42 @@ def test_human_output_keeps_the_stale_image_table_inside_a_narrow_console(
         line for line in _stale_lines(display_mock_service) if line.startswith(("│", "┌", "├", "└"))
     ]
     assert {len(line) for line in drawn} == {60}
+
+
+def test_interpreter_row_flags_constraints_the_bootstrap_has_not_caught_up_with(
+    display_mock_service: Mock,
+) -> None:
+    """A manual `git pull` moves bin/requirements.txt without re-provisioning."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        deps_current=False
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "dependencies stale" in line
+    assert "bin/agent-bootstrap" in line
+
+
+def test_interpreter_row_reports_the_pin_first_when_both_have_drifted(
+    display_mock_service: Mock,
+) -> None:
+    """One bootstrap run fixes both, so naming it twice would only add noise."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        python_version="3.14.7", python_pinned="3.15.0", deps_current=False
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.15.0" in line
+    assert "dependencies stale" not in line
+
+
+def test_interpreter_row_stays_quiet_when_the_venv_state_is_unreadable(
+    display_mock_service: Mock,
+) -> None:
+    """None means "could not tell", which must not render as a warning."""
+    services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
+        deps_current=None
+    )
+    run([])
+    line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
+    assert "3.14.7" in line
+    assert "bootstrap" not in line

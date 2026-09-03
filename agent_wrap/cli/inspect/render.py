@@ -462,6 +462,11 @@ class Details:
         warning and not an error. It does mean the wrapper is running on something
         other than what this revision pins, which is worth saying out loud since
         nothing else in the report would reveal it.
+
+        Stale dependencies are the same shape of drift and get the same treatment. It
+        only shows up after a manual ``git pull``: ``agent update`` re-runs the bootstrap
+        itself. The pin is reported first when both have moved, because one bootstrap
+        run fixes both and there is no value in naming it twice.
         """
         running = wrapper.python_version
         pinned = wrapper.python_pinned
@@ -471,6 +476,12 @@ class Details:
             return Cells.row(
                 "interpreter",
                 f"{running} (pinned {pinned}) -- run bin/agent-bootstrap",
+                Ansi.BOLD_YELLOW,
+            )
+        if wrapper.deps_current is False:
+            return Cells.row(
+                "interpreter",
+                f"{running} (dependencies stale) -- run bin/agent-bootstrap",
                 Ansi.BOLD_YELLOW,
             )
         return Cells.row("interpreter", running)

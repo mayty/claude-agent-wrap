@@ -206,7 +206,7 @@ class _GitOps:
             display.success("no re-source needed")
 
         if changed & BOOTSTRAP_FILES:
-            display.warning("the pinned CPython moved — re-provisioning")
+            display.warning("the interpreter or its dependencies moved — re-provisioning")
         else:
             display.success("no re-provision needed")
 
@@ -415,15 +415,18 @@ class UpdateService:
         """
         Re-run the bootstrap after an update that actually advanced HEAD.
 
-        Invoked unconditionally rather than gated on ``BOOTSTRAP_FILES`` appearing in
-        the diff: the bootstrap's own fast path makes it a few-millisecond no-op when
-        the pin has not moved, which costs nothing and additionally repairs a previous
-        bootstrap that was interrupted. Gating here would mean parsing the pin file in
+        Provisions both halves: the pinned interpreter and the venv holding the locked
+        dependencies. Invoked unconditionally rather than gated on ``BOOTSTRAP_FILES``
+        appearing in the diff: the bootstrap's own fast path makes it a few-millisecond
+        no-op when neither the pin nor ``bin/requirements.txt`` has moved, which costs
+        nothing and additionally repairs a previous bootstrap that was interrupted.
+        Gating here would mean parsing the pin file and hashing the constraints in
         Python as well as in sh, for no gain.
 
-        Best-effort by design. A failure leaves the *existing* interpreter in place and
-        working, so it must not turn a successful update into a failed one — the message
-        names the command to re-run.
+        Best-effort by design. A failure leaves the *existing* interpreter and venv
+        published and working — the bootstrap only moves its pointers once an install
+        has fully succeeded — so it must not turn a successful update into a failed one.
+        The message names the command to re-run.
         """
         after, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
         if rc != 0 or after == before:

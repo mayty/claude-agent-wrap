@@ -39,6 +39,7 @@ constraint is that a version probe must never run against an absent image, since
 probes are an awaited phase of their own instead of another handful of futures.
 """
 
+import hashlib
 import os
 import platform
 from concurrent.futures import ThreadPoolExecutor
@@ -49,13 +50,16 @@ from agent_wrap.constants import (
     BASE_IMAGE_NAME,
     DAY_START_HOURS,
     LITELLM_LOGS_DIRNAME,
+    PYTHON_CONSTRAINTS_FILE,
     PYTHON_PIN_FILE,
+    PYTHON_VENV_POINTER_FILE,
     SIDECAR_NETWORK_NAME,
     SKIP_SAFETY_CHECK_ENV,
     TOOL_DIR,
 )
 from agent_wrap.domain.status.constants import (
     DAY_START_ENV,
+    DEV_VENV_SUFFIX,
     DOCKER_UNREACHABLE,
     HOST_NETWORK_ENV,
     PROBE_THREAD_PREFIX,
@@ -437,7 +441,33 @@ class InspectService:
             dirty=revision.dirty,
             python_version=platform.python_version(),
             python_pinned=self._pinned_python_version(),
+            deps_current=self._deps_current(),
         )
+
+    @staticmethod
+    def _deps_current() -> bool | None:
+        """
+        Report whether the published venv was built from the constraints now on disk.
+
+        The venv directory name ends in the first 12 hex of the SHA-256 of
+        ``bin/requirements.txt`` (see bin/agent-bootstrap), so comparing the two needs
+        no metadata file and no import of anything the venv holds. None when either
+        side is unreadable -- the report says nothing rather than guessing.
+
+        None too for a ``--dev`` venv, which ends in ``-dev`` and carries no hash at
+        all: its contents come from uv.lock, so the constraints file cannot speak to
+        whether it is current, and `uv sync` is the only thing that can. Saying nothing
+        is the honest answer there; the alternative reads as "dependencies stale" at
+        every contributor's venv.
+        """
+        try:
+            pointer = PYTHON_VENV_POINTER_FILE.read_text(encoding="utf-8").strip()
+            if not pointer or pointer.endswith(DEV_VENV_SUFFIX):
+                return None
+            digest = hashlib.sha256(PYTHON_CONSTRAINTS_FILE.read_bytes()).hexdigest()
+        except OSError, ValueError:
+            return None
+        return pointer.endswith(f"-{digest[:12]}")
 
     @staticmethod
     def _pinned_python_version() -> str | None:
