@@ -6,11 +6,16 @@ The autouse ``_mock_all_services`` fixture replaces every
 ``services.*_service`` with a spec-mocked instance so no CLI test
 can accidentally call real domain code. Individual tests configure
 specific return values or side effects on the already-mocked services.
+
+``runner`` is the click harness every CLI test invokes commands through. Commands are
+always invoked via ``cli_root`` rather than directly, so the root group's
+``help_option_names`` (``-h``) reaches them the way it does in production.
 """
 
 from typing import TYPE_CHECKING
 
 import pytest
+from click.testing import CliRunner
 
 if TYPE_CHECKING:
     import pytest_mock
@@ -35,6 +40,12 @@ from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.domain.status.service import InspectService
 from agent_wrap.domain.updates.service import UpdateService
+
+
+@pytest.fixture
+def runner() -> CliRunner:
+    """Return a click test runner, the harness every CLI test invokes commands through."""
+    return CliRunner()
 
 
 @pytest.fixture(autouse=True)

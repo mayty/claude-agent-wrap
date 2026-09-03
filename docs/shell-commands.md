@@ -1,7 +1,11 @@
 <!-- This file has been edited with the assistance of an AI tool. -->
 # Shell Commands
 
-`agent` is an executable (`bin/agent`) whose first argument is a verb that selects the operation. All verbs forward to `-m agent_wrap` on the pinned interpreter `bin/agent-bootstrap` provisioned (see [Getting Started](getting-started.md)) and run on the host. Sourcing `agent-wrap.bashrc` adds `bin/` to your `PATH` (so `agent` resolves) and, under bash only, registers tab-completion for the verbs and their flags. Completion is live, not generated: `complete -F _agent_complete agent` (in `agent-wrap.bashrc`) calls `AGENT_COMPLETE=1 agent <cword> <words...>`, which routes to `_complete()` in `agent_wrap/__main__.py` and calls each command module's own `complete()` function directly — there is no generated completion file and no `make` step to keep it in sync. Completion is also the one caller that will not provision the interpreter: every other `agent` invocation runs `bin/agent-bootstrap` itself when the venv is missing, but a TAB press exits silently instead, because the completion subshell discards stderr and would offer the bootstrap's progress lines as candidates. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required.
+`agent` is an executable (`bin/agent`) whose first argument is a verb that selects the operation. All verbs forward to `-m agent_wrap` on the pinned interpreter `bin/agent-bootstrap` provisioned (see [Getting Started](getting-started.md)) and run on the host. The command line is parsed by [click](https://click.palletsprojects.com/), so every verb accepts `-h`/`--help`, and the exit codes follow the POSIX convention: `0` on success, `1` when the operation itself failed, and `2` for a usage error (an unknown flag, a bad value, a missing argument). A bare `agent` prints the verb list as a usage error, so it exits `2`.
+
+Sourcing `agent-wrap.bashrc` adds `bin/` to your `PATH` (so `agent` resolves) and, under bash only, registers tab-completion for the verbs, their flags, and `agent secrets`' sidecar names. Completion is live, not generated: the function in `agent-wrap.bashrc` calls `_AGENT_COMPLETE=bash_complete agent`, which click answers from the same command objects that parse the real command line — there is no generated completion file and no `make` step to keep it in sync. The function itself is click's own, pasted in rather than `eval`'d at shell startup so that opening a shell forks no interpreter. Two consequences worth knowing: flags are offered once you type a `-` (on an empty word there is nothing to complete, since no verb takes a positional), and a flag you have already given is not offered again. Completion is also the one caller that will not provision the interpreter: every other `agent` invocation runs `bin/agent-bootstrap` itself when the venv is missing, but a TAB press exits silently instead, because anything on stdout would be read back as a completion candidate.
+
+Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required.
 
 | Verb | Purpose |
 | --- | --- |
@@ -18,7 +22,7 @@
 ## `agent run`
 
 ```
-agent run [-b|--base] [claude-code-args...]
+agent run [OPTIONS] [CLAUDE_ARGS]...
 ```
 
 Launches Claude Code in a Docker container against the resolved image for the current directory. Records the project path in `<wrap-dir>/.agent-launches/projects.txt` for use by `agent stats`. Paths are stored in a compressed, grouped form (e.g. sibling directories collapse to `/a/{x,y,z}`, shared prefixes collapse to `{N}/rest`) rather than one plain path per line — read it with `agent stats`/`agent logs`, not by grepping the file directly.
@@ -49,7 +53,7 @@ subprocess.run(["agent", "run", "--base"], stdin=subprocess.DEVNULL, check=True)
 ## `agent rebuild`
 
 ```
-agent rebuild [-f|--full]
+agent rebuild [OPTIONS]
 ```
 
 Rebuilds the resolved image, passing `HOST_UID`/`HOST_GID` build args. A project image is rebuilt with `--no-cache`; the base image uses docker's layer cache below the Claude Code CLI install, which is reinstalled either way — see [Build caching](docker-sandboxing.md#build-caching). This is the *force*: [`agent run`](#agent-run) already builds what is missing or stale by itself, so what is left for this verb is the rebuild the wrapper cannot infer — most often applying an edit you just made to `.claude-agent-wrap/Dockerfile`. The base image is still ensured underneath, so a project build never runs on an absent or stale base.
@@ -61,7 +65,7 @@ Rebuilds the resolved image, passing `HOST_UID`/`HOST_GID` build args. A project
 ## `agent create`
 
 ```
-agent create
+agent create [OPTIONS]
 ```
 
 Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory, pre-populated with a `# agent-name: <sanitized-dirname>` comment line — the same directive [docs/docker-sandboxing.md](docker-sandboxing.md#recognized-directives) documents as required.
@@ -69,7 +73,7 @@ Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current dire
 ## `agent stats`
 
 ```
-agent stats [--verbose] [--refresh] [--from D] [--until D] [--days N] [--pattern P]
+agent stats [OPTIONS]
 ```
 
 Aggregates token usage and estimated USD cost across every project where you've launched `agent run`. Reads the project registry at `<wrap-dir>/.agent-launches/projects.txt` (see [`agent run`](#agent-run) for its on-disk format) and walks each project's `.claude/litellm-logs/` directory (organized by provider and session). Pricing is fetched dynamically per provider as logs are scanned. Both the per-project table and the per-day breakdown cover the same usage window.
@@ -99,7 +103,7 @@ Logs left behind by a deleted or unregistered project — request logs that surv
 ## `agent logs`
 
 ```
-agent logs [-p|--port N] [-s|--stop]
+agent logs [OPTIONS]
 ```
 
 Starts a local, read-only web viewer for the LiteLLM request logs written under each project's `.claude/litellm-logs/` directory. (That path is now a symlink into the shared per-project log store at `<wrap-dir>/litellm-logs/<project_hash>/`, since each provider's sidecar serves every project; the viewer follows it transparently, and a project that has run several providers shows one subtree per provider.) Reads the same project registry as `agent stats` (`<wrap-dir>/.agent-launches/projects.txt`, see [`agent run`](#agent-run) for its on-disk format), then lets you pick a project, pick a session, and read every logged request chat-style: the system prompt, the message thread (including `tool_use`/`tool_result` blocks), the tool definitions, the response, and per-request token usage. Hashed strings (`hash:<sha256>`) are resolved from each session's `strings.jsonl` for display.
@@ -115,12 +119,12 @@ The viewer applies the same grouping as `agent stats`: projects under an `.agent
 Updates are driven by filesystem events rather than by a timer, so a request shows up in the browser within a fraction of a second of being logged, and an idle viewer costs nothing — it stops re-walking the log tree entirely instead of doing so every two seconds. One watch covers the shared log store at `<wrap-dir>/litellm-logs/`, which is where every sidecar writes, and one covers the project registry. A full reconciliation still runs once a minute, which is what keeps `usage.json` fresh for the statusline, rolls the daily totals over at the day boundary, and notices log directories removed out of band by [`agent cleanup`](#agent-cleanup). This is why the wrapper has to be installed on a local filesystem — see [Setup](getting-started.md#setup); `agent logs` warns if it is not.
 
 - **`-p`/`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one. Ignored when a viewer is already running.
-- **`-s`/`--stop`** — stops the background viewer (no-op with a friendly message if none is running).
+- **`-s`/`--stop`** — stops the background viewer (no-op with a friendly message if none is running). It takes no other argument, and `--port` alongside it is refused even when the port given is the default one.
 
 ## `agent inspect`
 
 ```
-agent inspect [-j|--json] [-l|--lite]
+agent inspect [OPTIONS]
 ```
 
 Reports what agent-wrap is doing on this host right now. Answers the questions that otherwise need `docker ps`, `docker inspect`, and a look inside `<wrap-dir>/.agent-launches/`: which sidecars are up, which agents are attached to which sidecar, whether the logs viewer is alive, and whether each provider's secrets are in place.
@@ -146,7 +150,7 @@ Exits `1` when the Docker daemon cannot be reached, after printing every section
 ## `agent cleanup`
 
 ```
-agent cleanup [-n|--dry-run]
+agent cleanup [OPTIONS]
 ```
 
 Removes the three kinds of leftover state that accumulate as projects are deleted or renamed and images are rebuilt. The first two are things [`agent stats`](#agent-stats) already reports but never cleans up; the third overlaps what [`agent inspect`](#agent-inspect) reports as stale:
@@ -183,15 +187,17 @@ The archive deliberately stores raw UTC hours and no cost. Day bucketing (see [`
 ## `agent secrets`
 
 ```
-agent secrets check|set|clear <sidecar>
-agent secrets cleanup
+agent secrets check|set|clear [OPTIONS] SIDECAR
+agent secrets cleanup [OPTIONS]
 ```
 
 Manages secrets in the encrypted store, namespaced per sidecar/provider (e.g. `litellm-bedrock:api_key`, `telegram:TelegramBotToken`).
 
-- **`check <sidecar>`** — reports whether each secret required by `<sidecar>` is present, without revealing values.
-- **`set <sidecar>`** — prompts for and persists each secret required by `<sidecar>`.
-- **`clear <sidecar>`** — deletes all secrets stored for `<sidecar>`.
+This verb is a command group of its own, so each action below has its own `--help` (`agent secrets set --help`) and its own argument list. The three that operate on one sidecar require the name; `cleanup` takes none. Getting that wrong is a usage error (exit `2`), and `SIDECAR` tab-completes from the sidecars the wrapper knows about.
+
+- **`check SIDECAR`** — reports whether each secret required by `SIDECAR` is present, without revealing values.
+- **`set SIDECAR`** — prompts for and persists each secret required by `SIDECAR`.
+- **`clear SIDECAR`** — deletes all secrets stored for `SIDECAR`.
 - **`cleanup`** — removes any stored keys that don't belong to a known sidecar/provider.
 
 Provider secrets are also resolved interactively on the first `agent run` when stdin is a TTY (they're required, so a missing one triggers a prompt); `agent secrets set <provider>` is the explicit, non-interactive alternative. Telegram secrets are optional and are never prompted for interactively — `agent secrets set telegram` is the only way to set them.
@@ -199,7 +205,7 @@ Provider secrets are also resolved interactively on the first `agent run` when s
 ## `agent update`
 
 ```
-agent update
+agent update [OPTIONS]
 ```
 
 Pulls the latest wrapper source. On `master`, it only updates when a newer tag has been published and fast-forwards to that tag's commit; on any other branch it fast-forwards to the branch tip on any upstream commit. If `default-CLAUDE.md` changed, replaces the user's copy when unmodified; when customized, it leaves the copy untouched and prints instructions for merging or deleting it manually.

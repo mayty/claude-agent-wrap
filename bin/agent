@@ -49,12 +49,13 @@ resolve_venv() {
 resolve_venv
 
 if [ -z "$venv_slug" ] || [ ! -x "$py" ]; then
-    # Completion must stay silent: agent-wrap.bashrc discards this script's stderr
-    # and exit code, and anything on stdout would be offered as a candidate. So it
+    # Completion must stay silent: anything this script writes to stdout would be
+    # parsed by click's completion function as a `type,value` candidate line. So it
     # does not provision either -- a TAB press is no place to spend a 34MB download
-    # whose progress the shell would swallow. An unprovisioned checkout falls back
-    # to filename completion, which is what the bashrc already does on empty output.
-    [ -n "${AGENT_COMPLETE:-}" ] && exit 0
+    # whose progress the shell would swallow. An unprovisioned checkout simply
+    # completes nothing. `_AGENT_COMPLETE` is click's variable, derived from the
+    # program name `agent_wrap/__main__.py` passes as `prog_name`.
+    [ -n "${_AGENT_COMPLETE:-}" ] && exit 0
 
     # The bootstrap's own progress says what it is doing; this says why it is
     # happening at all, which is the part someone who just typed `agent run` lacks.

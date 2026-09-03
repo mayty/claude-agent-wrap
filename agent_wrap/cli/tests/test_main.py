@@ -1,109 +1,26 @@
 # This file has been edited with the assistance of an AI tool.
-"""Tests for CLI dispatch — guards against help/dispatch drift."""
+"""Tests for CLI dispatch — guards against help/registration drift."""
 
-import sys
-from importlib import import_module
 from typing import TYPE_CHECKING
 
-from agent_wrap.__main__ import _complete, main
-from agent_wrap.cli.commands import command_meta
-from agent_wrap.cli.constants import COMMANDS
-from agent_wrap.containers import services
+import click
+import pytest
+
+from agent_wrap.__main__ import cli_root
+from agent_wrap.cli import command_groups
+from agent_wrap.cli.secrets.run import secrets_group
 
 if TYPE_CHECKING:
-    import pytest
-    from pytest_mock import MockerFixture
+    from click.testing import CliRunner
 
+#: Width click's help formatter settles on for any terminal 80 columns or wider:
+#: `max(min(terminal_columns, max_content_width=80) - 2, 50)`.
+ROOT_HELP_WIDTH = 78
 
-def test_every_command_module_exposes_run_and_metadata(subtests: pytest.Subtests) -> None:
-    meta = command_meta()
-    assert meta, "expected at least one command to be registered"
-    for c in meta.values():
-        with subtests.test(msg=c.name):
-            mod = import_module(f"agent_wrap.cli.{c.name}.run")
-            assert callable(getattr(mod, "run", None)), f"{c.name} missing callable run()"
-            assert isinstance(c.usage, str), f"{c.name} USAGE must be a string"
-            assert isinstance(c.summary, str), f"{c.name} SUMMARY must be a string"
-            assert c.summary, f"{c.name} SUMMARY must be non-empty"
-
-
-def test_help_lists_every_discovered_command(
-    mocker: MockerFixture, subtests: pytest.Subtests
-) -> None:
-    mocker.patch("sys.argv", ["agent_wrap"])
-    rc = main()
-    assert rc == 1
-    info_call = services.display_service.info.call_args  # pyrefly: ignore [missing-attribute]
-    assert info_call is not None
-    help_text = info_call[0][0]
-    for c in command_meta().values():
-        with subtests.test(msg=c.name):
-            assert c.name in help_text, f"help output missing command {c.name!r}"
-            if c.summary:
-                assert c.summary in help_text, f"help output missing summary for {c.name!r}"
-
-
-def test_unknown_command_returns_error(
-    mocker: MockerFixture,
-) -> None:
-    mocker.patch("sys.argv", ["agent_wrap", "no-such-cmd"])
-    rc = main()
-    assert rc == 1
-    services.display_service.error.assert_called_once_with("Unknown command: no-such-cmd")  # pyrefly: ignore [missing-attribute]
-
-
-def test_complete_verb_completion(
-    capsys: pytest.CaptureFixture[str], subtests: pytest.Subtests
-) -> None:
-    """Verify cword=1 prints all COMMANDS keys (verb completion)."""
-    old_argv = sys.argv
-    try:
-        sys.argv = ["agent_wrap", "1", "agent", ""]
-        _complete()
-    finally:
-        sys.argv = old_argv
-
-    out = capsys.readouterr().out
-    for name in COMMANDS:
-        with subtests.test(msg=name):
-            assert name in out
-
-
-def test_complete_unknown_verb_no_output(capsys: pytest.CaptureFixture[str]) -> None:
-    """Verify cword > 1 with unknown verb produces no output."""
-    old_argv = sys.argv
-    try:
-        sys.argv = ["agent_wrap", "2", "agent", "no-such-verb", ""]
-        _complete()
-    finally:
-        sys.argv = old_argv
-
-    assert capsys.readouterr().out == ""
-
-
-def test_complete_known_verb_delegates_to_complete(capsys: pytest.CaptureFixture[str]) -> None:
-    """Verify cword=2 with 'rebuild' delegates to rebuild's complete()."""
-    old_argv = sys.argv
-    try:
-        sys.argv = ["agent_wrap", "2", "agent", "rebuild", ""]
-        _complete()
-    finally:
-        sys.argv = old_argv
-
-    out = capsys.readouterr().out
-    assert "--full" in out
-
-
-def test_every_command_has_complete_function(subtests: pytest.Subtests) -> None:
-    """Every registered verb maps to a callable complete()."""
-    for name, (_run_fn, complete_fn) in COMMANDS.items():
-        with subtests.test(msg=name):
-            assert callable(complete_fn), f"{name} complete() is not callable"
-
-
-def test_commands_dict_matches_registered_verbs() -> None:
-    """COMMANDS keys match the set of known verbs."""
-    expected = {
+#: Every verb `agent` is expected to expose. Spelled out rather than derived so that
+#: adding or removing one is a deliberate edit here, not a silent consequence.
+EXPECTED_VERBS = frozenset(
+    {
         "cleanup",
         "create",
         "inspect",
@@ -114,4 +31,87 @@ def test_commands_dict_matches_registered_verbs() -> None:
         "stats",
         "update",
     }
-    assert set(COMMANDS) == expected
+)
+
+
+def test_registered_verbs_match_the_expected_set() -> None:
+    assert {command.name for command in command_groups} == EXPECTED_VERBS
+
+
+def test_root_group_registers_every_command_group() -> None:
+    assert set(cli_root.commands) == EXPECTED_VERBS
+
+
+def test_every_verb_has_a_summary_that_is_not_truncated(subtests: pytest.Subtests) -> None:
+    """
+    No command sets ``short_help``; click derives it from the docstring's first paragraph.
+
+    A derived summary too long for the commands listing is silently truncated with an
+    ellipsis, so this is the guard that used to be the explicit ``short_help`` kwarg.
+    """
+    limit = ROOT_HELP_WIDTH - 6 - max(len(name) for name in EXPECTED_VERBS)
+    for command in command_groups:
+        with subtests.test(msg=str(command.name)):
+            assert isinstance(command, click.Command)
+            assert command.short_help is None, f"{command.name} sets short_help by hand"
+            summary = command.get_short_help_str(limit)
+            assert summary, f"{command.name} has no summary"
+            assert not summary.endswith("..."), f"{command.name} summary is truncated: {summary}"
+
+
+def test_every_secrets_subcommand_has_a_summary_that_is_not_truncated(
+    subtests: pytest.Subtests,
+) -> None:
+    limit = ROOT_HELP_WIDTH - 6 - max(len(name) for name in secrets_group.commands)
+    for name, command in secrets_group.commands.items():
+        with subtests.test(msg=name):
+            summary = command.get_short_help_str(limit)
+            assert summary, f"secrets {name} has no summary"
+            assert not summary.endswith("..."), f"secrets {name} summary is truncated: {summary}"
+
+
+def test_help_lists_every_registered_command(runner: CliRunner, subtests: pytest.Subtests) -> None:
+    result = runner.invoke(cli_root, ["--help"])
+    assert result.exit_code == 0
+    for name in sorted(EXPECTED_VERBS):
+        with subtests.test(msg=name):
+            assert name in result.output
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_root_help_flags_exit_zero(runner: CliRunner, flag: str) -> None:
+    """``-h`` is not a click default; the root group declares it for every subcommand."""
+    result = runner.invoke(cli_root, [flag])
+    assert result.exit_code == 0
+    assert "Usage: agent" in result.output
+
+
+def test_no_arguments_is_a_usage_error(runner: CliRunner) -> None:
+    """Click's own no_args_is_help: the help text, but as a usage error."""
+    result = runner.invoke(cli_root, [])
+    assert result.exit_code == 2
+    assert "Usage: agent" in result.output
+
+
+def test_unknown_command_is_a_usage_error(runner: CliRunner) -> None:
+    result = runner.invoke(cli_root, ["no-such-cmd"])
+    assert result.exit_code == 2
+    assert "No such command 'no-such-cmd'" in result.output
+
+
+def test_mistyped_command_is_suggested(runner: CliRunner) -> None:
+    result = runner.invoke(cli_root, ["stat"])
+    assert result.exit_code == 2
+    assert "Did you mean 'stats'?" in result.output
+
+
+def test_verb_completion_offers_every_command() -> None:
+    ctx = click.Context(cli_root, info_name="agent")
+    offered = {item.value for item in cli_root.shell_complete(ctx, "")}
+    assert offered == EXPECTED_VERBS
+
+
+def test_verb_completion_filters_by_prefix() -> None:
+    ctx = click.Context(cli_root, info_name="agent")
+    offered = {item.value for item in cli_root.shell_complete(ctx, "s")}
+    assert offered == {"secrets", "stats"}

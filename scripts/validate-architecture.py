@@ -541,13 +541,12 @@ def _check_rule_e(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, s
     Return EE001 violations found in *tree*.
 
     Rule 10: a module-level constant belongs in its package's ``constants.py``. A
-    constant is an UPPER_CASE (or ``_UPPER_CASE``) module-level assignment.
-    ``USAGE``/``SUMMARY`` are exempt: ``cli/commands.py`` reads them reflectively off
-    each command's ``run`` module by name, so they cannot move.
+    constant is an UPPER_CASE (or ``_UPPER_CASE``) module-level assignment. There are
+    no exemptions: the per-verb ``USAGE``/``SUMMARY`` constants that used to need one
+    are now a click ``options_metavar`` argument and the command docstring's summary line.
     """
     violations: list[tuple[str, int, str, str]] = []
     rel_file = str(file_path.relative_to(ROOT))
-    exempt = {"USAGE", "SUMMARY"}
 
     for node in tree.body if isinstance(tree, ast.Module) else []:
         targets: list[ast.expr] = []
@@ -560,7 +559,7 @@ def _check_rule_e(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, s
             if not isinstance(target, ast.Name):
                 continue
             bare = target.id.lstrip("_")
-            if bare in exempt or not bare.isupper() or not bare.replace("_", "").isalnum():
+            if not bare.isupper() or not bare.replace("_", "").isalnum():
                 continue
             violations.append(
                 (

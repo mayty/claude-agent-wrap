@@ -59,33 +59,3 @@ LITE_NOTE = (
 DETAILS_TITLE = "Details:"
 DETAILS_HEADERS = ("ITEM", "STATE")
 DETAILS_ALIGNS = ("<", "<")
-
-#: Long-form help printed for `agent inspect -h`.
-USAGE_TEXT = (
-    "Usage: agent inspect [--json] [--lite]\n\n"
-    "Reports what agent-wrap is currently doing on this host: the sidecar\n"
-    "containers that are up (with their image, port, health, uptime, and how\n"
-    "many agents are attached), the agent containers running against them (with\n"
-    "their image, project directory, and provider), the logs viewer, the\n"
-    "on-disk log footprint, per-provider secret readiness, the installed\n"
-    "wrapper revision, the Claude Code version in the base image and in this\n"
-    "project's own image, and the host facts behind most launch surprises.\n\n"
-    "It closes with every registered project whose own image is already stale,\n"
-    "so the rebuilds coming across the whole fleet are stated before they are\n"
-    "paid for -- or one green line when there are none. A project that\n"
-    "declares no Dockerfile is not listed (the base image row above covers\n"
-    "it), nor is one whose image was never built on this host.\n\n"
-    "Read-only: it starts no agent, stops nothing, and writes nothing. It does\n"
-    "start a throwaway container per image to read the Claude Code version\n"
-    "installed there, and one of those queries the npm registry to report\n"
-    "whether a newer version exists. The wrapper revision is always read\n"
-    "locally — use `agent update` to check for a newer release.\n\n"
-    "--lite skips the three slowest steps: the npm-registry check, the walk\n"
-    "over the shared logs tree, and the stale-image sweep over the project\n"
-    "registry. Everything else is reported as usual, including both installed\n"
-    "Claude Code versions. Use it from a project startup script, which runs\n"
-    "while holding the host-global startup lock.\n\n"
-    "--json emits the same report as one JSON document instead of tables.\n\n"
-    "Exits 1 when the Docker daemon cannot be reached; every section that does\n"
-    "not depend on Docker is still reported."
-)

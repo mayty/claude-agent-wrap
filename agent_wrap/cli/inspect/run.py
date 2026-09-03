@@ -5,60 +5,78 @@ import dataclasses
 import json
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.inspect.constants import INSPECT_LABEL, NO_STALE_IMAGES, USAGE_TEXT
+import click
+
+from agent_wrap.cli.inspect.constants import INSPECT_LABEL, NO_STALE_IMAGES
 from agent_wrap.cli.inspect.render import render
 from agent_wrap.containers import services
-from agent_wrap.lib.argparsing import make_parser, parse_or_code
 
 if TYPE_CHECKING:
-    import argparse
-
     from agent_wrap.domain.status.models import InspectReport
 
-USAGE = "[-j|--json] [-l|--lite]"
-SUMMARY = "Show running sidecars, agents, and the rest of the current state"
 
+@click.command("inspect")
+@click.option(
+    "-j",
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the report as a single JSON document instead of tables.",
+)
+@click.option(
+    "-l",
+    "--lite",
+    is_flag=True,
+    help=(
+        "Skip the three slowest steps: the npm-registry version check, the logs-size walk, "
+        "and the stale-image sweep. Everything else is reported as usual, including both "
+        "installed Claude Code versions. Use it from a project startup script, which runs "
+        "while holding the host-global startup lock."
+    ),
+)
+@click.pass_context
+def inspect_command(ctx: click.Context, *, as_json: bool, lite: bool) -> None:
+    """
+    Show running sidecars, agents, and the current wrapper state
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("inspect", usage_summary=USAGE, description=USAGE_TEXT)
-    parser.add_argument(
-        "-j",
-        "--json",
-        action="store_true",
-        dest="as_json",
-        help="Emit the report as a single JSON document instead of tables.",
-    )
-    parser.add_argument(
-        "-l",
-        "--lite",
-        action="store_true",
-        help="Skip the npm-registry version check, the logs-size walk, and the stale-image sweep.",
-    )
-    return parser
+    Report what agent-wrap is currently doing on this host: the sidecar containers that
+    are up (with their image, port, health, uptime, and how many agents are attached),
+    the agent containers running against them (with their image, project directory, and
+    provider), the logs viewer, the on-disk log footprint, per-provider secret readiness,
+    the installed wrapper revision, the Claude Code version in the base image and in this
+    project's own image, and the host facts behind most launch surprises.
 
+    It closes with every registered project whose own image is already stale, so the
+    rebuilds coming across the whole fleet are stated before they are paid for -- or one
+    green line when there are none. A project that declares no Dockerfile is not listed
+    (the base image row above covers it), nor is one whose image was never built on this
+    host.
 
-def run(args: list[str]) -> int:
-    """Execute the `inspect` subcommand."""
-    ns = parse_or_code(build_parser(), args)
-    if isinstance(ns, int):
-        return ns
+    Read-only: it starts no agent, stops nothing, and writes nothing. It does start a
+    throwaway container per image to read the Claude Code version installed there, and
+    one of those queries the npm registry to report whether a newer version exists. The
+    wrapper revision is always read locally -- use `agent update` to check for a newer
+    release.
 
+    Exits 1 when the Docker daemon cannot be reached; every section that does not depend
+    on Docker is still reported.
+    """
     dsp = services.display_service
 
     captured: list[InspectReport] = []
-    if ns.as_json:
+    if as_json:
         # No spinner: its animation goes to stdout, which would corrupt the document.
-        captured.append(services.inspect_service.build_report(lite=ns.lite))
+        captured.append(services.inspect_service.build_report(lite=lite))
     else:
         dsp.spin_while(
             label=INSPECT_LABEL,
             message="collecting…",
             done_message=lambda: None,
-            work=lambda: captured.append(services.inspect_service.build_report(lite=ns.lite)),
+            work=lambda: captured.append(services.inspect_service.build_report(lite=lite)),
         )
     report = captured[0]
 
-    if ns.as_json:
+    if as_json:
         # asdict is safe because every model in the report is a frozen dataclass of
         # scalars — see domain/status/models.py, which exists to guarantee exactly this.
         dsp.info(json.dumps(dataclasses.asdict(report), indent=2))
@@ -81,5 +99,4 @@ def run(args: list[str]) -> int:
     if not report.docker.available:
         # The report above still printed everything that does not need Docker; the
         # non-zero exit is what makes the degradation detectable by a script.
-        return 1
-    return 0
+        ctx.exit(1)

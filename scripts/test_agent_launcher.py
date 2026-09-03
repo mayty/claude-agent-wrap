@@ -105,9 +105,10 @@ def test_launcher_rejects_a_bootstrap_that_publishes_nothing(tmp_path: Path) -> 
 
 
 def test_completion_stays_silent_and_skips_the_bootstrap(tmp_path: Path) -> None:
+    """``_AGENT_COMPLETE`` is click's variable; a TAB press must not start a 34MB download."""
     agent = sandbox(tmp_path)
 
-    result = run(agent, "1", "agent", AGENT_COMPLETE="1")
+    result = run(agent, _AGENT_COMPLETE="bash_complete")
 
     assert result.returncode == 0
     assert result.stdout == ""

@@ -8,9 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.cli.stats.complete import complete as stats_complete
+from agent_wrap.__main__ import cli_root
 from agent_wrap.cli.stats.display import render, render_source_breakdown
-from agent_wrap.cli.stats.run import run as stats_run
 from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
@@ -18,6 +17,7 @@ from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.stats.models import ProjectRow, StatsReport
 
 if TYPE_CHECKING:
+    from click.testing import CliRunner
     from pytest_mock import MockerFixture
 
 
@@ -152,18 +152,18 @@ def _project_row() -> dict[str, Any]:
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_renders_the_reports_orphaned_row(mocker: MockerFixture) -> None:
+def test_run_renders_the_reports_orphaned_row(runner: CliRunner, mocker: MockerFixture) -> None:
     """Whatever orphaned row the report carries is what render() is handed."""
     merged = _orphaned_result(3)
     services.stats_service.build_report.return_value = _report(orphaned=merged)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     assert render_spy.call_args.kwargs["orphaned"] is merged
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
+def test_run_renders_orphaned_only_state(runner: CliRunner, mocker: MockerFixture) -> None:
     """
     A report with no project rows but an orphaned row must still render.
 
@@ -174,97 +174,68 @@ def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
     services.stats_service.build_report.return_value = _report(orphaned=archived)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     render_spy.assert_called_once()
     services.display_service.error.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_notes_when_report_is_empty(mocker: MockerFixture) -> None:
+def test_run_notes_when_report_is_empty(runner: CliRunner, mocker: MockerFixture) -> None:
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     render_spy.assert_not_called()
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no LiteLLM logs found" in message
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_names_the_pattern_when_it_matched_nothing(mocker: MockerFixture) -> None:
+def test_run_names_the_pattern_when_it_matched_nothing(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
     """An empty report under a pattern must say so, not blame the whole registry."""
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run(["-p", "nomatch"]) == 0
+    assert runner.invoke(cli_root, ["stats", "-p", "nomatch"]).exit_code == 0
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "nomatch" in message
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_passes_the_parsed_window_to_the_report(mocker: MockerFixture) -> None:
+def test_run_passes_the_parsed_window_to_the_report(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
     services.stats_service.resolve_window.return_value = ("2026-07-01", "2026-07-20")  # pyrefly: ignore [missing-attribute]
     services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
 
-    assert stats_run(["--from", "2026-07-01", "--until", "2026-07-20"]) == 0
+    assert (
+        runner.invoke(
+            cli_root, ["stats", "--from", "2026-07-01", "--until", "2026-07-20"]
+        ).exit_code
+        == 0
+    )
     _projects, args = services.stats_service.build_report.call_args.args  # pyrefly: ignore [missing-attribute]
     assert (args.from_iso, args.until_iso) == ("2026-07-01", "2026-07-20")
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_footnotes_unrecorded_usage(mocker: MockerFixture) -> None:
+def test_run_footnotes_unrecorded_usage(runner: CliRunner, mocker: MockerFixture) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
     services.stats_service.build_report.return_value = _report(rows=[_project_row()], unrecorded=4)  # pyrefly: ignore [missing-attribute]
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     warning = services.display_service.warning.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "4 successful request(s) had unrecorded usage" in warning
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_notes_when_no_projects_registered() -> None:
+def test_run_notes_when_no_projects_registered(runner: CliRunner) -> None:
     services.config_service.read_project_paths.return_value = []  # pyrefly: ignore [missing-attribute]
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no projects recorded yet" in message
-
-
-def test_complete_bare_tab_shows_all_flags() -> None:
-    result = stats_complete(2, ["agent", "stats", ""])
-    assert "-v" in result
-    assert "--verbose" in result
-    assert "-f" in result
-    assert "--from" in result
-    assert "-p" in result
-    assert "--pattern" in result
-
-
-def test_complete_verbose_consumed() -> None:
-    result = stats_complete(3, ["agent", "stats", "-v", ""])
-    assert "-v" not in result
-    assert "--verbose" not in result
-    assert "-f" in result  # still available
-
-
-def test_complete_shorthand_excludes_long() -> None:
-    result = stats_complete(3, ["agent", "stats", "-u", ""])
-    assert "-u" not in result
-    assert "--until" not in result
-
-
-def test_complete_value_flag_prev_returns_empty() -> None:
-    result = stats_complete(3, ["agent", "stats", "-d", ""])
-    assert result == []
-
-
-def test_complete_after_date_value() -> None:
-    result = stats_complete(4, ["agent", "stats", "-d", "14", ""])
-    assert "-v" in result
-
-
-def test_complete_pattern_value_prev_returns_empty() -> None:
-    result = stats_complete(3, ["agent", "stats", "-p", ""])
-    assert result == []
 
 
 def _tree_row(path: str) -> ProjectRow:

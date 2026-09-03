@@ -7,8 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.cli.constants import COMMANDS
-from agent_wrap.cli.inspect.run import build_parser, run
+from agent_wrap.__main__ import cli_root
 from agent_wrap.constants import SKIP_SAFETY_CHECK_ENV
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
@@ -31,6 +30,7 @@ if TYPE_CHECKING:
     from unittest.mock import Mock
 
     import pytest_mock
+    from click.testing import CliRunner
 
 _SIDECAR = SidecarRow(
     name="agent-wrap-litellm-bedrock",
@@ -194,95 +194,90 @@ def _details_lines(dsp: Mock) -> list[str]:
     return lines[start : end + 1]
 
 
-# --- parsing ---
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], (False, False)),
+        (["--json"], (True, False)),
+        (["-j"], (True, False)),
+        (["--lite"], (False, True)),
+        (["-l"], (False, True)),
+        (["-j", "-l"], (True, True)),
+    ],
+)
+@pytest.mark.usefixtures("display_mock_service")
+def test_flags_map_to_json_and_lite(
+    runner: CliRunner, inspect_mock: Mock, argv: list[str], expected: tuple[bool, bool]
+) -> None:
+    """-j/--json binds to `as_json`; both flags combine."""
+    as_json, lite = expected
+    result = runner.invoke(cli_root, ["inspect", *argv])
+    assert result.exit_code == 0
+    inspect_mock.build_report.assert_called_once_with(lite=lite)
+    # A JSON run must not spin: the animation goes to stdout and would corrupt it.
+    assert services.display_service.spin_while.called is not as_json  # pyrefly: ignore [missing-attribute]
 
 
-def test_parser_defaults_to_human_output() -> None:
-    assert build_parser().parse_args([]).as_json is False
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_exits_zero(runner: CliRunner, flag: str) -> None:
+    result = runner.invoke(cli_root, ["inspect", flag])
+    assert result.exit_code == 0
+    assert "--lite" in result.output
 
 
-def test_parser_accepts_json_flag() -> None:
-    assert build_parser().parse_args(["--json"]).as_json is True
+def test_unknown_flag_reports_the_reason(runner: CliRunner) -> None:
+    result = runner.invoke(cli_root, ["inspect", "--bogus"])
+    assert result.exit_code == 2
+    assert "No such option '--bogus'" in result.output
 
 
-def test_parser_accepts_j_flag() -> None:
-    """-j is the shorthand for --json."""
-    assert build_parser().parse_args(["-j"]).as_json is True
-
-
-def test_parser_defaults_to_the_full_report() -> None:
-    assert build_parser().parse_args([]).lite is False
-
-
-def test_parser_accepts_lite_flag() -> None:
-    assert build_parser().parse_args(["--lite"]).lite is True
-
-
-def test_parser_accepts_l_flag() -> None:
-    """-l is the shorthand for --lite."""
-    assert build_parser().parse_args(["-l"]).lite is True
-
-
-def test_parser_combines_lite_and_json() -> None:
-    ns = build_parser().parse_args(["-j", "-l"])
-    assert (ns.as_json, ns.lite) == (True, True)
-
-
-def test_help_returns_zero() -> None:
-    assert run(["--help"]) == 0
-
-
-def test_unknown_flag_reports_the_reason(capsys: pytest.CaptureFixture[str]) -> None:
-    assert run(["--bogus"]) == 1
-    assert "unrecognized arguments" in capsys.readouterr().err
-
-
-def test_positional_argument_rejected(capsys: pytest.CaptureFixture[str]) -> None:
-    assert run(["extra"]) == 1
-    assert "unrecognized arguments" in capsys.readouterr().err
-
-
-# --- service protocol ---
+def test_positional_argument_rejected(runner: CliRunner) -> None:
+    result = runner.invoke(cli_root, ["inspect", "extra"])
+    assert result.exit_code == 2
+    assert "Got unexpected extra argument" in result.output
 
 
 @pytest.mark.usefixtures("display_mock_service")
-def test_run_builds_the_report_once(inspect_mock: Mock) -> None:
-    assert run([]) == 0
+def test_run_builds_the_report_once(runner: CliRunner, inspect_mock: Mock) -> None:
+    assert runner.invoke(cli_root, ["inspect"]).exit_code == 0
     inspect_mock.build_report.assert_called_once_with(lite=False)
 
 
 @pytest.mark.usefixtures("display_mock_service")
-def test_run_forwards_the_lite_flag(inspect_mock: Mock) -> None:
-    assert run(["--lite"]) == 0
+def test_run_forwards_the_lite_flag(runner: CliRunner, inspect_mock: Mock) -> None:
+    assert runner.invoke(cli_root, ["inspect", "--lite"]).exit_code == 0
     inspect_mock.build_report.assert_called_once_with(lite=True)
 
 
-def test_json_run_forwards_the_lite_flag(inspect_mock: Mock, display_mock_service: Mock) -> None:
+def test_json_run_forwards_the_lite_flag(
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
+) -> None:
     """The spinner-free path takes the flag too — it is a separate call site."""
     del display_mock_service
-    assert run(["--json", "--lite"]) == 0
+    assert runner.invoke(cli_root, ["inspect", "--json", "--lite"]).exit_code == 0
     inspect_mock.build_report.assert_called_once_with(lite=True)
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_run_shows_a_spinner_while_collecting(display_mock_service: Mock) -> None:
-    run([])
+def test_run_shows_a_spinner_while_collecting(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     display_mock_service.spin_while.assert_called_once()
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_json_mode_uses_no_spinner(display_mock_service: Mock) -> None:
+def test_json_mode_uses_no_spinner(runner: CliRunner, display_mock_service: Mock) -> None:
     """The spinner animates on stdout, which would corrupt the JSON document."""
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     display_mock_service.spin_while.assert_not_called()
 
 
-# --- human output ---
-
-
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_lists_sidecars_and_agents(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_lists_sidecars_and_agents(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "agent-wrap-litellm-bedrock" in out
     assert "48620" in out
@@ -291,8 +286,8 @@ def test_human_output_lists_sidecars_and_agents(display_mock_service: Mock) -> N
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_sidecar_table_column_order(display_mock_service: Mock) -> None:
-    run([])
+def test_sidecar_table_column_order(runner: CliRunner, display_mock_service: Mock) -> None:
+    runner.invoke(cli_root, ["inspect"])
     header = next(line for line in _lines(display_mock_service) if "CONTAINER" in line)
     assert [cell.strip() for cell in header.strip("│").split("│")] == [
         "CONTAINER",
@@ -307,9 +302,11 @@ def test_sidecar_table_column_order(display_mock_service: Mock) -> None:
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_sidecar_image_drops_the_registry_and_digest(display_mock_service: Mock) -> None:
+def test_sidecar_image_drops_the_registry_and_digest(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """A digest-pinned reference is ~110 chars and would wrap the row."""
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "litellm:v1.96.2" in out
     assert "sha256" not in out
@@ -317,8 +314,8 @@ def test_sidecar_image_drops_the_registry_and_digest(display_mock_service: Mock)
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_agent_table_column_order(display_mock_service: Mock) -> None:
-    run([])
+def test_agent_table_column_order(runner: CliRunner, display_mock_service: Mock) -> None:
+    runner.invoke(cli_root, ["inspect"])
     header = next(
         line for line in _lines(display_mock_service) if "IMAGE" in line and "PROVIDER" in line
     )
@@ -333,18 +330,21 @@ def test_agent_table_column_order(display_mock_service: Mock) -> None:
 
 @pytest.mark.usefixtures("inspect_mock")
 def test_agent_row_shows_the_provider_not_the_container_names(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """The sidecar container names are already listed in the table above."""
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "│ litellm-bedrock" in out
     assert "SIDECARS" not in out
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_includes_every_details_row(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_includes_every_details_row(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     for label in (
         "logs viewer",
@@ -361,7 +361,7 @@ def test_human_output_includes_every_details_row(display_mock_service: Mock) -> 
 
 
 def test_human_output_reports_a_starting_viewer_without_a_connect_line(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A viewer that has not bound its port yet has no address to advertise."""
     inspect_mock.build_report.return_value = _report(
@@ -375,7 +375,7 @@ def test_human_output_reports_a_starting_viewer_without_a_connect_line(
             log_mtime=1_700_000_000.0,
         )
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "starting" in out
     assert "http://127.0.0.1" not in out
@@ -387,31 +387,33 @@ def _guard_row(dsp: Mock) -> str:
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_reports_the_directory_guard_on(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_reports_the_directory_guard_on(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     assert "on" in _guard_row(display_mock_service)
 
 
 def test_human_output_reports_the_directory_guard_off_by_env(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(safety_check_enabled=False)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert f"OFF ({SKIP_SAFETY_CHECK_ENV})" in _guard_row(display_mock_service)
 
 
 def test_human_output_reports_autostart_off_by_env(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(
         logs_autostart=AutostartRow(requested=False, effective=False, declining_provider="")
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "OFF (AGENT_AUTOSTART_LOGS)" in _stdout(display_mock_service)
 
 
 def test_human_output_flags_an_autostart_the_provider_ignores(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """
     Set-and-ignored has to say so, not read as plain "off".
@@ -424,37 +426,39 @@ def test_human_output_flags_an_autostart_the_provider_ignores(
             requested=True, effective=False, declining_provider="litellm-anthropic-sub"
         )
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "requested but IGNORED (litellm-anthropic-sub does not use it)" in out
 
 
 def test_human_output_names_the_provider_that_declines_the_autostart(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(
         logs_autostart=AutostartRow(
             requested=None, effective=False, declining_provider="litellm-anthropic-sub"
         )
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "OFF (litellm-anthropic-sub does not use it)" in out
     assert "IGNORED" not in out
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_shows_base_image_version(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_shows_base_image_version(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "claude-agent present (Claude Code v2.0.50)" in out
 
 
 def test_human_output_shows_the_project_image(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(project=_PROJECT)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "project image" in out
     assert "claude-agent-wrap present (Claude Code v2.0.50)" in out
@@ -462,26 +466,27 @@ def test_human_output_shows_the_project_image(
 
 @pytest.mark.usefixtures("inspect_mock")
 def test_human_output_omits_the_project_row_without_a_project_image(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """A project that customizes nothing has nothing to say here."""
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "project image" not in _stdout(display_mock_service)
 
 
 def test_human_output_flags_a_project_image_that_was_never_built(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(
         project=dataclasses.replace(_PROJECT, present=False, claude_version=None)
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "claude-agent-wrap MISSING (built on the next `agent run`)" in out
 
 
 def test_human_output_flags_an_image_the_next_launch_will_rebuild(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """Present is not the same as current, and the report has to say which."""
     report = _report(project=dataclasses.replace(_PROJECT, stale_reason="its base moved"))
@@ -491,7 +496,7 @@ def test_human_output_flags_an_image_the_next_launch_will_rebuild(
             report.environment, base_image_stale_reason="the build iteration changed"
         ),
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "claude-agent present (Claude Code v2.0.50) -- STALE, rebuilt on the next" in out
     assert "the build iteration changed" in out
@@ -500,7 +505,7 @@ def test_human_output_flags_an_image_the_next_launch_will_rebuild(
 
 
 def test_human_output_flags_a_stale_project_image(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """Both image rows name the same available version — there is one registry answer."""
     report = _report(project=dataclasses.replace(_PROJECT, claude_update_available=True))
@@ -510,46 +515,46 @@ def test_human_output_flags_a_stale_project_image(
             report.environment, latest_claude_version="2.0.51", claude_update_available=True
         ),
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "claude-agent-wrap present (Claude Code v2.0.50) → v2.0.51 available" in out
 
 
 def test_human_output_never_claims_an_update_it_did_not_check_for(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """In lite mode the latest version is unknown, and unknown must not read as stale."""
     inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None, project=_PROJECT)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "available" not in _stdout(display_mock_service)
 
 
 def test_human_output_notes_a_legacy_project_dockerfile(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(
         project=dataclasses.replace(_PROJECT, is_legacy=True)
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "deprecated Dockerfile.agent" in _stdout(display_mock_service)
 
 
 def test_human_output_marks_an_unmeasured_logs_footprint(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A blank cell beside the project count would read as zero bytes."""
     inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "not measured (--lite)" in out
     assert "24 project(s) registered" in out
 
 
 def test_human_output_closes_a_lite_report_with_what_it_skipped(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "npm-registry version check" in out
     assert "logs-size walk" in out
@@ -557,23 +562,25 @@ def test_human_output_closes_a_lite_report_with_what_it_skipped(
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_has_no_lite_note_in_the_full_report(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_has_no_lite_note_in_the_full_report(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     assert "--lite" not in _stdout(display_mock_service)
 
 
 def test_human_output_reports_collection_warnings_off_stdout(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """Warnings belong on stderr so a redirected report stays machine-readable."""
     inspect_mock.build_report.return_value = _report(warnings=["both Dockerfiles exist"])
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "both Dockerfiles exist" in _warnings(display_mock_service)
     assert "both Dockerfiles exist" not in _stdout(display_mock_service)
 
 
 def test_human_output_flags_an_available_update(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     report = _report()
     report = dataclasses.replace(
@@ -585,13 +592,13 @@ def test_human_output_flags_an_available_update(
         ),
     )
     inspect_mock.build_report.return_value = report
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "claude-agent present (Claude Code v2.0.50) → v2.0.51 available" in out
 
 
 def test_human_output_shows_no_update_when_current(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A current version must not be flagged — that is the steady state."""
     report = _report()
@@ -604,13 +611,13 @@ def test_human_output_shows_no_update_when_current(
         ),
     )
     inspect_mock.build_report.return_value = report
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "→" not in out
 
 
 def test_human_output_omits_version_when_none(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A failed version probe degrades to the plain 'present' row."""
     report = _report()
@@ -619,20 +626,24 @@ def test_human_output_omits_version_when_none(
         environment=dataclasses.replace(report.environment, base_image_version=None),
     )
     inspect_mock.build_report.return_value = report
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "claude-agent present" in out
     assert "Claude Code v" not in out
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_json_output_includes_base_image_version(display_mock_service: Mock) -> None:
-    run(["--json"])
+def test_json_output_includes_base_image_version(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     assert payload["environment"]["base_image_version"] == "2.0.50"
 
 
-def test_json_output_includes_update_fields(inspect_mock: Mock, display_mock_service: Mock) -> None:
+def test_json_output_includes_update_fields(
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
+) -> None:
     report = _report()
     report = dataclasses.replace(
         report,
@@ -643,7 +654,7 @@ def test_json_output_includes_update_fields(inspect_mock: Mock, display_mock_ser
         ),
     )
     inspect_mock.build_report.return_value = report
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     env = payload["environment"]
     assert env["latest_claude_version"] == "2.0.51"
@@ -651,82 +662,92 @@ def test_json_output_includes_update_fields(inspect_mock: Mock, display_mock_ser
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_details_table_divides_its_three_groups(display_mock_service: Mock) -> None:
+def test_details_table_divides_its_three_groups(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """Logs, secrets, and wrapper facts are separate concerns, not one run-on block."""
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     rules = [line for line in _details_lines(display_mock_service) if line.startswith("├")]
     assert len(rules) == 3  # the header rule, plus one divider between each pair of groups
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_formats_uptime(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_formats_uptime(runner: CliRunner, display_mock_service: Mock) -> None:
+    runner.invoke(cli_root, ["inspect"])
     assert "3h 12m" in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_reports_secret_readiness_as_two_states(display_mock_service: Mock) -> None:
-    run([])
+def test_human_output_reports_secret_readiness_as_two_states(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "Secrets OK" in out
     assert "Secrets NOT SET" in out
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_omits_the_missing_secret_names(display_mock_service: Mock) -> None:
+def test_human_output_omits_the_missing_secret_names(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """`agent secrets check` names the keys; here they only pad the row."""
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "telegram:TelegramBotToken" not in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_json_output_still_names_the_missing_secrets(display_mock_service: Mock) -> None:
+def test_json_output_still_names_the_missing_secrets(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """Dropping the keys is a table decision, not a loss of information."""
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     assert payload["providers"][1]["missing_keys"] == ["telegram:TelegramBotToken"]
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_day_boundary_states_the_offset_against_utc(display_mock_service: Mock) -> None:
-    run([])
+def test_day_boundary_states_the_offset_against_utc(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect"])
     assert "-3h UTC (AGENT_DAY_START_UTC)" in _stdout(display_mock_service)
 
 
 def test_day_boundary_drops_the_sign_at_zero(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(day_start_hours=0, day_start_overridden=False)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "0h UTC" in out
     assert "+0h" not in out
 
 
 def test_day_boundary_notes_agent_timezone_when_that_is_the_source(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(
         day_start_hours=-2, day_start_overridden=False, day_start_timezone="Europe/Warsaw"
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "-2h UTC (AGENT_TIMEZONE=Europe/Warsaw)" in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_human_output_reports_no_token_usage(display_mock_service: Mock) -> None:
+def test_human_output_reports_no_token_usage(runner: CliRunner, display_mock_service: Mock) -> None:
     """`agent stats` owns usage; this command must not half-answer it."""
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "Today" not in out
     assert "usage" not in out.lower()
 
 
 def test_queued_launches_footnote_follows_the_sidecar_table(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(queued=["other-xyz"])
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     lines = _lines(display_mock_service)
     footnote = next(i for i, line in enumerate(lines) if "awaiting the sidecar lock" in line)
     agents_title = next(i for i, line in enumerate(lines) if line.startswith("Agents ("))
@@ -734,11 +755,11 @@ def test_queued_launches_footnote_follows_the_sidecar_table(
 
 
 def test_human_output_never_prescribes_cleanup(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """Staleness is only answerable from the host; acting on it deletes live logs."""
     inspect_mock.build_report.return_value = _report()
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     assert "agent cleanup" not in _stdout(display_mock_service)
 
 
@@ -782,11 +803,11 @@ def _stale_cells(line: str) -> list[str]:
 
 
 def test_human_output_lists_stale_images_one_row_per_project(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """Two projects on one image are two rows -- the project is what the reader acts on."""
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     table = _stale_lines(display_mock_service)
     assert table[0] == "Stale images (2):"
     assert sum(line.count("claude-agent-wotp") for line in table) == 2
@@ -794,27 +815,27 @@ def test_human_output_lists_stale_images_one_row_per_project(
 
 
 def test_human_output_renders_the_stale_image_projects_as_a_tree(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """The shared prefix is stated once, as a directory row, the way `agent stats` does."""
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     body = _stale_body(display_mock_service)
     assert [_stale_cells(line)[0] for line in body] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
 
 
 def test_human_output_leaves_a_stale_image_directory_row_blank(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A directory has no image to rebuild and no reason to report."""
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     rows = [_stale_cells(line) for line in _stale_body(display_mock_service)]
     assert [cells[1:] for cells in rows if cells[0].endswith("/")] == [["", ""], ["", ""]]
 
 
 def test_human_output_keeps_a_project_less_stale_image_row(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """It names no path and cannot be placed in the tree, but the title still counts it."""
     inspect_mock.build_report.return_value = _report(
@@ -823,7 +844,7 @@ def test_human_output_keeps_a_project_less_stale_image_row(
             StaleImageRow(project="", image="claude-agent-huh", reason="who knows"),
         ]
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     table = _stale_lines(display_mock_service)
     assert table[0] == "Stale images (3):"
     row = next(line for line in table if "claude-agent-huh" in line)
@@ -831,10 +852,10 @@ def test_human_output_keeps_a_project_less_stale_image_row(
 
 
 def test_human_output_orders_the_stale_image_columns(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     header = next(line for line in _stale_lines(display_mock_service) if "PROJECT" in line)
     assert [cell.strip() for cell in header.split("\u2502") if cell.strip()] == [
         "PROJECT",
@@ -855,7 +876,10 @@ def _one_long_reason() -> list[StaleImageRow]:
 
 
 def test_human_output_keeps_a_long_stale_image_reason_whole_when_it_fits(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     The reported bug: the reason used to be cut to a fixed 72 at any console width.
@@ -865,19 +889,22 @@ def test_human_output_keeps_a_long_stale_image_reason_whole_when_it_fits(
     """
     monkeypatch.setenv("COLUMNS", "200")
     inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
     assert _LONG_REASON in body
     assert "\u2026" not in body
 
 
 def test_human_output_trims_a_long_stale_image_reason_to_the_console(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Too narrow for the whole reason, so its tail goes -- the head still identifies it."""
     monkeypatch.setenv("COLUMNS", "100")
     inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     body = next(line for line in _stale_lines(display_mock_service) if "home/me/wotp" in line)
     assert "before agent-wrap stamped its images" in body
     assert "\u2026" in body
@@ -885,84 +912,86 @@ def test_human_output_trims_a_long_stale_image_reason_to_the_console(
 
 
 def test_human_output_never_trims_the_stale_image_project(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A path is what the reader acts on; the tree is chopped rather than cut short."""
     monkeypatch.setenv("COLUMNS", "60")
     inspect_mock.build_report.return_value = _report(stale_images=_one_long_reason())
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     projects = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
     assert not any("\u2026" in project for project in projects)
     assert "wotp" in projects[-1]
 
 
 def test_json_output_keeps_a_long_stale_image_reason_whole(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """Trimming is a table concern; a machine consumer gets the reason in full."""
     long_reason = "x" * 200
     inspect_mock.build_report.return_value = _report(
         stale_images=[StaleImageRow(project="/p", image="claude-agent-p", reason=long_reason)]
     )
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     assert payload["stale_images"][0]["reason"] == long_reason
 
 
 def test_human_output_says_so_in_green_when_no_image_is_stale(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """The one section whose empty state is good news, so it is said rather than tabulated."""
     inspect_mock.build_report.return_value = _report(stale_images=[])
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     display_mock_service.success.assert_called_once()
     assert "up to date" in display_mock_service.success.call_args.args[0]
     assert "Stale images" not in _stdout(display_mock_service)
 
 
 def test_human_output_has_no_stale_image_section_when_the_sweep_did_not_run(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """None is not the empty list: an unrun sweep has no verdict to report either way."""
     inspect_mock.build_report.return_value = _report(stale_images=None)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     display_mock_service.success.assert_not_called()
     assert "Stale images" not in _stdout(display_mock_service)
 
 
 def test_human_output_omits_the_green_line_when_an_image_is_stale(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     display_mock_service.success.assert_not_called()
 
 
-# --- json output ---
-
-
 @pytest.mark.usefixtures("inspect_mock")
-def test_json_output_parses(display_mock_service: Mock) -> None:
-    run(["--json"])
+def test_json_output_parses(runner: CliRunner, display_mock_service: Mock) -> None:
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     assert payload["sidecars"][0]["port"] == 48620
     assert payload["agents"][0]["instance_id"] == "wrap-abc"
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_json_output_carries_no_secret_values(display_mock_service: Mock) -> None:
-    run(["--json"])
+def test_json_output_carries_no_secret_values(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect", "--json"])
     out = _stdout(display_mock_service)
     for forbidden in ("LITELLM_MASTER_KEY", "AWS_BEARER_TOKEN", "TELEGRAM_BOT_TOKEN", "sk-"):
         assert forbidden not in out
 
 
 def test_json_output_carries_the_lite_marker_and_nulls(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A consumer must be able to tell "not measured" from "measured as zero"."""
     inspect_mock.build_report.return_value = _report(lite=True, logs_bytes=None)
-    run(["--json", "--lite"])
+    runner.invoke(cli_root, ["inspect", "--json", "--lite"])
     payload = json.loads(_stdout(display_mock_service))
     assert payload["lite"] is True
     assert payload["storage"]["logs_bytes"] is None
@@ -971,10 +1000,10 @@ def test_json_output_carries_the_lite_marker_and_nulls(
 
 
 def test_json_output_carries_the_stale_images(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     assert [row["project"] for row in payload["stale_images"]] == [
         "/home/me/wotp",
@@ -984,123 +1013,101 @@ def test_json_output_carries_the_stale_images(
 
 
 def test_json_output_distinguishes_an_empty_sweep_from_an_unrun_one(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """[] is the measured verdict that nothing is stale; null is no verdict at all."""
     inspect_mock.build_report.return_value = _report(stale_images=[])
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     assert json.loads(_stdout(display_mock_service))["stale_images"] == []
     display_mock_service.success.assert_not_called()
 
 
 def test_json_output_carries_the_project_image(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(project=_PROJECT)
-    run(["--json"])
+    runner.invoke(cli_root, ["inspect", "--json"])
     payload = json.loads(_stdout(display_mock_service))
     assert payload["project"]["image"] == "claude-agent-wrap"
     assert payload["project"]["claude_version"] == "2.0.50"
 
 
 @pytest.mark.usefixtures("inspect_mock")
-def test_json_output_nulls_the_project_when_there_is_none(display_mock_service: Mock) -> None:
-    run(["--json"])
+def test_json_output_nulls_the_project_when_there_is_none(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    runner.invoke(cli_root, ["inspect", "--json"])
     assert json.loads(_stdout(display_mock_service))["project"] is None
 
 
 def test_json_output_still_parses_when_docker_is_down(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     """A degraded report must stay machine-readable, not truncate."""
     inspect_mock.build_report.return_value = _report(docker_available=False)
-    assert run(["--json"]) == 1
+    assert runner.invoke(cli_root, ["inspect", "--json"]).exit_code == 1
     payload = json.loads(_stdout(display_mock_service))
     assert payload["docker"]["available"] is False
     assert payload["docker"]["error"]
 
 
-# --- exit codes ---
-
-
 @pytest.mark.usefixtures("display_mock_service")
-def test_exit_zero_when_docker_is_up(inspect_mock: Mock) -> None:
+def test_exit_zero_when_docker_is_up(runner: CliRunner, inspect_mock: Mock) -> None:
     del inspect_mock
-    assert run([]) == 0
+    assert runner.invoke(cli_root, ["inspect"]).exit_code == 0
 
 
-def test_exit_one_when_docker_is_down(inspect_mock: Mock, display_mock_service: Mock) -> None:
+def test_exit_one_when_docker_is_down(
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
+) -> None:
     inspect_mock.build_report.return_value = _report(docker_available=False)
-    assert run([]) == 1
+    assert runner.invoke(cli_root, ["inspect"]).exit_code == 1
     assert "no docker" in _stdout(display_mock_service)
 
 
 def test_docker_down_still_prints_filesystem_sections(
-    inspect_mock: Mock, display_mock_service: Mock
+    runner: CliRunner, inspect_mock: Mock, display_mock_service: Mock
 ) -> None:
     inspect_mock.build_report.return_value = _report(docker_available=False)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
     assert "wrapper" in out
     assert "logs storage" in out
 
 
-# --- completion ---
-
-
-def test_completion_offers_the_json_flag() -> None:
-    _run_fn, complete_fn = COMMANDS["inspect"]
-    assert "--json" in complete_fn(2, ["agent", "inspect", ""])
-    assert "-j" in complete_fn(2, ["agent", "inspect", ""])
-
-
-def test_completion_offers_the_lite_flag() -> None:
-    _run_fn, complete_fn = COMMANDS["inspect"]
-    assert "--lite" in complete_fn(2, ["agent", "inspect", ""])
-    assert "-l" in complete_fn(2, ["agent", "inspect", ""])
-
-
-def test_completion_omits_an_already_used_flag() -> None:
-    _run_fn, complete_fn = COMMANDS["inspect"]
-    assert "--json" not in complete_fn(3, ["agent", "inspect", "--json", ""])
-
-
-def test_completion_omits_an_already_used_lite_flag() -> None:
-    """Both spellings hang off one action, so either present excludes the pair."""
-    _run_fn, complete_fn = COMMANDS["inspect"]
-    offered = complete_fn(3, ["agent", "inspect", "-l", ""])
-    assert "--lite" not in offered
-    assert "--json" in offered
-
-
-def test_interpreter_row_reports_the_provisioned_version(display_mock_service: Mock) -> None:
+def test_interpreter_row_reports_the_provisioned_version(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     services.inspect_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "bootstrap" not in line
 
 
 def test_interpreter_row_flags_a_pin_the_bootstrap_has_not_caught_up_with(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """Nothing else in the report would reveal that the two have diverged."""
     services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
         python_version="3.14.7", python_pinned="3.15.0"
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "3.15.0" in line
     assert "bin/agent-bootstrap" in line
 
 
-def test_interpreter_row_survives_an_unreadable_pin(display_mock_service: Mock) -> None:
+def test_interpreter_row_survives_an_unreadable_pin(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """A missing python-pin.env must not make the row claim a mismatch."""
     services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
         python_version="3.14.7", python_pinned=None
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "bootstrap" not in line
@@ -1121,7 +1128,10 @@ _DEEP_STALE_IMAGES = [
 
 
 def test_human_output_chops_the_stale_image_tree_into_a_narrow_console(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Too narrow for the tree even with IMAGE and REASON cut to their headers, so it chops.
@@ -1131,7 +1141,7 @@ def test_human_output_chops_the_stale_image_tree_into_a_narrow_console(
     """
     monkeypatch.setenv("COLUMNS", "35")
     inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
     assert labels == [
         "/",
@@ -1144,7 +1154,10 @@ def test_human_output_chops_the_stale_image_tree_into_a_narrow_console(
 
 
 def test_human_output_leaves_the_stale_image_tree_whole_when_cutting_is_enough(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     The tree is chopped only when the tree is what does not fit.
@@ -1155,29 +1168,35 @@ def test_human_output_leaves_the_stale_image_tree_whole_when_cutting_is_enough(
     """
     monkeypatch.setenv("COLUMNS", "60")
     inspect_mock.build_report.return_value = _report(stale_images=_DEEP_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
     assert labels == ["/", "└home/me/work/", " ├personal/dotfiles", " └wargaming/wotp"]
 
 
 def test_human_output_keeps_the_stale_image_tree_folded_when_chopping_would_not_help(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Splitting `home/me/` would indent the leaves that already set the width."""
     monkeypatch.setenv("COLUMNS", "60")
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     labels = [_stale_cells(line)[0] for line in _stale_body(display_mock_service)]
     assert [label for label in labels if label] == ["/", "└home/me/", " ├wotp", " └wotp-be"]
 
 
 def test_human_output_keeps_the_stale_image_table_inside_a_narrow_console(
-    inspect_mock: Mock, display_mock_service: Mock, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    inspect_mock: Mock,
+    display_mock_service: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Whatever chopping cannot fix, cutting does: no drawn line runs past the console."""
     monkeypatch.setenv("COLUMNS", "60")
     inspect_mock.build_report.return_value = _report(stale_images=_STALE_IMAGES)
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     drawn = [
         line for line in _stale_lines(display_mock_service) if line.startswith(("│", "┌", "├", "└"))
     ]
@@ -1185,39 +1204,42 @@ def test_human_output_keeps_the_stale_image_table_inside_a_narrow_console(
 
 
 def test_interpreter_row_flags_constraints_the_bootstrap_has_not_caught_up_with(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """A manual `git pull` moves bin/requirements.txt without re-provisioning."""
     services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
         deps_current=False
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "dependencies stale" in line
     assert "bin/agent-bootstrap" in line
 
 
 def test_interpreter_row_reports_the_pin_first_when_both_have_drifted(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """One bootstrap run fixes both, so naming it twice would only add noise."""
     services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
         python_version="3.14.7", python_pinned="3.15.0", deps_current=False
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.15.0" in line
     assert "dependencies stale" not in line
 
 
 def test_interpreter_row_stays_quiet_when_the_venv_state_is_unreadable(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """None means "could not tell", which must not render as a warning."""
     services.inspect_service.build_report.return_value = _report(  # pyrefly: ignore [missing-attribute]
         deps_current=None
     )
-    run([])
+    runner.invoke(cli_root, ["inspect"])
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "bootstrap" not in line

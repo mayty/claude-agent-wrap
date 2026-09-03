@@ -1,26 +1,25 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `run` subcommand — launches Claude Code in a Docker container."""
 
-from typing import TYPE_CHECKING
+import click
 
 from agent_wrap.containers import services
-from agent_wrap.lib.argparsing import make_parser
-
-if TYPE_CHECKING:
-    import argparse
-
-USAGE = "[-b|--base] [claude-args...]"
-SUMMARY = "Launch Claude Code in Docker"
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("run", usage_summary=USAGE, add_help=False)
-    parser.add_argument("-b", "--base", action="store_true")
-    return parser
-
-
-def run(args: list[str]) -> int:
-    """Execute the `run` subcommand. Forwards exit code from docker run."""
-    parser = build_parser()
-    ns, claude_args = parser.parse_known_args(args)
-    return services.launch_service.launch(use_base=ns.base, claude_args=claude_args)
+@click.command(
+    "run",
+    # `add_help_option=False` is what makes `agent run --help` forward `--help` to Claude
+    # Code rather than print the wrapper's own help; `ignore_unknown_options` is what lets
+    # every other unrecognised flag through to `claude_args` instead of erroring.
+    # `allow_interspersed_args` is deliberately left at its default: turning it off would
+    # stop `-b` being recognised after an unknown flag, which argparse's parse_known_args
+    # accepted and callers rely on.
+    add_help_option=False,
+    context_settings={"ignore_unknown_options": True},
+)
+@click.option("-b", "--base", is_flag=True)
+@click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def run_command(ctx: click.Context, *, base: bool, claude_args: tuple[str, ...]) -> None:
+    """Launch Claude Code in Docker"""
+    ctx.exit(services.launch_service.launch(use_base=base, claude_args=list(claude_args)))

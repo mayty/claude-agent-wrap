@@ -11,7 +11,11 @@ A Docker-based wrapper for the Claude Code CLI that isolates the agent in contai
 
 ```
 agent_wrap/
-├── cli/             # User-facing CLI commands (run, rebuild, create, logs, stats, inspect, cleanup, update, secrets)
+├── __main__.py      # Root click group; bin/agent execs `-m agent_wrap`
+├── cli/             # One click command per verb (run, rebuild, create, logs, stats, inspect, cleanup, update, secrets)
+│   ├── __init__.py  #   command_groups: the tuple the root group registers
+│   ├── params.py    #   Shared click.ParamType converters
+│   └── <verb>/run.py#   The verb's click command, plus its constants.py / tests/
 ├── domain/          # Business logic — one subpackage per concern, each with its own tests/
 │   ├── build/       #   Image build orchestration
 │   ├── config/      #   Configuration reading
@@ -272,7 +276,7 @@ so the two never have to share the more conservative number.
 
 - **Exceptions**: all custom exceptions are defined in `agent_wrap/exceptions.py`. Consumers import directly from there.
 - **Constants**: module-level constants imported by more than one module belong in `agent_wrap/constants.py`. Subpackage-scoped constants (public or `_`-prefixed) belong in an optional ``constants.py`` within their domain subpackage (see rule 10).
-- **``__init__.py``**: must not re-export names from sibling modules. Every consumer imports directly from the module that defines the name.
+- **``__init__.py``**: must not re-export names from sibling modules. Every consumer imports directly from the module that defines the name. Defining a name of the package's own is different and is allowed — `agent_wrap/cli/__init__.py` builds the `command_groups` tuple the root click group registers, which is a new binding rather than a passthrough to something a consumer could import directly.
 - **Private names**: never import a private (`_`-prefixed) name from another module. If a name is intended for import outside its defining module, it must be public (no underscore).
 - **Namespace classes**: comment-separated blocks of standalone functions that share a micro-domain must be replaced with a namespace class — a class whose methods are all ``@staticmethod`` and that has no instance state (see rule 7). They are pure organizational containers; do not confuse them with domain service classes.
 - **``models.py``**: data- and type-carrying classes (dataclasses, TypedDicts, NamedTuples, type aliases) belong in an optional ``models.py`` within their domain subpackage (see rule 8).

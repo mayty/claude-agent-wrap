@@ -3,6 +3,8 @@
 
 from typing import TYPE_CHECKING
 
+import click
+
 from agent_wrap.cli.cleanup.constants import (
     CLEANUP_IMAGE_ALIGNS,
     CLEANUP_IMAGE_ELIDE,
@@ -22,29 +24,12 @@ from agent_wrap.domain.build.constants import (
 )
 from agent_wrap.domain.display.constants import Ansi
 from agent_wrap.domain.display.models import RowItem
-from agent_wrap.lib.argparsing import make_parser, parse_or_code
 
 if TYPE_CHECKING:
-    import argparse
-
     from agent_wrap.domain.build.models import ImageCleanupOutcome, ImageCleanupScope
     from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import CleanupOutcome, CleanupScope
-
-USAGE = "[-n|--dry-run]"
-SUMMARY = "Delete orphaned project data and outdated images (archiving usage first)"
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("cleanup", usage_summary=USAGE)
-    parser.add_argument(
-        "-n",
-        "--dry-run",
-        action="store_true",
-        help="Show what would be cleaned up, without deleting anything or prompting.",
-    )
-    return parser
 
 
 class _CleanupReport:
@@ -165,11 +150,27 @@ class _CleanupReport:
         return 0
 
 
-def run(args: list[str]) -> int:
-    """Execute the `cleanup` subcommand."""
-    ns = parse_or_code(build_parser(), args)
-    if isinstance(ns, int):
-        return ns
+@click.command("cleanup")
+@click.option(
+    "-n",
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be cleaned up, without deleting anything or prompting.",
+)
+@click.pass_context
+def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
+    """
+    Delete orphaned project data and outdated images
+
+    Remove the leftover state that accumulates as projects are deleted or renamed and
+    images are rebuilt: request-log directories no longer reachable from any registered
+    project, registry entries whose project directory is gone, and docker images that are
+    untagged, orphaned, stale, or superseded by a newer pinned sidecar digest.
+
+    Every log directory's token counts are archived before it is deleted, so historical
+    spend keeps appearing in `agent stats` under the <orphaned> row. The whole plan is
+    previewed and confirmed once before anything is removed.
+    """
     dsp = services.display_service
     stats = services.stats_service
     build = services.build_service
@@ -193,17 +194,17 @@ def run(args: list[str]) -> int:
         )
         if image_scope.unattributable:
             dsp.info(UNATTRIBUTABLE_NOTE.format(count=image_scope.unattributable))
-        return 0
+        ctx.exit(0)
 
     _CleanupReport.preview(scope, image_scope, dsp)
 
-    if ns.dry_run:
-        return 0
+    if dry_run:
+        ctx.exit(0)
 
     # Non-interactive stdin declines via prompt_confirm's EOFError handling.
     if not dsp.prompt_confirm("Proceed? [y/N]"):
         dsp.info("Cleanup cancelled.")
-        return 0
+        ctx.exit(0)
 
     outcomes: list[CleanupOutcome] = []
     image_outcomes: list[ImageCleanupOutcome] = []
@@ -223,4 +224,4 @@ def run(args: list[str]) -> int:
     dsp.spin_while(
         label=CLEANUP_LABEL, message="cleaning up…", done_message=lambda: None, work=clean
     )
-    return _CleanupReport.summarize(outcomes[0], image_outcomes[0], dsp)
+    ctx.exit(_CleanupReport.summarize(outcomes[0], image_outcomes[0], dsp))

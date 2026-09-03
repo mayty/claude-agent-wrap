@@ -7,12 +7,12 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.11.0](releases/0.11.0.md) — 2026-09-03
 
-`agent` now runs on a venv that carries the dependencies the wrapper pins, and provisions
-that venv itself on the first run. The setup is a clone and one `source` line. The
-bootstrap reports each step, and `agent inspect` reports a stale venv. The `agent logs`
-viewer now updates on filesystem events instead of polling every two seconds, which also
-means agent-wrap must be installed on a local filesystem. Its project table's session
-count now agrees with the sessions it lists.
+**Breaking:** `agent` exits `2` on a usage error, not `1`, and `agent secrets` is now a
+command group. `agent` also runs on a venv that it provisions itself on the first run.
+Tab completion answers from the parser, so re-source `agent-wrap.bashrc`. The `agent
+logs` viewer updates on filesystem events instead of polling, so agent-wrap must be
+installed on a local filesystem. Its project table's session count now agrees with the
+sessions it lists.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 

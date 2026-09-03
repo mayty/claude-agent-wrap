@@ -16,31 +16,42 @@ case ":$PATH:" in
 esac
 export PATH
 
-# Bash completion for `agent`. Delegates to the Python completion module
-# via AGENT_COMPLETE=1 agent. Registered only under bash,
-# where `complete`/COMPREPLY exist; other shells just get the PATH setup.
+# Bash completion for `agent`. This is click's own generated completion function,
+# inlined verbatim rather than sourced via `eval "$(_AGENT_COMPLETE=bash_source agent)"`:
+# that form forks a Python interpreter on every shell startup, and on a checkout that is
+# not provisioned yet bin/agent exits 0 immediately, so the eval would register nothing
+# at all until the next new shell. Regenerate with
+# `_AGENT_COMPLETE=bash_source agent` if click's template changes.
+#
+# Registered only under bash, where `complete`/COMPREPLY exist; other shells just get
+# the PATH setup above. `complete -o nosort` needs bash >= 4.4.
 if [ -n "$BASH_VERSION" ]; then
-    _agent_complete() {
-        local cur="${COMP_WORDS[COMP_CWORD]}"
-        local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    _agent_completion() {
+        local IFS=$'\n'
+        local response
 
-        # `=` in flag values (e.g. --from=-14d): don't complete
-        if [[ "$prev" == *= ]]; then
-            COMPREPLY=()
-            return 0
-        fi
+        response=$(env COMP_WORDS="${COMP_WORDS[*]}" COMP_CWORD=$COMP_CWORD _AGENT_COMPLETE=bash_complete $1)
 
-        local result
-        result=$(AGENT_COMPLETE=1 agent "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null) || true
+        for completion in $response; do
+            IFS=',' read type value <<< "$completion"
 
-        if [[ -n "$result" ]]; then
-            mapfile -t COMPREPLY < <(compgen -W "$result" -- "$cur")
-        else
-            compopt -o default 2>/dev/null
-            COMPREPLY=()
-        fi
+            if [[ $type == 'dir' ]]; then
+                COMPREPLY=()
+                compopt -o dirnames
+            elif [[ $type == 'file' ]]; then
+                COMPREPLY=()
+                compopt -o default
+            elif [[ $type == 'plain' ]]; then
+                COMPREPLY+=($value)
+            fi
+        done
+
         return 0
     }
 
-    complete -F _agent_complete agent
+    _agent_completion_setup() {
+        complete -o nosort -F _agent_completion agent
+    }
+
+    _agent_completion_setup;
 fi

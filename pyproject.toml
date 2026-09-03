@@ -7,6 +7,7 @@ requires-python = "==3.14.7"
 # First-degree runtime dependencies, as ranges. Exact versions live in uv.lock and
 # in the exported bin/requirements.txt -- never here. See CLAUDE.md for the flow.
 dependencies = [
+    "click>=8.5.0",
     "httpx2>=2.12.0",
     "watchdog>=6.0.0",
 ]
@@ -162,9 +163,6 @@ ignore = [
 ]
 "agent_wrap/domain/logs/daemon.py" = [
     "T201",    # separate process; stdout is dup2'd to the daemon's own logfile
-]
-"agent_wrap/__main__.py" = [
-    "T201",    # shell tab-completion candidates: machine-readable stdout, not a message
 ]
 
 [tool.ruff.lint.isort]

@@ -8,8 +8,11 @@ from typing import Final
 from agent_wrap.lib.daytime import local_utc_offset_hours, utc_offset_hours_for_tz
 from agent_wrap.lib.utils import is_truthy_env
 
-# Minimum sys.argv length for a valid CLI invocation (program name + verb).
-MIN_ARGS = 2
+#: Click ``context_settings`` for the root group, inherited by every subcommand.
+#: Click adds only ``--help`` by default; ``-h`` is declared because argparse's
+#: ``add_help`` used to provide it on every verb. ``agent run`` is the one exception --
+#: it adds no help option at all, so that ``--help`` reaches Claude Code.
+CLI_CONTEXT_SETTINGS: Final[dict[str, list[str]]] = {"help_option_names": ["-h", "--help"]}
 
 
 class PollResult(Enum):

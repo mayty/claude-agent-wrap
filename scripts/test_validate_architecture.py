@@ -570,11 +570,18 @@ def test_rule_e_constant_inside_constants_allowed(make: _Maker) -> None:
     assert "EE001" not in _violation_codes(check_file(fp))
 
 
-def test_rule_e_usage_and_summary_exempt(make: _Maker) -> None:
-    """cli/commands.py reads these off each run module by name, so they cannot move."""
+def test_rule_e_has_no_exemptions(make: _Maker) -> None:
+    """
+    ``USAGE``/``SUMMARY`` used to be exempt here.
+
+    ``cli/commands.py`` read them reflectively off each verb's ``run`` module, so they
+    could not move. They are now a click ``options_metavar`` argument and the command
+    docstring's summary line, so the exemption is gone and a constant in a verb module is
+    a violation like any other.
+    """
     make.write("agent_wrap/cli/stats/run.py", "USAGE = '[-v]'\nSUMMARY = 'Show stats'\n")
     fp = make.root / "agent_wrap" / "cli" / "stats" / "run.py"
-    assert "EE001" not in _violation_codes(check_file(fp))
+    assert "EE001" in _violation_codes(check_file(fp))
 
 
 def test_rule_e_lower_case_binding_not_a_constant(make: _Maker) -> None:

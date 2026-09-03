@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from agent_wrap.__main__ import cli_root
 from agent_wrap.cli.cleanup.constants import (
     CLEANUP_LABEL,
     SKIPPED_IMAGE_NOTE,
@@ -14,7 +15,6 @@ from agent_wrap.cli.cleanup.constants import (
     UNATTRIBUTABLE_NOTE,
 )
 from agent_wrap.cli.cleanup.run import _CleanupReport
-from agent_wrap.cli.cleanup.run import run as cleanup_run
 from agent_wrap.containers import services
 from agent_wrap.domain.build.constants import ImageCleanupReason
 from agent_wrap.domain.build.models import (
@@ -28,6 +28,8 @@ from agent_wrap.domain.stats.models import CleanupOutcome, CleanupResult, Cleanu
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
+
+    from click.testing import CliRunner
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -118,46 +120,50 @@ def _stdout(dsp: Mock) -> str:
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock", "display_mock_service")
-def test_image_scope_is_surveyed_against_the_registry() -> None:
+def test_image_scope_is_surveyed_against_the_registry(runner: CliRunner) -> None:
     """The sweep needs every registered project to know which image names are claimed."""
     services.config_service.read_project_paths.return_value = [  # pyrefly: ignore [missing-attribute]
         Path("/home/u/proj-web")
     ]
 
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     services.build_service.image_cleanup_scope.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         [Path("/home/u/proj-web")]
     )
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_images_alone_are_enough_to_run(display_mock_service: Mock) -> None:
+def test_images_alone_are_enough_to_run(runner: CliRunner, display_mock_service: Mock) -> None:
     """Nothing on the logs side must not read as nothing to do."""
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     out = _stdout(display_mock_service)
     assert "Outdated images (1):" in out
     assert "project log(s) will be deleted" not in out
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_empty_on_both_sides_reports_nothing_to_do(display_mock_service: Mock) -> None:
+def test_empty_on_both_sides_reports_nothing_to_do(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(images=[], unattributable=0)
     )
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     assert "Nothing to clean up" in _stdout(display_mock_service)
     services.build_service.remove_images.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_unattributable_images_are_reported_but_never_removed(display_mock_service: Mock) -> None:
+def test_unattributable_images_are_reported_but_never_removed(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """A pre-label leftover cannot be attributed, so the note points at `docker image prune`."""
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(images=[], unattributable=4)
     )
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     out = _stdout(display_mock_service)
     assert "Nothing to clean up" in out
     assert UNATTRIBUTABLE_NOTE.format(count=4) in out
@@ -165,45 +171,50 @@ def test_unattributable_images_are_reported_but_never_removed(display_mock_servi
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_unattributable_note_also_rides_along_with_a_real_scope(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(images=[_image("w01")], unattributable=2)
     )
 
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     assert UNATTRIBUTABLE_NOTE.format(count=2) in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_dry_run_removes_nothing_and_never_prompts(display_mock_service: Mock) -> None:
-    assert cleanup_run(["--dry-run"]) == 0
+def test_dry_run_removes_nothing_and_never_prompts(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     services.build_service.remove_images.assert_not_called()  # pyrefly: ignore [missing-attribute]
     display_mock_service.prompt_confirm.assert_not_called()
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_declining_the_prompt_removes_no_image(display_mock_service: Mock) -> None:
+def test_declining_the_prompt_removes_no_image(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """One confirmation covers both halves, so declining it must leave images alone too."""
     display_mock_service.prompt_confirm.return_value = False
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     services.build_service.remove_images.assert_not_called()  # pyrefly: ignore [missing-attribute]
     services.stats_service.run_cleanup.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_one_confirmation_covers_both_halves(display_mock_service: Mock) -> None:
+def test_one_confirmation_covers_both_halves(runner: CliRunner, display_mock_service: Mock) -> None:
     display_mock_service.prompt_confirm.return_value = True
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     assert display_mock_service.prompt_confirm.call_count == 1
     services.build_service.remove_images.assert_called_once()  # pyrefly: ignore [missing-attribute]
     services.stats_service.run_cleanup.assert_called_once()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_images_are_removed_before_the_logs(display_mock_service: Mock) -> None:
+def test_images_are_removed_before_the_logs(runner: CliRunner, display_mock_service: Mock) -> None:
     """
     Ordering is deliberate: the archive's abort path returns early, and images must be
     dealt with by then rather than skipped because of it.
@@ -217,41 +228,47 @@ def test_images_are_removed_before_the_logs(display_mock_service: Mock) -> None:
         lambda _scope: order.append("logs") or _stats_outcome()
     )
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     assert order == ["images", "logs"]
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_remove_images_acts_on_the_surveyed_scope(display_mock_service: Mock) -> None:
+def test_remove_images_acts_on_the_surveyed_scope(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """No re-survey between the preview the user confirmed and the removal."""
     display_mock_service.prompt_confirm.return_value = True
     surveyed = ImageCleanupScope(images=[_image("w01")], unattributable=0)
     services.build_service.image_cleanup_scope.return_value = surveyed  # pyrefly: ignore [missing-attribute]
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     services.build_service.remove_images.assert_called_once_with(surveyed)  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_success_message_counts_the_removed_images(display_mock_service: Mock) -> None:
+def test_success_message_counts_the_removed_images(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     display_mock_service.prompt_confirm.return_value = True
     services.build_service.remove_images.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupOutcome(removed=[_image("w01"), _image("g01")], skipped=[])
     )
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     assert "2 image(s) removed" in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_a_refused_removal_warns_without_failing(display_mock_service: Mock) -> None:
+def test_a_refused_removal_warns_without_failing(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """`remove_images` never forces, so docker's refusal is reported, not fatal."""
     display_mock_service.prompt_confirm.return_value = True
     services.build_service.remove_images.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupOutcome(removed=[], skipped=[_image("claude-agent-api:latest")])
     )
 
-    assert cleanup_run([]) == 0
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     out = _stdout(display_mock_service)
     assert f"claude-agent-api:latest: {SKIPPED_IMAGE_NOTE}" in out
     assert "0 image(s) removed" in out
@@ -259,6 +276,7 @@ def test_a_refused_removal_warns_without_failing(display_mock_service: Mock) -> 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_unfinalized_archive_still_reports_the_images_it_removed(
+    runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
     """Images go first, so an archive failure must not hide what already happened."""
@@ -277,14 +295,16 @@ def test_unfinalized_archive_still_reports_the_images_it_removed(
         ImageCleanupOutcome(removed=[], skipped=[_image("w01")])
     )
 
-    assert cleanup_run([]) == 1
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 1
     out = _stdout(display_mock_service)
     assert SKIPPED_IMAGE_NOTE in out
     assert "failed to finalize the usage archive" in out
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_preview_groups_rows_by_reason_with_a_heading_each(display_mock_service: Mock) -> None:
+def test_preview_groups_rows_by_reason_with_a_heading_each(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """
     The four reasons cost the reader different things, and the stale heading is where the
     rebuild they buy gets stated once.
@@ -300,7 +320,7 @@ def test_preview_groups_rows_by_reason_with_a_heading_each(display_mock_service:
         )
     )
 
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     out = _stdout(display_mock_service)
     assert "Outdated images (3):" in out
     assert "1 superseded build(s)" in out
@@ -310,7 +330,9 @@ def test_preview_groups_rows_by_reason_with_a_heading_each(display_mock_service:
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_preview_shows_each_size_and_never_a_total(display_mock_service: Mock) -> None:
+def test_preview_shows_each_size_and_never_a_total(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """Images share layers, so a summed figure would overstate the reclaim badly."""
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(
@@ -318,7 +340,7 @@ def test_preview_shows_each_size_and_never_a_total(display_mock_service: Mock) -
         )
     )
 
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     out = _stdout(display_mock_service)
     assert "1.2GB" in out
     assert "2.4GB" in out
@@ -360,7 +382,7 @@ def test_image_table_renders_through_the_real_display_service(
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_stale_rows_carry_the_rebuild_note(display_mock_service: Mock) -> None:
+def test_stale_rows_carry_the_rebuild_note(runner: CliRunner, display_mock_service: Mock) -> None:
     """The one line in the preview that says what confirming costs, rather than reclaims."""
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(
@@ -369,21 +391,25 @@ def test_stale_rows_carry_the_rebuild_note(display_mock_service: Mock) -> None:
         )
     )
 
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     assert STALE_REBUILD_NOTE in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_rebuild_note_is_absent_without_a_stale_row(display_mock_service: Mock) -> None:
+def test_rebuild_note_is_absent_without_a_stale_row(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """A superseded build costs nothing, so nothing should warn about a rebuild."""
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     assert STALE_REBUILD_NOTE not in _stdout(display_mock_service)
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_both_surveys_run_under_one_scan_spinner(display_mock_service: Mock) -> None:
+def test_both_surveys_run_under_one_scan_spinner(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
     """One scan, one spinner: the two surveys are both read-only and both happen up front."""
-    assert cleanup_run(["--dry-run"]) == 0
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
     labels = [call.kwargs["label"] for call in display_mock_service.spin_while.call_args_list]
     messages = [call.kwargs["message"] for call in display_mock_service.spin_while.call_args_list]
     assert labels == [CLEANUP_LABEL]
