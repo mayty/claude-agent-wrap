@@ -5,6 +5,12 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.11.0](releases/0.11.0.md) — 2026-09-03
+
+`agent` now runs on a venv that carries the dependencies the wrapper pins, and provisions
+that venv itself on the first run. The setup is a clone and one `source` line. The
+bootstrap reports each step, and `agent inspect` reports a stale venv.
+
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 
 **Breaking:** the wrapper now runs a CPython version it pins itself, not the host's
