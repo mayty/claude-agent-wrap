@@ -143,19 +143,24 @@ class StartupService:
         Signal the whole process group *proc* leads, then reap it.
 
         ``start_new_session=True`` made *proc* its own process-group leader, so its pid
-        doubles as the group id. Both signals are sent before the reaping ``wait()``: once
-        the leader's zombie is cleared the group id is gone, and with it the only handle
-        on the children still in it.
+        doubles as the group id.
         """
         pgid = proc.pid
-        with contextlib.suppress(ProcessLookupError):
+        # ESRCH and EPERM both mean "nothing in the group left to signal". Linux reports
+        # ESRCH; Darwin inherits 4.3BSD's killpg, where a per-process permission failure
+        # shadows the empty-group ESRCH and surfaces as EPERM instead. The group is one
+        # this process created, so neither errno can mean anything else here -- unlike a
+        # pid read from a pidfile, which may belong to another user and where EPERM is
+        # real information worth propagating.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=STARTUP_KILL_GRACE_SECONDS)
         # Unconditional rather than "only if the leader is still alive": the leader
         # exiting says nothing about *its* children, which stay in the group and would
-        # otherwise keep running.
-        with contextlib.suppress(ProcessLookupError):
+        # otherwise keep running. The wait above has already reaped the leader, so on
+        # Darwin this is the call that reports the emptied group as EPERM.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGKILL)
         # Bounded: a leaked zombie beats a launcher wedged on an unkillable child.
         with contextlib.suppress(subprocess.TimeoutExpired):
