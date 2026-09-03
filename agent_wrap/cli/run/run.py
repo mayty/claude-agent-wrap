@@ -17,7 +17,17 @@ from agent_wrap.containers import services
     add_help_option=False,
     context_settings={"ignore_unknown_options": True},
 )
-@click.option("-b", "--base", is_flag=True)
+@click.option(
+    "-b",
+    "--base",
+    is_flag=True,
+    help=(
+        "Ignore any .claude-agent-wrap/Dockerfile in the current directory and launch the "
+        "base 'claude-agent' image instead. The project's EXPOSE, agent-user, "
+        "agent-run-args and agent-enable-startup directives are all skipped, so its "
+        "startup script does not run either. Only the base image is built or rebuilt."
+    ),
+)
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run_command(ctx: click.Context, *, base: bool, claude_args: tuple[str, ...]) -> None:

@@ -16,8 +16,8 @@ Programmatic callers that only need to launch `agent` can instead put `<repo>/bi
 | `logs` | Browse LiteLLM request logs in a local web viewer |
 | `inspect` | Report the current state: sidecars, agents, providers, host facts |
 | `cleanup` | Delete leftover logs, registry entries and outdated docker images |
-| `update` | Pull latest wrapper source |
 | `secrets` | Manage encrypted sidecar/provider secrets |
+| `update` | Pull latest wrapper source |
 
 ## `agent run`
 
@@ -68,7 +68,7 @@ Rebuilds the resolved image, passing `HOST_UID`/`HOST_GID` build args. A project
 agent create [OPTIONS]
 ```
 
-Scaffolds a minimal `Dockerfile.agent` (`FROM claude-agent`) in the current directory, pre-populated with a `# agent-name: <sanitized-dirname>` comment line — the same directive [docs/docker-sandboxing.md](docker-sandboxing.md#recognized-directives) documents as required.
+Scaffolds a minimal `.claude-agent-wrap/Dockerfile` (`FROM claude-agent`) in the current directory, pre-populated with a `# agent-name: <sanitized-dirname>` comment line — the same directive [docs/docker-sandboxing.md](docker-sandboxing.md#recognized-directives) documents as required. It never overwrites: an existing `.claude-agent-wrap/Dockerfile` is an error, and so is a leftover deprecated `Dockerfile.agent`, which it tells you to move rather than scaffolding a second file beside it.
 
 ## `agent stats`
 
@@ -82,9 +82,9 @@ Aggregates token usage and estimated USD cost across every project where you've 
 
 Selection range — at most two of the three flags may be combined:
 
-- **`--from D`** — inclusive lower bound; `D` is an absolute date (`YYYY-MM-DD`) or a relative offset (`-Nd`, e.g. `-14d`).
-- **`--until D`** — inclusive upper bound; same format as `--from`.
-- **`--days N`** — span in days; `N=0` means unlimited (no day bound).
+- **`-f`/`--from D`** — inclusive lower bound; `D` is an absolute date (`YYYY-MM-DD`) or a relative offset (`-Nd`, e.g. `-14d`).
+- **`-u`/`--until D`** — inclusive upper bound; same format as `--from`.
+- **`-d`/`--days N`** — span in days; `N=0` means unlimited (no day bound).
 
 The **`-v`/`--verbose`** flag is independent of the range: it adds a usage-source breakdown table over the same window, splitting the totals by how each request's usage was obtained (read straight from the response, recovered from the request log, or uncountable).
 

@@ -1,10 +1,10 @@
 # This file has been edited with the assistance of an AI tool.
 # agent-wrap QA targets.
-# Strict targets (for CI): lintcheck format-check test typecheck markdown-check arch-check check-executables
+# Strict targets (for CI): lintcheck format-check test typecheck markdown-check arch-check cli-check check-executables
 # Fix targets (for dev):    lint, format
 # Dependency targets:       available-upgrades, upgrade-deps, dump-prod-constraints
 
-.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check
+.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check cli-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check
 
 # Every target runs on the venv bin/agent-bootstrap provisioned, never on the host's
 # python3 -- that is the whole point of owning the interpreter, and a `python3`
@@ -79,6 +79,15 @@ markdown-check:
 
 arch-check:
 	$(PYTHON) scripts/validate-architecture.py
+
+# Assert docs/shell-commands.md still covers every verb and flag in the click tree.
+# CLAUDE.md routes "adding/editing an agent verb or its flags" to that doc, and nothing
+# else enforces it. Coverage only: the doc's prose is deliberately richer than click's
+# help text, so nothing here compares wording. Unlike the other two validators this one
+# imports agent_wrap, because the subject is the parser's resolved behaviour rather than
+# the source text -- see the script's header.
+cli-check:
+	$(PYTHON) scripts/validate-cli-docs.py
 
 # Fail if any required executable lost its executable bit. Checks BOTH the
 # working-tree filesystem bit (so PATH invocation works locally) AND git's
@@ -224,4 +233,4 @@ upgrade-deps: uv-check python-check
 	uv lock
 	$(MAKE) dump-prod-constraints
 
-check: python-check constraints-check lintcheck format-check test typecheck markdown-check arch-check carveout-check check-executables
+check: python-check constraints-check lintcheck format-check test typecheck markdown-check arch-check cli-check carveout-check check-executables

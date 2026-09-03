@@ -18,6 +18,7 @@ from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.cache import LogsCache
 from agent_wrap.domain.logs.io import logs_dir
+from agent_wrap.domain.logs.watcher import CacheWatcher
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
@@ -39,6 +40,25 @@ def _group_count(cache: LogsCache) -> int:
     while cache.get_logs_dirs(count) is not None:
         count += 1
     return count
+
+
+@pytest.fixture(autouse=True)
+def inert_watcher(mocker: MockerFixture) -> None:
+    """
+    Keep the watcher's threads out of every test in this module.
+
+    ``reconcile`` and ``apply_paths`` are documented as running on the watcher's single
+    consumer thread, and in production they only ever do: ``start`` rebuilds before the
+    thread exists, and every other call is the consumer's own. These tests drive both
+    from the main thread while a real watcher runs, which breaks that contract -- a
+    filesystem write inside a test queues an event, and the consumer can handle the same
+    ``projects.txt`` delta concurrently with the test's explicit ``reconcile``. Both then
+    pass the ``current_paths != _known_project_paths`` gate and insert the same group, so
+    ``_group_count`` intermittently read 2 where the test asserted 1.
+
+    Event delivery is covered by ``test_watcher.py``; nothing here depends on it.
+    """
+    mocker.patch.object(CacheWatcher, "start", autospec=True)
 
 
 @pytest.fixture

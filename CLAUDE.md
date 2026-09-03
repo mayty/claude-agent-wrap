@@ -56,7 +56,7 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 A `Makefile` provides all QA targets. Follow these rules:
 
-- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + constraints-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
+- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + constraints-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + cli-check + carveout-check + check-executables) passes cleanly.
 - **Save `agent rebuild` for the end of the session.** `make install` updates the venv
   this session runs on, so nothing is blocked in the meantime. But the container's
   `.python/` is an anonymous volume on a `--rm` container: it dies with the session, and
