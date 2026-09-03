@@ -3,24 +3,21 @@
 
 import contextlib
 import json
-import os
 from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.constants import (
-    AGENT_LAUNCHES_DIR,
     LITELLM_LOGS_DIRNAME,
     ORPHANED_LABEL,
-    PROJECT_REGISTRY_FILENAME,
 )
+from agent_wrap.domain.logs.constants import MESSAGES_FILENAME
 from agent_wrap.domain.logs.hash_resolver import load_strings
 from agent_wrap.domain.logs.models import (
     CombinedSessionMeta,
     Fingerprint,
     GroupInfo,
     NormalizedRecord,
-    ProjectInfo,
     ProviderSessionMeta,
     ProviderSessionRead,
     ReadSessionResult,
@@ -40,109 +37,8 @@ if TYPE_CHECKING:
     from agent_wrap.domain.stats.service import StatsService
 
 
-def read_last_record_ts(messages_file: Path) -> float | None:
-    r"""
-    Read the ``timing.end`` epoch from the last JSON record in *messages_file*.
-
-    Seeks to the last 1 MB, skips to the first ``\n`` to avoid landing in
-    the middle of a multi-byte character, then walks lines backwards to
-    find the last valid JSON record.
-    """
-    if not messages_file.is_file():
-        return None
-
-    try:
-        size = messages_file.stat().st_size
-        if size == 0:
-            return None
-        with messages_file.open("rb") as f:
-            chunk_size = min(size, 1_048_576)
-            f.seek(-chunk_size, os.SEEK_END)
-            tail = f.read(chunk_size)
-    except OSError:
-        return None
-
-    # If we started mid-file (not at offset 0), skip past the first newline
-    # to avoid a partial line that could be cut mid-character.
-    if chunk_size < size:
-        nl = tail.find(b"\n")
-        if nl != -1:
-            tail = tail[nl + 1 :]
-
-    tail_str = tail.decode("utf-8", errors="replace")
-    for raw_line in reversed(tail_str.splitlines()):
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        try:
-            rec = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        end = (rec.get("timing") or {}).get("end")
-        if isinstance(end, (int, float)):
-            return end
-
-    return None
-
-
-def _lightweight_logs_summary(logs_dir: Path) -> tuple[int, float | None]:
-    """
-    Return ``(session_count, max_last_ts)`` for a logs dir using minimal I/O.
-
-    Counts session directories (deduplicating across providers) and reads
-    the last record's timestamp only from the single ``messages.jsonl``
-    with the highest modification time — the file most recently appended to,
-    which is where the latest timestamp lives.
-    """
-    if not logs_dir.is_dir():
-        return 0, None
-
-    seen_sessions: set[str] = set()
-    newest_file: Path | None = None
-    newest_mtime: int = 0
-
-    # rglob walks logs_dir/<provider>/<session_id>/messages.jsonl in one pass.
-    for messages_file in logs_dir.rglob("messages.jsonl"):
-        if not messages_file.is_file():
-            continue
-
-        # Deduplicate session_id across providers.
-        session_id = messages_file.parent.name
-        seen_sessions.add(session_id)
-
-        # Track the file with the highest modification time.
-        try:
-            mtime = messages_file.stat().st_mtime_ns
-        except OSError:
-            continue
-        if mtime > newest_mtime:
-            newest_mtime = mtime
-            newest_file = messages_file
-
-    # Read only the single most-recently-written file — its last record
-    # carries the latest timestamp across all sessions.
-    max_last_ts: float | None = None
-    if newest_file is not None:
-        max_last_ts = read_last_record_ts(newest_file)
-
-    return len(seen_sessions), max_last_ts
-
-
 def logs_dir(project: Path) -> Path:
     return project / ".claude" / LITELLM_LOGS_DIRNAME
-
-
-def _aslogs_dirs(project: Path | list[Path]) -> list[Path]:
-    """
-    Normalize a reader argument to a list of LiteLLM logs dirs to scan.
-
-    Accepts either a single project :class:`~pathlib.Path` (the historical,
-    per-project API still used by tests) — mapped to its ``.claude/litellm-logs``
-    — or a list of logs dirs already resolved by the HTTP handler (a grouped
-    transient project's members, or the synthetic ``<orphaned>`` group's central
-    ``<hash>`` dirs, which *are* logs dirs and have no ``.claude`` wrapper).
-    """
-    return project if isinstance(project, list) else [logs_dir(project)]
 
 
 def list_groups(stats_service: StatsService, projects: list[Path]) -> list[GroupInfo]:
@@ -202,39 +98,10 @@ def list_groups(stats_service: StatsService, projects: list[Path]) -> list[Group
     return groups
 
 
-def list_projects(groups: list[GroupInfo]) -> list[ProjectInfo]:
-    """List transient projects (grouped) that have LiteLLM logs."""
-    out: list[ProjectInfo] = []
-    for idx, group in enumerate(groups):
-        session_count = 0
-        max_last_ts: float | None = None
-        for logs_dir in group["logs_dirs"]:
-            count, last_ts = _lightweight_logs_summary(logs_dir)
-            session_count += count
-            if last_ts is not None and (max_last_ts is None or last_ts > max_last_ts):
-                max_last_ts = last_ts
-        if session_count == 0:
-            continue
-        out.append(
-            {
-                "id": idx,
-                "path": str(group["root"]),
-                "name": group["name"],
-                "sessions": session_count,
-                "last_ts": max_last_ts,
-            }
-        )
-    out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
-    return out
-
-
 def _accumulate_session_meta(meta: SessionMeta, rec: LogRecord) -> None:
     """Update *meta* with timing, model, alias, and title from *rec*."""
     meta.count += 1
     timing = rec["timing"] or {}
-    start = timing.get("start")
-    if isinstance(start, (int, float)) and meta.first_ts is None:
-        meta.first_ts = start
     end = timing.get("end")
     if isinstance(end, (int, float)):
         meta.last_ts = end
@@ -257,7 +124,7 @@ def read_meta_json(session_dir: Path) -> MetaData | None:
     stale, or corrupt so the caller can fall back to a full scan.
     """
     meta_file = session_dir / "meta.json"
-    messages_file = session_dir / "messages.jsonl"
+    messages_file = session_dir / MESSAGES_FILENAME
     if not meta_file.is_file() or not messages_file.is_file():
         return None
     try:
@@ -308,14 +175,13 @@ def scan_session_meta(session_dir: Path, provider: str) -> ProviderSessionMeta |
                 "alias": cached.get("alias"),
                 "title": cached.get("title"),
                 "count": cached.get("count", 0),
-                "first_ts": cached.get("first_ts"),
                 "last_ts": cached.get("last_ts"),
                 "models": cached.get("models") or [],
             },
         )
 
     # Slow path: full scan (existing behavior).
-    messages_file = session_dir / "messages.jsonl"
+    messages_file = session_dir / MESSAGES_FILENAME
     if not messages_file.is_file():
         return None
 
@@ -357,7 +223,6 @@ def scan_session_meta(session_dir: Path, provider: str) -> ProviderSessionMeta |
         "alias": meta.derived_alias,
         "title": meta.derived_title,
         "count": meta.count,
-        "first_ts": meta.first_ts,
         "last_ts": meta.last_ts,
         "models": sorted(meta.models),
     }
@@ -369,8 +234,6 @@ def _merge_session_meta(existing: CombinedSessionMeta, meta: ProviderSessionMeta
         existing["providers"].append(meta["provider"])
         existing["providers"].sort()
     existing["count"] += meta["count"]
-    if meta["first_ts"] and (not existing["first_ts"] or meta["first_ts"] < existing["first_ts"]):
-        existing["first_ts"] = meta["first_ts"]
     if meta["last_ts"] and (not existing["last_ts"] or meta["last_ts"] > existing["last_ts"]):
         existing["last_ts"] = meta["last_ts"]
     existing["models"] = sorted(set(existing["models"]) | set(meta["models"]))
@@ -380,9 +243,9 @@ def _merge_session_meta(existing: CombinedSessionMeta, meta: ProviderSessionMeta
         existing["title"] = meta["title"]
 
 
-def list_sessions(project: Path | list[Path]) -> list[CombinedSessionMeta]:
+def list_sessions(logs_dirs: list[Path]) -> list[CombinedSessionMeta]:
     """
-    List sessions (newest first) across every provider in a project.
+    List sessions (newest first) across every provider in *logs_dirs*.
 
     Sessions with the same ``session_id`` across different providers — or across
     the member projects of a grouped transient project — are merged into a single
@@ -390,7 +253,7 @@ def list_sessions(project: Path | list[Path]) -> list[CombinedSessionMeta]:
     rows in the viewer.
     """
     by_session: dict[str, CombinedSessionMeta] = {}
-    for logs_dir in _aslogs_dirs(project):
+    for logs_dir in logs_dirs:
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -411,7 +274,6 @@ def list_sessions(project: Path | list[Path]) -> list[CombinedSessionMeta]:
                         "alias": meta["alias"],
                         "title": meta["title"],
                         "count": meta["count"],
-                        "first_ts": meta["first_ts"],
                         "last_ts": meta["last_ts"],
                         "models": meta["models"],
                         "providers": [meta["provider"]],
@@ -423,26 +285,26 @@ def list_sessions(project: Path | list[Path]) -> list[CombinedSessionMeta]:
     return out
 
 
-def session_fingerprint(project: Path | list[Path], session_id: str) -> Fingerprint:
+def session_fingerprint(logs_dirs: list[Path], session_id: str) -> Fingerprint:
     """
     Return a combined change-marker for a session across all providers.
 
     Returns ``{"mtime": max_mtime_ns, "size": sum_sizes}`` across every provider
-    directory (and every member project of a group) that holds this session, so a
-    new record from any provider triggers a refresh in the polling loop.  Returns
+    directory (and every member project of a group) that holds this session, so a new
+    record from any provider changes the marker the frontend polls.  Returns
     ``{"mtime": None, "size": None}`` when no provider has the session.
     """
     best_mtime: int | None = None
     total_size: int | None = None
     found = False
 
-    for logs_dir in _aslogs_dirs(project):
+    for logs_dir in logs_dirs:
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
             if not provider_dir.is_dir():
                 continue
-            messages_file = provider_dir / session_id / "messages.jsonl"
+            messages_file = provider_dir / session_id / MESSAGES_FILENAME
             try:
                 st = messages_file.stat()
             except OSError:
@@ -457,7 +319,7 @@ def session_fingerprint(project: Path | list[Path], session_id: str) -> Fingerpr
     return {"mtime": best_mtime, "size": total_size}
 
 
-def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
+def sessions_fingerprint(logs_dirs: list[Path]) -> Fingerprint:
     """
     Return a change-marker for all sessions in a project.
 
@@ -474,7 +336,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
     total_size: int | None = None
     found = False
 
-    for logs_dir in _aslogs_dirs(project):
+    for logs_dir in logs_dirs:
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -483,7 +345,7 @@ def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
             for session_dir in provider_dir.iterdir():
                 if not session_dir.is_dir():
                     continue
-                messages_file = session_dir / "messages.jsonl"
+                messages_file = session_dir / MESSAGES_FILENAME
                 try:
                     st = messages_file.stat()
                 except OSError:
@@ -495,39 +357,6 @@ def sessions_fingerprint(project: Path | list[Path]) -> Fingerprint:
 
     if not found:
         return {"mtime": None, "size": None}
-    return {"mtime": best_mtime, "size": total_size}
-
-
-def projects_fingerprint(projects: list[Path]) -> Fingerprint:
-    """
-    Return a change-marker for all registered projects that have logs.
-
-    Includes the registry file's mtime so new project registrations and removals
-    also change the fingerprint.  Returns ``{"mtime": max_mtime_ns, "size":
-    sum_sizes}`` across every ``messages.jsonl`` under every project.
-
-    Returns ``{"mtime": None, "size": None}`` when no projects have logs.
-    """
-    registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
-    best_mtime: int | None = None
-    total_size: int | None = None
-
-    # Include the registry itself so new/removed projects change the fingerprint.
-    try:
-        st = registry.stat()
-        best_mtime = st.st_mtime_ns
-        total_size = st.st_size
-    except OSError:
-        return {"mtime": None, "size": None}
-
-    for project in projects:
-        fp = sessions_fingerprint(project)
-        if fp["mtime"] is None:
-            continue
-        if best_mtime is None or fp["mtime"] > best_mtime:
-            best_mtime = fp["mtime"]
-        total_size = (total_size or 0) + (fp["size"] or 0)
-
     return {"mtime": best_mtime, "size": total_size}
 
 
@@ -545,7 +374,7 @@ def _read_provider_session(
     records) and *strings* is the ``{hash: original}`` map loaded from the
     session's ``strings.jsonl``.
     """
-    messages_file = session_dir / "messages.jsonl"
+    messages_file = session_dir / MESSAGES_FILENAME
     if not messages_file.is_file():
         return ProviderSessionRead([], None, {})
 
@@ -590,7 +419,6 @@ def _read_provider_session(
         "alias": meta.derived_alias,
         "title": meta.derived_title,
         "count": meta.count,
-        "first_ts": meta.first_ts,
         "last_ts": meta.last_ts,
         "models": sorted(meta.models),
     }
@@ -598,7 +426,7 @@ def _read_provider_session(
 
 
 def read_strings(
-    project: Path | list[Path],
+    logs_dirs: list[Path],
     session_id: str,
 ) -> str:
     """
@@ -612,7 +440,7 @@ def read_strings(
     Returns an empty string when no ``strings.jsonl`` files exist.
     """
     parts: list[str] = []
-    for logs_dir in _aslogs_dirs(project):
+    for logs_dir in logs_dirs:
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -656,7 +484,7 @@ def _append_order_keys(records: list[NormalizedRecord]) -> list[float]:
 
 
 def read_session(
-    project: Path | list[Path],
+    logs_dirs: list[Path],
     session_id: str,
     pricing: PricingService,
     *,
@@ -684,7 +512,7 @@ def read_session(
     keyed: list[tuple[float, NormalizedRecord]] = []
     combined_meta: CombinedSessionMeta | None = None
 
-    for logs_dir in _aslogs_dirs(project):
+    for logs_dir in logs_dirs:
         if not logs_dir.is_dir():
             continue
         for provider_dir in logs_dir.iterdir():
@@ -701,7 +529,6 @@ def read_session(
                         "alias": entry["alias"],
                         "title": entry["title"],
                         "count": entry["count"],
-                        "first_ts": entry["first_ts"],
                         "last_ts": entry["last_ts"],
                         "models": entry["models"],
                         "providers": [entry["provider"]],

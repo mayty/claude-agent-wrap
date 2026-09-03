@@ -136,7 +136,6 @@ def api_server(tmp_path: Path) -> tuple[int, Path]:
         {
             "session_id": sid,
             "count": 1,
-            "first_ts": 1000000.0,
             "last_ts": 1000001.0,
             "models": ["test"],
             "providers": ["litellm-bedrock"],

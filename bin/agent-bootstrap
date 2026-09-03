@@ -416,13 +416,27 @@ elif [ ! -x "$venv/bin/python3" ]; then
     note "installing dependencies from bin/requirements.txt"
     rm -rf "$tmp/venv"
     run "$tree/bin/python3" -m venv "$tmp/venv"
+    # watchdog publishes no cp314 macOS wheel -- its Darwin wheels carry a compiled
+    # fsevents extension and stop at cp313 -- so on Darwin that one requirement is
+    # built from its sdist. The sdist's hash is in bin/requirements.txt like every
+    # other artifact, so --require-hashes still gates it, and the exception is named
+    # per-package rather than by dropping --only-binary: every other requirement stays
+    # wheels-only on every platform. The build needs a C compiler, which on macOS means
+    # the Xcode command line tools; without them pip fails here, loudly, which is the
+    # right outcome -- the viewer has no non-watchdog mode to fall back to.
+    no_binary=""
+    [ "$platform" = "apple-darwin" ] && no_binary="--no-binary=watchdog"
     # No --quiet: what pip is collecting, and from where, is the slowest part of a
     # first run and the part worth watching. --disable-pip-version-check stays, because
     # a nag about pip's own release is noise rather than progress.
+    # $no_binary is deliberately unquoted: it is either empty (and must expand to no
+    # argument at all) or a single option with no whitespace in it.
+    # shellcheck disable=SC2086
     run "$tmp/venv/bin/python3" -m pip install \
         -r "$req_file" \
         --require-hashes \
         --only-binary=:all: \
+        $no_binary \
         --disable-pip-version-check
     # pip bakes the interpreter's absolute path into the shebang of every console
     # script it writes, and this venv is built under $tmp -- so any such script would

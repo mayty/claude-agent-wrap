@@ -83,7 +83,6 @@ class ProviderSessionMeta(TypedDict):
     alias: str | None
     title: str | None
     count: int
-    first_ts: float | None
     last_ts: float | None
     models: list[str]
 
@@ -96,7 +95,6 @@ class CombinedSessionMeta(TypedDict):
     alias: str | None
     title: str | None
     count: int
-    first_ts: float | None
     last_ts: float | None
     models: list[str]
 
@@ -150,7 +148,6 @@ class SessionMeta:
 
     def __init__(self) -> None:
         self.count = 0
-        self.first_ts: float | None = None
         self.last_ts: float | None = None
         self.models: set[str] = set()
         self.derived_alias: str | None = None

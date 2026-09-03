@@ -116,6 +116,8 @@ The [logs viewer](shell-commands.md#agent-logs) is unaffected — it renders tim
 
 Setting `AGENT_LOG_DEBUG=1` (or any non-empty value other than `0`/`false`/`no`) enables verbose per-tick/per-step logging in the `agent logs` background viewer daemon. Unset, only always-visible lines print (including a "completed in Ns" line that always prints once an operation's elapsed time exceeds its threshold, even without this flag).
 
+The viewer updates on filesystem events, so its `Update:` lines appear when something actually changed rather than on a fixed tick — an idle viewer logs roughly once a minute, when its periodic reconciliation runs. A `Watch:` line at startup names the directories being watched, and reports it when the wrapper is installed somewhere those events are never delivered.
+
 ```sh
 AGENT_LOG_DEBUG=1 agent logs
 ```

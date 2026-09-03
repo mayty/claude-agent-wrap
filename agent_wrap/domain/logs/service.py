@@ -17,6 +17,8 @@ from agent_wrap.constants import (
 )
 from agent_wrap.domain.logs.cache import LogsCache
 from agent_wrap.domain.logs.constants import (
+    CACHE_HEARTBEAT_INTERVAL_SEC,
+    EVENTLESS_FILESYSTEMS,
     LOG_FILE_NAME,
     LOGS_VIEWER_LABEL,
     POLL_INTERVAL_SEC,
@@ -36,6 +38,7 @@ from agent_wrap.domain.logs.models import ViewerState
 from agent_wrap.domain.logs.server import bind_port, get_handler
 from agent_wrap.exceptions import LockTimeoutError
 from agent_wrap.lib.flock import file_lock
+from agent_wrap.lib.mounts import filesystem_type
 from agent_wrap.lib.process_utils import pid_alive
 
 if TYPE_CHECKING:
@@ -68,6 +71,31 @@ class LogsService:
     def connect_line(self, port: int) -> str:
         """Return the connect line printed to the terminal."""
         return f"LiteLLM log viewer running at http://127.0.0.1:{port}"
+
+    def install_location_warning(self) -> str | None:
+        """
+        Return a warning when the wrapper sits where filesystem events never arrive.
+
+        The viewer learns about new requests from inotify, and inotify on a Windows
+        drive under WSL2 or on a network share accepts a watch and then delivers
+        nothing -- silently, with no error to catch. It cannot be probed for, so the
+        install location is checked instead.
+
+        Only the wrapper's own location matters: every sidecar writes into
+        ``TOOL_DIR/litellm-logs``, so a *project* on such a filesystem is served
+        perfectly well. None means either a filesystem that works or -- off Linux --
+        no way to tell, and both are reported the same way, by saying nothing.
+        """
+        fs_type = filesystem_type(TOOL_DIR)
+        if fs_type is None or fs_type not in EVENTLESS_FILESYSTEMS:
+            return None
+        return (
+            f"agent-wrap is installed on a {fs_type} filesystem ({TOOL_DIR}), which does "
+            f"not deliver filesystem events. The logs viewer will only notice new "
+            f"requests on its periodic check, up to "
+            f"{int(CACHE_HEARTBEAT_INTERVAL_SEC)}s late. Clone it onto a local "
+            f"filesystem to get live updates."
+        )
 
     def starting_line(self, port: int) -> str:
         """
@@ -156,6 +184,9 @@ class LogsService:
             os.dup2(lf.fileno(), sys.stderr.fileno())
 
         log_info("Logs server", "starting")
+        location_warning = self.install_location_warning()
+        if location_warning is not None:
+            log_info("Watch", location_warning)
         logs_cache = LogsCache(self._stats, self._config, self._pricing)
         logs_cache.start()
         handler = get_handler(self._pricing, logs_cache)
@@ -201,6 +232,9 @@ class LogsService:
     def spawn_background(self, port: int) -> int:
         """Spawn a detached viewer and wait for it to start listening."""
         port = port or LOGS_DEFAULT_PORT
+        location_warning = self.install_location_warning()
+        if location_warning is not None:
+            self._display.warning(location_warning)
         try:
             claimed = self._claim_or_spawn(port)
         except (LockTimeoutError, OSError) as e:

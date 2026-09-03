@@ -9,7 +9,10 @@ the [release notes style guide](releases/styleguide.md).
 
 `agent` now runs on a venv that carries the dependencies the wrapper pins, and provisions
 that venv itself on the first run. The setup is a clone and one `source` line. The
-bootstrap reports each step, and `agent inspect` reports a stale venv.
+bootstrap reports each step, and `agent inspect` reports a stale venv. The `agent logs`
+viewer now updates on filesystem events instead of polling every two seconds, which also
+means agent-wrap must be installed on a local filesystem. Its project table's session
+count now agrees with the sessions it lists.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 

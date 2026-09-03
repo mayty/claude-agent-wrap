@@ -112,6 +112,8 @@ Most of the time the viewer is already up, because [`agent run`](#agent-run) sta
 
 The viewer applies the same grouping as `agent stats`: projects under an `.agent_stats_leaf` marker appear as one project whose session list is the union of its members, and an `<orphaned>` project collects sessions from logs with no registered project so you can still read them.
 
+Updates are driven by filesystem events rather than by a timer, so a request shows up in the browser within a fraction of a second of being logged, and an idle viewer costs nothing — it stops re-walking the log tree entirely instead of doing so every two seconds. One watch covers the shared log store at `<wrap-dir>/litellm-logs/`, which is where every sidecar writes, and one covers the project registry. A full reconciliation still runs once a minute, which is what keeps `usage.json` fresh for the statusline, rolls the daily totals over at the day boundary, and notices log directories removed out of band by [`agent cleanup`](#agent-cleanup). This is why the wrapper has to be installed on a local filesystem — see [Setup](getting-started.md#setup); `agent logs` warns if it is not.
+
 - **`-p`/`--port N`** — binds the viewer to port N (default `8765`); if that port is busy, it scans up to 50 successive ports for a free one. Ignored when a viewer is already running.
 - **`-s`/`--stop`** — stops the background viewer (no-op with a friendly message if none is running).
 

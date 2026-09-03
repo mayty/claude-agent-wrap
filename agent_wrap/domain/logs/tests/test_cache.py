@@ -176,6 +176,160 @@ def test_cache_empty_when_no_registry(
         cache.stop()
 
 
+def test_rebuild_populates_every_structure(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """
+    Startup fills the session cache, all three fingerprint levels, and the manifest.
+
+    ``rebuild`` delegates to ``reconcile`` rather than running its own scan, so this pins
+    the equivalence that trade rests on — nothing asserted it before.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "proj"
+    write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    write_session(project, "litellm-deepseek", "sess-2", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        # Compared as a set: both sessions share a last_ts, so their relative order is
+        # whatever the directory walk produced.
+        assert {s["session_id"] for s in cache.get_sessions(0) or []} == {"sess-1", "sess-2"}
+        assert [p["sessions"] for p in cache.get_projects()] == [2]
+        assert cache.get_projects_fingerprint()["mtime"] is not None
+        assert (cache.get_sessions_fingerprint(0) or {})["mtime"] is not None
+        assert (cache.get_session_fingerprint(0, "sess-1") or {})["mtime"] is not None
+        assert len(cache._known_messages) == 2
+    finally:
+        cache.stop()
+
+
+def test_rebuild_and_reconcile_agree(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """A reconcile straight after startup changes nothing — the regression guard."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "proj"
+    write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        before = (
+            cache.get_projects(),
+            cache.get_projects_fingerprint(),
+            cache.get_sessions(0),
+            cache.get_sessions_fingerprint(0),
+            cache.get_session_fingerprint(0, "sess-1"),
+            dict(cache._known_messages),
+        )
+        cache.reconcile()
+        assert (
+            cache.get_projects(),
+            cache.get_projects_fingerprint(),
+            cache.get_sessions(0),
+            cache.get_sessions_fingerprint(0),
+            cache.get_session_fingerprint(0, "sess-1"),
+            dict(cache._known_messages),
+        ) == before
+    finally:
+        cache.stop()
+
+
+def test_rebuild_counts_a_group_shared_session_once(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """
+    A session shared by two members of one group counts once at startup.
+
+    The old startup pass counted session *directories* per member and summed them, so it
+    reported two where the sessions view renders one merged row. Every update since has
+    counted the merged sessions, so the table's number changed after the first event.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    # resolve_group looks for the marker as a *file*.
+    (runs / ".agent_stats_leaf").write_text("", encoding="utf-8")
+    member_a = runs / "agent-a"
+    member_b = runs / "agent-b"
+    write_session(member_a, "litellm-bedrock", "shared-sess", [valid_record])
+    write_session(member_b, "litellm-bedrock", "shared-sess", [valid_record])
+    (launches / "projects.txt").write_text(f"{member_a}\n{member_b}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        assert _group_count(cache) == 1
+        assert [s["session_id"] for s in cache.get_sessions(0) or []] == ["shared-sess"]
+        assert [p["sessions"] for p in cache.get_projects()] == [1]
+    finally:
+        cache.stop()
+
+
+def test_projects_fingerprint_reflects_the_pass_that_published_it(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """
+    The published projects marker is derived from the *current* session fingerprints.
+
+    It sums ``_sessions_fp``, so computing it before that dict is refreshed publishes a
+    marker one pass behind. That is not a lost notification — consecutive recomputations
+    always straddle a change, so the marker still moves — but it means the value served
+    disagrees with the cache it claims to summarize, which is a trap for anything that
+    later compares the two.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "proj"
+    write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        write_session(project, "litellm-bedrock", "sess-2", [valid_record])
+        cache.reconcile()
+
+        assert cache.get_projects_fingerprint() == cache._recompute_projects_fp_from_cache()
+    finally:
+        cache.stop()
+
+
 def test_get_logs_dirs_returns_none_for_unknown_project(
     started_cache: LogsCache,
 ) -> None:
@@ -224,7 +378,6 @@ def test_merge_combined_dedupes_repeated_provider(
         "alias": None,
         "title": None,
         "count": 1,
-        "first_ts": 1.0,
         "last_ts": 1.0,
         "models": ["a"],
         "providers": ["litellm-bedrock"],
@@ -234,7 +387,6 @@ def test_merge_combined_dedupes_repeated_provider(
         {
             "provider": "litellm-bedrock",
             "count": 1,
-            "first_ts": 5.0,
             "last_ts": 5.0,
             "models": ["b"],
             "alias": None,
@@ -267,22 +419,34 @@ def test_concurrent_reads_dont_crash(started_cache: LogsCache) -> None:
     assert not errors
 
 
-def test_stop_terminates_poll_thread(started_cache: LogsCache) -> None:
+def test_reads_still_work_after_stop(started_cache: LogsCache) -> None:
     started_cache.stop()
-    # If stop() returned, the thread is joined.  Give it a bit more time.
-    time.sleep(0.1)
-    # Access still works after stop.
     assert isinstance(started_cache.get_projects(), list)
 
 
-def test_oserror_handled_gracefully_during_poll(
+def test_stop_before_start_reports_that_nothing_is_running(
+    pricing: PricingService, config_mock: ConfigService
+) -> None:
+    stats = Mock(spec=StatsService)
+    cache = LogsCache(stats, config_mock, pricing)
+    with pytest.raises(RuntimeError, match="ThreadNotRunning"):
+        cache.stop()
+
+
+def test_reconcile_survives_an_oserror_while_scanning(
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     mocker: MockerFixture,
     real_stats: StatsService,
 ) -> None:
-    """An OSError during stat doesn't kill the poll thread."""
+    """
+    A failing stat leaves reconcile harmless and the cache readable.
+
+    Drives ``reconcile`` directly rather than waiting for the watcher to schedule
+    one: the contract under test is the cache's, and asserting it synchronously
+    makes the test both exact and instant.
+    """
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
@@ -295,29 +459,24 @@ def test_oserror_handled_gracefully_during_poll(
     (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
 
     cache = LogsCache(real_stats, config_svc, pricing)
-    cache.start()
-    try:
-        # Force an OSError during the poll by making iterdir raise.
-        original_iterdir = Path.iterdir
-        _simulated_msg = "Simulated"
+    cache.rebuild()
 
-        def _failing_iterdir(self_path: Path) -> Generator[Path]:
-            if self_path == logs_target:
-                raise OSError(_simulated_msg)
-            yield from original_iterdir(self_path)
+    original_iterdir = Path.iterdir
+    _simulated_msg = "Simulated"
 
-        mocker.patch("pathlib.Path.iterdir", _failing_iterdir)
+    def _failing_iterdir(self_path: Path) -> Generator[Path]:
+        if self_path == logs_target:
+            raise OSError(_simulated_msg)
+        yield from original_iterdir(self_path)
 
-        # Let the poll thread run at least once.
-        time.sleep(2.5)
+    mocker.patch("pathlib.Path.iterdir", _failing_iterdir)
 
-        # The poll thread should still be alive and cache accessible.
-        assert isinstance(cache.get_logs_dirs(0), list)
-    finally:
-        cache.stop()
+    cache.reconcile()
+
+    assert isinstance(cache.get_logs_dirs(0), list)
 
 
-def test_gather_directory_manifest_and_path_to_key_are_consistent(  # noqa: PLR0913
+def test_every_manifest_path_resolves_to_its_session(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
@@ -325,7 +484,14 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(  # noqa: PLR0
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
 ) -> None:
-    """path_to_key covers exactly the manifest's keys, with correct (pid, sid)."""
+    """
+    Every manifest key maps to its (pid, sid) by path arithmetic alone.
+
+    The manifest used to carry a ``path_to_key`` side-table built in the same walk, so
+    this was true by construction. Now ``_diff_manifest`` recovers the mapping from
+    ``_root_to_pid``, and a path it could not attribute would be silently skipped — the
+    session would go stale with nothing to show for it. Hence an explicit invariant.
+    """
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
@@ -339,16 +505,17 @@ def test_gather_directory_manifest_and_path_to_key_are_consistent(  # noqa: PLR0
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
-        manifest, path_to_key = cache._gather_directory_manifest()
-        assert manifest.keys() == path_to_key.keys()
+        manifest = cache._gather_directory_manifest()
+        assert manifest
 
         expected: dict[Path, tuple[int, str]] = {}
         for pid in range(_group_count(cache)):
-            for logs_dir in cache.get_logs_dirs(pid) or []:
-                for provider_dir in logs_dir.iterdir():
+            for group_logs_dir in cache.get_logs_dirs(pid) or []:
+                for provider_dir in group_logs_dir.iterdir():
                     for session_dir in provider_dir.iterdir():
                         expected[session_dir / "messages.jsonl"] = (pid, session_dir.name)
-        assert path_to_key == expected
+
+        assert {p: cache._resolve_message_path(p) for p in manifest} == expected
     finally:
         cache.stop()
 
@@ -381,7 +548,7 @@ def test_changed_session_resolved_via_manifest_diff(  # noqa: PLR0913
             f.write(json.dumps(valid_record) + "\n")
         (sdir / "meta.json").unlink(missing_ok=True)
 
-        cache._poll_once()
+        cache.reconcile()
 
         sessions = cache.get_sessions(0)
         assert sessions is not None
@@ -398,7 +565,7 @@ def test_deleted_session_removed_after_directory_disappears(  # noqa: PLR0913
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
 ) -> None:
-    """A session whose directory vanishes between polls is dropped from the cache."""
+    """A session whose directory vanishes out of band is dropped on the next reconcile."""
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
@@ -416,7 +583,7 @@ def test_deleted_session_removed_after_directory_disappears(  # noqa: PLR0913
         (sdir / "meta.json").unlink(missing_ok=True)
         sdir.rmdir()
 
-        cache._poll_once()
+        cache.reconcile()
 
         sessions = cache.get_sessions(0)
         assert sessions == []
@@ -425,32 +592,7 @@ def test_deleted_session_removed_after_directory_disappears(  # noqa: PLR0913
         cache.stop()
 
 
-@pytest.mark.parametrize(
-    ("relative_to_group", "expected_pid"),
-    [
-        pytest.param(True, 0, id="path-inside-group"),
-        pytest.param(False, None, id="path-outside-all-groups"),
-    ],
-)
-def test_resolve_deleted_project(
-    tmp_path: Path,
-    started_cache: LogsCache,
-    *,
-    relative_to_group: bool,
-    expected_pid: int | None,
-) -> None:
-    """Resolution is pure path comparison — no filesystem access needed."""
-    logs_dir = tmp_path / "logs"
-    started_cache._groups = [{"root": logs_dir, "name": "g", "paths": [], "logs_dirs": [logs_dir]}]
-    if relative_to_group:
-        mf_path = logs_dir / "litellm-bedrock" / "sess-1" / "messages.jsonl"
-    else:
-        mf_path = tmp_path / "elsewhere" / "sess-1" / "messages.jsonl"
-
-    assert started_cache._resolve_deleted_project(mf_path) == expected_pid
-
-
-def test_poll_once_writes_usage_json(  # noqa: PLR0913
+def test_rebuild_writes_usage_json_before_any_update_runs(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
@@ -458,7 +600,239 @@ def test_poll_once_writes_usage_json(  # noqa: PLR0913
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
 ) -> None:
-    """After _poll_once, usage.json exists with totals from today's records."""
+    """
+    The statusline reads usage.json, and updates are event-driven.
+
+    Left to the first update, that file would not exist until a heartbeat up to a
+    minute after startup, so a host that had never run a viewer would show no totals
+    at all in the meantime.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    write_session(
+        project,
+        "litellm-bedrock",
+        "sess-1",
+        [{**valid_record, "timing": {"start": time.time(), "end": time.time()}}],
+    )
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.rebuild()
+
+    assert (tmp_path / ".claude" / "usage.json").is_file()
+
+
+def test_apply_paths_rescans_only_the_named_session(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """The fast path picks up an append without walking the tree."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    write_session(project, "litellm-bedrock", "sess-2", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.rebuild()
+
+    with (sdir / "messages.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(valid_record) + "\n")
+    (sdir / "meta.json").unlink(missing_ok=True)
+
+    cache.apply_paths({sdir / "messages.jsonl"})
+
+    by_id = {s["session_id"]: s for s in cache.get_sessions(0) or []}
+    assert by_id["sess-1"]["count"] == 2
+    assert by_id["sess-2"]["count"] == 1
+
+
+def test_apply_paths_leaves_the_same_manifest_as_reconcile(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """
+    The consistency rule the two update paths rest on.
+
+    Both must leave ``_known_messages`` identical, or a later reconcile would
+    re-report as changed whatever the fast path had already applied.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    messages = sdir / "messages.jsonl"
+
+    fast = LogsCache(real_stats, config_svc, pricing)
+    fast.rebuild()
+    slow = LogsCache(real_stats, config_svc, pricing)
+    slow.rebuild()
+
+    with messages.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(valid_record) + "\n")
+    (sdir / "meta.json").unlink(missing_ok=True)
+
+    fast.apply_paths({messages})
+    # Both scans must start from the same on-disk state. scan_session_meta seeds a
+    # meta.json cache as a side effect, so without this the second cache would read
+    # back the first one's cache rather than rescanning, and the comparison would be
+    # measuring that instead of the two update paths.
+    (sdir / "meta.json").unlink(missing_ok=True)
+    slow.reconcile()
+
+    assert fast._known_messages == slow._known_messages
+    assert fast.get_sessions(0) == slow.get_sessions(0)
+    assert fast.get_session_fingerprint(0, "sess-1") == slow.get_session_fingerprint(0, "sess-1")
+    assert fast.get_projects_fingerprint() == slow.get_projects_fingerprint()
+
+
+def test_apply_paths_drops_a_session_whose_record_file_is_gone(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "testproj"
+    sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    messages = sdir / "messages.jsonl"
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.rebuild()
+
+    messages.unlink()
+    (sdir / "meta.json").unlink(missing_ok=True)
+
+    cache.apply_paths({messages})
+
+    assert cache.get_sessions(0) == []
+    assert cache.get_session_fingerprint(0, "sess-1") is None
+    assert messages not in cache._known_messages
+
+
+def test_apply_paths_falls_back_to_reconcile_for_an_unmappable_path(
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """
+    A registry change is queued as a path, and cannot name a session.
+
+    Anything the cache cannot attribute — the registry file, or a log dir belonging
+    to no known group — has to widen to the full pass rather than be dropped.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+    (launches / "projects.txt").write_text("", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.rebuild()
+    spy = mocker.spy(cache, "reconcile")
+
+    cache.apply_paths({launches / "projects.txt"})
+
+    spy.assert_called_once_with()
+
+
+def test_apply_paths_widens_to_reconcile_across_a_day_rollover(
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """A rollover has to re-offer every tracked file, not just this batch's."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+    (launches / "projects.txt").write_text("", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.rebuild()
+    mocker.patch.object(cache._usage_tracker, "detect_rollover", return_value=True)
+    # Spied after start(): rebuild() delegates to reconcile, so an earlier spy would
+    # already have that call on it and assert_called_once_with would fail.
+    spy = mocker.spy(cache, "reconcile")
+
+    cache.apply_paths({tmp_path / "a" / "b" / "c" / "messages.jsonl"})
+
+    spy.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("spelling", "filename", "expected"),
+    [
+        pytest.param("as-listed", "messages.jsonl", (0, "sess-1"), id="symlinked-spelling"),
+        pytest.param("resolved", "messages.jsonl", (0, "sess-1"), id="resolved-spelling"),
+        pytest.param("outside", "messages.jsonl", None, id="outside-all-groups"),
+        pytest.param("as-listed", "meta.json", None, id="not-a-record-file"),
+    ],
+)
+def test_resolve_message_path(
+    tmp_path: Path,
+    started_cache: LogsCache,
+    spelling: str,
+    filename: str,
+    expected: tuple[int, str] | None,
+) -> None:
+    """
+    Both spellings of a group's logs dir resolve to the same project.
+
+    A group lists its ``.claude/litellm-logs`` symlink, which is what a directory walk
+    produces; a filesystem event names the real dir under the shared tree. One mapping has
+    to answer for both, or the fast path silently misses every event.
+    """
+    real = tmp_path / "litellm-logs" / "abc"
+    real.mkdir(parents=True)
+    link = tmp_path / "proj" / ".claude" / "litellm-logs"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real, target_is_directory=True)
+
+    started_cache._groups = [{"root": link, "name": "g", "paths": [], "logs_dirs": [link]}]
+    started_cache._reindex_roots()
+
+    root = {"as-listed": link, "resolved": real, "outside": tmp_path / "elsewhere"}[spelling]
+    path = root / "litellm-bedrock" / "sess-1" / filename
+
+    assert started_cache._resolve_message_path(path) == expected
+
+
+def test_reconcile_writes_usage_json(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """After reconcile, usage.json exists with totals from today's records."""
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
@@ -470,7 +844,7 @@ def test_poll_once_writes_usage_json(  # noqa: PLR0913
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
-        cache._poll_once()
+        cache.reconcile()
 
         usage_path = tmp_path / ".claude" / "usage.json"
         assert usage_path.is_file(), f"usage.json not found at {usage_path}"
@@ -491,7 +865,7 @@ def test_usage_tracker_responds_to_file_changes(
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
 ) -> None:
-    """Adding records to a session file increases usage totals on the next poll."""
+    """Adding records to a session file increases usage totals on the next reconcile."""
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
@@ -509,8 +883,8 @@ def test_usage_tracker_responds_to_file_changes(
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
-        # First poll — seed the tracker.
-        cache._poll_once()
+        # First pass — seed the tracker.
+        cache.reconcile()
         usage_path = tmp_path / ".claude" / "usage.json"
         initial = json.loads(usage_path.read_text(encoding="utf-8"))
         assert initial["requests"] == 1
@@ -520,14 +894,14 @@ def test_usage_tracker_responds_to_file_changes(
             f.write(json.dumps(today_record) + "\n")
         (sdir / "meta.json").unlink(missing_ok=True)
 
-        cache._poll_once()
+        cache.reconcile()
         updated = json.loads(usage_path.read_text(encoding="utf-8"))
         assert updated["requests"] > initial["requests"]
     finally:
         cache.stop()
 
 
-def test_poll_once_rewrites_stale_usage_json_when_no_activity(
+def test_reconcile_rewrites_stale_usage_json_when_no_activity(
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
@@ -571,7 +945,7 @@ def test_poll_once_rewrites_stale_usage_json_when_no_activity(
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
-        cache._poll_once()
+        cache.reconcile()
 
         data = json.loads(usage_path.read_text(encoding="utf-8"))
         assert data["in"] == 0
@@ -582,7 +956,7 @@ def test_poll_once_rewrites_stale_usage_json_when_no_activity(
         cache.stop()
 
 
-def test_poll_once_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
+def test_reconcile_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
@@ -609,7 +983,7 @@ def test_poll_once_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
     cache.start()
     usage_path = tmp_path / ".claude" / "usage.json"
     try:
-        cache._poll_once()
+        cache.reconcile()
         assert json.loads(usage_path.read_text(encoding="utf-8"))["requests"] == 1
 
         # Move the tracker's clock a day forward, leaving the log file untouched —
@@ -618,7 +992,7 @@ def test_poll_once_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
         fake_datetime.now.return_value = datetime.now(UTC) + timedelta(days=1)
         fake_datetime.fromtimestamp.side_effect = datetime.fromtimestamp
 
-        cache._poll_once()
+        cache.reconcile()
 
         data = json.loads(usage_path.read_text(encoding="utf-8"))
         assert data["in"] == 0
@@ -728,6 +1102,78 @@ def test_added_path_merges_into_existing_group(  # noqa: PLR0913
     cache.stop()
 
 
+def test_a_project_whose_logs_dir_appears_late_is_picked_up(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+) -> None:
+    """
+    A registered path with no logs dir yet is retried, not written off.
+
+    ``link_litellm_logs`` normally runs before ``record_project``, but it is best-effort
+    and swallows OSError, so a path can land in the registry before its logs dir exists.
+    Recording it as known would strand it: no later registry write can put it back in
+    ``added``, so the project stayed invisible until the viewer restarted.
+    """
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        assert _group_count(cache) == 0
+
+        # The logs dir shows up later; the registry is deliberately left untouched.
+        write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+        cache.reconcile()
+
+        assert _group_count(cache) == 1
+        assert [s["session_id"] for s in cache.get_sessions(0) or []] == ["sess-1"]
+    finally:
+        cache.stop()
+
+
+def test_a_same_content_registry_rewrite_does_not_reprocess(  # noqa: PLR0913
+    tmp_path: Path,
+    pricing: PricingService,
+    config_svc: ConfigService,
+    valid_record: dict[str, Any],
+    write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
+    real_stats: StatsService,
+    mocker: MockerFixture,
+) -> None:
+    """``record_project`` rewrites the registry on every launch; contents decide, not mtime."""
+    stats_mod.TOOL_DIR = tmp_path
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True)
+
+    project = tmp_path / "proj"
+    write_session(project, "litellm-bedrock", "sess-1", [valid_record])
+    registry = launches / "projects.txt"
+    registry.write_text(f"{project}\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, config_svc, pricing)
+    cache.start()
+    try:
+        spy = mocker.spy(cache, "_merge_added_paths")
+        registry.write_text(f"{project}\n", encoding="utf-8")
+        cache.reconcile()
+
+        spy.assert_not_called()
+        # The registry's mtime still reaches the browser-facing fingerprint.
+        assert cache._projects_txt_mtime == registry.stat().st_mtime_ns
+    finally:
+        cache.stop()
+
+
 def test_added_group_inserted_mid_list(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
@@ -818,7 +1264,7 @@ def test_merge_added_paths_no_full_rebuild(  # noqa: PLR0913
     real_stats: StatsService,
     mocker: MockerFixture,
 ) -> None:
-    """_rebuild_all is not called when a path is added via _poll_once."""
+    """A path added via reconcile is merged incrementally, without a full rebuild."""
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
@@ -834,12 +1280,12 @@ def test_merge_added_paths_no_full_rebuild(  # noqa: PLR0913
     cache._projects_txt_path = launches / "projects.txt"
     cache.start()
 
-    rebuild_spy = mocker.spy(cache, "_rebuild_all")
+    rebuild_spy = mocker.spy(cache, "rebuild")
 
-    # Simulate project B being added and a poll tick detecting it.
+    # Simulate project B being added and a reconcile detecting it.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
     (launches / "projects.txt").write_text(f"{proj_a}\n{proj_b}\n", encoding="utf-8")
-    cache._poll_once()
+    cache.reconcile()
 
     rebuild_spy.assert_not_called()
 

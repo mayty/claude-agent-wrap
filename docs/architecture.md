@@ -18,7 +18,7 @@ agent_wrap/
 │   ├── create/      #   New agent bootstrap
 │   ├── display/     #   Centralized display/output formatting
 │   ├── launch/      #   Container launch and lifecycle
-│   ├── logs/        #   Log viewing and serving
+│   ├── logs/        #   Log viewing and serving (watcher.py drives the cache from FS events)
 │   ├── pricing/     #   Token pricing data
 │   ├── providers/   #   Provider plugin system + LiteLLM sidecar
 │   ├── secrets/     #   Credential management
@@ -203,6 +203,18 @@ locked, re-locks so `uv.lock`'s recorded requirements match, and re-exports the 
 So the floors state what was last resolved rather than a hand-chosen minimum, and the three
 artifacts move as one unit.
 
+**A dependency without a wheel everywhere is a `bin/agent-bootstrap` carve-out, not a
+`pyproject.toml` one.** `watchdog` is the first of these: its macOS wheels carry a compiled
+fsevents extension and stop at cp313, so under `requires-python = "==3.14.7"` there is no
+Darwin wheel to install and `--only-binary=:all:` would fail the whole install there. The
+requirement itself stays an ordinary unconditional floor — marking it
+`sys_platform != 'darwin'` would make it *absent* on macOS, and the code has no
+reduced mode to fall back to. Instead the bootstrap adds `--no-binary=watchdog` on Darwin
+and builds it from the sdist, whose hash `bin/requirements.txt` already carries, so
+`--require-hashes` still gates it and every other requirement stays wheels-only on every
+platform. A dependency needing this must be able to build from source on the platform it
+lands on; when that is not true, the honest answer is a different dependency.
+
 **The venv the CLI runs on is content-addressed and never mutated.** Its directory name
 embeds the interpreter pin, the target triple, and the first 12 hex of the SHA-256 of the
 constraints it was built from. A dependency change therefore publishes a *new* directory
@@ -293,6 +305,19 @@ so the two never have to share the more conservative number.
   is needed. The generic docker verbs it stands on (`list_images`, `inspect_images`,
   `remove_image`, `parse_image_ref`) live in `lib/docker_utils.py`; every wrapper-specific
   judgement about which of those results matter stays in the domain.
+- **Logs cache single-writer**: `LogsCache` holds no lock over the structures the HTTP
+  handler threads read. That is safe only because `CacheWatcher` owns a single consumer
+  thread and every call into the cache — `apply_paths` for a `messages.jsonl` a watch
+  named, `reconcile` for everything else, and `rebuild` at startup — happens on it. The
+  cache builds fresh structures and swaps references, so a reader sees a consistent
+  snapshot; watchdog's own emitter threads never reach the cache at all, only
+  `SimpleQueue.put`, which is what makes the invariant hold by construction rather than by
+  convention. The one exception is the single-slot hot-session cache, which both that
+  thread and handler threads write and which therefore has its own lock. Anything that
+  would call into the cache from another thread breaks this and needs a different design,
+  not an added lock. `lib/mounts.py` (`filesystem_type`) supports the related startup
+  check: inotify accepts a watch on `drvfs`/`9p`/`nfs` and then silently delivers nothing,
+  which cannot be probed for at runtime, so the install location is checked instead.
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
 - **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.

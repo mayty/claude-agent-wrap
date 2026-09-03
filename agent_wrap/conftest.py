@@ -41,6 +41,7 @@ def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         "agent_wrap.domain.updates.service",
         "agent_wrap.domain.pricing.service",
         "agent_wrap.domain.logs.io",
+        "agent_wrap.domain.logs.cache",
         "agent_wrap.domain.logs.daemon",
         "agent_wrap.domain.logs.service",
         "agent_wrap.domain.logs.server",

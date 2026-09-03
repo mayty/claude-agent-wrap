@@ -30,8 +30,8 @@ class UsageTracker:
     * A deleted file has its contribution removed.
     * Day rollover (per :data:`DAY_START_HOURS`) resets all state.
 
-    All public methods are called exclusively from the ``LogsCache`` poll thread,
-    so no internal locking is needed.
+    All public methods are called exclusively from the watcher's single consumer
+    thread, via ``LogsCache``, so no internal locking is needed.
     """
 
     def __init__(self, pricing: PricingService, stats: StatsService) -> None:
@@ -52,7 +52,7 @@ class UsageTracker:
         self._last_output: dict[str, int | str] | None = None
 
     # ------------------------------------------------------------------
-    # Public API (called from LogsCache poll thread)
+    # Public API (called from LogsCache, on the watcher's consumer thread)
     # ------------------------------------------------------------------
 
     def detect_rollover(self) -> bool:
@@ -110,14 +110,11 @@ class UsageTracker:
         totals under "Today".
 
         Detects day rollover as a safety net (the caller is expected to handle
-        rollover explicitly via :meth:`detect_rollover`, but if a tick straddles
+        rollover explicitly via :meth:`detect_rollover`, but if a pass straddles
         midnight this reset keeps the output from carrying stale data).
         """
-        today = self._current_day_key()
-        if today != self._today_key:
-            self._today_key = today
-            self._file_buckets.clear()
-            self._fingerprints.clear()
+        if self.detect_rollover():
+            self.reset()
 
         total = self._pricing.new_bucket()
         for bucket in self._file_buckets.values():

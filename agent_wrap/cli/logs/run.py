@@ -2,8 +2,9 @@
 """
 The `logs` subcommand — a local web viewer for the LiteLLM request logs.
 
-Everything is Python stdlib only (``http.server``) — no extra dependency, no
-``agent rebuild``, no Docker. It runs on the host exactly like `agent stats`.
+The HTTP layer is stdlib (``http.server``); change detection uses ``watchdog``, so the
+viewer refreshes on filesystem events rather than on a timer. Still no ``agent
+rebuild`` and no Docker — it runs on the host exactly like `agent stats`.
 """
 
 import argparse

@@ -12,11 +12,8 @@ from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.io import (
     list_groups,
-    list_projects,
     list_sessions,
     logs_dir,
-    projects_fingerprint,
-    read_last_record_ts,
     read_meta_json,
     read_session,
     read_strings,
@@ -50,7 +47,6 @@ def stats_svc() -> StatsService:
 def isolated_stats(mocker: pytest_mock.MockFixture, tmp_path: Path) -> StatsService:
     """Return a StatsService with TOOL_DIR isolated from real filesystem."""
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
-    mocker.patch("agent_wrap.domain.logs.io.AGENT_LAUNCHES_DIR", tmp_path / ".agent-launches")
     mocker.patch(
         "agent_wrap.domain.config.service.AGENT_LAUNCHES_DIR", tmp_path / ".agent-launches"
     )
@@ -114,7 +110,7 @@ def test_list_sessions_enumerates_and_sorts(tmp_path: Path):
             _ts_rec("2026-06-05T01:00:00+00:00", model="m/b"),
         ],
     )
-    sessions = list_sessions(project)
+    sessions = list_sessions([logs_dir(project)])
     assert [s["session_id"] for s in sessions] == ["sess-new", "sess-old"]
     assert sessions[0]["count"] == 2
     assert sessions[0]["models"] == ["b"]
@@ -124,7 +120,7 @@ def test_list_sessions_skips_empty_and_missing(tmp_path: Path):
     project = tmp_path / "proj"
     # Directory with no messages.jsonl.
     (project / ".claude" / "litellm-logs" / "litellm-bedrock" / "empty").mkdir(parents=True)
-    assert list_sessions(project) == []
+    assert list_sessions([logs_dir(project)]) == []
 
 
 def test_list_sessions_derives_alias_from_naming_record(tmp_path: Path):
@@ -138,7 +134,7 @@ def test_list_sessions_derives_alias_from_naming_record(tmp_path: Path):
             _naming_record('{"name": "derived-slug"}'),
         ],
     )
-    assert list_sessions(project)[0]["alias"] == "derived-slug"
+    assert list_sessions([logs_dir(project)])[0]["alias"] == "derived-slug"
 
 
 def test_list_sessions_meta_json_alias_used(tmp_path: Path):
@@ -159,7 +155,7 @@ def test_list_sessions_meta_json_alias_used(tmp_path: Path):
             "alias": "meta-slug",
         },
     )
-    assert list_sessions(project)[0]["alias"] == "meta-slug"
+    assert list_sessions([logs_dir(project)])[0]["alias"] == "meta-slug"
 
 
 def test_list_sessions_alias_none_when_absent(tmp_path: Path):
@@ -170,7 +166,7 @@ def test_list_sessions_alias_none_when_absent(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    assert list_sessions(project)[0]["alias"] is None
+    assert list_sessions([logs_dir(project)])[0]["alias"] is None
 
 
 def test_read_session_normalizes_and_resolves(tmp_path: Path, pricing_svc: PricingService):
@@ -180,7 +176,7 @@ def test_read_session_normalizes_and_resolves(tmp_path: Path, pricing_svc: Prici
         json.dumps({"hash": "hash:s", "original": "X"}) + "\n", encoding="utf-8"
     )
     pricing = pricing_svc
-    data = read_session(project, "s1", pricing=pricing)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing)
     assert data["session_meta"] is not None
     assert data["session_meta"]["session_id"] == "s1"
     # Records are returned unresolved — the strings.jsonl mapping exists but is
@@ -202,7 +198,7 @@ def test_read_session_from_index(tmp_path: Path, pricing_svc: PricingService):
         ],
     )
     pricing = pricing_svc
-    data = read_session(project, "s1", pricing=pricing, from_index=1)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing, from_index=1)
     assert data["session_meta"] is not None
     assert data["session_meta"]["count"] == 3
     assert len(data["reqs"]) == 2
@@ -218,7 +214,7 @@ def test_read_session_from_index_beyond(tmp_path: Path, pricing_svc: PricingServ
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
     pricing = pricing_svc
-    data = read_session(project, "s1", pricing=pricing, from_index=99)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing, from_index=99)
     assert data["session_meta"] is not None
     assert data["session_meta"]["count"] == 1
     assert len(data["reqs"]) == 0
@@ -232,7 +228,7 @@ def test_session_fingerprint_reflects_file(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    fp = session_fingerprint(project, "s1")
+    fp = session_fingerprint([logs_dir(project)], "s1")
     assert isinstance(fp["mtime"], int)
     assert isinstance(fp["size"], int)
     assert fp["size"] > 0
@@ -240,7 +236,7 @@ def test_session_fingerprint_reflects_file(tmp_path: Path):
 
 def test_session_fingerprint_null_when_missing(tmp_path: Path):
     project = tmp_path / "proj"
-    assert session_fingerprint(project, "nope") == {
+    assert session_fingerprint([logs_dir(project)], "nope") == {
         "mtime": None,
         "size": None,
     }
@@ -261,14 +257,13 @@ def test_list_sessions_merges_across_providers(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
     )
-    sessions = list_sessions(project)
+    sessions = list_sessions([logs_dir(project)])
     assert len(sessions) == 1
     s = sessions[0]
     assert s["session_id"] == "s1"
     assert s["providers"] == ["litellm-bedrock", "litellm-deepseek"]
     assert s["count"] == 2
     assert s["models"] == ["a", "b"]
-    assert s["first_ts"] == _epoch("2026-06-01T00:00:00+00:00")
     assert s["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
 
 
@@ -281,7 +276,7 @@ def test_list_sessions_providers_field_shape(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    sessions = list_sessions(project)
+    sessions = list_sessions([logs_dir(project)])
     assert sessions[0]["providers"] == ["litellm-bedrock"]
     assert "provider" not in sessions[0]
 
@@ -352,7 +347,7 @@ def test_read_session_merges_across_providers(tmp_path: Path, pricing_svc: Prici
         ],
     )
     pricing = pricing_svc
-    data = read_session(project, "s1", pricing=pricing)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing)
     reqs = data["reqs"]
     assert len(reqs) == 2
     assert reqs[0]["messages"] == [{"role": "user", "content": "from bedrock"}]
@@ -374,7 +369,7 @@ def test_read_strings_concatenates(tmp_path: Path):
         '{"hash": "hash:a", "original": "AAA"}\n{"hash": "hash:b", "original": "BBB"}\n',
         encoding="utf-8",
     )
-    result = read_strings(project, "s1")
+    result = read_strings([logs_dir(project)], "s1")
     assert "hash:a" in result
     assert "AAA" in result
     assert "hash:b" in result
@@ -385,7 +380,7 @@ def test_read_strings_empty_when_no_file(tmp_path: Path):
     """read_strings returns an empty string when no strings.jsonl exists."""
     project = tmp_path / "proj"
     _write_session(project, "litellm-bedrock", "s1", [_raw_record()])
-    assert read_strings(project, "s1") == ""
+    assert read_strings([logs_dir(project)], "s1") == ""
 
 
 def test_session_fingerprint_combines_across_providers(tmp_path: Path):
@@ -406,7 +401,7 @@ def test_session_fingerprint_combines_across_providers(tmp_path: Path):
             _ts_rec("2026-06-05T01:00:00+00:00", model="m/b"),
         ],
     )
-    fp = session_fingerprint(project, "s1")
+    fp = session_fingerprint([logs_dir(project)], "s1")
     assert isinstance(fp["mtime"], int)
     assert isinstance(fp["size"], int)
     # Size should be at least the sum of both files (each file > 0 bytes).
@@ -432,7 +427,7 @@ def test_sessions_fingerprint_reflects_changes(tmp_path: Path):
         "s1",
         [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
     )
-    fp1 = sessions_fingerprint(project)
+    fp1 = sessions_fingerprint([logs_dir(project)])
     assert isinstance(fp1["mtime"], int)
     assert isinstance(fp1["size"], int)
     assert fp1["size"] > 0
@@ -444,73 +439,14 @@ def test_sessions_fingerprint_reflects_changes(tmp_path: Path):
         "s2",
         [_ts_rec("2026-06-05T01:00:00+00:00", model="m/b")],
     )
-    fp2 = sessions_fingerprint(project)
+    fp2 = sessions_fingerprint([logs_dir(project)])
     assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
 
 
 def test_sessions_fingerprint_null_when_empty(tmp_path: Path):
     """No sessions at all → null fingerprint."""
     project = tmp_path / "proj"
-    assert sessions_fingerprint(project) == {"mtime": None, "size": None}
-
-
-def test_list_projects_filters_to_those_with_logs(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
-) -> None:
-    tool_dir = tmp_path
-    (tool_dir / ".agent-launches").mkdir(parents=True)
-    with_logs = tmp_path / "with"
-    without_logs = tmp_path / "without"
-    _write_session(
-        with_logs,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
-    )
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(
-        f"{with_logs}\n{without_logs}\n", encoding="utf-8"
-    )
-    raw_projects = config_svc.read_project_paths()
-    groups = list_groups(isolated_stats, raw_projects)
-    result = list_projects(groups)
-    assert [p["path"] for p in result] == [str(with_logs)]
-    assert result[0]["sessions"] == 1
-    assert result[0]["id"] == 0
-
-
-def test_list_projects_empty_without_registry(
-    isolated_stats: StatsService, config_svc: ConfigService
-) -> None:
-    raw_projects = config_svc.read_project_paths()
-    groups = list_groups(isolated_stats, raw_projects)
-    assert list_projects(groups) == []
-
-
-def test_list_projects_aggregates_marked_group(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
-) -> None:
-    """Two projects under a .agent_stats_leaf marker collapse to one entry."""
-    tool_dir = tmp_path
-    (tool_dir / ".agent-launches").mkdir(parents=True)
-    runs = tmp_path / "runs"
-    runs.mkdir()
-    (runs / ".agent_stats_leaf").write_text("batch-feb\n", encoding="utf-8")
-
-    a = runs / "agent-a"
-    b = runs / "agent-b"
-    _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
-    _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
-
-    raw_projects = config_svc.read_project_paths()
-    groups = list_groups(isolated_stats, raw_projects)
-    result = list_projects(groups)
-    assert len(result) == 1
-    p = result[0]
-    assert p["name"] == "runs"
-    assert p["path"] == str(runs)
-    assert p["sessions"] == 2
-    assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
+    assert sessions_fingerprint([logs_dir(project)]) == {"mtime": None, "size": None}
 
 
 def test_list_sessions_unions_group_members(tmp_path: Path) -> None:
@@ -539,8 +475,7 @@ def test_unmarked_projects_stay_separate(
 
     raw_projects = config_svc.read_project_paths()
     groups = list_groups(isolated_stats, raw_projects)
-    result = list_projects(groups)
-    assert {p["name"] for p in result} == {"proj-a", "proj-b"}
+    assert {g["name"] for g in groups} == {"proj-a", "proj-b"}
 
 
 def _write_central(tool_dir: Path, hash_name: str, session_id: str, records: list[Any]) -> Path:
@@ -582,15 +517,10 @@ def test_orphaned_group_exposed_and_readable(
     assert groups[-1]["name"] == "<orphaned>"
     assert groups[-1]["logs_dirs"] == [hash_b]
 
-    result = list_projects(groups)
-    assert "<orphaned>" in {p["name"] for p in result}
-    orphaned = next(p for p in result if p["name"] == "<orphaned>")
-    assert orphaned["sessions"] == 1
-
-    # Resolving the group id yields the central dirs; reading them returns s2.
-    assert 0 <= orphaned["id"] < len(groups)
-    assert groups[orphaned["id"]]["logs_dirs"] == [hash_b]
-    assert [s["session_id"] for s in list_sessions(groups[orphaned["id"]]["logs_dirs"])] == ["s2"]
+    # The group id is its index, and reading that group's central dirs returns s2.
+    orphaned_id = len(groups) - 1
+    assert groups[orphaned_id]["logs_dirs"] == [hash_b]
+    assert [s["session_id"] for s in list_sessions(groups[orphaned_id]["logs_dirs"])] == ["s2"]
 
 
 def test_no_orphaned_group_when_all_reachable(
@@ -610,180 +540,6 @@ def test_no_orphaned_group_when_all_reachable(
 
     raw_projects = config_svc.read_project_paths()
     assert all(g["name"] != "<orphaned>" for g in list_groups(isolated_stats, raw_projects))
-
-
-def test_read_last_record_ts_returns_last_ts(tmp_path: Path):
-    f = tmp_path / "messages.jsonl"
-    f.write_text(
-        json.dumps(_ts_rec("2026-06-01T00:00:00+00:00"))
-        + "\n"
-        + json.dumps(_ts_rec("2026-06-05T12:00:00+00:00"))
-        + "\n",
-        encoding="utf-8",
-    )
-    assert read_last_record_ts(f) == _epoch("2026-06-05T12:00:00+00:00")
-
-
-def test_read_last_record_ts_returns_none_for_empty_file(tmp_path: Path):
-    f = tmp_path / "messages.jsonl"
-    f.write_text("", encoding="utf-8")
-    assert read_last_record_ts(f) is None
-
-
-def test_read_last_record_ts_returns_none_for_missing_file(tmp_path: Path):
-    assert read_last_record_ts(tmp_path / "nope.jsonl") is None
-
-
-def test_read_last_record_ts_handles_single_record(tmp_path: Path):
-    f = tmp_path / "messages.jsonl"
-    f.write_text(
-        json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")) + "\n",
-        encoding="utf-8",
-    )
-    assert read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
-
-
-def test_read_last_record_ts_handles_no_trailing_newline(tmp_path: Path):
-    f = tmp_path / "messages.jsonl"
-    f.write_text(
-        json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")),
-        encoding="utf-8",
-    )
-    assert read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
-
-
-def test_read_last_record_ts_handles_multibyte_utf8_content(tmp_path: Path):
-    """
-    Multibyte UTF-8 characters within records must not prevent
-    extracting the ``timing.end`` field from the last valid JSON line.
-    """
-    f = tmp_path / "messages.jsonl"
-    # Records containing 3-byte UTF-8 characters (Unicode Hiragana).
-    records = [
-        json.dumps(_ts_rec("2026-06-01T00:00:00+00:00", data="あいうえお")),
-        json.dumps(_ts_rec("2026-06-05T12:00:00+00:00", data="かきくけこ")),
-    ]
-    f.write_text("\n".join(records) + "\n", encoding="utf-8")
-    assert read_last_record_ts(f) == _epoch("2026-06-05T12:00:00+00:00")
-
-
-def test_read_last_record_ts_handles_non_json_lines(tmp_path: Path):
-    f = tmp_path / "messages.jsonl"
-    f.write_text(
-        "not json\n" + json.dumps(_ts_rec("2026-06-05T00:00:00+00:00")) + "\n",
-        encoding="utf-8",
-    )
-    assert read_last_record_ts(f) == _epoch("2026-06-05T00:00:00+00:00")
-
-
-def test_list_projects_dedups_sessions_across_providers(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
-) -> None:
-    """Same session_id under two providers → counted once, ts from the newest file."""
-    tool_dir = tmp_path
-    (tool_dir / ".agent-launches").mkdir(parents=True)
-    project = tmp_path / "proj"
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")],
-    )
-    # Ensure the second write gets a strictly higher mtime so the newest file
-    # is the one the last_ts is read from.
-    time.sleep(0.01)
-    _write_session(
-        project,
-        "litellm-deepseek",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")],
-    )
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
-    groups = list_groups(isolated_stats, config_svc.read_project_paths())
-    result = list_projects(groups)
-    assert len(result) == 1
-    assert result[0]["sessions"] == 1
-    assert result[0]["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
-
-
-def test_list_projects_skips_sessions_without_messages(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
-) -> None:
-    """A session dir with no messages.jsonl contributes nothing, so the project drops out."""
-    tool_dir = tmp_path
-    (tool_dir / ".agent-launches").mkdir(parents=True)
-    project = tmp_path / "proj"
-    (project / ".claude" / "litellm-logs" / "litellm-bedrock" / "empty").mkdir(parents=True)
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
-    groups = list_groups(isolated_stats, config_svc.read_project_paths())
-    assert list_projects(groups) == []
-
-
-def test_list_projects_lightweight_produces_same_shape(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
-) -> None:
-    """Output dict must have the same keys as before the optimization."""
-    tool_dir = tmp_path
-    (tool_dir / ".agent-launches").mkdir(parents=True)
-    project = tmp_path / "proj"
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
-    )
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
-    raw_projects = config_svc.read_project_paths()
-    groups = list_groups(isolated_stats, raw_projects)
-    result = list_projects(groups)
-    assert len(result) == 1
-    p = result[0]
-    assert set(p.keys()) == {"id", "path", "name", "sessions", "last_ts"}
-    assert p["sessions"] == 1
-    assert p["last_ts"] == _epoch("2026-06-05T00:00:00+00:00")
-
-
-@pytest.mark.usefixtures("isolated_stats")
-def test_projects_fingerprint_reflects_changes(
-    tmp_path: Path,
-    config_svc: ConfigService,
-) -> None:
-    """Fingerprint changes when a record is appended anywhere across projects."""
-    tool_dir = tmp_path
-    (tool_dir / ".agent-launches").mkdir(parents=True)
-    project = tmp_path / "proj"
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s1",
-        [_ts_rec("2026-06-05T00:00:00+00:00", model="m/a")],
-    )
-    raw_projects = config_svc.read_project_paths()
-    fp1 = projects_fingerprint(raw_projects)
-    assert isinstance(fp1["mtime"], int)
-    assert isinstance(fp1["size"], int)
-    assert fp1["size"] > 0
-
-    # Append a record in a second session — fingerprint should change.
-    _write_session(
-        project,
-        "litellm-bedrock",
-        "s2",
-        [_ts_rec("2026-06-05T01:00:00+00:00", model="m/b")],
-    )
-    raw_projects = config_svc.read_project_paths()
-    fp2 = projects_fingerprint(raw_projects)
-    assert fp2["mtime"] != fp1["mtime"] or fp2["size"] != fp1["size"]
-
-
-@pytest.mark.usefixtures("isolated_stats")
-def test_projects_fingerprint_null_when_no_registry(
-    config_svc: ConfigService,
-) -> None:
-    """No registry file → null fingerprint."""
-    raw_projects = config_svc.read_project_paths()
-    assert projects_fingerprint(raw_projects) == {"mtime": None, "size": None}
 
 
 def _write_meta_file(session_dir: Path, meta: dict[str, Any]) -> Path:
@@ -926,6 +682,30 @@ def test_scan_session_meta_falls_back_without_cache(tmp_path: Path):
     assert cached["models"] == ["a", "b"]
 
 
+def test_scan_session_meta_agrees_across_cold_and_warm_cache(tmp_path: Path):
+    """
+    A cold scan and the meta.json it seeds must describe a session identically.
+
+    This is the property the old ``first_ts`` field violated for its whole life: the
+    slow path computed it, the seed write dropped it, and no test compared the two,
+    so every warm cache silently reported None. Any future field added to one path
+    and not the other fails here instead.
+    """
+    sdir = _write_session(
+        tmp_path,
+        "litellm-bedrock",
+        "s1",
+        [
+            _ts_rec("2026-06-05T00:00:00+00:00", model="m/a"),
+            _ts_rec("2026-06-05T01:00:00+00:00", model="m/b"),
+        ],
+    )
+    cold = scan_session_meta(sdir, "litellm-bedrock")  # no meta.json: full scan, seeds it
+    warm = scan_session_meta(sdir, "litellm-bedrock")  # meta.json present: fast path
+    assert cold is not None
+    assert cold == warm
+
+
 def test_write_andread_meta_json_round_trip(tmp_path: Path):
     """write_meta_json produces a file that read_meta_json can consume."""
     sdir = tmp_path / "s"
@@ -1030,7 +810,7 @@ def test_read_session_keeps_an_untimed_record_where_it_was_appended(
             _ts_rec("2026-06-05T12:00:02+00:00", model="last"),
         ],
     )
-    data = read_session(project, "s1", pricing=pricing_svc)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing_svc)
     assert _models(data) == ["first", "failed-here", "last"]
 
 
@@ -1048,7 +828,7 @@ def test_read_session_keeps_a_leading_untimed_record_first(
             _ts_rec("2026-06-05T12:00:00+00:00", model="conversation"),
         ],
     )
-    data = read_session(project, "s1", pricing=pricing_svc)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing_svc)
     assert _models(data) == ["probe", "conversation"]
 
 
@@ -1065,7 +845,7 @@ def test_read_session_keeps_a_trailing_untimed_record_last(
             _untimed_rec(model="ended-here"),
         ],
     )
-    data = read_session(project, "s1", pricing=pricing_svc)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing_svc)
     assert _models(data) == ["conversation", "ended-here"]
 
 
@@ -1089,5 +869,5 @@ def test_read_session_merges_two_providers_chronologically(
         "s1",
         [_ts_rec("2026-06-05T12:00:02+00:00", model="deepseek-middle")],
     )
-    data = read_session(project, "s1", pricing=pricing_svc)
+    data = read_session([logs_dir(project)], "s1", pricing=pricing_svc)
     assert _models(data) == ["bedrock-early", "deepseek-middle", "bedrock-late"]

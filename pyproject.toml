@@ -8,6 +8,7 @@ requires-python = "==3.14.7"
 # in the exported bin/requirements.txt -- never here. See CLAUDE.md for the flow.
 dependencies = [
     "httpx2>=2.12.0",
+    "watchdog>=6.0.0",
 ]
 
 # ---------------------------------------------------------------------------
