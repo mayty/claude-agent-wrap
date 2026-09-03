@@ -177,7 +177,10 @@ bootstrap, never `--dev` (`--dev` needs `uv`, and this is the end-user path), an
 provisioning entirely under `AGENT_COMPLETE`, because `agent-wrap.bashrc` discards the
 completion subshell's stderr and exit code and would offer any stdout as a candidate. The
 bootstrap's progress is redirected to stderr so a verb's stdout stays clean for whatever is
-parsing it. `scripts/test_agent_launcher.py` covers all of this against a stub bootstrap. `requires-python` pins that exact version, and `make python-check` fails when the two
+parsing it — and that progress is deliberately loud: the bootstrap names the target and
+venv it resolved, says why it decided to do work (or that it had none), traces every
+external command it runs, and leaves each one's own output unmuted, so provisioning is
+watchable instead of a silent pause on a 34MB download. `scripts/test_agent_launcher.py` covers all of this against a stub bootstrap. `requires-python` pins that exact version, and `make python-check` fails when the two
 files disagree or when the running interpreter is not the pinned one.
 
 **Dependencies are declared once and pinned twice.** `[project].dependencies` holds

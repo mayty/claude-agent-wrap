@@ -47,6 +47,14 @@
 # in place rather than published under a new name -- the atomic-swap guarantee below
 # is for the venvs `agent` itself runs on, and nothing on that path passes --dev.
 #
+# Every run says what it resolved and why it is (or is not) doing work, prints each
+# external command before running it, and leaves that command's own output unmuted --
+# a provisioning run is meant to be watchable rather than a silent pause on a 34MB
+# download. Progress goes to stdout and fatal errors to stderr, which is the split
+# bin/agent relies on when it provisions on demand. The one thing deliberately kept
+# quiet is tar: the archive holds a few thousand files and listing them would bury
+# every other line of the run.
+#
 # Usage: agent-bootstrap [--force] [--dev]
 #   --force  provision even when the pin is already satisfied
 #   --dev    sync prod + dev dependencies from uv.lock instead of installing
@@ -74,6 +82,19 @@ die() {
 
 note() {
     printf 'agent-bootstrap: %s\n' "$*"
+}
+
+# Trace a command, then run it. On stdout, like note, so the two stay in one stream;
+# each printf is a single write with nothing buffered between commands, so a traced
+# line always lands immediately before the output of the command it names.
+#
+# "$*" joins the arguments with spaces and does not re-quote them: exact for the paths
+# this script builds, indicative for anything a caller staged under a name with spaces
+# in it. Display only -- "$@" is what actually executes, and its exit status is this
+# function's, so every `|| die` around a call still reads the command's own result.
+run() {
+    printf 'agent-bootstrap: + %s\n' "$*"
+    "$@"
 }
 
 # Resolve this script's real path, following symlinks. Kept deliberately
@@ -179,11 +200,14 @@ sha256_of() {
     fi
 }
 
+# Neither downloader is silenced: --progress-bar is curl's quietest meter that still
+# moves, and wget without -q reports the same thing in its own format. Both write it to
+# stderr, so it interleaves with the trace lines rather than mixing into stdout.
 fetch() {
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        run curl -fL --retry 3 --progress-bar -o "$2" "$1"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$2" "$1"
+        run wget -O "$2" "$1"
     else
         die "no downloader found (need curl or wget)"
     fi
@@ -209,31 +233,69 @@ else
 fi
 venv="$prefix/$venv_slug"
 
+# Said before anything is decided, so even a run that turns out to have nothing to do
+# has named the three things every later line is about.
+note "target $target, cpython $AGENT_PY_VERSION+$AGENT_PY_RELEASE"
+note "venv $venv_slug in $prefix"
+
 # Already satisfied? Checked twice: once before taking the lock, so the common case
 # costs a couple of stats and no network, and again after acquiring it, so a process
 # that queued behind a concurrent bootstrap does not redo the work that bootstrap
 # just finished.
+#
+# On a "no" it leaves the reason in $unsatisfied -- global, because sh has no locals --
+# and the caller prints it. That line is the only place the difference between "the pin
+# moved", "the dependencies moved" and "a pointer went missing" is visible, and each
+# sends the run down a visibly different path below.
 pin_satisfied() {
-    [ "$force" -eq 0 ] || return 1
+    unsatisfied=""
+    if [ "$force" -ne 0 ]; then
+        unsatisfied="--force given"
+        return 1
+    fi
     # Never satisfied under --dev: the dev slug carries no content hash, so this
     # function cannot tell whether the venv matches uv.lock -- only `uv sync` can, and
     # it has to be reached to say so. The interpreter half of the run is still skipped
     # by the guards below, so the cost of a no-op --dev is one uv sync and no network.
-    [ "$dev" -eq 0 ] || return 1
-    [ -x "$tree/bin/python3" ] || return 1
-    [ -f "$prefix/current" ] || return 1
-    read -r installed < "$prefix/current" || return 1
-    [ "$installed" = "$slug" ] || return 1
-    [ -x "$venv/bin/python3" ] || return 1
-    [ -f "$prefix/current-venv" ] || return 1
-    read -r installed_venv < "$prefix/current-venv" || return 1
-    [ "$installed_venv" = "$venv_slug" ] || return 1
+    if [ "$dev" -ne 0 ]; then
+        unsatisfied="--dev always re-syncs from uv.lock"
+        return 1
+    fi
+    if [ ! -x "$tree/bin/python3" ]; then
+        unsatisfied="no interpreter at $tree"
+        return 1
+    fi
+    # The [ -f ] guard is what keeps the shell from writing its own "cannot open" line
+    # when the pointer is missing; the read still has to be guarded too, for a pointer
+    # that exists but is empty.
+    if [ ! -f "$prefix/current" ] || ! read -r installed < "$prefix/current"; then
+        unsatisfied="no interpreter pointer published"
+        return 1
+    fi
+    if [ "$installed" != "$slug" ]; then
+        unsatisfied="current names $installed"
+        return 1
+    fi
+    if [ ! -x "$venv/bin/python3" ]; then
+        unsatisfied="no venv at $venv"
+        return 1
+    fi
+    if [ ! -f "$prefix/current-venv" ] || ! read -r installed_venv < "$prefix/current-venv"; then
+        unsatisfied="no venv pointer published"
+        return 1
+    fi
+    if [ "$installed_venv" != "$venv_slug" ]; then
+        unsatisfied="current-venv names $installed_venv"
+        return 1
+    fi
     return 0
 }
 
 if pin_satisfied; then
+    note "already provisioned; nothing to do"
     exit 0
 fi
+note "provisioning: $unsatisfied"
 
 # --- lock -------------------------------------------------------------------
 # mkdir, not flock: macOS ships no flock(1). The pid file is what makes a lock
@@ -258,6 +320,7 @@ done
 printf '%s\n' "$$" > "$lock/pid"
 
 if pin_satisfied; then
+    note "another bootstrap did the work; nothing to do"
     rm -rf "$lock"
     exit 0
 fi
@@ -288,20 +351,26 @@ if [ ! -x "$tree/bin/python3" ]; then
         fetch "$BASE_URL/$AGENT_PY_RELEASE/$asset" "$tarball"
     fi
 
+    note "verifying SHA-256 of $asset"
     got_sha=$(sha256_of "$tarball")
     if [ "$got_sha" != "$want_sha" ]; then
         die "SHA-256 mismatch for $asset
   expected $want_sha
   got      $got_sha"
     fi
+    note "SHA-256 matches the pin: $got_sha"
 
     rm -rf "$tree"
-    tar -xzf "$tarball" -C "$tmp"
+    # Not `tar -v`: the archive is a few thousand files, and the trace line above is
+    # the part worth reading.
+    run tar -xzf "$tarball" -C "$tmp"
     [ -x "$tmp/python/bin/python3" ] || die "$asset did not contain python/bin/python3"
     mv "$tmp/python" "$tree"
     extracted=1
 fi
-"$tree/bin/python3" -c 'import sys; sys.exit(0)' \
+# `-V` rather than a silent `sys.exit(0)`: it proves the interpreter execs on this host
+# exactly as well, and it prints which one it is while doing so.
+run "$tree/bin/python3" -V \
     || die "the extracted interpreter does not run on this host"
 
 # --- publish the interpreter -------------------------------------------------
@@ -309,13 +378,15 @@ fi
 # place; the venv below is built against it and published separately. Written
 # unconditionally -- it is cheap, and it repairs a pointer lost while its tree survived.
 #
-# The note is not unconditional, because reaching here does not mean anything was
-# installed. A constraints-only bump reuses the tree, and --dev reaches here on every
-# run by design, so announcing an interpreter that was already in place would make the
-# common case read like work. Only an actual extraction says so.
+# Two notes, and only one of them unconditional. The pointer really is written on every
+# run, so it says so on every run. The tree is not: a constraints-only bump reuses it,
+# and --dev reaches here on every run by design, so announcing an interpreter that was
+# already in place would make the common case read like work. Only an actual extraction
+# says so.
 printf '%s\n' "$slug" > "$tmp/current"
 mv "$tmp/current" "$prefix/current"
 [ "$extracted" -eq 0 ] || note "CPython $AGENT_PY_VERSION ready at $tree"
+note "published current -> $slug"
 
 # --- dependencies -------------------------------------------------------------
 # Built under $tmp and renamed, so a partially installed venv is never visible under
@@ -337,18 +408,22 @@ if [ "$dev" -eq 1 ]; then
     # is what stops it creating a .venv beside pyproject.toml instead, and
     # `package = false` there is what stops it installing agent_wrap into site-packages,
     # where it would shadow the copy PYTHONPATH provides.
-    [ -x "$venv/bin/python3" ] || "$tree/bin/python3" -m venv "$venv"
-    UV_PROJECT_ENVIRONMENT="$venv" uv sync --locked --project "$wrap_dir"
+    [ -x "$venv/bin/python3" ] || run "$tree/bin/python3" -m venv "$venv"
+    # Through `env` so the trace carries UV_PROJECT_ENVIRONMENT: without it the line
+    # would name a uv invocation that resolves a different environment than this one.
+    run env UV_PROJECT_ENVIRONMENT="$venv" uv sync --locked --project "$wrap_dir"
 elif [ ! -x "$venv/bin/python3" ]; then
     note "installing dependencies from bin/requirements.txt"
     rm -rf "$tmp/venv"
-    "$tree/bin/python3" -m venv "$tmp/venv"
-    "$tmp/venv/bin/python3" -m pip install \
+    run "$tree/bin/python3" -m venv "$tmp/venv"
+    # No --quiet: what pip is collecting, and from where, is the slowest part of a
+    # first run and the part worth watching. --disable-pip-version-check stays, because
+    # a nag about pip's own release is noise rather than progress.
+    run "$tmp/venv/bin/python3" -m pip install \
         -r "$req_file" \
         --require-hashes \
         --only-binary=:all: \
-        --disable-pip-version-check \
-        --quiet
+        --disable-pip-version-check
     # pip bakes the interpreter's absolute path into the shebang of every console
     # script it writes, and this venv is built under $tmp -- so any such script would
     # land pointing at a directory this script is about to delete. Repointing them
@@ -379,4 +454,5 @@ fi
 # the correct answer.
 printf '%s\n' "$venv_slug" > "$tmp/current-venv"
 mv "$tmp/current-venv" "$prefix/current-venv"
+note "published current-venv -> $venv_slug"
 note "dependencies ready at $venv"
