@@ -56,7 +56,7 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 A `Makefile` provides all QA targets. Follow these rules:
 
-- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
+- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + constraints-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
 - **Save `agent rebuild` for the end of the session.** `make install` updates the venv
   this session runs on, so nothing is blocked in the meantime. But the container's
   `.python/` is an anonymous volume on a `--rm` container: it dies with the session, and
@@ -74,6 +74,17 @@ A `Makefile` provides all QA targets. Follow these rules:
     of `make check`) fails while they drift.
   - *Dev tooling*: add it to the `dev` dependency group (`[dependency-groups]`), then
     `uv lock`. No constraints dump — the group never ships.
+  - Either kind is declared as a **floor and nothing else** (`x>=y`) — no upper bound
+    anywhere. `uv.lock` is what pins, and `exclude-newer` holds back anything younger
+    than a week, so a cap would gate nothing; it would only hide new majors from
+    `make upgrade-deps`.
+  - *Upgrading*: `make available-upgrades` reports what a re-resolution would move and
+    writes nothing; `make upgrade-deps` performs it — `uv lock --upgrade`, then
+    `scripts/sync-dependencies.py` rewrites every floor in `pyproject.toml` to the
+    version just locked, then a re-lock and a constraints dump, so all three artifacts
+    land in step. A floor is therefore a record of what was last locked, not a
+    hand-chosen minimum; do not tighten one by hand. Run `make install` afterwards to
+    put the new versions in the venv.
   - Either way, `make install` applies it immediately and that is the whole of it: the
     new dependency is importable and `make check` runs against it without a rebuild.
   - `make install` is the only dev-environment command: it is `bin/agent-bootstrap --dev`,

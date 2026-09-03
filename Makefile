@@ -2,8 +2,9 @@
 # agent-wrap QA targets.
 # Strict targets (for CI): lintcheck format-check test typecheck markdown-check arch-check check-executables
 # Fix targets (for dev):    lint, format
+# Dependency targets:       available-upgrades, upgrade-deps, dump-prod-constraints
 
-.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check check-executables python-check carveout-check constraints-check dump-prod-constraints check
+.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check
 
 # Every target runs on the venv bin/agent-bootstrap provisioned, never on the host's
 # python3 -- that is the whole point of owning the interpreter, and a `python3`
@@ -152,6 +153,13 @@ carveout-check:
 	$(call carveout_legs,$(CARVEOUT_STATUSLINE_PATHS),$(CARVEOUT_STATUSLINE_VERSION))
 	$(call carveout_legs,$(CARVEOUT_RUNTIME_PATHS),$(CARVEOUT_RUNTIME_VERSION))
 
+# uv is a developer tool only -- nothing on the end-user path needs it -- so the targets
+# that do need it declare that as a prerequisite instead of failing halfway through a
+# recipe, or worse, inside a pipeline where the exit code is the tail command's. Phony,
+# so make runs it at most once per invocation however many of them are in the goal list.
+uv-check:
+	@command -v uv >/dev/null 2>&1 || { printf 'uv not found. See docs/getting-started.md\n' >&2; exit 1; }
+
 # The exported constraint set, to stdout. `--no-header` is what makes the output a
 # pure function of uv.lock: uv's own header stamps the invoking command line into the
 # file, including the -o path, so a check that exported anywhere else would see a
@@ -169,8 +177,7 @@ CONSTRAINTS_EXPORT := uv export --locked --quiet --no-dev --no-emit-project --no
 # Written via a temp file and renamed, not straight to the destination: `>` truncates
 # before uv runs, so a refusal (a stale lock, no network) would otherwise leave behind
 # a header and nothing else -- a constraints file that installs no dependencies at all.
-dump-prod-constraints:
-	@command -v uv >/dev/null 2>&1 || { printf 'uv not found. See docs/getting-started.md\n' >&2; exit 1; }
+dump-prod-constraints: uv-check
 	@{ printf '%s\n' '$(CONSTRAINTS_HEADER)'; $(CONSTRAINTS_EXPORT); } > bin/requirements.txt.tmp \
 		|| { rm -f bin/requirements.txt.tmp; exit 1; }
 	@mv bin/requirements.txt.tmp bin/requirements.txt
@@ -184,8 +191,7 @@ dump-prod-constraints:
 # Compares content, not `git status`: the answer must be the same whether the
 # regenerated file has been committed yet or not, so that the natural order --
 # uv lock, make dump-prod-constraints, make check, commit -- passes at every step.
-constraints-check:
-	@command -v uv >/dev/null 2>&1 || { printf 'uv not found. See docs/getting-started.md\n' >&2; exit 1; }
+constraints-check: uv-check
 	uv lock --check
 	@{ printf '%s\n' '$(CONSTRAINTS_HEADER)'; $(CONSTRAINTS_EXPORT); } \
 		| diff -u bin/requirements.txt - > /dev/null || { \
@@ -193,5 +199,29 @@ constraints-check:
 		printf 'Run: make dump-prod-constraints\n' >&2; \
 		exit 1; \
 	}
+
+# What would move if the lock were re-resolved today, and nothing else: --dry-run means
+# uv reports the upgrade and writes no file. The answer is shaped by `exclude-newer` in
+# pyproject.toml, so a release published this week is deliberately not offered yet.
+available-upgrades: uv-check
+	uv lock --upgrade --dry-run
+
+# Move every dependency to the newest release the declared floors and the exclude-newer
+# cooldown allow, and leave all three dependency artifacts agreeing again.
+#
+# Both guards are load-bearing: uv-check for the resolver, python-check for the
+# interpreter sync-dependencies.py runs on -- the pinned one, never a host python3.
+# --frozen on each `uv tree`: the prod pipe edits pyproject.toml, which makes the lock
+# stale for the dev pipe, and without it uv would quietly re-resolve mid-recipe.
+# The second `uv lock` is not cosmetic: uv.lock records the declared requirements, so the
+# rewritten floors leave `uv lock --check` -- and therefore `make check` -- failing until
+# it runs. It cannot move a resolved version, since every new floor is the version already
+# locked. Stops at the files; `make install` applies them to the venv when you want it.
+upgrade-deps: uv-check python-check
+	uv lock --upgrade
+	uv tree --frozen --no-dev --depth 1 | $(PYTHON) scripts/sync-dependencies.py prod
+	uv tree --frozen --only-dev --depth 1 | $(PYTHON) scripts/sync-dependencies.py dev
+	uv lock
+	$(MAKE) dump-prod-constraints
 
 check: python-check constraints-check lintcheck format-check test typecheck markdown-check arch-check carveout-check check-executables

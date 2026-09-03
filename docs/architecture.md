@@ -193,6 +193,16 @@ hashes a hard gate rather than decoration — the same posture as the interprete
 SHA-256 check. `uv` is a developer and CI tool only; the end-user path needs pip and PyPI,
 nothing more.
 
+**Declared requirements are floors, and a floor is an output.** No requirement here carries
+an upper bound — the lock pins, and the cooldown is what holds back a release that is too
+new, so a cap would only hide majors from the upgrade path. That path is two targets:
+`make available-upgrades` re-resolves with `--dry-run` and reports what could move without
+writing anything, and `make upgrade-deps` performs it, pipes `uv tree` through
+`scripts/sync-dependencies.py` to rewrite each `>=` in `pyproject.toml` to the version just
+locked, re-locks so `uv.lock`'s recorded requirements match, and re-exports the constraints.
+So the floors state what was last resolved rather than a hand-chosen minimum, and the three
+artifacts move as one unit.
+
 **The venv the CLI runs on is content-addressed and never mutated.** Its directory name
 embeds the interpreter pin, the target triple, and the first 12 hex of the SHA-256 of the
 constraints it was built from. A dependency change therefore publishes a *new* directory

@@ -24,15 +24,15 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx2", specifier = ">=2.12" }]
+requires-dist = [{ name = "httpx2", specifier = ">=2.12.0" }]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyrefly", specifier = ">=1.2.0,<2" },
-    { name = "pytest", specifier = ">=9.1.1,<10" },
-    { name = "pytest-cov", specifier = ">=7.1.0,<8" },
-    { name = "pytest-mock", specifier = ">=3.15.1,<4" },
-    { name = "ruff", specifier = ">=0.16.1,<1" },
+    { name = "pyrefly", specifier = ">=1.2.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-mock", specifier = ">=3.15.1" },
+    { name = "ruff", specifier = ">=0.16.4" },
 ]
 
 [[package]]

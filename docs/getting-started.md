@@ -28,7 +28,7 @@ Nothing is ever replaced in place: each venv's directory name encodes the constr
 
 ### Working on agent-wrap itself
 
-Contributors additionally need [uv](https://docs.astral.sh/uv/), which owns dependency resolution and backs `make dump-prod-constraints` and `make constraints-check`. It is not needed to *use* the wrapper. With it on `PATH`, one command provisions everything up front instead of leaving it to the first `agent` command:
+Contributors additionally need [uv](https://docs.astral.sh/uv/), which owns dependency resolution and backs `make dump-prod-constraints`, `make constraints-check`, and the upgrade path — `make available-upgrades` to see what could move, `make upgrade-deps` to move it (followed by `make install` to put it in the venv). It is not needed to *use* the wrapper. With it on `PATH`, one command provisions everything up front instead of leaving it to the first `agent` command:
 
 ```bash
 make install
