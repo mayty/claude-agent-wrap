@@ -318,7 +318,7 @@ class LogsService:
         # Honour an already-set tool dir env (e.g. from test wrappers) so the child
         # resolves the same state file as the parent. Otherwise default to TOOL_DIR.
         tool_dir = os.environ.get(LOGS_TOOL_DIR_ENV, str(TOOL_DIR))
-        env = {**os.environ, LOGS_TOOL_DIR_ENV: str(tool_dir)}
+        env = {**os.environ, LOGS_TOOL_DIR_ENV: tool_dir}
         argv = [sys.executable, "-m", "agent_wrap", "logs", "--foreground", f"--port={port}"]
 
         pid = os.fork()

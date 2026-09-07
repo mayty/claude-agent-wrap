@@ -146,7 +146,7 @@ class LiteLLMSidecar(Sidecar):
             )
             raise SystemExit(1)
 
-        agent_in_host_netns = bool(use_host_net) or agent_network == "host"
+        agent_in_host_netns = use_host_net or agent_network == "host"
 
         # Runs under the runner's shared lock (held across the whole launch), so the
         # start decision + health poll are atomic against every concurrent launcher.

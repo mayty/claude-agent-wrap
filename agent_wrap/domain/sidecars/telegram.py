@@ -116,7 +116,7 @@ class TelegramSidecar(Sidecar):
             # singleton if it is the last one out.
             return []
 
-        agent_in_host_netns = bool(use_host_net) or agent_network == "host"
+        agent_in_host_netns = use_host_net or agent_network == "host"
 
         self._ensure_network()
 

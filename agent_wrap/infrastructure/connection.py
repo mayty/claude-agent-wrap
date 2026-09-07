@@ -21,7 +21,7 @@ from agent_wrap.infrastructure.constants import CONNECTION_PRAGMAS, DATABASE_PRA
 from agent_wrap.infrastructure.migrations import MigrationRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from pathlib import Path
 
     from agent_wrap.infrastructure.constants import Databases
@@ -49,7 +49,7 @@ class ConnectionFactory:
         self._migrate()
 
     @contextmanager
-    def enable_writes(self) -> Iterator[None]:
+    def enable_writes(self) -> Generator[None]:
         """
         Permit :meth:`rw` for the duration of the block.
 
@@ -75,7 +75,7 @@ class ConnectionFactory:
             self._writes_enabled = False
 
     @contextmanager
-    def rw(self) -> Iterator[sqlite3.Connection]:
+    def rw(self) -> Generator[sqlite3.Connection]:
         """
         Yield a read-write connection wrapping the block in one transaction.
 
@@ -105,7 +105,7 @@ class ConnectionFactory:
             connection.close()
 
     @contextmanager
-    def ro(self) -> Iterator[sqlite3.Connection]:
+    def ro(self) -> Generator[sqlite3.Connection]:
         """
         Yield a connection that cannot write, via ``PRAGMA query_only``.
 

@@ -3,6 +3,7 @@ import json
 import socket
 import threading
 import time
+import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock

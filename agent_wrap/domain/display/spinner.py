@@ -89,25 +89,27 @@ class Spinner:
         if not sys.stderr.isatty():
             return self._poll_quiet(poll, deadline, poll_interval)
 
-        state = {"status": "", "ok": False}
+        status = ""
+        ok = False
 
         def work() -> None:
+            nonlocal status, ok
             while time.monotonic() < deadline:
-                verdict, status = poll()
-                state["status"] = status
+                verdict, poll_status = poll()
+                status = poll_status
                 if verdict is PollResult.SUCCESS:
-                    state["ok"] = True
+                    ok = True
                     return
                 if verdict is PollResult.FAILURE:
                     return
                 time.sleep(poll_interval)
 
         self.spin_while(
-            message=lambda: f"{message} [{state['status'] or '?'}]",
-            done_message=lambda: done_message if state["ok"] else None,
+            message=lambda: f"{message} [{status or '?'}]",
+            done_message=lambda: done_message if ok else None,
             work=work,
         )
-        return bool(state["ok"])
+        return ok
 
     def _poll_quiet(
         self,

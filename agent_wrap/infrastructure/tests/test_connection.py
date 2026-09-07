@@ -228,7 +228,8 @@ def test_ro_opens_when_no_writer_has_run(factory: ConnectionFactory, tmp_path: P
 def test_rw_propagates_non_sqlite_exceptions_unwrapped(writable: ConnectionFactory) -> None:
     """A bug in the caller's block should surface as itself, not as a StorageError."""
     with pytest.raises(ZeroDivisionError), writable.rw():
-        _ = 1 / 0
+        # The literal is the point: a non-sqlite bug must surface as itself.
+        _ = 1 / 0  # pyrefly: ignore [division-by-zero]
 
 
 def test_construction_reports_a_broken_migration(tmp_path: Path, db_path: Path) -> None:

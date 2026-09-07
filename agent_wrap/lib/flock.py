@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, TextIO
 from agent_wrap.exceptions import LockTimeoutError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from pathlib import Path
 
 #: Seconds between acquisition attempts while :func:`file_lock` waits on a timeout.
@@ -43,7 +43,7 @@ LOCK_POLL_INTERVAL = 0.1
 
 
 @contextmanager
-def file_lock(path: Path, *, timeout: float | None = None) -> Iterator[None]:
+def file_lock(path: Path, *, timeout: float | None = None) -> Generator[None]:
     """
     Hold an exclusive ``flock`` on *path* for the duration of the block.
 
@@ -74,7 +74,7 @@ def file_lock(path: Path, *, timeout: float | None = None) -> Iterator[None]:
 
 
 @contextmanager
-def try_file_lock(path: Path) -> Iterator[bool]:
+def try_file_lock(path: Path) -> Generator[bool]:
     """
     Try once to take an exclusive ``flock`` on *path*, without blocking.
 

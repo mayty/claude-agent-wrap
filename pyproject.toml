@@ -226,5 +226,6 @@ project_includes = [
 # those entries never took effect. The directory's flat sys.path imports are covered
 # by inline `# type: ignore` comments in the files themselves instead.
 python_version = "3.14"
+min-severity = "info"
 
 [tool.pyrefly.errors]

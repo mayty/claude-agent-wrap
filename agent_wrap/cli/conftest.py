@@ -19,7 +19,7 @@ import pytest
 from click.testing import CliRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
     import pytest_mock
 
@@ -67,7 +67,7 @@ def write_grants(mocker: pytest_mock.MockFixture) -> list[str]:
     taken: list[str] = []
 
     @contextlib.contextmanager
-    def grant() -> Iterator[None]:
+    def grant() -> Generator[None]:
         taken.append("projects")
         yield
 
