@@ -38,6 +38,12 @@ make install
 
 That is `bin/agent-bootstrap --dev`: it provisions the same pinned interpreter, then hands the whole dependency question to `uv sync --locked` — the prod dependencies **and** the dev group, out of the one lock `bin/requirements.txt` is exported from. So there is no second step and no reason to run the plain bootstrap first. It publishes its own venv, `venv-<ver>+<rel>-<target>-dev`, alongside any the plain bootstrap built; re-run it after any `uv lock`, and it re-syncs in place.
 
+Run it before the `uv`-backed targets rather than instead of them: those targets are pointed
+at the venv it provisions (`UV_PROJECT_ENVIRONMENT`), because `requires-python` is an exact
+pin and uv would otherwise hunt for a matching interpreter in its own managed installs and
+on `PATH` — where this checkout's copy is not. Without a provisioned venv they stop with
+`No provisioned interpreter. Run: make install`.
+
 `make check` then runs the full QA suite. Working inside this project's own agent container, both `uv` and the dev group are already in the image — `agent rebuild` is enough.
 
 ## Usage

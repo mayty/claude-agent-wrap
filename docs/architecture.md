@@ -231,6 +231,16 @@ hashes a hard gate rather than decoration — the same posture as the interprete
 SHA-256 check. `uv` is a developer and CI tool only; the end-user path needs pip and PyPI,
 nothing more.
 
+**The `uv` targets run against the checkout's own interpreter, like every other target.**
+`requires-python` is an exact pin, and uv resolves something matching it before it will
+lock, export or walk the tree — searching only its own managed installs and `PATH`, neither
+of which is where `.python/` is. Left to itself uv downloads a second copy of the pinned
+version, or fails outright where downloads are unavailable. So the `Makefile` exports
+`UV_PROJECT_ENVIRONMENT` at the provisioned venv, which uv adopts instead of resolving
+anything — the same lever `bin/agent-bootstrap` already pulls for its own `uv sync`. That
+makes `make install` a precondition for every `uv`-backed target, which is why each one
+guards on `python-check` as well as `uv-check`.
+
 **Declared requirements are floors, and a floor is an output.** No requirement here carries
 an upper bound — the lock pins, and the cooldown is what holds back a release that is too
 new, so a cap would only hide majors from the upgrade path. That path is two targets:

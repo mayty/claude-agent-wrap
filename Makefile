@@ -19,6 +19,19 @@ PY_VENV := $(shell [ -f .python/current-venv ] && cat .python/current-venv)
 # this regardless of the operator.
 PYTHON := .python/$(PY_VENV)/bin/python3
 
+# The same rule for uv, which cannot be told an interpreter the way $(PYTHON) tells one.
+# Before it will lock, export or walk the tree, uv resolves something satisfying
+# `requires-python` -- an exact pin, ==3.14.7 -- and it looks only in its own managed
+# installs and on PATH. Neither is where this checkout's interpreter lives: the bootstrap
+# unpacks a python-build-standalone tarball into .python/ and never tells uv about it. So
+# uv downloads a *second* copy of the pinned version, or, where downloads are off, fails
+# with "No interpreter found for Python 3.14.7". Handed an environment that already exists
+# it adopts that instead and asks nothing -- the same lever bin/agent-bootstrap pulls for
+# its own `uv sync`. Exported rather than spelled `--python` on each call, so a uv
+# invocation added later cannot forget it. Unprovisioned this names .python/, which holds
+# no interpreter; the python-check prerequisite on every uv target is what stops there.
+export UV_PROJECT_ENVIRONMENT := .python/$(PY_VENV)
+
 # The two regions that do NOT run on the pinned interpreter, and the floor each
 # must stay inside. ops/statusline.py runs on the agent container's python3;
 # litellm_runtime/ runs inside the pinned LiteLLM image. Both numbers are the
@@ -166,6 +179,9 @@ carveout-check:
 # that do need it declare that as a prerequisite instead of failing halfway through a
 # recipe, or worse, inside a pipeline where the exit code is the tail command's. Phony,
 # so make runs it at most once per invocation however many of them are in the goal list.
+# Every uv target pairs it with python-check, because UV_PROJECT_ENVIRONMENT above points
+# uv at a venv that only `make install` creates -- and "Run: make install" is a far better
+# answer than uv's own hunt for a 3.14.7 it will not find.
 uv-check:
 	@command -v uv >/dev/null 2>&1 || { printf 'uv not found. See docs/getting-started.md\n' >&2; exit 1; }
 
@@ -186,7 +202,7 @@ CONSTRAINTS_EXPORT := uv export --locked --quiet --no-dev --no-emit-project --no
 # Written via a temp file and renamed, not straight to the destination: `>` truncates
 # before uv runs, so a refusal (a stale lock, no network) would otherwise leave behind
 # a header and nothing else -- a constraints file that installs no dependencies at all.
-dump-prod-constraints: uv-check
+dump-prod-constraints: uv-check python-check
 	@{ printf '%s\n' '$(CONSTRAINTS_HEADER)'; $(CONSTRAINTS_EXPORT); } > bin/requirements.txt.tmp \
 		|| { rm -f bin/requirements.txt.tmp; exit 1; }
 	@mv bin/requirements.txt.tmp bin/requirements.txt
@@ -200,7 +216,7 @@ dump-prod-constraints: uv-check
 # Compares content, not `git status`: the answer must be the same whether the
 # regenerated file has been committed yet or not, so that the natural order --
 # uv lock, make dump-prod-constraints, make check, commit -- passes at every step.
-constraints-check: uv-check
+constraints-check: uv-check python-check
 	uv lock --check
 	@{ printf '%s\n' '$(CONSTRAINTS_HEADER)'; $(CONSTRAINTS_EXPORT); } \
 		| diff -u bin/requirements.txt - > /dev/null || { \
@@ -212,14 +228,15 @@ constraints-check: uv-check
 # What would move if the lock were re-resolved today, and nothing else: --dry-run means
 # uv reports the upgrade and writes no file. The answer is shaped by `exclude-newer` in
 # pyproject.toml, so a release published this week is deliberately not offered yet.
-available-upgrades: uv-check
+available-upgrades: uv-check python-check
 	uv lock --upgrade --dry-run
 
 # Move every dependency to the newest release the declared floors and the exclude-newer
 # cooldown allow, and leave all three dependency artifacts agreeing again.
 #
 # Both guards are load-bearing: uv-check for the resolver, python-check for the
-# interpreter sync-dependencies.py runs on -- the pinned one, never a host python3.
+# interpreter sync-dependencies.py runs on and the one UV_PROJECT_ENVIRONMENT hands uv --
+# the pinned one in both cases, never a host python3.
 # --frozen on each `uv tree`: the prod pipe edits pyproject.toml, which makes the lock
 # stale for the dev pipe, and without it uv would quietly re-resolve mid-recipe.
 # The second `uv lock` is not cosmetic: uv.lock records the declared requirements, so the
