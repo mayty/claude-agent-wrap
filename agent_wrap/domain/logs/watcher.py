@@ -92,32 +92,6 @@ class _LogTreeHandler(FileSystemEventHandler):
                 self._queue.put(path)
 
 
-class _RegistryHandler(FileSystemEventHandler):
-    """
-    Queue changes to the project registry, and nothing else in its directory.
-
-    The filter is correctness, not economy: the daemon redirects its own stdout to
-    ``logs-server.log`` in this same directory and flushes on every line, so an
-    unfiltered handler would let a logged line wake the loop that logged it -- and
-    under ``AGENT_LOG_DEBUG`` that is an unbounded spin, since nothing here rate-limits
-    a self-trigger.
-
-    The queued path is the registry file itself, which the cache cannot map to a
-    session and therefore treats as "reconcile everything" -- exactly right, because a
-    registry change means projects were added or removed.
-    """
-
-    def __init__(self, queue: SimpleQueue[object], filename: str) -> None:
-        self._queue = queue
-        self._filename = filename
-
-    @override
-    def dispatch(self, event: FileSystemEvent) -> None:
-        for path in event_paths(event):
-            if path.name == self._filename:
-                self._queue.put(path)
-
-
 class CacheWatcher:
     """
     Drives :class:`~agent_wrap.domain.logs.cache.LogsCache` from filesystem events.
@@ -125,26 +99,26 @@ class CacheWatcher:
     Owns the observer and the single consumer thread. Every call into the cache
     happens on that thread, so the cache needs no lock beyond the one guarding its
     hot-session slot.
+
+    Only the logs tree is watched. The project registry deliberately is not, even
+    though a registration is a change the viewer cares about: every project's logs land
+    in this one tree, so a newly registered project's first session write is already an
+    event here -- one the cache cannot attribute to a known group, which makes it fall
+    back to a full ``reconcile`` that re-reads the registry. Until that write happens
+    the project has nothing to render, so there is nothing an earlier wakeup could show.
+    A registration that is never followed by a log write is picked up by the heartbeat.
     """
 
-    def __init__(
-        self,
-        cache: LogsCache,
-        logs_tree: Path,
-        registry_dir: Path,
-        registry_filename: str,
-    ) -> None:
+    def __init__(self, cache: LogsCache, logs_tree: Path) -> None:
         self._cache = cache
         self._logs_tree = logs_tree
-        self._registry_dir = registry_dir
-        self._registry_filename = registry_filename
         self._queue: SimpleQueue[object] = SimpleQueue()
         self._observer: BaseObserver | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         """
-        Schedule both watches, start the observer, then start the consumer.
+        Schedule the watch, start the observer, then start the consumer.
 
         Nothing here is defensive. A failure to establish a watch -- an exhausted
         ``fs.inotify.max_user_watches`` being the realistic one -- propagates out of
@@ -157,24 +131,15 @@ class CacheWatcher:
         # `agent run` starts the viewer before the sidecar comes up. Observer.schedule
         # raises on a missing path, so create it the way link_litellm_logs does.
         self._logs_tree.mkdir(parents=True, exist_ok=True)
-        self._registry_dir.mkdir(parents=True, exist_ok=True)
 
         observer = Observer()
         observer.schedule(_LogTreeHandler(self._queue), str(self._logs_tree), recursive=True)
-        observer.schedule(
-            _RegistryHandler(self._queue, self._registry_filename),
-            str(self._registry_dir),
-            recursive=False,
-        )
         observer.start()
         self._observer = observer
 
         self._thread = threading.Thread(target=self._run, daemon=True, name="logs-cache-watch")
         self._thread.start()
-        log_info(
-            "Watch",
-            f"watching {self._logs_tree} and {self._registry_dir / self._registry_filename}",
-        )
+        log_info("Watch", f"watching {self._logs_tree}")
 
     def stop(self) -> None:
         """

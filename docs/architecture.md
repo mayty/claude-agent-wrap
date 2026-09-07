@@ -30,10 +30,14 @@ agent_wrap/
 │   ├── stats/       #   Usage statistics
 │   ├── status/      #   System-state aggregation (the `inspect` command)
 │   └── updates/     #   Self-update checks
+├── infrastructure/  # Storage layer — SQLite databases, migrations, repositories
+│   ├── connection.py#   ConnectionFactory: rw()/ro(), migrates on construction
+│   ├── migrations.py#   MigrationRunner: numbered .sql scripts, backup before each step
+│   └── <database>/  #   One subpackage per Databases member: migrations/, repositories/, models.py
 ├── lib/             # Reusable general-purpose utilities — "could be extracted to a standalone library"
 ├── constants.py     # Module-level constants shared by multiple modules
 ├── exceptions.py    # ALL custom exceptions
-└── containers.py    # DI container — the singleton Services instance
+└── containers.py    # DI containers — the singleton Core / Repositories / Services instances
 ```
 
 ## Layered architecture
@@ -46,13 +50,23 @@ graph TD
     Container -->|"constructor DI"| SvcA["Domain Service A"]
     Container -->|"constructor DI"| SvcB["Domain Service B"]
     SvcA -->|"constructor DI"| SvcC["Domain Service C"]
+    Repos["Repositories Container"] -->|"constructor DI"| SvcA
+    Core["Core Container<br/>connection factories"] -->|"constructor DI"| Repos
 ```
 
 **From outside `agent_wrap/domain/`** (including the CLI), access domain logic ONLY through `services.xxx_service.method()`. Never import from `agent_wrap.domain.xxx.xxx` directly.
 
-## Services container
+## Containers
 
-`agent_wrap/containers.py` defines a `Services` class — a lazy-initialized singleton. Each service is a `@cached_property` that creates its dependencies via constructor injection. Services that are never accessed are never created.
+`agent_wrap/containers.py` defines three lazy-initialized singletons, each built on the one below it. Every member is a `@cached_property` that creates its dependencies via constructor injection, so anything never accessed is never created.
+
+| Container | Holds | Built from |
+| --- | --- | --- |
+| `Core` | one `ConnectionFactory` per database | its `db_dir` / `backups_dir` arguments |
+| `Repositories` | repository instances | `Core` |
+| `Services` | domain services | `Repositories`, and each other |
+
+`Core` takes its directories as constructor arguments rather than reading a module-level constant. That is the seam tests override — a test builds its own `Core` against `tmp_path` instead of monkeypatching a path into place. Constructing a factory is what runs its database's migrations, so the laziness is load-bearing: `agent --help` opens no database.
 
 ```python
 # The singleton instance — the ONLY way external code reaches domain logic:
@@ -61,7 +75,7 @@ from agent_wrap.containers import services
 services.launch_service.launch(...)
 ```
 
-Inter-service dependencies are wired through constructors:
+Inter-service dependencies are wired through constructors, and a service that needs storage receives a repository the same way:
 
 ```python
 @cached_property
@@ -72,7 +86,27 @@ def launch_service(self) -> LaunchService:
         update_service=self.update_service,
         provider_service=self.provider_service,
     )
+
+
+@cached_property
+def config_service(self) -> ConfigService:
+    return ConfigService(
+        display_service=self.display_service,
+        projects_repository=self._repositories.projects_repository,
+    )
 ```
+
+## Infrastructure layer
+
+`agent_wrap/infrastructure/` is the storage layer, below `domain/`. Shared machinery sits at its root; each database is a subpackage owning its own `migrations/`, `repositories/`, `models.py` and `tests/`. Its full contract — connection semantics, the migration and backup rules, how to add a database — is in [infrastructure.md](infrastructure.md). The boundary rules that matter from outside:
+
+- Nothing under `infrastructure/` may import `agent_wrap.domain.*` or `agent_wrap.cli.*`, at runtime or under `TYPE_CHECKING`.
+- A domain service reaches a repository by constructor injection only. `containers.py` is the composition root and the sole place permitted a runtime `agent_wrap.infrastructure` import.
+- Repositories return app objects, never rows or SQL. No `sqlite3` type ever leaves the layer; every `sqlite3.Error` surfaces as `StorageError` (see `exceptions.py`).
+- A database subpackage holds no path constants. Its directory name, its file's stem and its backup prefix are all one `Databases` member, and `containers.py` derives every path from it.
+- Writing is opt-in per database: `rw()` refuses outside a `with core.projects_db.enable_writes()` grant, and grants live in the CLI command entries. A process that never takes one — the `agent logs` viewer daemon above all — cannot mutate the database through a read, which is what lets the one-time `projects.txt` import sit on the read path safely.
+
+**`make arch-check` does not police this package.** `_models_constants_scope`'s allow-list is `("domain", "cli")`, so ED001/EE001/EF001 are silent here and the import-direction rules above are review-only. EB001 and EG001 are global and do apply.
 
 ## Domain service structure
 

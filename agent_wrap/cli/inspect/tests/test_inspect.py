@@ -1243,3 +1243,10 @@ def test_interpreter_row_stays_quiet_when_the_venv_state_is_unreadable(
     line = next(ln for ln in _lines(display_mock_service) if "interpreter" in ln)
     assert "3.14.7" in line
     assert "bootstrap" not in line
+
+
+def test_inspect_takes_no_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
+    """A reporting command does not get write permission just to migrate data."""
+    runner.invoke(cli_root, ["inspect"])
+
+    assert write_grants == []

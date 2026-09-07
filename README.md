@@ -45,7 +45,7 @@ See the [Getting Started](docs/getting-started.md) guide for full setup instruct
 
 ```
 .
-├── .agent-launches/      # Project registry, encrypted secrets, usage archive, launch state (git-ignored)
+├── .agent-launches/      # SQLite databases (db/), encrypted secrets, usage archive, launch state (git-ignored)
 ├── .claude_config/       # Global Claude config (git-ignored)
 ├── .python/              # The provisioned CPython `agent` runs on (git-ignored)
 ├── agent_wrap/           # Python orchestration (commands, providers, config)

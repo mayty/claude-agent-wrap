@@ -2,6 +2,7 @@
 """Data models for the config domain."""
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 
 @dataclass
@@ -11,3 +12,15 @@ class Entry:
     compressed: str
     first_original: str
     last_original: str
+
+
+class RegistryFingerprint(NamedTuple):
+    """
+    A cheap summary of the project registry, for HTTP cache validation.
+
+    Stands in for the ``(mtime, size)`` the logs viewer used to stat off the registry
+    file. ``last_change`` is unix nanoseconds, or ``None`` when nothing is registered.
+    """
+
+    last_change: int | None
+    count: int

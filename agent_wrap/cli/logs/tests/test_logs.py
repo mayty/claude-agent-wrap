@@ -141,3 +141,28 @@ def test_foreground_flag_is_hidden_from_completion_and_help() -> None:
     assert "--stop" in offered
     assert "--foreground" not in offered
     assert "--foreground" not in logs_command.get_help(ctx)
+
+
+def test_logs_takes_no_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
+    services.logs_service.running_server.return_value = None  # pyrefly: ignore [missing-attribute]
+    services.logs_service.spawn_background.return_value = 0  # pyrefly: ignore [missing-attribute]
+
+    runner.invoke(cli_root, ["logs"])
+
+    assert write_grants == []
+
+
+def test_the_viewer_daemon_takes_no_registry_write_grant(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    ``--foreground`` *is* the viewer daemon, re-exec'd as its own process.
+
+    It reads the registry on every reconcile, so a grant here would let a filesystem
+    event migrate host state. This is the invocation the whole gate exists for.
+    """
+    services.logs_service.serve_foreground.return_value = 0  # pyrefly: ignore [missing-attribute]
+
+    runner.invoke(cli_root, ["logs", "--foreground"])
+
+    assert write_grants == []

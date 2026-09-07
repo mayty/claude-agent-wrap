@@ -1,10 +1,38 @@
 # This file has been edited with the assistance of an AI tool.
-"""Singleton service container with lazy-initialized, dependency-injected services."""
+"""
+Singleton containers with lazy-initialized, dependency-injected members.
+
+Three tiers, each built on the one below it:
+
+``Core``
+    Connection factories -- one per database. Constructing a factory is what migrates
+    its database, so the laziness is load-bearing: ``agent --help`` opens nothing.
+``Repositories``
+    Repository instances, each over a factory from ``Core``.
+``Services``
+    Domain services, wired to each other and to the repositories they need.
+
+This is the composition root, and the only place permitted to import from
+``agent_wrap.infrastructure`` at runtime -- everything above reaches a repository
+through constructor injection.
+"""
 
 from functools import cached_property
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import AGENT_LAUNCHES_DIR
+from agent_wrap.infrastructure.constants import (
+    BACKUPS_DIRNAME,
+    DB_DIRNAME,
+    DB_FILE_SUFFIX,
+    INFRASTRUCTURE_DIR,
+    MIGRATIONS_DIRNAME,
+    Databases,
+)
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.create.service import CreateService
@@ -19,6 +47,54 @@ if TYPE_CHECKING:
     from agent_wrap.domain.stats.service import StatsService
     from agent_wrap.domain.status.service import InspectService
     from agent_wrap.domain.updates.service import UpdateService
+    from agent_wrap.infrastructure.connection import ConnectionFactory
+    from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
+
+
+class Core:
+    """
+    Lazy-initialized container for the storage layer's connection factories.
+
+    Takes its directories as constructor arguments rather than reading them from a
+    module-level constant: that is the seam a test overrides, by building its own
+    ``Core`` against ``tmp_path`` instead of monkeypatching a path into place.
+
+    Each factory runs its database's migrations when it is first constructed, so a
+    command that never touches a database never migrates one.
+    """
+
+    def __init__(self, db_dir: Path, backups_dir: Path) -> None:
+        self._db_dir = db_dir
+        self._backups_dir = backups_dir
+
+    @cached_property
+    def projects_db(self) -> ConnectionFactory:
+        from agent_wrap.infrastructure.connection import ConnectionFactory
+
+        return ConnectionFactory(
+            name=Databases.PROJECTS,
+            db_path=self._db_dir / f"{Databases.PROJECTS}{DB_FILE_SUFFIX}",
+            migrations_dir=INFRASTRUCTURE_DIR / Databases.PROJECTS / MIGRATIONS_DIRNAME,
+            backups_dir=self._backups_dir,
+        )
+
+
+class Repositories:
+    """
+    Lazy-initialized container for repositories, each over a database from ``Core``.
+
+    A repository is the only thing above the storage layer that knows a database exists.
+    Domain services receive one by constructor injection and see app objects, never rows.
+    """
+
+    def __init__(self, core: Core) -> None:
+        self._core = core
+
+    @cached_property
+    def projects_repository(self) -> ProjectsRepository:
+        from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
+
+        return ProjectsRepository(connection_factory=self._core.projects_db)
 
 
 class Services:
@@ -28,6 +104,9 @@ class Services:
     Each service is a ``@cached_property`` that creates its dependencies via
     constructor injection. Services that are never accessed are never created.
     """
+
+    def __init__(self, repositories: Repositories) -> None:
+        self._repositories = repositories
 
     @cached_property
     def display_service(self) -> DisplayService:
@@ -54,7 +133,10 @@ class Services:
     def config_service(self) -> ConfigService:
         from agent_wrap.domain.config.service import ConfigService
 
-        return ConfigService(display_service=self.display_service)
+        return ConfigService(
+            display_service=self.display_service,
+            projects_repository=self._repositories.projects_repository,
+        )
 
     @cached_property
     def secrets_service(self) -> SecretsService:
@@ -157,4 +239,9 @@ class Services:
         )
 
 
-services = Services()
+core = Core(
+    db_dir=AGENT_LAUNCHES_DIR / DB_DIRNAME,
+    backups_dir=AGENT_LAUNCHES_DIR / DB_DIRNAME / BACKUPS_DIRNAME,
+)
+repositories = Repositories(core=core)
+services = Services(repositories=repositories)

@@ -26,14 +26,16 @@ from agent_wrap.constants import (
     TOOL_DIR,
     WORKSPACE_MOUNT,
 )
+from agent_wrap.domain.config.models import RegistryFingerprint
 from agent_wrap.domain.config.project_registry import ProjectRegistry
-from agent_wrap.exceptions import HostMountError
-from agent_wrap.lib.atomic import atomic_write_json, atomic_write_text
+from agent_wrap.exceptions import HostMountError, StorageError, WritesNotEnabledError
+from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.docker_utils import parse_mount_specs
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
+    from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -50,8 +52,11 @@ def _load_json(path: Path) -> dict[str, Any] | None:
 class ConfigService:
     """Configuration file manipulation for agent-wrap."""
 
-    def __init__(self, display_service: DisplayService) -> None:
+    def __init__(
+        self, display_service: DisplayService, projects_repository: ProjectsRepository
+    ) -> None:
         self._display = display_service
+        self._projects = projects_repository
 
     # statusline / hooks
 
@@ -401,23 +406,56 @@ class ConfigService:
     # project registry -------------------------------------------------
 
     def read_project_paths(self) -> list[Path]:
-        """Return expanded project paths from the registry file."""
-        registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
+        """
+        Return every registered project path, ordered as the registry stores them.
+
+        An empty table is what triggers the one-time import of a pre-SQLite
+        ``projects.txt``. The rows this already fetches *are* that check, so the steady
+        state costs nothing beyond the query it was going to run anyway.
+
+        That import is a write, reached from a read, which is safe only because the
+        storage layer refuses it outright unless the process holds a write grant. A
+        command that never asked for one -- the logs daemon above all -- gets
+        :class:`WritesNotEnabledError` here and reads an empty registry rather than
+        mutating host state. The advice is worth printing because the state it describes
+        is fixable and otherwise inexplicable: an empty project list with a
+        ``projects.txt`` sitting right there.
+        """
         try:
-            text = registry.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            projects = self._projects.list_projects()
+            if not projects:
+                self._import_legacy_registry()
+                projects = self._projects.list_projects()
+        except WritesNotEnabledError:
+            self._display.error(
+                f"agent-wrap: {PROJECT_REGISTRY_FILENAME} has not been imported into the "
+                "project registry yet -- run `agent run` once to import it"
+            )
             return []
-        return [Path(p) for p in ProjectRegistry.decompress(text.splitlines())]
+        except StorageError:
+            # A genuine failure -- a corrupt file, a lock the busy timeout outlived.
+            # Deliberately silent, and deliberately not told to run `agent run`: that
+            # would not fix it.
+            return []
+        return [Path(project.path) for project in projects]
 
     def record_project(self) -> None:
         """
-        Record cwd in the project registry, deduping aliases and keeping it sorted.
+        Record cwd in the project registry, deduping aliases.
 
         Existing entries that resolve to the same canonical target as cwd are
-        replaced by the current path — so a stale ``/mnt/...`` line gets overwritten
-        once the user starts launching from its ``/home/.../symlink`` alias.
+        replaced by the current path — so a stale ``/mnt/...`` entry gets dropped
+        once the user starts launching from its ``/home/.../symlink`` alias. Aliases
+        are re-resolved on every call rather than cached in a column, so a symlink
+        repointed after registration cannot leave a stale answer behind.
 
-        Failures are non-fatal — the agent launch must not depend on this.
+        The alias scan goes through :meth:`read_project_paths`, which is also what
+        imports a pre-SQLite ``projects.txt`` — so a launch, the likeliest first touch
+        after an update, cannot lose the old registry.
+
+        Failures are non-fatal — the agent launch must not depend on this. That
+        includes ``StorageError``: a database another launch holds locked past the busy
+        timeout costs this launch its registration, not its run.
         """
         try:
             cwd = self._current_project_path()
@@ -426,22 +464,19 @@ class ConfigService:
             except OSError:
                 cwd_target = None
 
-            kept: list[str] = []
+            superseded: list[str] = []
             for entry_path in self.read_project_paths():
-                if cwd_target is not None:
-                    try:
-                        if entry_path.resolve() == cwd_target:
-                            continue  # alias of cwd — superseded
-                    except OSError:
-                        pass  # keep entries we can't resolve
-                kept.append(str(entry_path))
-            kept.append(cwd)
+                if cwd_target is None or str(entry_path) == cwd:
+                    continue
+                try:
+                    if entry_path.resolve() == cwd_target:
+                        superseded.append(str(entry_path))  # alias of cwd
+                except OSError:
+                    pass  # keep entries we can't resolve
 
-            compressed = ProjectRegistry.compress(kept)
-            with contextlib.suppress(OSError):
-                registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
-                atomic_write_text(registry, "\n".join(compressed) + "\n")
-        except OSError:
+            self._projects.delete(superseded)
+            self._projects.record(cwd)
+        except OSError, StorageError:
             pass  # non-fatal
 
     def stale_project_paths(self) -> list[Path]:
@@ -470,13 +505,56 @@ class ConfigService:
         Failures are non-fatal, matching :meth:`record_project` — the registry is
         a convenience index, not a source of truth.
         """
-        drop = {str(path) for path in stale}
-        kept = [str(path) for path in self.read_project_paths() if str(path) not in drop]
-        compressed = ProjectRegistry.compress(kept)
-        with contextlib.suppress(OSError):
-            registry = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
-            atomic_write_text(registry, "\n".join(compressed) + "\n")
+        with contextlib.suppress(StorageError):
+            self._projects.delete([str(path) for path in stale])
         return stale
+
+    def registry_fingerprint(self) -> RegistryFingerprint:
+        """
+        Return a cheap value that changes whenever the registry does.
+
+        The logs viewer folds this into the ETag it serves for the projects list. It
+        replaces the ``stat()`` that used to read the registry file's mtime and size,
+        and behaves the same way: ``last_change`` moves on every ``agent run`` because
+        recording a project refreshes its ``last_seen_at``, exactly as rewriting the
+        file used to move its mtime.
+        """
+        try:
+            revision = self._projects.revision()
+        except StorageError:
+            return RegistryFingerprint(last_change=None, count=0)
+        return RegistryFingerprint(last_change=revision.last_change_ns, count=revision.count)
+
+    def _import_legacy_registry(self) -> None:
+        """
+        Copy a pre-SQLite ``projects.txt`` into an empty projects table.
+
+        Called only when the table has no rows, which is the whole gate: once the import
+        has landed, every later read sees rows and never looks at the file again. Two
+        launches racing here both write the same paths through an upsert keyed on the
+        path, so neither can double-insert or lose a row.
+
+        A write, and therefore refused with :class:`WritesNotEnabledError` in a process
+        holding no grant. The caller reports that; here it simply propagates.
+
+        The file is decoded with :class:`ProjectRegistry` — the compressed, grouped
+        encoding it used is why that class still exists — and is then left exactly where
+        it is. Nothing rewrites or removes it: it is the only copy of the pre-migration
+        registry, and one failed import must not be able to destroy it. The single
+        ``record_many`` means a failure part-way writes nothing, so the next call retries
+        a still-empty table.
+        """
+        legacy = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
+        try:
+            text = legacy.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+
+        paths = ProjectRegistry.decompress(text.splitlines())
+        if not paths:
+            return
+        self._projects.record_many(paths)
+        self._display.info(f"agent-wrap: imported {legacy.name} into the project registry")
 
     def _current_project_path(self) -> str:
         """

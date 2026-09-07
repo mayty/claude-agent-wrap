@@ -6,6 +6,7 @@ Placed at the package root so pytest discovers it for every test file
 under ``agent_wrap/**/tests/``.
 """
 
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, ClassVar, override
 from unittest.mock import Mock
 
@@ -16,12 +17,15 @@ from agent_wrap.constants import (
     AGENT_DOCKERFILE_NAME,
     LEGACY_AGENT_DOCKERFILE_NAME,
 )
+from agent_wrap.containers import Core, core, repositories
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.sidecars.service import SidecarService
+from agent_wrap.infrastructure.constants import BACKUPS_DIRNAME, DB_DIRNAME
+from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -66,6 +70,94 @@ def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         monkeypatch.setattr(
             f"{mod}.AGENT_LAUNCHES_DIR", tmp_path / ".agent-launches", raising=False
         )
+
+
+@pytest.fixture
+def db_dir(tmp_path: Path) -> Path:
+    """Return the directory every database and backup in a test is written under."""
+    return tmp_path / DB_DIRNAME
+
+
+@pytest.fixture
+def db_core(db_dir: Path) -> Core:
+    """Return a ``Core`` whose databases and backups live under ``tmp_path``."""
+    return Core(db_dir=db_dir, backups_dir=db_dir / BACKUPS_DIRNAME)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_databases(db_core: Core, db_dir: Path, mocker: MockerFixture) -> None:
+    """
+    Point the module-level containers at ``tmp_path`` before any test body runs.
+
+    ``Core`` composes its paths once, at import, from the real ``AGENT_LAUNCHES_DIR``.
+    Any test that reaches ``containers.services`` would otherwise migrate and write the
+    developer's own database — and that is not hypothetical: ``patch.object`` saves the
+    original by ``getattr``, so mocking a service *evaluates* the whole
+    ``cached_property`` chain and opens the database as a side effect.
+
+    Which makes the ordering here load-bearing. ``agent_wrap/cli/conftest.py``'s autouse
+    ``_mock_all_services`` does exactly that ``getattr``; autouse fixtures from a parent
+    conftest run before a child conftest's, so by the time it does, the singletons are
+    already redirected. Do not move this fixture down the hierarchy.
+
+    Only the cached properties are evicted, by name. ``__dict__.clear()`` would also
+    take the attributes ``__init__`` set -- ``Core``'s directories, ``Repositories``'
+    reference to the core -- and leave the container unusable.
+
+    Eviction happens on setup only, deliberately. A teardown eviction would delete a
+    ``cached_property`` entry that a test's own ``mocker.patch.object`` still intends to
+    restore, and ``mock``'s ``delattr`` would then fail on the way out. Setup is where it
+    matters anyway: every test is preceded by one.
+    """
+    for container in (core, repositories):
+        cached = {
+            name
+            for name, attr in type(container).__dict__.items()
+            if isinstance(attr, cached_property)
+        }
+        for name in cached & set(container.__dict__):
+            del container.__dict__[name]
+
+    mocker.patch.object(core, "_db_dir", db_dir)
+    mocker.patch.object(core, "_backups_dir", db_dir / BACKUPS_DIRNAME)
+    mocker.patch.object(repositories, "_core", db_core)
+
+
+@pytest.fixture
+def read_only_core(db_dir: Path) -> Core:
+    """
+    Return a second ``Core`` over the same database whose factory can never write.
+
+    Models a read-only consumer -- the logs daemon above all -- faithfully: a distinct
+    ``ConnectionFactory`` that has never been granted writes, and so cannot be perturbed
+    by whatever ``projects_repository`` did to the other one.
+    """
+    return Core(db_dir=db_dir, backups_dir=db_dir / BACKUPS_DIRNAME)
+
+
+@pytest.fixture
+def projects_repository(db_core: Core) -> Iterator[ProjectsRepository]:
+    """
+    Yield a ``ProjectsRepository`` over a migrated, empty database in ``tmp_path``.
+
+    Holds a write grant for the test's duration: nearly everything that touches the
+    registry writes to it, and a CLI command would hold one too. A test that needs a
+    write *refused* builds over ``read_only_core`` instead.
+    """
+    factory = db_core.projects_db
+    with factory.enable_writes():
+        yield ProjectsRepository(connection_factory=factory)
+
+
+@pytest.fixture
+def register_projects(projects_repository: ProjectsRepository) -> Callable[..., None]:
+    """Return a factory registering project paths, the way ``agent run`` would."""
+
+    def _register(*paths: Path | str) -> None:
+        for path in paths:
+            projects_repository.record(str(path))
+
+    return _register
 
 
 @pytest.fixture

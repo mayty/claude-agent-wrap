@@ -14,6 +14,7 @@ import pytest
 
 import agent_wrap.domain.logs.usage_tracker as usage_tracker_mod
 import agent_wrap.domain.stats.service as stats_mod
+from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.cache import LogsCache
@@ -22,11 +23,14 @@ from agent_wrap.domain.logs.watcher import CacheWatcher
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
+from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
     from pytest_mock import MockerFixture
+
+    from agent_wrap.containers import Core
 
 
 def _group_count(cache: LogsCache) -> int:
@@ -52,7 +56,7 @@ def inert_watcher(mocker: MockerFixture) -> None:
     thread exists, and every other call is the consumer's own. These tests drive both
     from the main thread while a real watcher runs, which breaks that contract -- a
     filesystem write inside a test queues an event, and the consumer can handle the same
-    ``projects.txt`` delta concurrently with the test's explicit ``reconcile``. Both then
+    registry delta concurrently with the test's explicit ``reconcile``. Both then
     pass the ``current_paths != _known_project_paths`` gate and insert the same group, so
     ``_group_count`` intermittently read 2 where the test asserted 1.
 
@@ -117,8 +121,49 @@ def real_stats(pricing: PricingService) -> StatsService:
 
 
 @pytest.fixture
-def config_svc() -> ConfigService:
-    return ConfigService(display_service=Mock(spec=DisplayService))
+def config_svc(projects_repository: ProjectsRepository) -> ConfigService:
+    return ConfigService(
+        display_service=Mock(spec=DisplayService), projects_repository=projects_repository
+    )
+
+
+@pytest.fixture
+def read_only_config_svc(read_only_core: Core) -> ConfigService:
+    """Return a ConfigService over a factory holding no write grant — the daemon's own."""
+    return ConfigService(
+        display_service=Mock(spec=DisplayService),
+        projects_repository=ProjectsRepository(connection_factory=read_only_core.projects_db),
+    )
+
+
+def test_the_daemon_cannot_import_the_legacy_registry(
+    tmp_path: Path,
+    pricing: PricingService,
+    read_only_config_svc: ConfigService,
+    read_only_core: Core,
+    real_stats: StatsService,
+) -> None:
+    """
+    The viewer runs in a process that never takes a write grant.
+
+    A reconcile reads the registry, and an empty table is what would trigger the
+    one-time ``projects.txt`` import — so without the gate the daemon would migrate host
+    state off a filesystem event. It must come away having written nothing.
+    """
+    launches = tmp_path / ".agent-launches"
+    launches.mkdir(parents=True, exist_ok=True)
+    compressed = ProjectRegistry.compress([str(tmp_path / "a"), str(tmp_path / "b")])
+    (launches / "projects.txt").write_text("\n".join(compressed) + "\n", encoding="utf-8")
+
+    cache = LogsCache(real_stats, read_only_config_svc, pricing)
+    cache.start()
+    try:
+        assert cache.get_projects() == []
+    finally:
+        cache.stop()
+
+    with read_only_core.projects_db.ro() as connection:
+        assert connection.execute("SELECT COUNT(*) AS n FROM projects").fetchone()["n"] == 0
 
 
 @pytest.fixture
@@ -149,6 +194,7 @@ def test_cache_populated_when_registry_exists(
     pricing: PricingService,
     config_svc: ConfigService,
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """Cache populates from a project that has a litellm-logs symlink."""
     stats_mod.TOOL_DIR = tmp_path
@@ -161,7 +207,7 @@ def test_cache_populated_when_registry_exists(
     logs_target.mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(logs_target, target_is_directory=True)
 
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -182,7 +228,7 @@ def test_cache_empty_when_no_registry(
     config_svc: ConfigService,
     real_stats: StatsService,
 ) -> None:
-    """Returns empty lists when projects.txt doesn't exist."""
+    """Returns empty lists when nothing is registered."""
     stats_mod.TOOL_DIR = tmp_path / "nonexistent"
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -203,6 +249,7 @@ def test_rebuild_populates_every_structure(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     Startup fills the session cache, all three fingerprint levels, and the manifest.
@@ -217,7 +264,7 @@ def test_rebuild_populates_every_structure(  # noqa: PLR0913
     project = tmp_path / "proj"
     write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     write_session(project, "litellm-deepseek", "sess-2", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -241,6 +288,7 @@ def test_rebuild_and_reconcile_agree(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """A reconcile straight after startup changes nothing — the regression guard."""
     stats_mod.TOOL_DIR = tmp_path
@@ -249,7 +297,7 @@ def test_rebuild_and_reconcile_agree(  # noqa: PLR0913
 
     project = tmp_path / "proj"
     write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -282,6 +330,7 @@ def test_rebuild_counts_a_group_shared_session_once(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     A session shared by two members of one group counts once at startup.
@@ -302,7 +351,7 @@ def test_rebuild_counts_a_group_shared_session_once(  # noqa: PLR0913
     member_b = runs / "agent-b"
     write_session(member_a, "litellm-bedrock", "shared-sess", [valid_record])
     write_session(member_b, "litellm-bedrock", "shared-sess", [valid_record])
-    (launches / "projects.txt").write_text(f"{member_a}\n{member_b}\n", encoding="utf-8")
+    register_projects(member_a, member_b)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -321,6 +370,7 @@ def test_projects_fingerprint_reflects_the_pass_that_published_it(  # noqa: PLR0
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     The published projects marker is derived from the *current* session fingerprints.
@@ -337,7 +387,7 @@ def test_projects_fingerprint_reflects_the_pass_that_published_it(  # noqa: PLR0
 
     project = tmp_path / "proj"
     write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -453,12 +503,13 @@ def test_stop_before_start_reports_that_nothing_is_running(
         cache.stop()
 
 
-def test_reconcile_survives_an_oserror_while_scanning(
+def test_reconcile_survives_an_oserror_while_scanning(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     mocker: MockerFixture,
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     A failing stat leaves reconcile harmless and the cache readable.
@@ -476,7 +527,7 @@ def test_reconcile_survives_an_oserror_while_scanning(
     logs_target = tmp_path / "litellm-logs" / "abc"
     logs_target.mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(logs_target, target_is_directory=True)
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.rebuild()
@@ -503,6 +554,7 @@ def test_every_manifest_path_resolves_to_its_session(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     Every manifest key maps to its (pid, sid) by path arithmetic alone.
@@ -520,7 +572,7 @@ def test_every_manifest_path_resolves_to_its_session(  # noqa: PLR0913
     proj_b = tmp_path / "proj-b"
     write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
     write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
-    (launches / "projects.txt").write_text(f"{proj_a}\n{proj_b}\n", encoding="utf-8")
+    register_projects(proj_a, proj_b)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -547,6 +599,7 @@ def test_changed_session_resolved_via_manifest_diff(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """A modified messages.jsonl is re-scanned and reflected in cached sessions."""
     stats_mod.TOOL_DIR = tmp_path
@@ -555,7 +608,7 @@ def test_changed_session_resolved_via_manifest_diff(  # noqa: PLR0913
 
     project = tmp_path / "testproj"
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -584,6 +637,7 @@ def test_deleted_session_removed_after_directory_disappears(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """A session whose directory vanishes out of band is dropped on the next reconcile."""
     stats_mod.TOOL_DIR = tmp_path
@@ -592,7 +646,7 @@ def test_deleted_session_removed_after_directory_disappears(  # noqa: PLR0913
 
     project = tmp_path / "testproj"
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -619,6 +673,7 @@ def test_rebuild_writes_usage_json_before_any_update_runs(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     The statusline reads usage.json, and updates are event-driven.
@@ -638,7 +693,7 @@ def test_rebuild_writes_usage_json_before_any_update_runs(  # noqa: PLR0913
         "sess-1",
         [{**valid_record, "timing": {"start": time.time(), "end": time.time()}}],
     )
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.rebuild()
@@ -653,6 +708,7 @@ def test_apply_paths_rescans_only_the_named_session(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """The fast path picks up an append without walking the tree."""
     stats_mod.TOOL_DIR = tmp_path
@@ -662,7 +718,7 @@ def test_apply_paths_rescans_only_the_named_session(  # noqa: PLR0913
     project = tmp_path / "testproj"
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     write_session(project, "litellm-bedrock", "sess-2", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.rebuild()
@@ -685,6 +741,7 @@ def test_apply_paths_leaves_the_same_manifest_as_reconcile(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     The consistency rule the two update paths rest on.
@@ -698,7 +755,7 @@ def test_apply_paths_leaves_the_same_manifest_as_reconcile(  # noqa: PLR0913
 
     project = tmp_path / "testproj"
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
     messages = sdir / "messages.jsonl"
 
     fast = LogsCache(real_stats, config_svc, pricing)
@@ -731,6 +788,7 @@ def test_apply_paths_drops_a_session_whose_record_file_is_gone(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
@@ -738,7 +796,7 @@ def test_apply_paths_drops_a_session_whose_record_file_is_gone(  # noqa: PLR0913
 
     project = tmp_path / "testproj"
     sdir = write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
     messages = sdir / "messages.jsonl"
 
     cache = LogsCache(real_stats, config_svc, pricing)
@@ -762,21 +820,22 @@ def test_apply_paths_falls_back_to_reconcile_for_an_unmappable_path(
     mocker: MockerFixture,
 ) -> None:
     """
-    A registry change is queued as a path, and cannot name a session.
+    A log dir belonging to no known group has to widen to the full pass.
 
-    Anything the cache cannot attribute — the registry file, or a log dir belonging
-    to no known group — has to widen to the full pass rather than be dropped.
+    This is what makes a newly registered project visible: its first session write is a
+    path under the watched tree that no cached group owns, and the reconcile it forces
+    is what re-reads the registry. Nothing else watches the registry, so dropping such a
+    path instead would leave the project invisible until the next heartbeat.
     """
     stats_mod.TOOL_DIR = tmp_path
-    launches = tmp_path / ".agent-launches"
-    launches.mkdir(parents=True)
-    (launches / "projects.txt").write_text("", encoding="utf-8")
+    unregistered = tmp_path / "litellm-logs" / "hashX" / "litellm-bedrock" / "sess-x"
+    unregistered.mkdir(parents=True)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.rebuild()
     spy = mocker.spy(cache, "reconcile")
 
-    cache.apply_paths({launches / "projects.txt"})
+    cache.apply_paths({unregistered / "messages.jsonl"})
 
     spy.assert_called_once_with()
 
@@ -792,7 +851,6 @@ def test_apply_paths_widens_to_reconcile_across_a_day_rollover(
     stats_mod.TOOL_DIR = tmp_path
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True)
-    (launches / "projects.txt").write_text("", encoding="utf-8")
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.rebuild()
@@ -851,6 +909,7 @@ def test_reconcile_writes_usage_json(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """After reconcile, usage.json exists with totals from today's records."""
     stats_mod.TOOL_DIR = tmp_path
@@ -859,7 +918,7 @@ def test_reconcile_writes_usage_json(  # noqa: PLR0913
 
     project = tmp_path / "testproj"
     write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -878,12 +937,13 @@ def test_reconcile_writes_usage_json(  # noqa: PLR0913
         cache.stop()
 
 
-def test_usage_tracker_responds_to_file_changes(
+def test_usage_tracker_responds_to_file_changes(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """Adding records to a session file increases usage totals on the next reconcile."""
     stats_mod.TOOL_DIR = tmp_path
@@ -898,7 +958,7 @@ def test_usage_tracker_responds_to_file_changes(
         "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
     }
     sdir = write_session(project, "litellm-bedrock", "sess-1", [today_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -921,12 +981,13 @@ def test_usage_tracker_responds_to_file_changes(
         cache.stop()
 
 
-def test_reconcile_rewrites_stale_usage_json_when_no_activity(
+def test_reconcile_rewrites_stale_usage_json_when_no_activity(  # noqa: PLR0913
     tmp_path: Path,
     pricing: PricingService,
     config_svc: ConfigService,
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """A day with no records overwrites a previous day's payload instead of touching it."""
     stats_mod.TOOL_DIR = tmp_path
@@ -943,7 +1004,7 @@ def test_reconcile_rewrites_stale_usage_json_when_no_activity(
     }
     sdir = write_session(project, "litellm-bedrock", "sess-1", [old_record])
     os.utime(sdir / "messages.jsonl", (yesterday, yesterday))
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     # Yesterday's payload, as a previous daemon run would have left it behind.
     usage_path = tmp_path / ".claude" / "usage.json"
@@ -983,6 +1044,7 @@ def test_reconcile_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
     mocker: MockerFixture,
+    register_projects: Callable[..., None],
 ) -> None:
     """A rollover past the day boundary with no new records zeroes the payload."""
     stats_mod.TOOL_DIR = tmp_path
@@ -997,7 +1059,7 @@ def test_reconcile_zeroes_usage_json_after_day_rollover(  # noqa: PLR0913
         "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
     }
     write_session(project, "litellm-bedrock", "sess-1", [today_record])
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -1031,6 +1093,7 @@ def test_added_project_merged_incrementally(  # noqa: PLR0913
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
     mocker: MockerFixture,
+    register_projects: Callable[..., None],
 ) -> None:
     """Adding a new project path does not disturb existing cached sessions."""
     stats_mod.TOOL_DIR = tmp_path
@@ -1044,8 +1107,7 @@ def test_added_project_merged_incrementally(  # noqa: PLR0913
 
     cache = LogsCache(real_stats, config_svc, pricing)
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a])
-    cache._projects_txt_path = launches / "projects.txt"
-    (launches / "projects.txt").write_text(f"{proj_a}\n", encoding="utf-8")
+    register_projects(proj_a)
     cache.start()
 
     sessions_a = cache.get_sessions(0)
@@ -1129,6 +1191,7 @@ def test_a_project_whose_logs_dir_appears_late_is_picked_up(  # noqa: PLR0913
     valid_record: dict[str, Any],
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
+    register_projects: Callable[..., None],
 ) -> None:
     """
     A registered path with no logs dir yet is retried, not written off.
@@ -1144,7 +1207,7 @@ def test_a_project_whose_logs_dir_appears_late_is_picked_up(  # noqa: PLR0913
 
     project = tmp_path / "proj"
     project.mkdir()
-    (launches / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
@@ -1169,27 +1232,25 @@ def test_a_same_content_registry_rewrite_does_not_reprocess(  # noqa: PLR0913
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
     mocker: MockerFixture,
+    register_projects: Callable[..., None],
 ) -> None:
-    """``record_project`` rewrites the registry on every launch; contents decide, not mtime."""
+    """``record_project`` re-records on every launch; contents decide, not the revision."""
     stats_mod.TOOL_DIR = tmp_path
-    launches = tmp_path / ".agent-launches"
-    launches.mkdir(parents=True)
 
     project = tmp_path / "proj"
     write_session(project, "litellm-bedrock", "sess-1", [valid_record])
-    registry = launches / "projects.txt"
-    registry.write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     cache.start()
     try:
         spy = mocker.spy(cache, "_merge_added_paths")
-        registry.write_text(f"{project}\n", encoding="utf-8")
+        register_projects(project)  # a re-launch from the same directory
         cache.reconcile()
 
         spy.assert_not_called()
-        # The registry's mtime still reaches the browser-facing fingerprint.
-        assert cache._projects_txt_mtime == registry.stat().st_mtime_ns
+        # The registry's revision still reaches the browser-facing fingerprint.
+        assert cache._registry_last_change == config_svc.registry_fingerprint().last_change
     finally:
         cache.stop()
 
@@ -1241,7 +1302,7 @@ def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913
     real_stats: StatsService,
     mocker: MockerFixture,
 ) -> None:
-    """Both additions and removals in the same projects.txt change are handled."""
+    """Both additions and removals in the same registry change are handled."""
     stats_mod.TOOL_DIR = tmp_path
 
     proj_a = tmp_path / "proj-a"
@@ -1259,7 +1320,7 @@ def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913
     # Replace proj_a with proj_c.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_b, proj_c])
     cache._known_project_paths = {str(proj_a), str(proj_b)}
-    # Simulate _handle_projects_txt_change: prune + merge.
+    # Simulate _handle_registry_change: prune + merge.
     cache._prune_removed_paths({str(proj_a)})
     cache._merge_added_paths({str(proj_c)})
 
@@ -1283,6 +1344,7 @@ def test_merge_added_paths_no_full_rebuild(  # noqa: PLR0913
     write_session: Callable[[Path, str, str, list[dict[str, Any]]], Path],
     real_stats: StatsService,
     mocker: MockerFixture,
+    register_projects: Callable[..., None],
 ) -> None:
     """A path added via reconcile is merged incrementally, without a full rebuild."""
     stats_mod.TOOL_DIR = tmp_path
@@ -1293,18 +1355,17 @@ def test_merge_added_paths_no_full_rebuild(  # noqa: PLR0913
     proj_b = tmp_path / "proj-b"
     write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
     write_session(proj_b, "litellm-bedrock", "sess-b", [valid_record])
-    (launches / "projects.txt").write_text(f"{proj_a}\n", encoding="utf-8")
+    register_projects(proj_a)
 
     cache = LogsCache(real_stats, config_svc, pricing)
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a])
-    cache._projects_txt_path = launches / "projects.txt"
     cache.start()
 
     rebuild_spy = mocker.spy(cache, "rebuild")
 
     # Simulate project B being added and a reconcile detecting it.
     mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_a, proj_b])
-    (launches / "projects.txt").write_text(f"{proj_a}\n{proj_b}\n", encoding="utf-8")
+    register_projects(proj_a, proj_b)
     cache.reconcile()
 
     rebuild_spy.assert_not_called()

@@ -3,7 +3,7 @@
 
 import click
 
-from agent_wrap.containers import services
+from agent_wrap.containers import core, services
 
 
 @click.command(
@@ -32,4 +32,8 @@ from agent_wrap.containers import services
 @click.pass_context
 def run_command(ctx: click.Context, *, base: bool, claude_args: tuple[str, ...]) -> None:
     """Launch Claude Code in Docker"""
-    ctx.exit(services.launch_service.launch(use_base=base, claude_args=list(claude_args)))
+    # The grant a launch needs to register its project directory -- and the one that
+    # performs the one-time import of a pre-SQLite projects.txt. `ctx.exit` raises, and
+    # `enable_writes` clears the flag in a `finally`, so the exit path needs nothing.
+    with core.projects_db.enable_writes():
+        ctx.exit(services.launch_service.launch(use_base=base, claude_args=list(claude_args)))

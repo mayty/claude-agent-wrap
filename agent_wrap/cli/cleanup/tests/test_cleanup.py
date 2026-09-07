@@ -265,3 +265,37 @@ def test_cleanup_spinner_runs_after_confirmation(
     assert second_call.kwargs["label"] == CLEANUP_LABEL
     assert second_call.kwargs["message"] == "cleaning up…"
     services.stats_service.run_cleanup.assert_called_once()  # pyrefly: ignore [missing-attribute]
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_cleanup_takes_a_registry_write_grant_per_writing_phase(
+    runner: CliRunner, display_mock_service: Mock, write_grants: list[str]
+) -> None:
+    """
+    Two grants, one per phase that writes.
+
+    The survey takes one so the one-time ``projects.txt`` import lands before the scope
+    is computed; the clean takes one so the stale registry entries can be pruned. The
+    phases between them — preview, confirm — touch no database and hold nothing.
+    """
+    display_mock_service.prompt_confirm.return_value = True
+
+    runner.invoke(cli_root, ["cleanup"])
+
+    assert write_grants == ["projects", "projects"]
+
+
+@pytest.mark.usefixtures("stats_mock", "display_mock_service")
+def test_cleanup_dry_run_takes_no_registry_write_grant(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    A preview must not be able to mutate anything, the legacy import included.
+
+    The grant covers the survey rather than just the deletion, because the scope the
+    deletion acts on is built there -- so ``--dry-run`` has to withhold it from the whole
+    command, not merely from the part that deletes.
+    """
+    runner.invoke(cli_root, ["cleanup", "--dry-run"])
+
+    assert write_grants == []

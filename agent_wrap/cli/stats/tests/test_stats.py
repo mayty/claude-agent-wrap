@@ -334,3 +334,10 @@ def test_render_reports_the_same_totals_however_far_the_tree_was_chopped(
     wide, narrow = root_figures("200"), root_figures("85")
     assert wide == narrow
     assert wide[0] == "12"
+
+
+def test_stats_takes_no_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
+    """A reporting command does not get write permission just to migrate data."""
+    runner.invoke(cli_root, ["stats"])
+
+    assert write_grants == []

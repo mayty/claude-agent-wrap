@@ -1,6 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.config."""
 
+import itertools
 import json
 import os
 import stat
@@ -12,19 +13,27 @@ import pytest
 
 import agent_wrap.domain.config.service as config_mod
 from agent_wrap.constants import STATE_FILES
+from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.constants import EXTERNAL_STATE_MOUNTS, STATE_MOUNTS
-from agent_wrap.exceptions import HostMountError
+from agent_wrap.exceptions import HostMountError, StorageError
+from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     import pytest_mock
+
+    from agent_wrap.containers import Core
 
 
 @pytest.fixture
-def svc() -> ConfigService:
-    return ConfigService(display_service=Mock(spec=DisplayService))
+def svc(projects_repository: ProjectsRepository) -> ConfigService:
+    return ConfigService(
+        display_service=Mock(spec=DisplayService), projects_repository=projects_repository
+    )
 
 
 def test_injects_into_empty_file(svc: ConfigService, tmp_path: Path):
@@ -480,14 +489,39 @@ def test_prepare_project_dirs_migration_idempotent(svc: ConfigService, tmp_path:
     assert list(old_memory_dir.iterdir()) == []
 
 
-def test_record_project_appends_cwd(
+@pytest.fixture
+def make_live_project(tmp_path: Path) -> Callable[[str], Path]:
+    """Return a factory creating a project whose ``.claude/litellm-logs`` exists."""
+
+    def _make(name: str) -> Path:
+        project = tmp_path / name
+        (project / ".claude" / "litellm-logs").mkdir(parents=True)
+        return project
+
+    return _make
+
+
+@pytest.fixture
+def write_legacy_registry(tmp_path: Path) -> Callable[..., Path]:
+    """Return a factory writing a pre-SQLite projects.txt in its compressed encoding."""
+
+    def _write(*projects: Path | str) -> Path:
+        launches = tmp_path / ".agent-launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        legacy = launches / "projects.txt"
+        compressed = ProjectRegistry.compress([str(p) for p in projects])
+        legacy.write_text("\n".join(compressed) + "\n", encoding="utf-8")
+        return legacy
+
+    return _write
+
+
+def test_record_project_records_cwd(
     svc: ConfigService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
     svc.record_project()
-    projects_file = tmp_path / ".agent-launches" / "projects.txt"
-    assert projects_file.exists()
-    assert str(tmp_path) in projects_file.read_text()
+    assert svc.read_project_paths() == [tmp_path]
 
 
 def test_record_project_deduplicates(
@@ -496,9 +530,7 @@ def test_record_project_deduplicates(
     monkeypatch.chdir(tmp_path)
     svc.record_project()
     svc.record_project()
-    projects_file = tmp_path / ".agent-launches" / "projects.txt"
-    lines = projects_file.read_text().splitlines()
-    assert lines.count(str(tmp_path)) == 1
+    assert svc.read_project_paths() == [tmp_path]
 
 
 def test_record_project_uses_pwd_env_when_consistent(
@@ -513,39 +545,35 @@ def test_record_project_uses_pwd_env_when_consistent(
     monkeypatch.setenv("PWD", str(link))
     svc.record_project()
 
-    lines = (tmp_path / ".agent-launches" / "projects.txt").read_text().splitlines()
-    assert str(link) in lines
-    assert str(real) not in lines
+    assert svc.read_project_paths() == [link]
 
 
 def test_record_project_replaces_alias_pointing_to_same_target(
-    svc: ConfigService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    svc: ConfigService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    register_projects: Callable[..., None],
 ) -> None:
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-
-    launches = tmp_path / ".agent-launches"
-    launches.mkdir()
-    projects_file = launches / "projects.txt"
-    projects_file.write_text(f"{real}\n")
+    register_projects(real)
 
     monkeypatch.chdir(link)
     monkeypatch.setenv("PWD", str(link))
     svc.record_project()
 
-    lines = projects_file.read_text().splitlines()
-    assert lines == [str(link)]
+    assert svc.read_project_paths() == [link]
 
 
-def test_record_project_keeps_file_sorted(
-    svc: ConfigService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_record_project_keeps_the_registry_sorted(
+    svc: ConfigService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    register_projects: Callable[..., None],
 ) -> None:
-    launches = tmp_path / ".agent-launches"
-    launches.mkdir()
-    projects_file = launches / "projects.txt"
-    projects_file.write_text("/z\n/a\n/m\n")
+    register_projects("/z", "/a", "/m")
 
     extra = tmp_path / "extra"
     extra.mkdir()
@@ -553,57 +581,72 @@ def test_record_project_keeps_file_sorted(
     monkeypatch.delenv("PWD", raising=False)
     svc.record_project()
 
-    # The on-disk format may be compressed; verify expanded paths are sorted.
     paths = svc.read_project_paths()
     assert paths == sorted(paths)
     assert extra in paths
 
 
-def _register_projects(tmp_path: Path, *projects: Path) -> Path:
-    """Write *projects* into the registry file and return its path."""
-    launches = tmp_path / ".agent-launches"
-    launches.mkdir(exist_ok=True)
-    projects_file = launches / "projects.txt"
-    projects_file.write_text("\n".join(str(p) for p in projects) + "\n")
-    return projects_file
+def test_record_project_survives_a_storage_failure(
+    svc: ConfigService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """A launch must not die because the registry was locked — it is a convenience index."""
+    monkeypatch.chdir(tmp_path)
+    mocker.patch.object(
+        svc._projects, "record", autospec=True, side_effect=StorageError("database is locked")
+    )
+
+    svc.record_project()  # must not raise
 
 
-def _make_live_project(root: Path, name: str) -> Path:
-    """Create a project whose ``.claude/litellm-logs`` directory exists."""
-    project = root / name
-    (project / ".claude" / "litellm-logs").mkdir(parents=True)
-    return project
+def test_read_project_paths_survives_a_storage_failure(
+    svc: ConfigService, mocker: pytest_mock.MockerFixture
+) -> None:
+    mocker.patch.object(
+        svc._projects, "list_projects", autospec=True, side_effect=StorageError("corrupt")
+    )
+
+    assert svc.read_project_paths() == []
 
 
 def test_stale_project_paths_finds_projects_without_logs_dir(
-    svc: ConfigService, tmp_path: Path
+    svc: ConfigService,
+    tmp_path: Path,
+    make_live_project: Callable[[str], Path],
+    register_projects: Callable[..., None],
 ) -> None:
-    live = _make_live_project(tmp_path, "live")
+    live = make_live_project("live")
     gone = tmp_path / "gone"
     no_logs = tmp_path / "no_logs"
     (no_logs / ".claude").mkdir(parents=True)
-    _register_projects(tmp_path, live, gone, no_logs)
+    register_projects(live, gone, no_logs)
 
     assert svc.stale_project_paths() == [gone, no_logs]
 
 
-def test_stale_project_paths_accepts_symlinked_logs_dir(svc: ConfigService, tmp_path: Path) -> None:
+def test_stale_project_paths_accepts_symlinked_logs_dir(
+    svc: ConfigService, tmp_path: Path, register_projects: Callable[..., None]
+) -> None:
     """The real layout is a symlink into the central store — it must count as live."""
     central = tmp_path / "central" / "hashA"
     central.mkdir(parents=True)
     project = tmp_path / "project"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(central, target_is_directory=True)
-    _register_projects(tmp_path, project)
+    register_projects(project)
 
     assert svc.stale_project_paths() == []
 
 
-def test_stale_project_paths_flags_broken_symlink(svc: ConfigService, tmp_path: Path) -> None:
+def test_stale_project_paths_flags_broken_symlink(
+    svc: ConfigService, tmp_path: Path, register_projects: Callable[..., None]
+) -> None:
     project = tmp_path / "project"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(tmp_path / "missing")
-    _register_projects(tmp_path, project)
+    register_projects(project)
 
     assert svc.stale_project_paths() == [project]
 
@@ -612,11 +655,16 @@ def test_stale_project_paths_empty_when_no_registry(svc: ConfigService) -> None:
     assert svc.stale_project_paths() == []
 
 
-def test_prune_stale_projects_removes_only_given_paths(svc: ConfigService, tmp_path: Path) -> None:
-    live = _make_live_project(tmp_path, "live")
-    other = _make_live_project(tmp_path, "other")
+def test_prune_stale_projects_removes_only_given_paths(
+    svc: ConfigService,
+    tmp_path: Path,
+    make_live_project: Callable[[str], Path],
+    register_projects: Callable[..., None],
+) -> None:
+    live = make_live_project("live")
+    other = make_live_project("other")
     gone = tmp_path / "gone"
-    _register_projects(tmp_path, live, other, gone)
+    register_projects(live, other, gone)
 
     removed = svc.prune_stale_projects([gone])
 
@@ -626,11 +674,16 @@ def test_prune_stale_projects_removes_only_given_paths(svc: ConfigService, tmp_p
     assert set(remaining) == {live, other}
 
 
-def test_prune_stale_projects_keeps_file_sorted(svc: ConfigService, tmp_path: Path) -> None:
-    kept_z = _make_live_project(tmp_path, "z_project")
-    kept_a = _make_live_project(tmp_path, "a_project")
+def test_prune_stale_projects_keeps_the_registry_sorted(
+    svc: ConfigService,
+    tmp_path: Path,
+    make_live_project: Callable[[str], Path],
+    register_projects: Callable[..., None],
+) -> None:
+    kept_z = make_live_project("z_project")
+    kept_a = make_live_project("a_project")
     gone = tmp_path / "gone"
-    _register_projects(tmp_path, kept_z, gone, kept_a)
+    register_projects(kept_z, gone, kept_a)
 
     svc.prune_stale_projects([gone])
 
@@ -638,32 +691,291 @@ def test_prune_stale_projects_keeps_file_sorted(svc: ConfigService, tmp_path: Pa
     assert paths == sorted(paths)
 
 
-def test_prune_stale_projects_empty_list_is_noop(svc: ConfigService, tmp_path: Path) -> None:
-    live = _make_live_project(tmp_path, "live")
-    _register_projects(tmp_path, live)
+def test_prune_stale_projects_empty_list_is_noop(
+    svc: ConfigService,
+    make_live_project: Callable[[str], Path],
+    register_projects: Callable[..., None],
+) -> None:
+    live = make_live_project("live")
+    register_projects(live)
 
     assert svc.prune_stale_projects([]) == []
     assert svc.read_project_paths() == [live]
 
 
-def test_prune_stale_projects_can_empty_the_registry(svc: ConfigService, tmp_path: Path) -> None:
+def test_prune_stale_projects_can_empty_the_registry(
+    svc: ConfigService, tmp_path: Path, register_projects: Callable[..., None]
+) -> None:
     gone = tmp_path / "gone"
-    _register_projects(tmp_path, gone)
+    register_projects(gone)
 
     svc.prune_stale_projects([gone])
 
     assert svc.read_project_paths() == []
 
 
-def test_prune_then_stale_paths_is_clean(svc: ConfigService, tmp_path: Path) -> None:
+def test_prune_then_stale_paths_is_clean(
+    svc: ConfigService,
+    tmp_path: Path,
+    make_live_project: Callable[[str], Path],
+    register_projects: Callable[..., None],
+) -> None:
     """Pruning what stale_project_paths() reported leaves nothing stale behind."""
-    live = _make_live_project(tmp_path, "live")
-    _register_projects(tmp_path, live, tmp_path / "gone1", tmp_path / "gone2")
+    live = make_live_project("live")
+    register_projects(live, tmp_path / "gone1", tmp_path / "gone2")
 
     svc.prune_stale_projects(svc.stale_project_paths())
 
     assert svc.stale_project_paths() == []
     assert svc.read_project_paths() == [live]
+
+
+def test_registry_fingerprint_is_empty_without_projects(svc: ConfigService) -> None:
+    assert svc.registry_fingerprint() == (None, 0)
+
+
+def test_registry_fingerprint_moves_on_every_record(
+    svc: ConfigService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The viewer's ETag reads this, so re-recording an unchanged project must move it.
+
+    The registry file's mtime moved on every `agent run` for the same reason.
+    """
+    monkeypatch.chdir(tmp_path)
+    svc.record_project()
+    before = svc.registry_fingerprint()
+
+    svc.record_project()
+
+    assert svc.registry_fingerprint() != before
+
+
+@pytest.fixture
+def read_only_svc(read_only_core: Core, display_mock: Mock) -> ConfigService:
+    """
+    Return a service over a factory holding no write grant.
+
+    This is the logs daemon's position: a process that reads the registry and must not
+    be able to mutate it, however deep the call goes. Takes the shared ``display_mock``
+    so a test can assert on what it did or did not report.
+    """
+    repository = ProjectsRepository(connection_factory=read_only_core.projects_db)
+    return ConfigService(display_service=display_mock, projects_repository=repository)
+
+
+def test_a_read_without_a_write_grant_cannot_import_the_legacy_registry(
+    read_only_svc: ConfigService,
+    read_only_core: Core,
+    tmp_path: Path,
+    write_legacy_registry: Callable[..., Path],
+) -> None:
+    """
+    The defect this gate exists for.
+
+    ``read_project_paths`` reaches the legacy import, which is a write. A process holding
+    no grant must come away with an empty list and an untouched database rather than
+    having migrated host state from inside a read.
+    """
+    legacy = write_legacy_registry(tmp_path / "a", tmp_path / "b")
+    before = legacy.read_bytes()
+
+    assert read_only_svc.read_project_paths() == []
+
+    assert legacy.read_bytes() == before
+    with read_only_core.projects_db.ro() as connection:
+        assert connection.execute("SELECT COUNT(*) AS n FROM projects").fetchone()["n"] == 0
+
+
+def test_the_refused_import_advises_running_agent_run(
+    read_only_svc: ConfigService,
+    display_mock: Mock,
+    tmp_path: Path,
+    write_legacy_registry: Callable[..., Path],
+) -> None:
+    """An empty list beside an untouched projects.txt is inexplicable without this."""
+    write_legacy_registry(tmp_path / "a")
+
+    read_only_svc.read_project_paths()
+
+    (message,) = [call.args[0] for call in display_mock.error.call_args_list]
+    assert "agent run" in message
+
+
+def test_a_genuine_storage_failure_is_not_told_to_run_agent_run(
+    read_only_svc: ConfigService, display_mock: Mock, mocker: pytest_mock.MockerFixture
+) -> None:
+    """A corrupt or locked database is not fixed by launching, so it gets no advice."""
+    mocker.patch.object(
+        read_only_svc._projects, "list_projects", autospec=True, side_effect=StorageError("corrupt")
+    )
+
+    assert read_only_svc.read_project_paths() == []
+    display_mock.error.assert_not_called()
+
+
+def test_an_empty_registry_with_no_legacy_file_is_quiet(
+    read_only_svc: ConfigService, display_mock: Mock
+) -> None:
+    """A fresh install has nothing to import, so it must not be advised to import."""
+    assert read_only_svc.read_project_paths() == []
+    display_mock.error.assert_not_called()
+
+
+def test_prune_stale_projects_without_a_write_grant_silently_removes_nothing(
+    read_only_svc: ConfigService,
+    read_only_core: Core,
+    register_projects: Callable[..., None],
+    tmp_path: Path,
+) -> None:
+    """
+    Why the cleanup command needs a grant around its clean phase, not just its survey.
+
+    The refusal is a ``StorageError``, and this method suppresses those by design, so it
+    returns the paths as though it had removed them. Both halves are asserted: the
+    best-effort contract is unchanged, *and* nothing was actually deleted. A caller that
+    reports on the returned list — ``run_cleanup`` does — would claim a prune that never
+    happened.
+    """
+    gone = tmp_path / "gone"
+    register_projects(gone)
+
+    assert read_only_svc.prune_stale_projects([gone]) == [gone]
+
+    with read_only_core.projects_db.ro() as connection:
+        assert connection.execute("SELECT COUNT(*) AS n FROM projects").fetchone()["n"] == 1
+
+
+def test_a_granted_process_imports_the_same_registry(
+    svc: ConfigService, tmp_path: Path, write_legacy_registry: Callable[..., Path]
+) -> None:
+    """The other half of the gate: the refusal is about permission, not about the data."""
+    write_legacy_registry(tmp_path / "a", tmp_path / "b")
+
+    assert svc.read_project_paths() == [tmp_path / "a", tmp_path / "b"]
+
+
+def test_legacy_registry_is_imported(
+    svc: ConfigService, tmp_path: Path, write_legacy_registry: Callable[..., Path]
+) -> None:
+    """The file itself is left alone — it is the only copy of the pre-SQLite registry."""
+    legacy = write_legacy_registry(tmp_path / "a", tmp_path / "b", tmp_path / "c")
+    before = legacy.read_bytes()
+
+    assert svc.read_project_paths() == [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
+    assert legacy.read_bytes() == before
+
+
+def test_legacy_registry_import_expands_the_compressed_encoding(
+    svc: ConfigService, write_legacy_registry: Callable[..., Path]
+) -> None:
+    """Sibling groups and prefix borrows have to survive the trip into the database."""
+    write_legacy_registry("/home/dev/x", "/home/dev/y", "/home/dev/z", "/mnt/c/other")
+
+    assert [str(p) for p in svc.read_project_paths()] == [
+        "/home/dev/x",
+        "/home/dev/y",
+        "/home/dev/z",
+        "/mnt/c/other",
+    ]
+
+
+def test_legacy_registry_import_runs_once(
+    svc: ConfigService, tmp_path: Path, write_legacy_registry: Callable[..., Path]
+) -> None:
+    """A path pruned after the import must not be resurrected by a later read."""
+    write_legacy_registry(tmp_path / "a", tmp_path / "b")
+    svc.read_project_paths()
+
+    svc.prune_stale_projects([tmp_path / "a"])
+
+    assert svc.read_project_paths() == [tmp_path / "b"]
+
+
+def test_a_fully_pruned_registry_reimports_the_legacy_file(
+    svc: ConfigService, tmp_path: Path, write_legacy_registry: Callable[..., Path]
+) -> None:
+    """
+    The accepted cost of gating the import on an empty table.
+
+    Pruning every row puts the registry back in the state a fresh install is in, and the
+    legacy file is still there, so the next read imports it again. Self-correcting —
+    those paths were pruned for being stale and will be flagged stale again — and the
+    alternative was either a marker file or deleting the user's only copy of the old
+    registry.
+    """
+    write_legacy_registry(tmp_path / "a")
+    svc.read_project_paths()
+
+    svc.prune_stale_projects([tmp_path / "a"])
+
+    assert svc.read_project_paths() == [tmp_path / "a"]
+
+
+def test_legacy_registry_import_is_idempotent_across_instances(
+    svc: ConfigService,
+    tmp_path: Path,
+    projects_repository: ProjectsRepository,
+    write_legacy_registry: Callable[..., Path],
+) -> None:
+    """
+    Two processes can race here — a launch and the logs daemon.
+
+    Both write the same paths through an upsert keyed on the path, so neither can
+    double-insert; and whichever reads second finds a non-empty table and imports
+    nothing.
+    """
+    write_legacy_registry(tmp_path / "a")
+    other = ConfigService(
+        display_service=Mock(spec=DisplayService), projects_repository=projects_repository
+    )
+
+    svc.read_project_paths()
+    other.read_project_paths()
+
+    assert svc.read_project_paths() == [tmp_path / "a"]
+
+
+def test_record_project_imports_the_legacy_registry_too(
+    svc: ConfigService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_legacy_registry: Callable[..., Path],
+) -> None:
+    """A launch is the likeliest first touch, so it must not lose the old registry."""
+    write_legacy_registry(tmp_path / "old")
+    cwd = tmp_path / "new"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("PWD", raising=False)
+
+    svc.record_project()
+
+    assert set(svc.read_project_paths()) == {tmp_path / "old", cwd}
+
+
+def test_legacy_registry_import_retries_after_a_storage_failure(
+    svc: ConfigService,
+    tmp_path: Path,
+    write_legacy_registry: Callable[..., Path],
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """A failed import writes nothing, so the next read finds an empty table and retries."""
+    write_legacy_registry(tmp_path / "a")
+    real_record_many = svc._projects.record_many
+    attempts = itertools.count()
+
+    def flaky(paths: Sequence[str]) -> None:
+        if next(attempts) == 0:
+            msg = "locked"
+            raise StorageError(msg)
+        real_record_many(paths)
+
+    mocker.patch.object(svc._projects, "record_many", autospec=True, side_effect=flaky)
+
+    assert svc.read_project_paths() == []
+
+    assert svc.read_project_paths() == [tmp_path / "a"]
 
 
 def test_link_litellm_logs_creates_symlink(svc: ConfigService, tmp_path: Path) -> None:
@@ -840,8 +1152,10 @@ def test_declared_mounts_warns_and_skips_tilde_source(svc: ConfigService, tmp_pa
 
 
 def test_declared_mounts_ignores_named_volumes(svc: ConfigService, tmp_path: Path):
-    svc.prepare_declared_mounts(["-v", "cache:/cache", "--cap-add", "SYS_ADMIN"], tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == []
+    project = tmp_path / "project"
+    project.mkdir()
+    svc.prepare_declared_mounts(["-v", "cache:/cache", "--cap-add", "SYS_ADMIN"], project)
+    assert sorted(p.name for p in project.iterdir()) == []
 
 
 def test_declared_mounts_reports_unwritable_source(

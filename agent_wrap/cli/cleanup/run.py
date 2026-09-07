@@ -1,6 +1,7 @@
 # This file has been created with the assistance of an AI tool.
 """The `cleanup` subcommand — removes leftover state from deleted projects."""
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import click
@@ -16,7 +17,7 @@ from agent_wrap.cli.cleanup.constants import (
     UNATTRIBUTABLE_NOTE,
 )
 from agent_wrap.constants import DIVIDER
-from agent_wrap.containers import services
+from agent_wrap.containers import core, services
 from agent_wrap.domain.build.constants import (
     IMAGE_CLEANUP_GROUP_TEXT,
     IMAGE_CLEANUP_REASON_TEXT,
@@ -183,7 +184,15 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
         scoped.append(stats.cleanup_scope())
         image_scoped.append(build.image_cleanup_scope(services.config_service.read_project_paths()))
 
-    dsp.spin_while(label=CLEANUP_LABEL, message="scanning…", done_message=lambda: None, work=survey)
+    # The survey's only write is the one-time projects.txt import, and it has to happen
+    # here rather than before `clean`: the scope `clean` deletes from is built in this
+    # spinner, and an un-imported registry makes every project's log dir look orphaned.
+    # --dry-run takes no grant and so previews exactly that -- read_project_paths says
+    # why on stderr.
+    with contextlib.nullcontext() if dry_run else core.projects_db.enable_writes():
+        dsp.spin_while(
+            label=CLEANUP_LABEL, message="scanning…", done_message=lambda: None, work=survey
+        )
     scope = scoped[0]
     image_scope = image_scoped[0]
 
@@ -221,7 +230,14 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
         image_outcomes.append(build.remove_images(image_scope))
         outcomes.append(stats.run_cleanup(scope))
 
-    dsp.spin_while(
-        label=CLEANUP_LABEL, message="cleaning up…", done_message=lambda: None, work=clean
-    )
+    # A second grant, constructed fresh rather than reusing the one above: a
+    # @contextmanager instance is single-use, and nullcontext is not, so a shared
+    # variable would work under --dry-run and break on every real run. Unconditional
+    # because the --dry-run exit is above -- and needed because `clean` prunes the stale
+    # registry entries. Without it prune_stale_projects suppresses the refusal, returns
+    # the paths anyway, and the summary reports entries as removed that are still there.
+    with core.projects_db.enable_writes():
+        dsp.spin_while(
+            label=CLEANUP_LABEL, message="cleaning up…", done_message=lambda: None, work=clean
+        )
     ctx.exit(_CleanupReport.summarize(outcomes[0], image_outcomes[0], dsp))

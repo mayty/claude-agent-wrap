@@ -27,12 +27,14 @@ from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import pytest_mock
     from pytest_mock import MockerFixture
 
     from agent_wrap.domain.logs.models import ReadSessionResult
+    from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 
 @pytest.fixture
@@ -56,9 +58,11 @@ def isolated_stats(mocker: pytest_mock.MockFixture, tmp_path: Path) -> StatsServ
 
 
 @pytest.fixture
-def config_svc() -> ConfigService:
+def config_svc(projects_repository: ProjectsRepository) -> ConfigService:
     """Return a real ConfigService for reading the project registry."""
-    return ConfigService(display_service=Mock(spec=DisplayService))
+    return ConfigService(
+        display_service=Mock(spec=DisplayService), projects_repository=projects_repository
+    )
 
 
 @pytest.fixture
@@ -462,7 +466,10 @@ def test_list_sessions_unions_group_members(tmp_path: Path) -> None:
 
 
 def test_unmarked_projects_stay_separate(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService
+    tmp_path: Path,
+    isolated_stats: StatsService,
+    config_svc: ConfigService,
+    register_projects: Callable[..., None],
 ) -> None:
     """Without a marker, each project remains its own entry (regression guard)."""
     tool_dir = tmp_path
@@ -471,7 +478,7 @@ def test_unmarked_projects_stay_separate(
     b = tmp_path / "proj-b"
     _write_session(a, "litellm-bedrock", "s1", [_ts_rec("2026-06-01T00:00:00+00:00", model="m/a")])
     _write_session(b, "litellm-bedrock", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")])
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{a}\n{b}\n", encoding="utf-8")
+    register_projects(a, b)
 
     raw_projects = config_svc.read_project_paths()
     groups = list_groups(isolated_stats, raw_projects)
@@ -489,7 +496,11 @@ def _write_central(tool_dir: Path, hash_name: str, session_id: str, records: lis
 
 
 def test_orphaned_group_exposed_and_readable(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService, mocker: MockerFixture
+    tmp_path: Path,
+    isolated_stats: StatsService,
+    config_svc: ConfigService,
+    mocker: MockerFixture,
+    register_projects: Callable[..., None],
 ) -> None:
     """Central log dirs with no registered project surface as an <orphaned> group."""
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
@@ -509,7 +520,7 @@ def test_orphaned_group_exposed_and_readable(
         tool_dir, "hashB", "s2", [_ts_rec("2026-06-05T00:00:00+00:00", model="m/b")]
     )
 
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     # The orphaned group is appended last with the synthetic name.
     raw_projects = config_svc.read_project_paths()
@@ -524,7 +535,11 @@ def test_orphaned_group_exposed_and_readable(
 
 
 def test_no_orphaned_group_when_all_reachable(
-    tmp_path: Path, isolated_stats: StatsService, config_svc: ConfigService, mocker: MockerFixture
+    tmp_path: Path,
+    isolated_stats: StatsService,
+    config_svc: ConfigService,
+    mocker: MockerFixture,
+    register_projects: Callable[..., None],
 ) -> None:
     """No orphaned group is appended when every central dir is project-reachable."""
     mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
@@ -536,7 +551,7 @@ def test_no_orphaned_group_when_all_reachable(
     project = tmp_path / "proj"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "litellm-logs").symlink_to(hash_a, target_is_directory=True)
-    (tool_dir / ".agent-launches" / "projects.txt").write_text(f"{project}\n", encoding="utf-8")
+    register_projects(project)
 
     raw_projects = config_svc.read_project_paths()
     assert all(g["name"] != "<orphaned>" for g in list_groups(isolated_stats, raw_projects))

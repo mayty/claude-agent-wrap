@@ -12,19 +12,24 @@ always invoked via ``cli_root`` rather than directly, so the root group's
 ``help_option_names`` (``-h``) reaches them the way it does in production.
 """
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import pytest
 from click.testing import CliRunner
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import pytest_mock
 
-from agent_wrap.containers import services
+from agent_wrap.containers import core, services
 
-# NOTE: The domain-class imports below are an intentional exception to the
-# "never import from agent_wrap.domain.xxx directly" rule.  The classes are
-# used ONLY as ``spec=`` arguments to ``mocker.Mock(spec=SomeService)`` —
+# NOTE: The domain-class imports below — and ``ConnectionFactory`` from the
+# infrastructure layer — are an intentional exception to the "never import
+# from agent_wrap.domain.xxx directly" rule, and to the layering rule that
+# only containers.py imports agent_wrap.infrastructure at runtime.  The
+# classes are used ONLY as ``spec=`` arguments to ``mocker.Mock(spec=X)`` —
 # type metadata for the test harness, not domain logic.  No method is ever
 # called on the imported classes.
 from agent_wrap.domain.build.service import BuildService
@@ -40,12 +45,36 @@ from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.domain.status.service import InspectService
 from agent_wrap.domain.updates.service import UpdateService
+from agent_wrap.infrastructure.connection import ConnectionFactory
 
 
 @pytest.fixture
 def runner() -> CliRunner:
     """Return a click test runner, the harness every CLI test invokes commands through."""
     return CliRunner()
+
+
+@pytest.fixture
+def write_grants(mocker: pytest_mock.MockFixture) -> list[str]:
+    """
+    Return a list that records every database write grant the command takes.
+
+    Which verbs may write is a safety property rather than a detail: the logs daemon
+    (``agent logs --foreground``) and ``agent cleanup --dry-run`` must take no grant, and
+    a stray one there is as much a bug as a missing one on ``agent run``. Asserting on
+    this list makes both directions a test failure.
+    """
+    taken: list[str] = []
+
+    @contextlib.contextmanager
+    def grant() -> Iterator[None]:
+        taken.append("projects")
+        yield
+
+    factory = mocker.Mock(spec=ConnectionFactory)
+    factory.enable_writes.side_effect = grant
+    mocker.patch.object(core, "projects_db", factory)
+    return taken
 
 
 @pytest.fixture(autouse=True)

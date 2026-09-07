@@ -4,7 +4,7 @@
 # Fix targets (for dev):    lint, format
 # Dependency targets:       available-upgrades, upgrade-deps, dump-prod-constraints
 
-.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check cli-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check
+.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check cli-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check projects-db
 
 # Every target runs on the venv bin/agent-bootstrap provisioned, never on the host's
 # python3 -- that is the whole point of owning the interpreter, and a `python3`
@@ -234,3 +234,6 @@ upgrade-deps: uv-check python-check
 	$(MAKE) dump-prod-constraints
 
 check: python-check constraints-check lintcheck format-check test typecheck markdown-check arch-check cli-check carveout-check check-executables
+
+projects-db:
+	duckdb -readonly .agent-launches/db/projects.db

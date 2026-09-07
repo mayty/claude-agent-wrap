@@ -91,3 +91,10 @@ def test_run_forwards_unknown_long_flags_verbatim(runner: CliRunner) -> None:
     services.launch_service.launch.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         use_base=True, claude_args=["--model", "foo", "bar"]
     )
+
+
+def test_run_takes_a_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
+    """A launch registers its project directory, so it is one of the two verbs that may."""
+    runner.invoke(cli_root, ["run"])
+
+    assert write_grants == ["projects"]

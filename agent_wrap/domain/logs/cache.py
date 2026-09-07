@@ -9,10 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_wrap.constants import (
-    AGENT_LAUNCHES_DIR,
     LITELLM_LOGS_DIRNAME,
     ORPHANED_LABEL,
-    PROJECT_REGISTRY_FILENAME,
     TOOL_DIR,
 )
 from agent_wrap.domain.logs.constants import MESSAGES_FILENAME
@@ -86,12 +84,11 @@ class LogsCache:
         self._hot_strings: str | None = None
 
         # --- filesystem tracking (consumer thread only) ---
-        self._projects_txt_path = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
         # The tree every sidecar actually writes to. Each group's logs_dirs are
         # symlinks into it, so this is what the watcher watches -- see watcher.py.
         self._logs_tree_path = TOOL_DIR / LITELLM_LOGS_DIRNAME
-        self._projects_txt_mtime: int | None = None
-        self._projects_txt_size: int | None = None
+        self._registry_last_change: int | None = None
+        self._registry_count: int | None = None
         self._known_messages: dict[Path, tuple[int, int]] = {}  # path -> (mtime_ns, size)
         self._known_project_paths: set[str] = set()
         # Logs dir -> project id, so a path from a filesystem event or from a directory
@@ -177,14 +174,9 @@ class LogsCache:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        # Constructed here rather than in __init__ so it reads the registry path as it
+        # Constructed here rather than in __init__ so it reads the logs tree path as it
         # stands at start time -- callers (and tests) may repoint it after construction.
-        self._watcher = CacheWatcher(
-            self,
-            logs_tree=self._logs_tree_path,
-            registry_dir=self._projects_txt_path.parent,
-            registry_filename=self._projects_txt_path.name,
-        )
+        self._watcher = CacheWatcher(self, logs_tree=self._logs_tree_path)
         with log_info("Startup", "building initial session cache"):
             self.rebuild()
         self._watcher.start()
@@ -319,17 +311,15 @@ class LogsCache:
         disappeared out of band — ``agent cleanup`` archiving and deleting orphaned
         dirs — and what reseeds fingerprints after any change no event described.
         """
-        # 1. Check projects.txt for added/removed paths. Gated on its *contents*, not its
-        # mtime: a path whose logs dir does not exist yet is deliberately left out of
+        # 1. Check the registry for added/removed paths. Gated on its *contents*, not its
+        # revision: a path whose logs dir does not exist yet is deliberately left out of
         # _known_project_paths, so comparing contents is what retries it on a later pass.
-        # An mtime gate cannot -- by then the mtime has stopped moving.
-        self._update_projects_txt_tracking()
+        # A revision gate cannot -- by then the revision has stopped moving.
+        self._update_registry_tracking()
         current_paths = self._read_project_paths()
         if current_paths != self._known_project_paths:
-            with log_debug(
-                "Update", "handling projects.txt change", threshold=timedelta(seconds=2)
-            ):
-                self._handle_projects_txt_change(current_paths)
+            with log_debug("Update", "handling registry change", threshold=timedelta(seconds=2)):
+                self._handle_registry_change(current_paths)
 
         # 2. Walk known groups' logs_dirs, stat messages.jsonl files, diff.
         with log_debug("Update", "scanning session directories", threshold=timedelta(seconds=2)):
@@ -478,7 +468,7 @@ class LogsCache:
 
         # Before reconcile, so its registry gate compares against what this just read and
         # finds nothing to do.
-        self._track_projects_txt_state()
+        self._track_registry_state()
         self._reindex_roots()
 
         with log_info("Rebuild", "scanning sessions"):
@@ -503,7 +493,7 @@ class LogsCache:
                 except OSError:
                     pass
 
-    def _track_projects_txt_state(self) -> None:
+    def _track_registry_state(self) -> None:
         """
         Seed both the registry's contents and its fingerprint inputs.
 
@@ -521,7 +511,7 @@ class LogsCache:
         self._known_project_paths = {
             raw for raw in self._read_project_paths() if project_logs_dir(Path(raw)).is_dir()
         }
-        self._update_projects_txt_tracking()
+        self._update_registry_tracking()
 
     # ------------------------------------------------------------------
     # Incremental updates
@@ -629,15 +619,15 @@ class LogsCache:
         self._sessions[pid] = sessions
 
     # ------------------------------------------------------------------
-    # projects.txt change handling
+    # registry change handling
     # ------------------------------------------------------------------
 
     def _read_project_paths(self) -> set[str]:
         return {str(p) for p in self._config.read_project_paths()}
 
-    def _handle_projects_txt_change(self, new_paths: set[str]) -> None:
+    def _handle_registry_change(self, new_paths: set[str]) -> None:
         """
-        Handle added/removed paths in projects.txt.
+        Handle added/removed paths in the project registry.
 
         A path whose ``.claude/litellm-logs`` does not exist yet is deliberately *not*
         recorded as known, so the next reconcile still sees the registry as changed and
@@ -658,24 +648,19 @@ class LogsCache:
 
         self._known_project_paths = new_paths - unresolved
 
-    def _update_projects_txt_tracking(self) -> None:
+    def _update_registry_tracking(self) -> None:
         """
-        Refresh the registry's mtime and size.
+        Refresh the registry's revision.
 
         These are the only inputs to the projects fingerprint that do not come from the
         session cache, so this runs on every reconcile rather than only when the
-        registry's *contents* changed: ``record_project`` rewrites the file on every
-        ``agent run``, moving its mtime without adding or removing a path, and a value
-        left stale here would be served to the browser indefinitely.
+        registry's *contents* changed: ``record_project`` refreshes the recorded project
+        on every ``agent run``, moving the revision without adding or removing a path,
+        and a value left stale here would be served to the browser indefinitely.
         """
-        try:
-            st = self._projects_txt_path.stat()
-        except OSError:
-            self._projects_txt_mtime = None
-            self._projects_txt_size = None
-        else:
-            self._projects_txt_mtime = st.st_mtime_ns
-            self._projects_txt_size = st.st_size
+        fingerprint = self._config.registry_fingerprint()
+        self._registry_last_change = fingerprint.last_change
+        self._registry_count = fingerprint.count
 
     def _merge_added_paths(self, added: set[str]) -> set[str]:
         """
@@ -966,8 +951,8 @@ class LogsCache:
         return out
 
     def _recompute_projects_fp_from_cache(self) -> Fingerprint:
-        best_mtime: int | None = self._projects_txt_mtime
-        total_size: int = self._projects_txt_size or 0
+        best_mtime: int | None = self._registry_last_change
+        total_size: int = self._registry_count or 0
         for fp in self._sessions_fp.values():
             if fp["mtime"] is not None:
                 if best_mtime is None or (fp["mtime"] or 0) > best_mtime:

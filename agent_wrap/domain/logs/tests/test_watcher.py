@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileMovedEvent
+from watchdog.events import FileCreatedEvent, FileModifiedEvent
 
 import agent_wrap.domain.logs.watcher as watcher_mod
 from agent_wrap.domain.logs.cache import LogsCache
@@ -15,15 +15,12 @@ from agent_wrap.domain.logs.constants import WATCH_STOP
 from agent_wrap.domain.logs.watcher import (
     CacheWatcher,
     _LogTreeHandler,
-    _RegistryHandler,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from pytest_mock import MockerFixture
-
-REGISTRY_FILENAME = "projects.txt"
 
 
 @pytest.fixture
@@ -53,12 +50,7 @@ def cache_mock() -> Mock:
 def watcher(tmp_path: Path, cache_mock: Mock, observer_class: Mock) -> CacheWatcher:
     """Return a watcher over tmp_path whose Observer is mocked out."""
     assert observer_class is not None
-    return CacheWatcher(
-        cache_mock,
-        logs_tree=tmp_path / "litellm-logs",
-        registry_dir=tmp_path / ".agent-launches",
-        registry_filename=REGISTRY_FILENAME,
-    )
+    return CacheWatcher(cache_mock, logs_tree=tmp_path / "litellm-logs")
 
 
 # --- handlers -------------------------------------------------------------
@@ -104,45 +96,6 @@ def test_log_tree_handler_ignores_a_directory_event(
     session_dir = tmp_path / "hash" / "provider" / "session"
     _LogTreeHandler(queue).dispatch(FileModifiedEvent(str(session_dir)))
     assert _drain(queue) == []
-
-
-def test_registry_handler_queues_the_registry_file(
-    queue: SimpleQueue[object], tmp_path: Path
-) -> None:
-    path = tmp_path / REGISTRY_FILENAME
-    _RegistryHandler(queue, REGISTRY_FILENAME).dispatch(FileModifiedEvent(str(path)))
-    assert _drain(queue) == [path]
-
-
-def test_registry_handler_ignores_the_daemons_own_logfile(
-    queue: SimpleQueue[object], tmp_path: Path
-) -> None:
-    """
-    The daemon's stdout goes to logs-server.log in this same directory.
-
-    Without the filter a logged line would wake the loop that logged it, and under
-    AGENT_LOG_DEBUG that is an unbounded spin — nothing here rate-limits a
-    self-trigger.
-    """
-    handler = _RegistryHandler(queue, REGISTRY_FILENAME)
-    for name in ("logs-server.log", "logs-server.json", "logs-server.lock"):
-        handler.dispatch(FileModifiedEvent(str(tmp_path / name)))
-    assert _drain(queue) == []
-
-
-def test_registry_handler_sees_an_atomic_rewrite_by_its_destination(
-    queue: SimpleQueue[object], tmp_path: Path
-) -> None:
-    """
-    projects.txt is written mkstemp-then-os.replace, which arrives as a move.
-
-    Only the destination carries the name that matters, so a handler reading
-    src_path alone would miss every registry update ever made.
-    """
-    src = tmp_path / "projects.txt.a1b2.tmp"
-    dest = tmp_path / REGISTRY_FILENAME
-    _RegistryHandler(queue, REGISTRY_FILENAME).dispatch(FileMovedEvent(str(src), str(dest)))
-    assert _drain(queue) == [dest]
 
 
 # --- batching -------------------------------------------------------------
@@ -273,17 +226,22 @@ def test_stop_silences_the_observer_before_joining_the_consumer(
     observer_class.return_value.stop.assert_called_once()
 
 
-def test_start_schedules_the_tree_recursively_and_the_registry_flat(
+def test_start_schedules_only_the_tree_and_does_so_recursively(
     watcher: CacheWatcher, observer_class: Mock, tmp_path: Path
 ) -> None:
+    """
+    The project registry is deliberately not watched.
+
+    Every project's logs land in this one tree, so a newly registered project's first
+    session write already arrives here — and the cache cannot attribute it to a known
+    group, so it falls back to a full reconcile that re-reads the registry. Until that
+    write happens the project has nothing to render.
+    """
     watcher.start()
     try:
         calls = observer_class.return_value.schedule.call_args_list
         scheduled = {call.args[1]: call.kwargs["recursive"] for call in calls}
-        assert scheduled == {
-            str(tmp_path / "litellm-logs"): True,
-            str(tmp_path / ".agent-launches"): False,
-        }
+        assert scheduled == {str(tmp_path / "litellm-logs"): True}
     finally:
         watcher.stop()
 
@@ -334,12 +292,7 @@ def test_a_real_write_under_the_watched_tree_reaches_the_cache(tmp_path: Path) -
     cache = Mock(spec=LogsCache)
     cache.apply_paths.side_effect = _record
 
-    watcher = CacheWatcher(
-        cache,
-        logs_tree=tmp_path / "litellm-logs",
-        registry_dir=tmp_path / ".agent-launches",
-        registry_filename=REGISTRY_FILENAME,
-    )
+    watcher = CacheWatcher(cache, logs_tree=tmp_path / "litellm-logs")
     watcher.start()
     try:
         (session_dir / "messages.jsonl").write_text("{}\n", encoding="utf-8")

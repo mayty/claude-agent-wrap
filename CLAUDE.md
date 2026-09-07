@@ -21,6 +21,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | [docs/shell-commands.md](docs/shell-commands.md) | Adding/editing an `agent` verb or its flags |
 | [docs/container-environment.md](docs/container-environment.md) | Adding/editing container env var injection |
 | [docs/architecture.md](docs/architecture.md) | Understanding the codebase architecture |
+| [docs/infrastructure.md](docs/infrastructure.md) | Adding a database, a migration, or a repository; the storage layer's boundary rules |
 | [docs/testing-conventions.md](docs/testing-conventions.md) | Writing or reviewing tests |
 | [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `PATH` setup for `agent` |
 | [agent_wrap/domain/providers/README.md](agent_wrap/domain/providers/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
@@ -146,6 +147,15 @@ A `Makefile` provides all QA targets. Follow these rules:
 ## Architecture
 
 Domain-layer architecture rules and project structure — see [docs/architecture.md](docs/architecture.md).
+
+**The storage layer lives in `agent_wrap/infrastructure/`, below `domain/`.** SQLite
+databases, numbered `.sql` migrations, and repositories that translate app objects ↔ rows.
+Nothing there may import `agent_wrap.domain.*` or `agent_wrap.cli.*`; a domain service
+reaches a repository by constructor DI only, wired in `containers.py` — the composition
+root and the sole place permitted a runtime `agent_wrap.infrastructure` import. Repositories
+return app objects, never rows or SQL, and every `sqlite3.Error` surfaces as `StorageError`.
+`make arch-check` does **not** enforce any of this — see
+[docs/infrastructure.md](docs/infrastructure.md).
 
 ## Test conventions
 

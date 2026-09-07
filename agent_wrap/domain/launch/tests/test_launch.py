@@ -55,6 +55,8 @@ if TYPE_CHECKING:
 
     import pytest_mock
 
+    from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
+
 
 @pytest.fixture
 def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
@@ -1113,7 +1115,10 @@ def test_sweep_tolerates_absent_instances_dir(
 
 
 def test_prepare_config_precreates_every_project_mount_source(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    projects_repository: ProjectsRepository,
 ) -> None:
     """
     Every host-side mount source must exist, as the right kind of node, before docker run.
@@ -1132,7 +1137,10 @@ def test_prepare_config_precreates_every_project_mount_source(
         autospec=True,
         return_value=False,
     )
-    launch_svc._config = ConfigService(display_service=mocker.Mock(spec=DisplayService))
+    launch_svc._config = ConfigService(
+        display_service=mocker.Mock(spec=DisplayService),
+        projects_repository=projects_repository,
+    )
     instance_id = "agent-abc"
 
     launch_svc._prepare_config(instance_id=instance_id, telegram_available=False)

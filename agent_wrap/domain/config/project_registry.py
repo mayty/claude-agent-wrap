@@ -1,6 +1,12 @@
 # This file has been created with the assistance of an AI tool.
 """
-Internal path compression helpers for the project registry.
+The pre-SQLite ``projects.txt`` encoding — kept for the one-time import.
+
+The registry now lives in a database, one row per path. This module is what decodes the
+compressed, grouped text format it used to live in (``/a/{x,y,z}`` sibling groups,
+``{N}/rest`` prefix borrows), so ``ConfigService._import_legacy_registry`` can read an
+existing file once and move it aside. ``compress`` has no remaining caller and is kept
+only as the round-trip partner the tests check ``decompress`` against.
 
 Used by ``ConfigService`` — not part of the public domain API.
 """
