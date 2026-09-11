@@ -85,6 +85,13 @@ A complete skeleton looks like this:
   This applies to every repo file reference (READMEs, docs, source), not just
   READMEs. Pin to the file's location **as of that release** — paths that moved
   later (e.g. the `ops/` reorg in 0.4.0) resolve differently per tag.
+- `make markdown-check` enforces the rule above. It resolves each link against the
+  git tree at the tag it names, and checks that the path exists there, that `/blob/`
+  names a file and `/tree/` a directory, that any `#anchor` matches a heading of that
+  file at that tag, and that the tag equals the note's own version. Before the tag
+  exists, the note being drafted is checked against the working tree instead, and the
+  check warns rather than fails. A placeholder keeps its `<...>` — that is what makes
+  the check skip it.
 - **Release notes describe user-visible behavior, not internals.** State what
   broke and what changed from the user's perspective — never describe how a fix
   works. No data structures, no algorithms, no function signatures, no parameter
