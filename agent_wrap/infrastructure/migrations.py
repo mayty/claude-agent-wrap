@@ -79,7 +79,6 @@ class MigrationRunner:
         return tuple(found)
 
     def run(self, connection: sqlite3.Connection) -> None:
-        """Apply every migration newer than the database's ``user_version``."""
         current = self.current_version(connection)
         for migration in self.discover():
             if migration.version <= current:
@@ -89,7 +88,6 @@ class MigrationRunner:
             current = migration.version
 
     def current_version(self, connection: sqlite3.Connection) -> int:
-        """Return the database's applied schema version."""
         try:
             row = connection.execute("PRAGMA user_version").fetchone()
         except sqlite3.Error as exc:

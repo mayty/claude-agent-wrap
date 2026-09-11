@@ -37,13 +37,7 @@ NEEDS_BYTESWAP = array.array(BLOB_ID_TYPECODE, [1]).tobytes() != b"\x01\x00\x00\
 
 
 class BlobCodec:
-    """
-    How a blob's bytes and a request's reference vector are stored, and read back.
-
-    A namespace class rather than loose functions: these four are one micro-domain --
-    the encoding boundary between an app value and a column -- and both the ingest
-    writer and the read repositories need them.
-    """
+    """How a blob's bytes and a request's reference vector are stored, and read back."""
 
     @staticmethod
     def encode(raw: bytes) -> tuple[str, bytes]:
@@ -60,7 +54,6 @@ class BlobCodec:
 
     @staticmethod
     def decode(codec: str, payload: bytes) -> bytes:
-        """Invert :meth:`encode`."""
         return zlib.decompress(payload) if codec == CODEC_ZLIB else payload
 
     @staticmethod
@@ -81,7 +74,6 @@ class BlobCodec:
 
     @staticmethod
     def unpack_ids(payload: bytes) -> tuple[int, ...]:
-        """Invert :meth:`pack_ids`."""
         unpacked = array.array(BLOB_ID_TYPECODE)
         unpacked.frombytes(payload)
         if NEEDS_BYTESWAP:  # pragma: no cover -- no big-endian host in CI
@@ -93,9 +85,8 @@ class LogIngestRepository:
     """
     Writes the ingested index. Pure SQL plus the blob codec -- no parsing.
 
-    The split with ``domain/logs/ingest.py`` is deliberate: that module knows the log
-    file format, this one knows the schema, and neither knows the other's subject. What
-    crosses between them is :class:`IngestChunk`, a value type carrying no behaviour.
+    ``domain/logs/ingest.py`` knows the log file format, this knows the schema, and
+    :class:`IngestChunk` is all that crosses between them.
     """
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
@@ -106,8 +97,7 @@ class LogIngestRepository:
         Return where ingest left off for *key*, or ``None`` if it has never been seen.
 
         ``None`` and a zero state mean the same thing to a caller about to ingest, but
-        differ to one asking whether a directory has ever been looked at, so the
-        distinction is preserved rather than collapsed into ``SessionState.unseen()``.
+        differ to one asking whether a directory has ever been looked at.
         """
         with self._connections.ro() as connection:
             row = connection.execute(
@@ -135,12 +125,9 @@ class LogIngestRepository:
         """
         Return every indexed session and how far into its messages file ingest has read.
 
-        A read on the write-side repository because a watermark *is* ingest state, and
-        this is where the other reader of it (:meth:`session_state`) already lives. The
-        whole table, unfiltered: the caller compares each offset against the live file
-        size to see how far behind the index has fallen, and a session missing from this
-        list is one the index has never seen at all -- which the caller detects by
-        walking the tree, not by asking here.
+        The whole table, unfiltered: the caller compares each offset against the live
+        file size. A session missing from this list has never been indexed at all, which
+        the caller detects by walking the tree rather than by asking here.
         """
         with self._connections.ro() as connection:
             rows = connection.execute(
@@ -162,14 +149,11 @@ class LogIngestRepository:
         """
         Forget *key* entirely, cascading its requests, so it can be ingested from zero.
 
-        Truncation recovery. A source file smaller than its own watermark was replaced
-        rather than appended to, which makes every stored offset meaningless: there is
-        no way to know which existing rows still correspond to file content, so none are
-        kept.
+        Truncation recovery: a source file smaller than its own watermark was replaced
+        rather than appended to, so no stored offset means anything any more.
 
-        Orphaned blobs are deliberately left behind. They are content-addressed, so the
-        re-ingest re-uses them rather than duplicating them, and reclaiming them is the
-        blob sweep's job.
+        Orphaned blobs are left behind -- content-addressed, so the re-ingest re-uses
+        them, and reclaiming them is the blob sweep's job.
         """
         with self._connections.rw() as connection:
             connection.execute(
@@ -182,9 +166,8 @@ class LogIngestRepository:
         """
         Apply one chunk: blobs, requests, the session summary, and both watermarks.
 
-        All in one transaction, so an interrupted ingest leaves the watermarks exactly
-        where the last complete chunk left them and the next pass resumes there. No
-        statement here is idempotent by itself -- it is the offsets that make a re-run
+        One transaction, so an interrupted ingest resumes from the last complete chunk.
+        No statement here is idempotent by itself -- it is the offsets that make a re-run
         safe, by never presenting the same lines twice.
         """
         with self._connections.rw() as connection:
@@ -193,7 +176,6 @@ class LogIngestRepository:
             self._insert_requests(connection, session_id, chunk, blob_ids)
 
     def delete_projects(self, project_hashes: Sequence[str]) -> None:
-        """Drop every session belonging to *project_hashes*, cascading their requests."""
         if not project_hashes:
             return
         with self._connections.rw() as connection:
@@ -206,21 +188,17 @@ class LogIngestRepository:
         """
         Return every session whose newest request is older than *cutoff_us*.
 
-        Dated by ``last_event_at_us`` -- the last record's own end instant -- and never
-        by ``last_ingested_at``, which says when *this host* read the session rather
-        than when it happened. A backfill stamps the whole tree with today, so dating a
-        session by it would make retention unable to expire anything until the age had
-        elapsed again since the backfill.
+        Dated by ``last_event_at_us``, never by ``last_ingested_at``: a backfill stamps
+        the whole tree with today, which would stop retention expiring anything until the
+        age had elapsed again since the backfill.
 
-        A session with no ``last_event_at_us`` at all is never returned. Every one of
-        its records lacked a timing, so there is no instant to compare, and the caller
-        deletes files: guessing an age for content that cannot be dated is the one
-        mistake here that cannot be undone.
+        A session with no ``last_event_at_us`` is never returned -- the caller deletes
+        files, and guessing an age for undatable content is the one mistake here that
+        cannot be undone.
 
-        The watermark comes back with the key because the caller needs it. Age is not
-        sufficient grounds to delete a session -- the caller also has to know that the
-        index has read the whole of its file, which is a comparison against the live
-        size and therefore not a question this layer can ask.
+        The watermark rides along because age alone is not grounds to delete: the caller
+        must also know the index read the whole file, which is a comparison against the
+        live size and so not a question this layer can ask.
         """
         with self._connections.ro() as connection:
             rows = connection.execute(
@@ -245,13 +223,9 @@ class LogIngestRepository:
         """
         Drop each named session, cascading its requests.
 
-        Per session rather than per project, which is what separates retention from
-        :meth:`delete_projects`: a project's logs are deleted whole because the project
-        itself is gone, while retention takes the old sessions out of a project that is
-        still very much alive.
-
-        Orphaned blobs are left behind exactly as :meth:`reset_session` leaves them --
-        reclaiming them is :meth:`sweep_blobs`' job, and the caller runs it next.
+        Per session rather than per project: retention takes old sessions out of a
+        project that is still alive, where :meth:`delete_projects` deletes a gone
+        project's logs whole. Orphaned blobs are left to :meth:`sweep_blobs`.
         """
         if not keys:
             return
@@ -287,23 +261,16 @@ class LogIngestRepository:
           delete the message of every failure long enough to have been interned.
 
         The textual kinds are why this runs under ``agent cleanup`` and never on a
-        timer. They are the only thing standing between a bug and deleted content, they
-        cost a decode of every reachable blob, and that is worth paying for exactly
-        when the user has asked to reclaim space.
+        timer: they cost a decode of every reachable blob, worth paying for exactly when
+        the user has asked to reclaim space.
 
-        The scan is transitive because it has to be: an interned original is itself
-        arbitrary text and may quote a pointer, so each newly reached blob joins the
-        next frontier. It terminates because every round either empties the frontier or
-        removes at least one candidate from the set.
+        The scan is transitive because an interned original is itself arbitrary text and
+        may quote a pointer. It terminates because every round either empties the
+        frontier or removes at least one candidate.
 
-        Measured on a 2.2 GB log tree: 334k blobs, of which 172k are named by a request
-        and 162k are interned strings reached only by a pointer. The whole pass takes
-        about five seconds, nearly all of it in the closure. It found 435 unreachable
-        blobs (0.15 MB) on an index with nothing deleted from it, and they are genuine:
-        ingest interns every string in ``strings.jsonl``, including the ones quoted only
-        by the parts of a record it deliberately does not store -- the request headers
-        and litellm's own ``request.body.metadata``. No stored record can ever resolve
-        those, so reclaiming them is the point rather than a surprise.
+        Measured on a 2.2 GB log tree: 334k blobs, 172k named by a request and 162k
+        interned strings reached only by a pointer; about five seconds, nearly all of it
+        in the closure.
 
         **The caller must hold the ingest lock.** The read pass and the delete are two
         transactions, and a writer landing between them could commit a request
@@ -327,14 +294,9 @@ class LogIngestRepository:
         """
         Every blob id a request row names, from all four of its reference columns.
 
-        The one place besides ``RequestRepository`` that reads ``requests`` a row at a
-        time, and it stays inside the layer: nothing here is returned, only the set of
-        ids it implies. There is no aggregate that could replace it, because the
-        references are inside a packed vector SQL cannot open -- see rule 3 in
-        ``docs/infrastructure.md``.
-
-        Streamed off the cursor rather than fetched, so the whole table's vectors are
-        never resident at once.
+        No aggregate could replace this: the references are inside a packed vector SQL
+        cannot open. Streamed off the cursor, so the whole table's vectors are never
+        resident at once.
         """
         found: set[int] = set()
         rows = connection.execute(
@@ -356,10 +318,9 @@ class LogIngestRepository:
         """
         Return ``address -> id`` for every blob no request names, as sweep candidates.
 
-        Keyed by address because that is what a ``hash:`` pointer resolves to, and the
-        pointer scan is the only thing that can still save one of these. Most of them
-        *will* be saved: an interned string is never named by a request, so on a healthy
-        index this set is roughly every string in it.
+        Keyed by address because that is what a ``hash:`` pointer resolves to. Most will
+        be saved by the pointer scan: an interned string is never named by a request, so
+        on a healthy index this set is roughly every string in it.
         """
         return {
             row["sha256"]: row["id"]
@@ -377,11 +338,9 @@ class LogIngestRepository:
         """
         Remove from *candidates* every blob a pointer in reachable text points at.
 
-        Mutates *candidates* down to the doomed set, so what remains when this returns
-        is exactly what nothing reaches. The first round scans both textual roots -- the
-        error column and the payloads of every structurally referenced blob -- and each
-        round after it scans only what the previous round reached, which is what keeps a
-        transitive closure from re-reading the whole store per round.
+        Mutates *candidates* down to the doomed set. Each round after the first scans
+        only what the previous one reached, which keeps the transitive closure from
+        re-reading the whole store per round.
         """
         frontier = cls._claim(cls._error_texts(connection), candidates)
         frontier += cls._claim(cls._blob_texts(connection, sorted(reachable)), candidates)
@@ -393,10 +352,9 @@ class LogIngestRepository:
         """
         Take out of *candidates* every blob the pointers in *texts* name, and return them.
 
-        A pointer's 64 hex characters *are* the content address, so no lookup is needed
-        to resolve one -- membership of the candidate dictionary answers it. Removing as
-        it goes is what makes the loop above terminate, and what stops a blob two
-        different texts point at being scanned twice.
+        A pointer's 64 hex characters *are* the content address, so membership of the
+        candidate dict resolves one with no lookup. Removing as it goes is what makes the
+        loop above terminate.
         """
         reached: list[int] = []
         for text in texts:
@@ -412,10 +370,8 @@ class LogIngestRepository:
         """
         Yield every request's error message, which may itself be a pointer.
 
-        Not filtered to ``LIKE 'hash:%'``: the callback hashes an exception message
-        whole, so a pointer here is the entire column today -- but a message that merely
-        *contains* one costs the same regex either way, and the failure rows are a small
-        fraction of the table.
+        Not filtered to ``LIKE 'hash:%'``: a message that merely *contains* a pointer
+        costs the same regex, and failure rows are a small fraction of the table.
         """
         for row in connection.execute("SELECT error FROM requests WHERE error IS NOT NULL"):
             yield row["error"]
@@ -425,14 +381,12 @@ class LogIngestRepository:
         """
         Yield the decoded text of each named blob, one row at a time.
 
-        Deliberately a generator over the cursor: the caller scans as it goes, and
-        materializing a batch would put hundreds of megabytes of decompressed
-        conversation in memory to answer a question about ids.
+        A generator over the cursor: materializing a batch would put hundreds of
+        megabytes of decompressed conversation in memory to answer a question about ids.
 
-        Decoded with ``errors="replace"`` for the same reason the read side is -- ingest
-        encodes with ``surrogatepass``, so a payload is not always valid UTF-8. A
-        replacement character cannot invent or destroy a pointer, which is all this
-        text is scanned for.
+        ``errors="replace"`` because ingest encodes with ``surrogatepass``, so a payload
+        is not always valid UTF-8; a replacement character cannot invent or destroy a
+        pointer, which is all this text is scanned for.
         """
         for batch in cls._batched(blob_ids):
             placeholders = ", ".join("?" * len(batch))
@@ -450,13 +404,12 @@ class LogIngestRepository:
         """
         Delete the named blobs and reclaim their pages, returning the payload bytes.
 
-        The size is measured before the delete and in the same transaction, so the
-        figure reported is the content that actually went.
+        The size is measured before the delete and in the same transaction, so the figure
+        reported is the content that actually went.
 
         ``incremental_vacuum`` is what makes the file shrink rather than merely gain a
-        free list -- the reason ``auto_vacuum = INCREMENTAL`` is set when the database
-        is created. It has to be *stepped*: the pragma is a query, and executing it
-        without draining the result frees exactly one page.
+        free list. It has to be *stepped*: the pragma is a query, and executing it without
+        draining the result frees exactly one page.
         """
         freed = 0
         for batch in cls._batched(blob_ids):
@@ -479,9 +432,8 @@ class LogIngestRepository:
         """
         Create or refresh the session row and return its id.
 
-        An upsert because a session is ingested repeatedly as it grows. The summary
-        columns are assigned rather than accumulated -- the parser reports cumulative
-        totals, so replaying a chunk cannot inflate them.
+        The summary columns are assigned rather than accumulated -- the parser reports
+        cumulative totals, so replaying a chunk cannot inflate them.
         """
         summary = chunk.summary
         row = connection.execute(
@@ -521,17 +473,13 @@ class LogIngestRepository:
         """
         Store this chunk's blobs and return a ``sha256 -> id`` map the requests can use.
 
-        ``DO NOTHING`` because the blob store is a *set*: re-observing content is the
-        normal case, not a conflict. That makes ``RETURNING`` useless for rows that
-        already existed, so the ids are read back in a second pass rather than inferred
-        from the insert.
+        ``DO NOTHING`` because the blob store is a *set*, which makes ``RETURNING``
+        useless for rows that already existed -- so the ids are read back in a second pass.
 
-        The map is keyed on every address the chunk *references*, which is deliberately
-        wider than the blobs it *carries*. A session is split into chunks but its content
-        is deduplicated across the whole pass, so a later chunk routinely references a
-        blob an earlier chunk already committed and does not carry it again. Resolving
-        only the carried blobs would raise on exactly the sessions big enough to be
-        chunked.
+        The map is keyed on every address the chunk *references*, which is wider than
+        what it *carries*: content is deduplicated across the whole pass, so a later
+        chunk routinely references a blob an earlier one committed. Resolving only the
+        carried blobs would raise on exactly the sessions big enough to be chunked.
         """
         if chunk.blobs:
             connection.executemany(
@@ -579,10 +527,9 @@ class LogIngestRepository:
         """
         Split *values* into slices that fit SQLite's bound-parameter limit.
 
-        Addresses on the write path, blob ids on the sweep path -- both are bound into
-        an ``IN`` list, and both come in counts that make an unbounded one eventually
-        raise on a real host rather than in a test. A chunk of 200 records references
-        several thousand distinct blobs; a sweep names every row in the store.
+        A chunk of 200 records references several thousand distinct blobs, and a sweep
+        names every row in the store -- an unbounded ``IN`` list would raise on a real
+        host rather than in a test.
         """
         for start in range(0, len(values), MAX_QUERY_PARAMETERS):
             yield values[start : start + MAX_QUERY_PARAMETERS]

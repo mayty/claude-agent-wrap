@@ -165,9 +165,6 @@ def test_stop_daemon_permission_error_propagates(mocker: MockerFixture, logs_svc
         logs_svc.stop_daemon()
 
 
-# --- viewer_state (read-only counterpart of running_server) ---
-
-
 def test_viewer_state_running_when_pid_alive(mocker: MockerFixture, logs_svc: LogsService) -> None:
     write_state(pid=4242, port=9001)
     mocker.patch("agent_wrap.domain.logs.service.pid_alive", return_value=True, autospec=True)

@@ -34,13 +34,10 @@ def _api_key_approval_id(key: str) -> str:
 
 
 def _claude_json_path() -> Path:
-    """Resolve the global .claude.json file path."""
     return GLOBAL_CONFIG_DIR / ".claude.json"
 
 
 class MasterKeyApprovalMixin:
-    """Approve/un-approve the sidecar master key in the global ``.claude.json``."""
-
     def _load_claude_json(self) -> dict[str, Any] | None:
         """Load .claude.json, returning {} if missing/empty or None on malformed JSON."""
         path = _claude_json_path()
@@ -55,11 +52,9 @@ class MasterKeyApprovalMixin:
             return None
 
     def _save_claude_json(self, data: dict[str, Any]) -> None:
-        """Atomically write .claude.json."""
         atomic_write_json(_claude_json_path(), data)
 
     def _approve_master_key(self, key: str) -> None:
-        """Add the current master key's approval id to .claude.json."""
         data = self._load_claude_json()
         if data is None:
             return
@@ -72,7 +67,6 @@ class MasterKeyApprovalMixin:
             self._save_claude_json(data)
 
     def _unapprove_master_key(self, key: str) -> None:
-        """Remove the current master key's approval id from .claude.json."""
         data = self._load_claude_json()
         if data is None:
             return

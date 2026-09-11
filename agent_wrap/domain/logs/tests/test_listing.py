@@ -4,8 +4,7 @@ Tests for collapsing indexed session rows into the lists the viewer renders.
 
 One row per session *directory* goes in; one entry per session the user recognizes comes
 out. The rules that matter are the merge across providers and across the member projects
-of a grouped transient project, and the fingerprint the browser polls -- all of which
-used to be a walk of the log tree and a ``stat()`` of every record file in it.
+of a grouped transient project, and the fingerprint the browser polls.
 """
 
 from agent_wrap.domain.logs.listing import fingerprint, merge_sessions, rows_by_hash
@@ -82,8 +81,8 @@ def test_a_session_shared_by_two_group_members_is_counted_once() -> None:
     """
     Two hashes, one session: a grouped transient project whose members share a session.
 
-    This is the double-count the viewer's session number used to disagree with its own
-    drill-down over -- the rows are per directory, and the entry is per session.
+    The rows are per directory and the entry is per session, so counting rows would
+    double-count this one.
     """
     rows = [
         _row(project_hash="hashA", record_count=2),
@@ -157,7 +156,7 @@ def test_a_session_with_no_records_is_not_listed() -> None:
     Ingest writes a row for a session whose only new content was interned strings.
 
     Listing it would put an entry in the sidebar that opens to nothing, which is the
-    same reason the file scan this replaces skipped a session directory it found no
+    same reason a scan skips a session directory in which it finds no
     parseable record in.
     """
     assert merge_sessions([_row(record_count=0)]) == []

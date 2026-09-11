@@ -77,7 +77,6 @@ def test_json_safe_string_long_with_hasher() -> None:
 
 
 def test_json_safe_dict_keys_as_strings() -> None:
-    """Non-string dict keys are converted to strings."""
     result = json_safe({1: "one", 2: "two"})
     assert result == {"1": "one", "2": "two"}
     assert all(isinstance(k, str) for k in result)
@@ -103,21 +102,18 @@ def test_json_safe_list() -> None:
 
 
 def test_json_safe_tuple() -> None:
-    """Tuple is converted to a list for JSON compatibility."""
     result = json_safe((1, 2, 3))
     assert result == [1, 2, 3]
     assert isinstance(result, list)
 
 
 def test_json_safe_set() -> None:
-    """Set is converted to a list for JSON compatibility."""
     result = json_safe({3, 1, 2})
     assert sorted(result) == [1, 2, 3]
     assert isinstance(result, list)
 
 
 def test_json_safe_model_dump_method() -> None:
-    """Object with model_dump() is serialized via that method."""
 
     class WithModelDump:
         def model_dump(self) -> dict[str, object]:
@@ -139,7 +135,6 @@ def test_json_safe_dict_method() -> None:
 
 
 def test_json_safe_model_dump_preferred_over_dict() -> None:
-    """model_dump() is preferred over dict() when both exist."""
 
     class Both:
         def model_dump(self) -> dict[str, object]:

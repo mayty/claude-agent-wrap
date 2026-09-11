@@ -15,12 +15,8 @@ if TYPE_CHECKING:
 
 
 class Spinner:
-    """Animated, label-prefixed stderr spinner."""
-
     def __init__(self, label: str) -> None:
         self._label = label
-
-    # -- internal helpers --
 
     def _frame(self, frames: tuple[str, ...], n: int, message: str) -> str:
         glyph = frames[n % len(frames)]
@@ -42,8 +38,6 @@ class Spinner:
         if done_message is None or isinstance(done_message, str):
             return done_message
         return done_message(result)
-
-    # -- public --
 
     def spin_while[T](
         self,
@@ -107,7 +101,6 @@ class Spinner:
         timeout: float,
         poll_interval: float = 0.5,
     ) -> bool:
-        """Poll until *poll* reports SUCCESS/FAILURE or *timeout* seconds elapse."""
         deadline = time.monotonic() + timeout
         if not sys.stderr.isatty():
             return self._poll_quiet(poll, deadline, poll_interval)

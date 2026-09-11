@@ -144,7 +144,6 @@ class RequestRepository:
         return found
 
     def blob_texts(self, blob_ids: Collection[int]) -> dict[int, str]:
-        """Return the decoded text of each blob named by id, keyed by id."""
         return dict(self._texts("id", blob_ids))
 
     def string_texts(self, addresses: Collection[bytes]) -> dict[bytes, str]:

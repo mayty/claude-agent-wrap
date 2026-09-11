@@ -76,8 +76,6 @@ if TYPE_CHECKING:
 
 
 class LogsService:
-    """Facade for the logs viewer subsystem."""
-
     def __init__(  # noqa: PLR0913, PLR0917 -- four collaborators and three repositories
         self,
         pricing_service: PricingService,
@@ -96,26 +94,14 @@ class LogsService:
         self._sessions = log_session_repository
         self._requests = log_request_repository
 
-    # Ingest ----------------------------------------------------------
-
     def index_lag(self) -> IndexLag:
         """
         Report how far behind the log files the index is, without reading one.
 
-        Two filesystem questions and no parse: has an indexed session's messages file
-        grown past the offset ingest recorded, and are there session directories the
-        index has never seen? Both are answered with ``stat()`` and the same three-level
-        walk ingest uses, which is why ``agent stats`` can report staleness while still
-        never opening a log file.
-
-        A session whose file has *shrunk* counts as behind too. It was replaced rather
-        than appended to, so the index holds records that no longer exist -- and
-        ``agent reindex`` is the fix for that as well, since it re-reads a truncated
-        session from zero.
-
-        This lives in the logs domain rather than in stats because it is a question
-        about the log tree and the ingest watermarks, both of which are this domain's.
-        ``agent stats`` asks for the number and prints it.
+        Answered with ``stat()`` alone, which is why ``agent stats`` can report staleness
+        while never opening a log file. A session whose file has *shrunk* counts as
+        behind too: it was replaced rather than appended to, so the index holds records
+        that no longer exist.
         """
         behind = 0
         indexed = self._ingest.watermarks()
@@ -139,15 +125,12 @@ class LogsService:
         """
         Bring the logs database up to date with the whole log tree, once.
 
-        Returns ``None`` — and does nothing at all — when another process holds the
-        ingest lock. That is not a failure to retry here: the holder is either the
-        viewer daemon or another ``agent reindex``, and either way it is already doing
-        exactly this work. The caller decides how to report it.
+        ``None`` -- and no work at all -- when another process holds the ingest lock.
+        Not a failure to retry: the holder is already doing exactly this work.
 
-        The lock is host-wide rather than per session because the writes are: every
-        chunk goes through one ``rw()`` transaction on one database file, so two
-        concurrent passes would contend on SQLite instead of on this, and do it after
-        having already paid for the parsing.
+        The lock is host-wide rather than per session because the writes are. Two
+        concurrent passes would otherwise contend on SQLite, after having already paid
+        for the parsing.
         """
         lock_path = AGENT_LAUNCHES_DIR / INGEST_LOCK_NAME
         with try_file_lock(lock_path) as acquired:
@@ -156,7 +139,6 @@ class LogsService:
             return self._ingest_tree_locked()
 
     def _ingest_tree_locked(self) -> IngestReport:
-        """Walk every session in the tree and ingest what each one has gained."""
         changed = 0
         reset = 0
         records = 0
@@ -187,9 +169,8 @@ class LogsService:
         """
         Ingest whatever *session_dir* has gained since its stored watermarks.
 
-        Returns a single-session report so the caller only has to sum. Truncation is
-        handled first and by forgetting the session outright: both files are strictly
-        append-only, so a file shorter than its own watermark was replaced, and no
+        Truncation is handled first, by forgetting the session outright: both files are
+        strictly append-only, so a file shorter than its watermark was replaced and no
         stored offset means anything after that.
         """
         state = self._ingest.session_state(key)
@@ -219,23 +200,18 @@ class LogsService:
             failed=(),
         )
 
-    # Retention and reclaim -------------------------------------------
-
     @staticmethod
     def retention_days() -> int:
         """
         Return ``AGENT_LOGS_RETENTION_DAYS``, or 0 when retention is switched off.
 
-        Read here rather than at import, unlike every other ``AGENT_*`` value in this
-        codebase, because this one decides whether files get deleted: the value that
-        should govern a run is the one exported for that run, not whichever was in the
-        environment when some module first happened to be imported.
+        Read here rather than at import, unlike every other ``AGENT_*`` value, because
+        this one decides whether files get deleted: the value that governs a run must be
+        the one exported for that run.
 
-        Unset, empty and 0 all mean off. A negative or malformed value raises, on the
-        same reasoning as ``AGENT_DAY_START_UTC``: it can only be a mistake, and the
-        mistake to avoid is silently substituting a default for a setting that deletes
-        things. The message names the variable, because a bare ``int()`` failure two
-        frames down does not say which of the ``AGENT_*`` values was mistyped.
+        Unset, empty and 0 all mean off. A negative or malformed value raises rather than
+        falling back to a default -- silently substituting one for a setting that deletes
+        things is the mistake to avoid.
         """
         raw = os.environ.get(RETENTION_DAYS_ENV, "").strip()
         if not raw:
@@ -253,22 +229,17 @@ class LogsService:
         """
         Survey the session directories retention would delete, deleting nothing.
 
-        Two filters, and the second is the one that matters. Age comes from the index:
-        a session is a candidate when its newest request is older than the cutoff. But
-        a candidate is only deletable when the index has read the whole of its
-        ``messages.jsonl`` -- because retention deletes the log files along with the
-        rows, and a file with unread bytes at the end holds requests no consumer has
-        ever seen. Comparing the live size against the stored watermark is a ``stat()``,
-        not a read, so this stays on the right side of the rule that only the ingester
-        opens a log file.
+        Age makes a session a candidate; only a session the index has read *to the end*
+        is deletable. Retention deletes the log files along with the rows, and a file
+        with unread bytes at the end holds requests no consumer has ever seen. The
+        comparison is a ``stat()``, not a read, so only the ingester still opens a log
+        file.
 
-        A session whose file cannot be stat'd at all is left alone rather than assumed
-        gone. Retention's contract is that it removes a session's files and its rows
-        together; a directory that has already been deleted by hand is not that, and
-        reconciling one is ``agent cleanup``'s business.
+        A session whose file cannot be stat'd is left alone rather than assumed gone:
+        reconciling a hand-deleted directory is ``agent cleanup``'s business.
 
-        Sizes are measured now, over exactly the directories the run will be handed, so
-        the preview a user confirms describes the run that follows.
+        Sizes are measured over exactly the directories the run will be handed, so the
+        preview a user confirms describes the run that follows.
         """
         days = self.retention_days()
         if not days:
@@ -294,24 +265,17 @@ class LogsService:
         """
         Apply *scope*'s retention and then sweep the blobs, under one ingest lock.
 
-        One method rather than two because the two are one order: retention deletes the
-        session rows, and the sweep is the only thing that reclaims the content those
-        rows were the last reference to. Called the other way round, retention would
-        free log-tree bytes and nothing at all inside the database until the next run.
+        One method because the two are one order: retention deletes the session rows, and
+        the sweep is the only thing that reclaims the content those rows were the last
+        reference to. Reversed, retention would free log-tree bytes and nothing inside
+        the database until the next run.
 
-        ``None`` when another process holds the ingest lock, exactly as
-        :meth:`ingest_tree` reports it -- and for a sharper reason here. The sweep
-        decides what is unreachable in one pass and deletes it in another, so an ingest
-        committing between the two could leave a request pointing at content that has
-        just been deleted. The lock every writer of this database already takes is what
-        excludes that; it is also what stops a pass from deleting the files another
-        pass is halfway through reading.
+        ``None`` when another process holds the ingest lock. The sweep decides what is
+        unreachable in one pass and deletes it in another, so an ingest committing
+        between the two could leave a request pointing at just-deleted content.
 
-        Called by ``agent cleanup`` and ``agent reindex --prune``, and by nothing else.
-        Deciding what is unreachable costs a decode of every blob a request still points
-        at, because the pointers that reach an interned string live inside those
-        payloads and no SQL can see them -- which is a price worth paying when the user
-        has asked to reclaim space, and never one to pay on a timer.
+        Never run on a timer: deciding what is unreachable costs a decode of every blob
+        a request still points at.
         """
         lock_path = AGENT_LAUNCHES_DIR / INGEST_LOCK_NAME
         with try_file_lock(lock_path) as acquired:
@@ -325,16 +289,14 @@ class LogsService:
         """
         Delete each expired session's directory, then forget the ones that went.
 
-        The same order and the same reasoning as ``agent cleanup``'s orphan delete: the
-        directory first, its row second, and the row only for a directory whose removal
-        actually succeeded. A failed ``rmtree`` leaves a session purely live -- still
-        indexed, still readable, and still expired next time -- while dropping the row
-        first would blank a session's spend while its files sat waiting to be re-read.
+        Directory first, row second, and the row only where the removal succeeded. A
+        failed ``rmtree`` then leaves the session purely live -- still indexed, still
+        expired next time -- where dropping the row first would blank its spend while
+        the files sat waiting to be re-read.
 
-        The watermark check is repeated here, under the lock, rather than trusted from
-        the survey. It is one ``stat()`` per directory and it is what makes "retention
-        never deletes an unread request" a property of the delete instead of an
-        observation someone made a few seconds earlier.
+        The watermark check is repeated here under the lock rather than trusted from the
+        survey: one ``stat()`` per directory is what makes "retention never deletes an
+        unread request" a property of the delete rather than of an earlier observation.
         """
         freed = 0
         deleted: list[SessionKey] = []
@@ -357,9 +319,8 @@ class LogsService:
         """
         Report whether the index has read *session_dir*'s records file to its end.
 
-        False for a file that cannot be stat'd, which folds "gone" and "unreadable" in
-        with "not fully read". All three mean the same thing to the only caller: this
-        is not a session retention may delete.
+        False for a file that cannot be stat'd: "gone", "unreadable" and "not fully read"
+        all mean the same thing to the only caller.
         """
         try:
             return LogFiles.messages(session_dir).stat().st_size == messages_offset
@@ -371,10 +332,8 @@ class LogsService:
         """
         Remove the provider and project directories a deleted session leaves empty.
 
-        Walks up as far as the log root and no further. ``rmdir`` refuses a directory
-        that still holds anything, so a project with sessions left keeps its directory
-        and the walk stops there -- the refusal is the test, and there is no separate
-        emptiness check to race against.
+        ``rmdir``'s refusal *is* the emptiness test, so there is no separate check to
+        race against. Walks up as far as the log root and no further.
         """
         root = TOOL_DIR / LITELLM_LOGS_DIRNAME
         while directory != root and root in directory.parents:
@@ -384,25 +343,19 @@ class LogsService:
                 return
             directory = directory.parent
 
-    # Daemon lifecycle -------------------------------------------------
-
     def connect_line(self, port: int) -> str:
-        """Return the connect line printed to the terminal."""
         return f"LiteLLM log viewer running at http://127.0.0.1:{port}"
 
     def install_location_warning(self) -> str | None:
         """
         Return a warning when the wrapper sits where filesystem events never arrive.
 
-        The viewer learns about new requests from inotify, and inotify on a Windows
-        drive under WSL2 or on a network share accepts a watch and then delivers
-        nothing -- silently, with no error to catch. It cannot be probed for, so the
-        install location is checked instead.
+        inotify on a Windows drive under WSL2 or on a network share accepts a watch and
+        then delivers nothing, silently and with no error to catch. It cannot be probed
+        for, so the install location is checked instead.
 
         Only the wrapper's own location matters: every sidecar writes into
-        ``TOOL_DIR/litellm-logs``, so a *project* on such a filesystem is served
-        perfectly well. None means either a filesystem that works or -- off Linux --
-        no way to tell, and both are reported the same way, by saying nothing.
+        ``TOOL_DIR/litellm-logs``, so a *project* on such a filesystem is served fine.
         """
         fs_type = filesystem_type(TOOL_DIR)
         if fs_type is None or fs_type not in EVENTLESS_FILESYSTEMS:
@@ -420,7 +373,7 @@ class LogsService:
         Return the line printed for a viewer that is claimed but not yet listening.
 
         The port is hedged rather than stated: a starting viewer has not reached
-        ``bind_port`` yet, and that scans upward if the requested port is taken.
+        ``bind_port``, which scans upward if the requested port is taken.
         """
         return (
             f"LiteLLM log viewer is starting; it will serve at "
@@ -431,9 +384,9 @@ class LogsService:
         """
         Return the state of the viewer that holds this host, or None when none does.
 
-        "Holds" covers a viewer that has been claimed but is not listening yet -- check
-        ``starting`` on the result to tell the two apart. Callers use this to decide
-        whether to spawn, and a claim is exactly as good a reason not to as a bound port.
+        "Holds" covers a claimed viewer that is not listening yet -- check ``starting``
+        to tell them apart. For a caller deciding whether to spawn, a claim is as good a
+        reason not to as a bound port.
         """
         state = read_state()
         if state is None:
@@ -450,11 +403,9 @@ class LogsService:
         """
         Report the viewer's status without repairing anything.
 
-        The read-only counterpart to :meth:`running_server`, which unlinks the state
-        file when its pid is dead — correct on the launch path (so the port stops
-        looking taken), wrong for a reporting caller that must not delete state it only
-        looked at. The logfile's size and mtime come along because they are the cheapest
-        way to tell a healthy viewer from one crash-looping.
+        The read-only counterpart to :meth:`running_server`, which unlinks a dead pid's
+        state file -- right on the launch path, wrong for a caller that only looked. The
+        logfile's size and mtime tell a healthy viewer from one crash-looping.
         """
         state = read_state()
         log_path = state_dir() / LOG_FILE_NAME
@@ -538,12 +489,9 @@ class LogsService:
         """
         Start a detached viewer without waiting for it to become ready.
 
-        The `agent run` path. Idempotent -- a viewer already running or already coming up
-        is adopted -- and deliberately without a teardown counterpart: the viewer is a
-        host-level singleton that outlives whichever agent happened to start it.
-
-        Returns whether a viewer is running or on its way. Failure is reported rather
-        than raised: the caller is a launch that must proceed regardless.
+        Idempotent, and deliberately without a teardown counterpart: the viewer is a
+        host-level singleton that outlives whichever agent started it. Failure is
+        reported rather than raised -- the caller is a launch that must proceed anyway.
         """
         try:
             return self._claim_or_spawn(LOGS_DEFAULT_PORT) is not None
@@ -551,7 +499,6 @@ class LogsService:
             return False
 
     def spawn_background(self, port: int) -> int:
-        """Spawn a detached viewer and wait for it to start listening."""
         port = port or LOGS_DEFAULT_PORT
         location_warning = self.install_location_warning()
         if location_warning is not None:
@@ -608,13 +555,9 @@ class LogsService:
         """
         Return the viewer that is up or coming up, spawning one under the lock if none is.
 
-        The lock is what makes this safe to call concurrently: reading the state and
-        acting on it is one critical section, so two launchers cannot both conclude that
-        nothing is running and each start a viewer. It also keeps
-        :meth:`running_server`'s repair of a stale state file from racing a fresh claim.
-
-        None means the spawn produced no claim -- the caller decides whether that is an
-        error or a warning.
+        Reading the state and acting on it is one critical section, so two launchers
+        cannot both conclude nothing is running and each start a viewer -- and
+        :meth:`running_server`'s repair of a stale state file cannot race a fresh claim.
         """
         with file_lock(state_dir() / SPAWN_LOCK_NAME, timeout=SPAWN_LOCK_TIMEOUT_SEC):
             existing = self.running_server()
@@ -627,16 +570,13 @@ class LogsService:
         """
         Start the viewer through an intermediate fork, and claim the state file for it.
 
-        The intermediate exists to hand the viewer off to init. Spawning it directly from
-        a caller that then lives for hours -- `agent run` -- would leave a zombie for the
-        rest of that run every time the viewer exited first, because nobody would ever
-        wait on it. Forking first means the viewer's parent dies immediately, so the
-        viewer is reparented to init and reaped there, while this process waits only on
-        the intermediate and does so within a millisecond.
+        The intermediate hands the viewer off to init. Spawning it directly from a caller
+        that lives for hours -- `agent run` -- would leave a zombie for the rest of that
+        run whenever the viewer exited first, since nobody would wait on it.
 
-        The intermediate also writes the claim, because it is the only side that learns
-        the viewer's pid. That keeps the claim inside the caller's lock: ``waitpid``
-        returns only after the state file is on disk.
+        The intermediate also writes the claim, being the only side that learns the
+        viewer's pid. That keeps the claim inside the caller's lock: ``waitpid`` returns
+        only after the state file is on disk.
         """
         # Honour an already-set tool dir env (e.g. from test wrappers) so the child
         # resolves the same state file as the parent. Otherwise default to TOOL_DIR.
@@ -671,7 +611,6 @@ class LogsService:
         os.waitpid(pid, 0)
 
     def stop_daemon(self) -> int:
-        """Stop a running background viewer, if any."""
         state = self.running_server()
         if state is None:
             self._display.info("no viewer is running")

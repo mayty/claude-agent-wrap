@@ -5,7 +5,7 @@ These environment variables affect wrapper behavior, not the container's environ
 
 ## `AGENT_PROVIDER` (model-routing backend)
 
-Selects which provider plugin to use. Each provider lives in `agent_wrap/domain/providers/<name>/provider.py` and implements the [Provider ABC](../agent_wrap/domain/providers/base.py). The default is `litellm-bedrock`, preserving historical behavior.
+Selects which provider plugin to use. Each provider lives in `agent_wrap/domain/providers/<name>/provider.py` and implements the [Provider ABC](../agent_wrap/domain/providers/base.py). The default is `litellm-bedrock`.
 
 ```sh
 # Use the default LiteLLM-Bedrock provider (no var needed)

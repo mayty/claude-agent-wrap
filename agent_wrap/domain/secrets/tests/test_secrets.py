@@ -671,9 +671,6 @@ def test_migrate_bedrock_empty_falls_back_to_ssc(
     }
 
 
-# --- missing_keys_by_sidecar (read-only reporting probe) ---
-
-
 @pytest.fixture
 def reporting_svc(
     secrets_paths: tuple[Any, ...],  # noqa: ARG001

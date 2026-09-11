@@ -49,8 +49,6 @@ from agent_wrap.lib.docker_utils import parse_docker_timestamp
 
 
 class ContainerParsing:
-    """Field-level parsers shared by the sidecar and agent row builders."""
-
     @staticmethod
     def json_object(raw: str) -> dict[str, object]:
         """Parse a ``{{json}}`` field expected to be an object; {} on anything else."""
@@ -166,8 +164,6 @@ class ContainerParsing:
 
 
 class ContainerRows:
-    """Builders turning one inspect line into a report model."""
-
     @staticmethod
     def sidecar_role(name: str) -> str:
         """Classify a sidecar container by name: Telegram is the one singleton."""
@@ -203,7 +199,6 @@ class ContainerRows:
 
     @staticmethod
     def sidecar(line: str) -> SidecarContainer | None:
-        """Build a :class:`SidecarContainer` from one inspect line; None if malformed."""
         fields = line.split(INSPECT_FIELD_SEP)
         if len(fields) < SIDECAR_FIELD_COUNT:
             return None
@@ -257,7 +252,6 @@ class ContainerRows:
 
     @staticmethod
     def agent(line: str, sidecars_by_instance: dict[str, list[str]]) -> AgentContainer | None:
-        """Build an :class:`AgentContainer` from one inspect line; None if malformed."""
         fields = line.split(INSPECT_FIELD_SEP)
         if len(fields) < AGENT_FIELD_COUNT:
             return None

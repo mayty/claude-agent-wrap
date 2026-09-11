@@ -456,7 +456,6 @@ def test_build_record_failure_does_not_recover_or_mark() -> None:
 
 
 def test_build_record_hashes_long_strings() -> None:
-    """Test that build_record hashes long strings in the output."""
     long_string = "e" * 100
     kwargs = {
         "model": "bedrock/claude",
@@ -482,7 +481,6 @@ def test_build_record_hashes_long_strings() -> None:
 
 
 def test_build_record_leaves_short_strings_unchanged() -> None:
-    """Test that build_record leaves short strings unchanged."""
     short_string = "short"
     kwargs = {
         "model": "bedrock/claude",
@@ -941,10 +939,9 @@ def test_post_call_failure_hook_writes_no_metadata_file(tmp_path: Path) -> None:
     """
     The callback writes records and interned strings, and nothing else.
 
-    ``meta.json`` used to be written beside them -- a per-session cache of five fields
-    the request index now stores as columns. It has no reader left, and writing it into
-    the tree the viewer watches is what forced the watcher to filter its own writes back
-    out. The record itself is asserted elsewhere; what matters here is the absence.
+    Anything else written into the tree the viewer watches would force the watcher to
+    filter its own writes back out. The record itself is asserted elsewhere; what matters
+    here is the absence.
     """
     mod = _load_callback_with_stub_litellm(tmp_path)
     request_data = {

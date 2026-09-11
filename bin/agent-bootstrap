@@ -16,44 +16,34 @@
 #   current                             one line: the interpreter slug
 #   current-venv                        one line: the venv bin/agent should exec
 #
-# Except under --dev (below), the venv is named for the interpreter pin AND the
-# SHA-256 of the constraints file it was built from, so a dependency change
-# produces a new directory rather than mutating the live one. That is what makes
-# `agent update` safe: the swap is a single atomic rename of `current-venv`.
+# Except under --dev, the venv is named for the interpreter pin AND the SHA-256 of the
+# constraints file it was built from, so a dependency change produces a new directory
+# rather than mutating the live one. That is what makes `agent update` safe: the swap is
+# a single atomic rename of `current-venv`.
 #
 # Both pointers are plain text files rather than symlinks on purpose. Replacing a
-# symlink-to-directory in POSIX sh is not portable -- `mv -f newlink oldlink`
-# moves the new link *inside* the target directory on both GNU and BSD, and the
-# fix (`mv -T`) does not exist on macOS. `mv tmp current` onto a regular file is
-# a true atomic rename(2) everywhere.
+# symlink-to-directory in POSIX sh is not portable -- `mv -f newlink oldlink` moves the
+# new link *inside* the target directory on GNU and BSD alike, and the fix (`mv -T`) does
+# not exist on macOS. `mv tmp current` onto a regular file is a true atomic rename(2)
+# everywhere.
 #
-# Nothing on that path is ever mutated in place and nothing is ever pruned: a logs
-# daemon started under an older interpreter keeps running from its own tree. To
-# reclaim the space, remove the whole tree and re-run:
+# Nothing is ever mutated in place or pruned: a logs daemon started under an older
+# interpreter keeps running from its own tree. To reclaim the space:
 #   rm -rf .python && bin/agent-bootstrap
 #
-# Without --dev, dev tooling is NOT installed: the default build is exactly the
-# runtime the shipped CLI needs, installed by pip from the hash-pinned constraints,
-# and it requires no uv. That is the path end users get and the one `agent update`
-# re-provisions with.
+# Without --dev, dev tooling is NOT installed -- pip against the hash-pinned constraints,
+# no uv required. That is the end-user path and the one `agent update` re-provisions with.
 #
-# --dev is the contributor build (`make install`), and it hands the whole dependency
-# question to `uv sync --locked`, which installs the prod dependencies AND the dev
-# group out of uv.lock -- the same lock bin/requirements.txt is exported from. So the
-# pip step above is skipped entirely rather than run first and then synced over.
-# Its venv is named for the interpreter alone, with no content hash: what a hash
-# would gate, `uv sync` decides for itself on every run, including a dev-group bump
-# that left bin/requirements.txt untouched. That also means this one venv is synced
-# in place rather than published under a new name -- the atomic-swap guarantee below
-# is for the venvs `agent` itself runs on, and nothing on that path passes --dev.
+# --dev is the contributor build (`make install`), handing the whole dependency question
+# to `uv sync --locked`, so the pip step is skipped rather than run and then synced over.
+# Its venv is named for the interpreter alone, with no content hash: what a hash would
+# gate, `uv sync` decides for itself every run. That venv is therefore synced in place --
+# the atomic-swap guarantee is for the venvs `agent` itself runs on, and nothing on that
+# path passes --dev.
 #
-# Every run says what it resolved and why it is (or is not) doing work, prints each
-# external command before running it, and leaves that command's own output unmuted --
-# a provisioning run is meant to be watchable rather than a silent pause on a 34MB
-# download. Progress goes to stdout and fatal errors to stderr, which is the split
-# bin/agent relies on when it provisions on demand. The one thing deliberately kept
-# quiet is tar: the archive holds a few thousand files and listing them would bury
-# every other line of the run.
+# Progress goes to stdout and fatal errors to stderr, which is the split bin/agent relies
+# on when it provisions on demand. tar is deliberately kept quiet: the archive holds a few
+# thousand files and listing them would bury every other line of the run.
 #
 # Usage: agent-bootstrap [--force] [--dev]
 #   --force  provision even when the pin is already satisfied
@@ -84,9 +74,9 @@ note() {
     printf 'agent-bootstrap: %s\n' "$*"
 }
 
-# Trace a command, then run it. On stdout, like note, so the two stay in one stream;
-# each printf is a single write with nothing buffered between commands, so a traced
-# line always lands immediately before the output of the command it names.
+# Trace a command, then run it. On stdout, like note, so the two stay in one stream; each
+# printf is a single write, so a traced line always lands immediately before the output of
+# the command it names.
 #
 # "$*" joins the arguments with spaces and does not re-quote them: exact for the paths
 # this script builds, indicative for anything a caller staged under a name with spaces
@@ -150,7 +140,7 @@ if [ "$dev" -eq 1 ]; then
     [ -f "$wrap_dir/uv.lock" ] || die "missing lock file: $wrap_dir/uv.lock"
 fi
 
-# --- target resolution ------------------------------------------------------
+# target resolution
 # The arch name is per-OS, not universal: Linux reports aarch64 where macOS
 # reports arm64, and both map to the same python-build-standalone target.
 os=$(uname -s)
@@ -183,7 +173,7 @@ sha_var="SHA256_$(printf '%s' "$target" | tr - _)"
 eval "want_sha=\${$sha_var:-}"
 [ -n "$want_sha" ] || die "python-pin.env carries no hash for $target ($sha_var)"
 
-# --- tool probes ------------------------------------------------------------
+# tool probes
 # Above pin_satisfied, not below it: the fast path now hashes the constraints file,
 # so sha256_of has to exist before the first check. The extra cost is one fork on a
 # small text file. bin/agent never calls this script, so nothing on the TAB-completion
@@ -215,7 +205,7 @@ fetch() {
 
 command -v tar >/dev/null 2>&1 || die "tar not found"
 
-# --- venv identity ----------------------------------------------------------
+# venv identity
 # Content-addressed by the constraints file. A dependency change lands as a new
 # directory, so the previous venv stays intact and usable until the pointer moves.
 #
@@ -297,7 +287,7 @@ if pin_satisfied; then
 fi
 note "provisioning: $unsatisfied"
 
-# --- lock -------------------------------------------------------------------
+# lock
 # mkdir, not flock: macOS ships no flock(1). The pid file is what makes a lock
 # left behind by a SIGKILL recoverable -- the startup-script path can kill this
 # script's whole process group, and a lock nobody can break would wedge every
@@ -332,7 +322,7 @@ cleanup() {
 trap cleanup EXIT INT TERM HUP
 mkdir -p "$tmp"
 
-# --- fetch, verify, extract ---------------------------------------------------
+# fetch, verify, extract
 # All three are skipped when the tree is already in place, because pin_satisfied now
 # also fails for a constraints-only change -- and re-downloading 34MB of CPython to
 # rebuild a venv would be a pointless tax on every dependency bump.
@@ -373,7 +363,7 @@ fi
 run "$tree/bin/python3" -V \
     || die "the extracted interpreter does not run on this host"
 
-# --- publish the interpreter -------------------------------------------------
+# publish the interpreter
 # Before the venv, deliberately. This pointer says which tree is verified and in
 # place; the venv below is built against it and published separately. Written
 # unconditionally -- it is cheap, and it repairs a pointer lost while its tree survived.
@@ -388,7 +378,7 @@ mv "$tmp/current" "$prefix/current"
 [ "$extracted" -eq 0 ] || note "CPython $AGENT_PY_VERSION ready at $tree"
 note "published current -> $slug"
 
-# --- dependencies -------------------------------------------------------------
+# dependencies
 # Built under $tmp and renamed, so a partially installed venv is never visible under
 # its final name. Only the exported constraints are installed -- never the project
 # itself, which would put a second copy of agent_wrap in site-packages for PYTHONPATH
@@ -460,7 +450,7 @@ elif [ ! -x "$venv/bin/python3" ]; then
     mv "$tmp/venv" "$venv"
 fi
 
-# --- publish the venv ---------------------------------------------------------
+# publish the venv
 # Last, and atomically. Until this rename lands, `current-venv` still names the
 # previous venv -- so a failed dependency install leaves the CLI running on the old
 # dependency set rather than leaving it with none at all. On a first-ever run there

@@ -18,8 +18,6 @@ if TYPE_CHECKING:
 
 
 class ModelKeyMatcher:
-    """Model-key prefix matching for pricing table lookups."""
-
     @staticmethod
     def best_prefix_key(query: str, keys: Iterable[str]) -> str | None:
         """
@@ -44,8 +42,6 @@ class ModelKeyMatcher:
 
 
 class CostComputer:
-    """Token cost computation from tiered pricing data."""
-
     @staticmethod
     def cost_for_tiers(
         tiers: list[Tier],

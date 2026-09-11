@@ -2,29 +2,20 @@
 """
 Filesystem-event trigger for the logs cache.
 
-Replaces the interval poll the cache used to run on. Two watches cover everything the
-viewer reads: one recursive watch on the shared log tree, where every sidecar writes
-its request records, and one non-recursive watch on the launches directory for the
-project registry.
+The recursive watch on the *central* tree is not merely convenient, it is the only
+correct scope. Each project's ``.claude/litellm-logs`` is a symlink into that tree, and
+inotify watches inodes -- so a write is seen whichever symlinked path a reader would
+have used. Scheduling the per-project paths would watch nothing at all, because
+watchdog's recursive scheduling walks with ``os.walk``, which does not follow symlinks.
 
-The recursive watch on the central tree is not merely convenient, it is the only
-correct scope. Each project's ``.claude/litellm-logs`` is a *symlink* into that tree
-(``ConfigService.link_litellm_logs``), and inotify watches inodes -- so a write is
-seen no matter which symlinked path a reader would have used to reach it. Scheduling
-the per-project paths instead would watch nothing at all, because watchdog's recursive
-scheduling walks with ``os.walk``, which does not follow symlinks.
+Threading: watchdog's emitter and dispatcher threads touch nothing here but
+``SimpleQueue.put``, and one consumer thread owns every call back into the cache. The
+handlers are constructed with a queue and never see the cache, so the cache's
+single-writer invariant holds by construction.
 
-Threading. Watchdog runs its own emitter and dispatcher threads, and they touch
-nothing here but ``SimpleQueue.put``. One consumer thread owns every call back into
-the cache, which is what keeps the cache single-writer -- the handlers are constructed
-with a queue and never see the cache at all, so the invariant holds by construction
-rather than by convention.
-
-There is deliberately no debounce and no poll interval. The consumer blocks for one
-path, then takes everything already queued behind it and applies the batch, so
-coalescing is a consequence of the drain rather than a delay to tune: the longer a
-pass takes, the more has piled up behind it, and the loop settles at exactly the rate
-the work allows.
+No debounce and no poll interval: the consumer blocks for one path, then applies
+everything already queued behind it, so coalescing falls out of the drain and the loop
+settles at exactly the rate the work allows.
 """
 
 import os
@@ -56,10 +47,9 @@ def event_paths(event: FileSystemEvent) -> tuple[Path, ...]:
     """
     Return the filesystem paths an event refers to, decoded.
 
-    A move carries two: watchdog reports an atomic ``os.replace`` as a single event
-    whose *destination* is the interesting name, so a handler that read ``src_path``
-    alone would miss it entirely. Paths come back as ``bytes`` when a watch was
-    scheduled with a ``bytes`` path; ``os.fsdecode`` normalizes both spellings.
+    A move carries two: watchdog reports an atomic ``os.replace`` as one event whose
+    *destination* is the interesting name, so reading ``src_path`` alone would miss it.
+    ``os.fsdecode`` normalizes the ``bytes`` spelling a ``bytes`` watch produces.
     """
     raw = (event.src_path, getattr(event, "dest_path", ""))
     return tuple(Path(os.fsdecode(value)) for value in raw if value)
@@ -69,19 +59,13 @@ class _LogTreeHandler(FileSystemEventHandler):
     """
     Queue writes to session record files. Runs on a watchdog emitter thread.
 
-    Only a session's record file is forwarded, because a write to it is the one event
-    that means there are records to ingest -- the ingester owns the predicate, since it
-    owns what such a file is called. The filter drops the directory ``modified``
-    event inotify raises for every single write, which would otherwise wake the
-    consumer once per write on top of the write itself; it drops the ``strings.jsonl``
-    the sidecar writes beside each record file, which is always flushed just *before*
-    the record referencing it and so is never the last write of a pair; and it drops
-    the sidecar's ``meta.json``, a per-session cache the request index replaced and
-    that no reader opens any more.
+    Only a session's record file is forwarded -- the ingester owns that predicate, since
+    it owns what such a file is called. The filter drops the directory ``modified`` event
+    inotify raises for every write, which would otherwise double every wakeup, and the
+    ``strings.jsonl`` written beside each record file, which is always flushed just
+    *before* the record referencing it and so is never the last write of a pair.
 
-    Nothing here writes into the watched tree, so there is no feedback loop left to
-    filter out. The viewer used to seed ``meta.json`` after a slow scan and depended on
-    this filter to keep that from scheduling a pass behind itself.
+    Nothing here writes into the watched tree, so there is no feedback loop to filter.
     """
 
     def __init__(self, queue: SimpleQueue[object]) -> None:
@@ -103,13 +87,11 @@ class CacheWatcher:
     Owns the observer and the single consumer thread. Every call into the cache
     happens on that thread, so the cache needs no lock at all.
 
-    Only the logs tree is watched. The project registry deliberately is not, even
-    though a registration is a change the viewer cares about: every project's logs land
-    in this one tree, so a newly registered project's first session write is already an
-    event here -- one the cache cannot attribute to a known group, which makes it fall
-    back to a full ``reconcile`` that re-reads the registry. Until that write happens
-    the project has nothing to render, so there is nothing an earlier wakeup could show.
-    A registration that is never followed by a log write is picked up by the heartbeat.
+    Only the logs tree is watched; the project registry deliberately is not. A newly
+    registered project's first session write is already an event here -- one the cache
+    cannot attribute to a known group, so it falls back to a full ``reconcile`` that
+    re-reads the registry. Until that write there is nothing to render anyway, and a
+    registration never followed by one is picked up by the heartbeat.
     """
 
     def __init__(self, cache: LogsCache, logs_tree: Path) -> None:
@@ -123,12 +105,10 @@ class CacheWatcher:
         """
         Schedule the watch, start the observer, then start the consumer.
 
-        Nothing here is defensive. A failure to establish a watch -- an exhausted
-        ``fs.inotify.max_user_watches`` being the realistic one -- propagates out of
-        ``serve_foreground`` and takes the daemon down with the reason in its logfile,
-        because there is no reduced mode for the viewer to limp along in and a viewer
-        that silently stopped noticing new requests would be worse than one that did
-        not start.
+        Nothing here is defensive: a failure to establish a watch -- realistically an
+        exhausted ``fs.inotify.max_user_watches`` -- takes the daemon down with the
+        reason in its logfile. A viewer that silently stopped noticing new requests
+        would be worse than one that did not start.
         """
         # The tree does not exist yet on a host where no sidecar has ever run, and
         # `agent run` starts the viewer before the sidecar comes up. Observer.schedule
@@ -148,10 +128,9 @@ class CacheWatcher:
         """
         Stop the observer, then the consumer. Idempotent -- callers stop twice.
 
-        Order matters: silencing the producers first means the sentinel cannot be
-        queued behind a burst that would delay shutdown. Both joins are bounded, so a
-        wedged thread cannot hold up ``serve_foreground``'s teardown past the point
-        where ``stop_daemon`` escalates to SIGKILL and buffered log output is lost.
+        Order matters: silencing the producers first keeps the sentinel from queueing
+        behind a burst. Both joins are bounded, so a wedged thread cannot hold teardown
+        past the point where ``stop_daemon`` escalates to SIGKILL.
         """
         observer = self._observer
         if observer is not None:
@@ -188,10 +167,8 @@ class CacheWatcher:
         Block for one path, then take everything already queued behind it.
 
         An empty set means the heartbeat elapsed with nothing to do; None means stop.
-
-        Collecting into a set is what makes a burst cheap -- a session written to fifty
-        times while the previous batch was being applied costs one rescan, not fifty --
-        and it is why there is no debounce delay anywhere in this module.
+        Collecting into a set is what makes a burst cheap, and why this module needs no
+        debounce delay.
         """
         try:
             item = self._queue.get(timeout=CACHE_HEARTBEAT_INTERVAL_SEC)

@@ -7,8 +7,6 @@ from typing import NamedTuple
 
 @dataclass
 class Entry:
-    """Intermediate representation used during project-registry compression."""
-
     compressed: str
     first_original: str
     last_original: str

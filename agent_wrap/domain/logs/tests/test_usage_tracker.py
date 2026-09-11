@@ -2,13 +2,10 @@
 """
 Unit tests for UsageTracker — daily usage tracking and usage.json writing.
 
-The tracker used to keep a bucket and a stat fingerprint per log file and re-scan a
-changed file in full; most of what was tested here was that bookkeeping. It now runs one
-bounded aggregate over the request index per flush, so what is left to test is the day
-boundary, the payload, and the write-versus-touch decision.
+What is under test is the day boundary, the payload, and the write-versus-touch decision.
 
 Records are written into the central log tree and indexed, so a total here has come
-through the parser and the schema rather than from a stubbed aggregate — the arithmetic
+through the parser and the schema rather than from a stubbed aggregate -- the arithmetic
 that reaches the statusline is the arithmetic under test.
 """
 
@@ -312,7 +309,6 @@ def test_cache_creation_tokens_are_tracked(
     make_record: Callable[..., dict[str, Any]],
     index_session: Callable[..., None],
 ) -> None:
-    """Cache write tokens appear under cache_creation in output."""
     index_session(
         [make_record(input_tokens=200, output_tokens=100, cache_read=15, cache_creation=40)]
     )
@@ -332,7 +328,6 @@ def test_detect_rollover_after_the_clock_crosses_the_boundary(
 
 
 def test_detect_rollover_false_when_day_unchanged(tracker: UsageTracker) -> None:
-    """detect_rollover returns False on the same day."""
     assert tracker.detect_rollover() is False
 
 

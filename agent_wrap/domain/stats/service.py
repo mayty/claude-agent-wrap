@@ -46,8 +46,6 @@ if TYPE_CHECKING:
 
 
 class StatsService:
-    """Token usage stats aggregation service."""
-
     def __init__(
         self,
         pricing_service: PricingService,
@@ -60,18 +58,12 @@ class StatsService:
         self._usage = usage_repository
         self._ingest = log_ingest_repository
 
-    # ------------------------------------------------------------------
-    # Reading the index
-    # ------------------------------------------------------------------
-
     def day_totals(self, day_key: str) -> Bucket:
         """
         Return one stats day's whole priced usage, across every project on the host.
 
-        What ``usage.json`` holds, and the reason the viewer no longer re-reads a log
-        file per append: the cost of this is set by the number of *cells* in one day --
-        a few dozen -- rather than by the size of the files the day's requests were
-        written to.
+        What ``usage.json`` holds. Costs the number of *cells* in one day -- a few dozen
+        -- rather than the size of the files the day's requests were written to.
         """
         cache = self.usage_cache(from_iso=day_key, until_iso=day_key)
         return self._pricing.merged_bucket(
@@ -91,10 +83,9 @@ class StatsService:
         """
         Read the index once and fold it into per-project-hash priced usage.
 
-        One aggregate serves the project rows, the shared totals and the orphaned row,
-        so those three can never disagree about a request. The window is applied in SQL
-        as an hour-bucket range and again per cell as a day rule -- see
-        :func:`hour_bounds` for why both, and why that is not redundant.
+        One aggregate serves the project rows, the shared totals and the orphaned row, so
+        the three can never disagree about a request. The window is applied in SQL as an
+        hour-bucket range and again per cell as a day rule -- see :func:`hour_bounds`.
         """
         from_hour, until_hour = hour_bounds(from_iso, until_iso)
         cells = self._usage.usage_cells(from_hour=from_hour, until_hour=until_hour)
@@ -106,10 +97,6 @@ class StatsService:
             refresh_pricing_data=refresh_pricing_data,
         )
 
-    # ------------------------------------------------------------------
-    # Project aggregation
-    # ------------------------------------------------------------------
-
     def aggregate_projects(
         self,
         projects: list[Path],
@@ -119,16 +106,12 @@ class StatsService:
         """
         Roll each project's folded usage up into the four render inputs.
 
-        *cache* is one whole read of the index, keyed by project hash, and *owners* says
-        which hash each project claims (see :meth:`project_owners`). A project absent
-        from *owners* has no log directory, and a hash absent from *cache* contributed
-        nothing in the window; either way the project gets an empty
+        A project absent from *owners* has no log directory, and a hash absent from
+        *cache* contributed nothing in the window; either way it gets an empty
         :class:`HashUsage` rather than a special case.
 
-        The window is already applied -- it was applied when *cache* was read -- so
-        this method takes no bounds. That is the point of reading once: the project
-        rows and the shared totals are folded from the same cells rather than from two
-        passes that could disagree.
+        Takes no bounds: the window was applied when *cache* was read, so the project
+        rows and the shared totals fold from the same cells.
         """
         groups: dict[Path, Group] = {}
         totals_by_model: dict[str, Bucket] = defaultdict(self._pricing.new_bucket)
@@ -205,8 +188,7 @@ class StatsService:
 
         *days_given* distinguishes ``--days 0`` (given, meaning unlimited) from the flag
         being absent, which a bare int cannot express. At most two of the three may be
-        given. Returns ``(from_iso, until_iso)`` with None for an open side, or a
-        :class:`WindowError` naming the problem.
+        given.
 
         The resolution table, all bounds inclusive:
 
@@ -242,10 +224,9 @@ class StatsService:
         """
         Apply the resolution table to already-parsed specs, returning ``(lo, hi)`` dates.
 
-        ``days_bound`` is the positive day count, or None for "no count" (flag absent
-        *or* the unlimited ``--days 0``); *days_given* tells those apart so a bare side
-        stays open for ``--days 0`` but defaults to today/DEFAULT_DAYS otherwise. Open
-        sides come back as the ``date.min``/``date.max`` sentinels.
+        ``days_bound`` is None for "no count" -- flag absent *or* the unlimited
+        ``--days 0`` -- and *days_given* tells those apart. Open sides come back as the
+        ``date.min``/``date.max`` sentinels.
         """
         today = get_day(self.now_utc(), DAY_START_HOURS)
         # Bounds are inclusive on both sides, so an N-day window offsets by N-1.
@@ -272,9 +253,8 @@ class StatsService:
         """
         ``date ± span``, clamped to ``[date.min, date.max]`` instead of raising.
 
-        The unlimited ``--days 0`` case uses ``timedelta.max`` as its span; adding or
-        subtracting that from a real date overflows, so saturate to the open-side
-        sentinel (``date.max`` forward, ``date.min`` backward).
+        ``--days 0`` uses ``timedelta.max`` as its span, which overflows against a real
+        date, so saturate to the open-side sentinel instead.
         """
         try:
             return d + sign * span
@@ -290,14 +270,12 @@ class StatsService:
         """
         Aggregate everything ``agent stats`` renders for one window, in one pass.
 
-        *projects* is the full registry, unfiltered — telling "no project owns this log
-        dir" from "the pattern hid its owner" needs every registered path, so filtering
-        happens inside. A hash whose owner the pattern hid is excluded outright rather
-        than reappearing as orphaned.
+        *projects* is the full registry, unfiltered: telling "no project owns this log
+        dir" from "the pattern hid its owner" needs every registered path. A hash whose
+        owner the pattern hid is excluded outright rather than reappearing as orphaned.
 
-        Orphaned spend folds into the shared totals, so it shares the pattern gate:
-        folding in spend whose row is suppressed would break the agreement between the
-        projects table and the by-day totals.
+        Orphaned spend folds into the shared totals and so shares the pattern gate --
+        otherwise the projects table and the by-day totals would disagree.
         """
         show_orphaned = args.pattern is None or args.pattern.search(ORPHANED_LABEL) is not None
         selected = self.filter_projects(projects, args.pattern)
@@ -336,8 +314,8 @@ class StatsService:
         """
         Select the registered projects matching *pattern*, or all of them when None.
 
-        Matched against the whole recorded registry path, not the display name, so a
-        pattern can select by any path segment.
+        Matched against the whole registry path, not the display name, so a pattern can
+        select by any path segment.
         """
         if pattern is None:
             return projects
@@ -348,9 +326,9 @@ class StatsService:
         """
         Resolve the transient-project group a project path belongs to.
 
-        Walks up from ``path`` (inclusive) along its **literal** components looking
-        for the nearest ``.agent_stats_leaf``. The group is always named after the
-        marker's own directory — the marker file's content, if any, is not read.
+        Walks up from ``path`` along its **literal** components to the nearest
+        ``.agent_stats_leaf``, and names the group after that marker's own directory --
+        the file's content, if any, is not read.
         """
         for candidate in (path, *path.parents):
             marker = candidate / MARKER_NAME
@@ -364,23 +342,17 @@ class StatsService:
         """
         Map each registered project to the central ``<hash>`` directory it claims.
 
-        The exact inverse of :meth:`orphaned_log_dirs`: a hash claimed here is a hash
-        that is not orphaned, and both answers come from the same reachability rule, so
-        the projects table and the ``<orphaned>`` row can never both claim one
-        project's spend or both disown it.
+        The exact inverse of :meth:`orphaned_log_dirs`, from the same reachability rule,
+        so the projects table and the ``<orphaned>`` row can never both claim or both
+        disown one project's spend.
 
-        Reachability is resolved through the project's own
-        ``.claude/litellm-logs`` symlink rather than by re-deriving the hash from the
-        project path. Two reasons: a project whose directory is gone has no symlink to
-        follow and so is correctly treated as having no logs, where re-hashing would
-        happily produce the hash of a path that no longer exists; and a project whose
-        symlink points somewhere unexpected is disowned rather than credited with
-        whatever it points at.
+        Resolved through the project's ``.claude/litellm-logs`` symlink rather than by
+        re-deriving the hash from the path: a deleted project has no symlink to follow,
+        where re-hashing would happily produce the hash of a path that no longer exists.
 
-        A project absent from the result has no readable log directory. So is one whose
-        logs live outside the central tree, since the index only ever holds what the
-        sidecars wrote under ``TOOL_DIR/litellm-logs`` -- and crediting a project with a
-        hash the central tree does not have would let the same spend appear twice.
+        A project is absent from the result when it has no readable log directory, or
+        when its logs live outside the central tree -- crediting it with a hash the tree
+        does not have would let the same spend appear twice.
         """
         central = self._central_log_dirs()
         owners: dict[Path, str] = {}
@@ -410,7 +382,7 @@ class StatsService:
         """
         Map each project to the log directory its ``.claude/litellm-logs`` resolves to.
 
-        Projects whose link is missing or unreadable are left out, which is what makes a
+        A project whose link is missing or unreadable is left out, which is what makes a
         deleted project's logs orphaned rather than still its own.
         """
         claimed: dict[Path, Path] = {}
@@ -428,13 +400,9 @@ class StatsService:
         """
         Map every central ``<hash>`` directory's resolved path to its hash name.
 
-        Resolved paths are the keys because that is the only form two spellings of one
-        directory agree on -- a project reaches its logs through a symlink, and the
-        comparison against a central child has to survive that. The name is carried
-        alongside because it is the key the index stores usage under.
-
-        Best-effort: an unreadable central tree yields nothing rather than raising, so a
-        permissions problem degrades stats instead of breaking it.
+        Resolved paths are the keys because a project reaches its logs through a symlink,
+        and that is the only form the two spellings agree on. The name rides along
+        because it is what the index stores usage under.
         """
         central = TOOL_DIR / LITELLM_LOGS_DIRNAME
         try:
@@ -466,19 +434,13 @@ class StatsService:
         """
         Aggregate the indexed usage of every hash no registered project owns.
 
-        *owned* is the set of hashes claimed by the selected projects; everything else
-        in *cache* is spend whose project directory is gone or was never registered.
-        That is real money, so each hash is folded into the passed-in per-model and
-        per-day totals exactly like a project, and a single summary
-        ``{"sessions", "last_ts", "total"}`` is returned for the synthetic
-        ``<orphaned>`` row. Returns None when nothing is orphaned.
+        Everything in *cache* outside *owned* is spend whose project directory is gone or
+        was never registered. That is real money, so each hash folds into the per-model
+        and per-day totals exactly like a project.
 
-        Taking *owned* rather than the project list is what makes this the complement of
-        :meth:`aggregate_projects` by construction: no hash can be both, and none can be
-        neither, so the tables cannot disagree about where a request went.
-
-        When ``totals_by_source`` is given, orphaned spend is also folded into the
-        per-source per-model breakdown so the verbose table stays consistent.
+        Taking *owned* rather than the project list makes this the complement of
+        :meth:`aggregate_projects` by construction: no hash can be both or neither, so
+        the tables cannot disagree about where a request went.
         """
         total = self._pricing.new_bucket()
         sessions = 0
@@ -511,17 +473,12 @@ class StatsService:
             return None
         return {"sessions": sessions, "last_ts": last_ts, "total": total}
 
-    # ------------------------------------------------------------------
-    # Cleanup — deleting orphaned log dirs and their index rows
-    # ------------------------------------------------------------------
-
     def cleanup_scope(self) -> CleanupScope:
         """
         Survey what a cleanup would remove, without removing anything.
 
-        The size is measured now, over exactly the dirs :meth:`run_cleanup` will be
-        given, so the preview a user confirms describes the run that follows — no
-        re-walk, no TOCTOU gap between the two.
+        Measured over exactly the dirs :meth:`run_cleanup` will be given, so the preview
+        a user confirms describes the run that follows -- no re-walk, no TOCTOU gap.
         """
         orphaned_dirs = self.orphaned_log_dirs(self._config.read_project_paths())
         return CleanupScope(
@@ -534,8 +491,8 @@ class StatsService:
         """
         Total bytes occupied by *orphaned_dirs*.
 
-        Takes the dir list rather than recomputing it, so a caller can report a size
-        for exactly the same dirs it is about to delete.
+        Takes the list rather than recomputing it, so a caller reports a size for exactly
+        the dirs it is about to delete.
         """
         return sum(directory_size(logs_dir) for logs_dir in orphaned_dirs)
 
@@ -543,13 +500,9 @@ class StatsService:
         """
         Delete the log dirs in *scope* and their index rows, then prune the registry.
 
-        Two deletes per orphaned project, deliberately in this order: the directory
-        first, its index rows second, and the rows only for directories whose removal
-        actually succeeded. Neither half can leave the host inconsistent for long -- a
-        failed ``rmtree`` leaves rows the next ingest simply keeps using, and a failed
-        ``DELETE`` leaves rows for a directory the viewer's next reconcile reaps -- but
-        deleting the rows first would blank a project's spend while its logs were still
-        on disk waiting to be re-ingested.
+        Directory first, index rows second, and the rows only where the removal
+        succeeded. Deleting the rows first would blank a project's spend while its logs
+        sat on disk waiting to be re-ingested.
         """
         result = self.delete_orphaned_logs(scope.orphaned_dirs)
         return CleanupOutcome(
@@ -560,20 +513,16 @@ class StatsService:
         """
         Delete each orphaned log dir, and forget the sessions it held.
 
-        Takes *orphaned_dirs* from a prior :meth:`orphaned_log_dirs` call so the caller
-        can show counts before confirming and act on that exact list after — no
-        re-walk, no TOCTOU gap.
+        Takes *orphaned_dirs* from a prior :meth:`orphaned_log_dirs` call, so the caller
+        shows counts before confirming and acts on that exact list after.
 
-        Each dir is independent: a ``rmtree`` that fails leaves that dir purely live, so
-        it reappears in the next ``orphaned_log_dirs()`` and its spend keeps showing up
-        under ``<orphaned>``. It is never counted twice, because the index rows for a
-        dir are dropped only once the dir itself is gone.
+        Each dir is independent: a failed ``rmtree`` leaves that dir purely live, so it
+        reappears next sweep. It is never counted twice, because a dir's index rows are
+        dropped only once the dir itself is gone.
 
-        Their spend goes with them. There is no archive: the requests were indexed from
-        files that no longer exist, so keeping the rows would report spend against a
-        project the user has just asked to forget, and keeping a JSON side-copy of it
-        (which is what this used to do) meant a second format, a two-phase promotion,
-        and a read path nothing else used.
+        Their spend goes with them, unarchived: the requests were indexed from files that
+        no longer exist, so keeping the rows would report spend against a project the
+        user has just asked to forget.
         """
         removed = 0
         freed = 0

@@ -53,9 +53,6 @@ def watcher(tmp_path: Path, cache_mock: Mock, observer_class: Mock) -> CacheWatc
     return CacheWatcher(cache_mock, logs_tree=tmp_path / "litellm-logs")
 
 
-# --- handlers -------------------------------------------------------------
-
-
 def test_log_tree_handler_queues_a_messages_file(
     queue: SimpleQueue[object], tmp_path: Path
 ) -> None:
@@ -98,9 +95,6 @@ def test_log_tree_handler_ignores_a_directory_event(
     assert _drain(queue) == []
 
 
-# --- batching -------------------------------------------------------------
-
-
 def test_take_batch_collapses_duplicate_paths(watcher: CacheWatcher, tmp_path: Path) -> None:
     path = tmp_path / "a" / "b" / "c" / "messages.jsonl"
     for _ in range(50):
@@ -134,9 +128,6 @@ def test_take_batch_reports_stop_queued_behind_a_burst(
     watcher._queue.put(tmp_path / "a" / "b" / "c" / "messages.jsonl")
     watcher._queue.put(WATCH_STOP)
     assert watcher._take_batch() is None
-
-
-# --- the consumer loop ----------------------------------------------------
 
 
 def test_a_batch_of_paths_is_applied(
@@ -272,9 +263,6 @@ def test_a_watch_that_cannot_be_established_takes_the_daemon_down(
 
     with pytest.raises(OSError, match="inotify watch limit reached"):
         watcher.start()
-
-
-# --- against a real observer ----------------------------------------------
 
 
 def test_a_real_write_under_the_watched_tree_reaches_the_cache(tmp_path: Path) -> None:

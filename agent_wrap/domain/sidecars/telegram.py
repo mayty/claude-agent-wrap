@@ -42,8 +42,6 @@ class TelegramSidecar(Sidecar):
         self._bot_token: str = ""
         self._chat_id: str = ""
 
-    # --- Sidecar interface properties ---
-
     @property
     @override
     def container_name(self) -> str:
@@ -68,8 +66,6 @@ class TelegramSidecar(Sidecar):
             ("TelegramBotToken", "Telegram Bot Token (from @BotFather)"),
             ("TelegramChatId", "Telegram Chat ID (numeric user or group ID)"),
         ]
-
-    # --- Public: prepare / ensure ---
 
     @override
     def prepare(self) -> None:
@@ -154,8 +150,6 @@ class TelegramSidecar(Sidecar):
 
         return self._build_connectivity_args(agent_in_host_netns=agent_in_host_netns)
 
-    # --- Public: release ---
-
     @override
     def release(self) -> None:
         """
@@ -188,8 +182,6 @@ class TelegramSidecar(Sidecar):
         """
         docker_run("stop", self.config.container_name)
         docker_run("rm", self.config.container_name)
-
-    # --- Internal: network ---
 
     def _ensure_network(self) -> None:
         _, rc = docker_run("network", "inspect", self.config.network_name)
@@ -234,8 +226,6 @@ class TelegramSidecar(Sidecar):
         )
         stdout, rc = docker_run("inspect", self.config.container_name, "--format", fmt)
         return stdout.strip() if rc == 0 else ""
-
-    # --- Internal: container lifecycle ---
 
     def _is_running(self) -> bool:
         stdout, rc = docker_run(
@@ -315,8 +305,6 @@ class TelegramSidecar(Sidecar):
             timeout=self.config.health_timeout_sec,
         )
 
-    # --- Internal: HTTP calls to sidecar ---
-
     def _register(self) -> str:
         """POST /register — obtain an auth token for this agent run."""
         url = f"http://127.0.0.1:{self.config.internal_port}/register"
@@ -359,8 +347,6 @@ class TelegramSidecar(Sidecar):
                 },
                 timeout=5,
             )
-
-    # --- Internal: connectivity ---
 
     def _build_connectivity_args(self, *, agent_in_host_netns: bool) -> list[str]:
         """

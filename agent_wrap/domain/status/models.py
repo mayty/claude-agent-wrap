@@ -11,8 +11,7 @@ from this module. That is a hard requirement, twice over:
 * the sidecar rows this composes are built from container environments full of live
   credentials, and a scalar-only shape leaves nowhere for one to hide.
 
-Durations are stored as seconds and timestamps as epoch floats — formatting is the CLI's
-concern, and a JSON consumer wants the number, not "3h 12m".
+Durations are seconds and timestamps epoch floats: formatting is the CLI's concern.
 """
 
 from dataclasses import dataclass, field
@@ -20,10 +19,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class DockerStatus:
-    """Whether the Docker daemon answered, and why not if it didn't."""
-
     available: bool
-    #: Human-readable reason when *available* is False; "" otherwise.
     error: str = ""
 
 
@@ -49,20 +45,15 @@ class SidecarRow:
 
 @dataclass(frozen=True)
 class AgentRow:
-    """One agent container."""
-
     name: str
     instance_id: str
     status: str
     uptime_sec: int | None
     cwd: str
-    #: Image the container runs — "claude-agent" or a per-project "claude-agent-<name>".
     image: str
-    #: Provider this agent's traffic goes through; "" when it holds no registration.
+    #: "" when this agent holds no registration.
     provider: str
-    #: Sidecar container names this agent is registered on. Reported for machine
-    #: consumers; the human table shows the *provider* derived from it instead, since the
-    #: container names are already listed in the sidecar table above it.
+    #: For machine consumers; the human table shows the *provider* derived from this.
     sidecars: list[str]
 
 
@@ -89,9 +80,7 @@ class AutostartRow:
     """
     Whether `agent run` would start the logs viewer, and what decides that.
 
-    Kept apart from :class:`ViewerRow`, which reports the viewer process's own state: this
-    is launch policy, read from the environment and the default provider rather than from
-    anything running.
+    Launch policy, unlike :class:`ViewerRow`, which reports the running process.
 
     Invariant the renderer relies on: *effective* is False only when *requested* is False
     or *declining_provider* is non-empty, so there is always a reason to name.
@@ -113,12 +102,9 @@ class ProviderRow:
     """One known sidecar/provider and whether its secrets are all stored."""
 
     name: str
-    #: Whether this is the provider `agent run` would use right now.
     is_default: bool
-    #: True when every required secret is present. A provider requiring none is
-    #: trivially satisfied.
+    #: A provider requiring no secrets is trivially satisfied.
     secrets_ok: bool
-    #: Namespaced keys that are required but absent.
     missing_keys: list[str]
 
 
@@ -164,9 +150,8 @@ class EnvironmentRow:
     base_image_stale_reason: str
     network_name: str
     network_present: bool
-    #: Whether AGENT_USE_HOST_NETWORK is set to a truthy value.
     host_network_requested: bool
-    #: Whether it will actually take effect — it is honored only on WSL.
+    #: Honored only on WSL, so this can be False while *requested* is True.
     host_network_effective: bool
     #: Whether the next ``agent run`` would check its working directory, i.e. whether
     #: AGENT_SKIP_SAFETY_CHECK is unset or falsey. Nothing can ignore this one, so unlike
@@ -210,12 +195,9 @@ class StorageRow:
 class ProjectImageRow:
     """The per-project image the cwd's Dockerfile declares, when it declares one."""
 
-    #: Tag ``agent run`` would launch, e.g. "claude-agent-agent-wrap".
     image: str
-    #: The project Dockerfile it is built from. A string, not a Path -- see the module
-    #: docstring: anything unserialisable here breaks ``--json`` with no type error.
+    #: A string, not a Path -- see the module docstring.
     dockerfile: str
-    #: True when that Dockerfile still sits at the deprecated ``Dockerfile.agent`` path.
     is_legacy: bool
     present: bool
     #: Claude Code version inside it, or None when the image is absent or unreadable.
@@ -232,18 +214,15 @@ class StaleImageRow:
     """
     One registered project whose per-project image would be rebuilt on its next launch.
 
-    Fleet-wide, unlike :class:`ProjectImageRow`, which reports the cwd alone. A project
-    that declares no Dockerfile never appears here: its target is the base image, already
-    reported once on :class:`EnvironmentRow`. Neither does one whose image is not built on
-    this host -- nothing is stale about an image that does not exist.
+    Fleet-wide, unlike :class:`ProjectImageRow`. A project declaring no Dockerfile never
+    appears -- its target is the base image, reported once on :class:`EnvironmentRow` --
+    and neither does one whose image is not built on this host.
     """
 
-    #: The registered project directory. A string, not a Path -- see the module docstring.
+    #: A string, not a Path -- see the module docstring.
     project: str
-    #: The ``claude-agent-<name>`` tag that project's next launch would use. Repeats across
-    #: rows when two projects declare the same ``# agent-name:``.
+    #: Repeats across rows when two projects declare the same ``# agent-name:``.
     image: str
-    #: Why it would be rebuilt -- the same prose the cwd's own rows carry.
     reason: str
 
 
@@ -284,10 +263,9 @@ class ImagePresence:
     """
     Which images exist locally -- the gate the version probes wait on, and nothing else.
 
-    Separate from the rest because it is the report's one ordering constraint: reading a
-    version starts a container from the image, and ``docker run`` on an image that is not
-    there tries to *pull* it. Network presence is deliberately not part of this: it gates
-    nothing, and folding it in would make the version probes wait on an unrelated call.
+    The report's one ordering constraint: reading a version starts a container from the
+    image, and ``docker run`` on an absent image tries to *pull* it. Network presence is
+    deliberately excluded -- it gates nothing, and would make the probes wait on it.
     """
 
     base: bool
@@ -300,8 +278,7 @@ class ClaudeVersions:
     """
     Claude Code versions read in one parallel batch. None everywhere means "not read".
 
-    Internal to the collection phase -- unlike its neighbours this never reaches
-    ``InspectReport``; the rows built from it do.
+    Internal to the collection phase; never reaches ``InspectReport``.
     """
 
     base: str | None

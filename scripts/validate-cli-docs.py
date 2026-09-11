@@ -121,7 +121,6 @@ def bold_flags(text: str) -> set[str]:
 
 
 def documented_options(command: click.Command) -> list[click.Option]:
-    """Return every option of *command* that the doc is expected to cover."""
     return [
         param
         for param in command.params
@@ -132,7 +131,6 @@ def documented_options(command: click.Command) -> list[click.Option]:
 
 
 def all_options(command: click.Command) -> list[click.Option]:
-    """Return *command*'s documented options, plus those of its subcommands if it is a group."""
     options = documented_options(command)
     if isinstance(command, click.Group):
         for subcommand in command.commands.values():
@@ -141,14 +139,12 @@ def all_options(command: click.Command) -> list[click.Option]:
 
 
 def usage_line(name: str, command: click.Command) -> str:
-    """Return click's own usage line for *command*, without the ``Usage: `` prefix."""
     parent = click.Context(cli_root, info_name="agent")
     with click.Context(command, info_name=name, parent=parent) as ctx:
         return " ".join(["agent", name, *command.collect_usage_pieces(ctx)])
 
 
 def synopsis_block(section: str) -> list[str]:
-    """Return the lines of the first fenced code block in *section*, or ``[]`` if there is none."""
     lines = section.split("\n")
     fences = [i for i, line in enumerate(lines) if FENCE.match(line)]
     if len(fences) < FENCE_PAIR:
@@ -157,7 +153,6 @@ def synopsis_block(section: str) -> list[str]:
 
 
 def parse_sections(text: str) -> dict[str, tuple[int, str]]:
-    """Map each ``## `agent <verb>`` heading to its 1-based line number and body text."""
     lines = text.split("\n")
     starts: list[tuple[int, str]] = [
         (i, match.group(1))
@@ -173,7 +168,6 @@ def parse_sections(text: str) -> dict[str, tuple[int, str]]:
 
 
 def table_verbs(text: str) -> set[str]:
-    """Return the verbs listed in the intro verb table, i.e. the rows before the first section."""
     intro = text.split("\n## ", 1)[0]
     return {match.group(1) for line in intro.split("\n") if (match := TABLE_ROW.match(line))}
 

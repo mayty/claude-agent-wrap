@@ -47,9 +47,8 @@ def file_lock(path: Path, *, timeout: float | None = None) -> Generator[None]:
     """
     Hold an exclusive ``flock`` on *path* for the duration of the block.
 
-    With ``timeout=None`` this blocks indefinitely. With a positive *timeout* it
-    polls every :data:`LOCK_POLL_INTERVAL` seconds and raises
-    :class:`LockTimeoutError` if the deadline passes without acquiring the lock.
+    ``timeout=None`` blocks indefinitely; a positive *timeout* polls every
+    :data:`LOCK_POLL_INTERVAL` seconds and then raises :class:`LockTimeoutError`.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w")  # noqa: SIM115 -- fd lifetime is the context manager
@@ -78,9 +77,7 @@ def try_file_lock(path: Path) -> Generator[bool]:
     """
     Try once to take an exclusive ``flock`` on *path*, without blocking.
 
-    Yields ``True`` if the lock was acquired (and releases it on exit), or
-    ``False`` if another holder has it. Never blocks and never raises on
-    contention.
+    Yields ``True`` if the lock was acquired (and releases it on exit), else ``False``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w")  # noqa: SIM115 -- fd lifetime is the context manager
@@ -102,9 +99,8 @@ def lock_and_hold(path: Path) -> TextIO | None:
     """
     Take an exclusive ``flock`` on *path* and return the open handle, without blocking.
 
-    Returns the open file handle if the lock was acquired — the caller must keep it
-    open for as long as the lock should be held, and close it (releasing the lock) to
-    let go. Returns ``None`` if another holder already has the lock.
+    The caller must keep the returned handle open for as long as the lock should be
+    held. ``None`` when another holder already has it.
 
     Unlike the context managers, the lock outlives this call: it is released only when
     the handle is closed or the owning process exits (the kernel reclaims ``flock``s on
@@ -122,7 +118,6 @@ def lock_and_hold(path: Path) -> TextIO | None:
 
 
 def clear_lock_handle(handle: TextIO | None, path: Path) -> None:
-    """Close a held lock handle and remove its backing file."""
     if handle is not None:
         handle.close()
     with contextlib.suppress(OSError):
@@ -133,10 +128,9 @@ def live_lock_ids(directory: Path) -> list[str]:
     """
     List the names of files in *directory* whose locks are still held, sorted.
 
-    The read-only twin of :func:`any_live_locks`: it reports every live holder instead
-    of just whether one exists, and — the reason it exists — it **never unlinks**
-    anything. A reporting caller must not reap another process's state as a side effect
-    of looking at it, and must not decide teardown from a mutated view.
+    The read-only twin of :func:`any_live_locks`, and the reason it exists: it **never
+    unlinks** anything, so a reporting caller cannot reap another process's state as a
+    side effect of looking at it.
 
     Probing opens the file read-only, unlike the helpers above: ``flock`` needs a real
     fd but not a writable one (Linux grants ``LOCK_EX`` on an ``O_RDONLY`` fd), and
@@ -171,11 +165,8 @@ def any_live_locks(directory: Path, *, exclude_id: str | None = None) -> bool:
     """
     Walk *directory* of lock-held files, reaping stale entries and reporting liveness.
 
-    Each file is probed with a non-blocking lock: acquiring it proves the owner has
-    exited, so the stale file is unlinked while the lock is held. The walk continues
-    past the first live holder to reap stale siblings in the same pass.
-
-    Returns ``True`` if at least one file is still locked (owner alive).
+    Acquiring a file's lock proves its owner exited, so it is unlinked while the lock is
+    held. The walk continues past the first live holder to reap siblings in one pass.
     """
     if not directory.is_dir():
         return False

@@ -47,7 +47,6 @@ class _DeepSeekPricing:
 
     @staticmethod
     def extract_dollar_amounts(text: str) -> list[float]:
-        """Return all dollar-denominated numbers found in *text*."""
         return [float(m) for m in re.findall(r"\$([0-9]+(?:\.[0-9]+)?)", text)]
 
     @staticmethod
@@ -58,7 +57,6 @@ class _DeepSeekPricing:
 
     @staticmethod
     def parse_model_names(header_row: str) -> list[str]:
-        """Extract canonical model names from the table's header row."""
         cells = re.findall(r"<td[^>]*>(.*?)</td>", header_row, re.DOTALL)
         models: list[str] = []
         for cell in cells[1:]:  # skip the "MODEL" label cell
@@ -80,7 +78,6 @@ class _DeepSeekPricing:
 
     @staticmethod
     def _extract_peak_prices(models: list[str], rows: list[str]) -> dict[str, dict[str, float]]:
-        """Fill *models*' peak rates from the OFF-PEAK/PEAK row pairs in *rows*."""
         prices: dict[str, dict[str, float]] = {
             m: {"in": 0.0, "out": 0.0, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.0} for m in models
         }
@@ -242,7 +239,6 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
 
     @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
-        """Return the cached DeepSeek pricing table, scraping if stale."""
         cache_path = self._state_dir() / "pricing.json"
         return _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)
 
@@ -275,8 +271,6 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
             return cost
         is_peak = weekday in PEAK_WEEKDAYS and hour in peak_hours
         return cost if is_peak else cost / 2
-
-    # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 
     @override
     def on_started(self, master_key: str) -> None:

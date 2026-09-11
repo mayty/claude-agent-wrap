@@ -7,11 +7,10 @@ which is what lets 3.1M message references collapse to ~118k rows. Dedup is ther
 only as good as this encoding is stable: two spellings of the same value must produce
 the same bytes, and two different values must not.
 
-**This encoding is a wire format, not an implementation detail.** Changing it does not
-corrupt anything -- the database is rebuildable from the retained JSONL -- but it does
-silently *split* dedup, so every value re-observed after the change is stored a second
-time under a new address. Nothing fails; the database just quietly grows. That is why
-the tests pin real byte sequences rather than round-trip behaviour alone.
+**This encoding is a wire format, not an implementation detail.** Changing it corrupts
+nothing, but it silently *splits* dedup: every value re-observed afterwards is stored
+again under a new address, and nothing fails -- the database just quietly grows. That is
+why the tests pin real byte sequences rather than round-trip behaviour alone.
 
 Values are hashed **as they appear in the log file, with ``hash:`` pointers left
 unresolved**. That is cheaper than resolving them, and it is what makes an address
@@ -35,11 +34,9 @@ def canonical_bytes(value: object) -> bytes:
     * ``ensure_ascii=False`` -- non-ASCII is emitted as UTF-8 rather than ``\\uXXXX``
       escapes. Conversation text is heavily non-ASCII, and escaping would inflate it.
 
-    Encoding uses ``surrogatepass`` because JSON permits unpaired surrogates and
-    ``json.loads`` will hand one back as-is. Strict UTF-8 raises on those, which would
-    turn one malformed model response into a crashed ingest pass. ``surrogatepass`` is
-    total and deterministic, and produces byte-identical output for every input that
-    does *not* contain a lone surrogate -- so it costs nothing for well-formed data.
+    ``surrogatepass`` because JSON permits unpaired surrogates and ``json.loads`` hands
+    one back as-is; strict UTF-8 would turn one malformed model response into a crashed
+    ingest pass. It is byte-identical for every input without a lone surrogate.
     """
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return encoded.encode("utf-8", errors="surrogatepass")

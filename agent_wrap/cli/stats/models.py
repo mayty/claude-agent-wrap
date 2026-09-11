@@ -16,8 +16,6 @@ type BuildModelSection = Callable[[dict[str, Bucket], int, DisplayService], list
 
 
 class AggregatedDayRows(NamedTuple):
-    """Aggregated per-day rows with totals for the By-day table."""
-
     day_rows_data: list[tuple[str, Bucket, float, bool]]
     total_b: Bucket
     total_cost: float

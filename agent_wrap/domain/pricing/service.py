@@ -33,7 +33,6 @@ class PricingService:
 
     # Bucket factory for cross-domain consumers (accessed via injected instance).
     def new_bucket(self) -> Bucket:
-        """Return a fresh, empty :class:`Bucket` for token-count accumulation."""
         return Bucket()
 
     def merged_bucket(self, buckets: Iterable[Bucket]) -> Bucket:
@@ -67,10 +66,6 @@ class PricingService:
         self._display = display_service
         # Per-instance warning state (print once).
         self._mixed_cache_ttl_warned = False
-
-    # ------------------------------------------------------------------
-    # Cache TTL helpers (inlined from UsageCollectors)
-    # ------------------------------------------------------------------
 
     def _collect_cache_ttls(self, node: Any, out: set[str]) -> None:
         """
@@ -128,10 +123,6 @@ class PricingService:
                     split[key] = source[key]
         return split
 
-    # ------------------------------------------------------------------
-    # Model normalization
-    # ------------------------------------------------------------------
-
     def normalize_model(self, model: str) -> str | None:
         """
         Return a canonical 'claude-<tier>-<ver>' key for a session model id.
@@ -153,10 +144,6 @@ class PricingService:
         tier = m.group("tier").lower()
         ver = m.group("ver").replace(".", "-")
         return f"claude-{tier}-{ver}"
-
-    # ------------------------------------------------------------------
-    # Cost computation (delegates to provider)
-    # ------------------------------------------------------------------
 
     def compute_cost(  # noqa: PLR0913
         self,
@@ -203,14 +190,9 @@ class PricingService:
             refresh_pricing_data=refresh_pricing_data,
         )
 
-    # ------------------------------------------------------------------
-    # Usage extraction
-    # ------------------------------------------------------------------
-
     def extract_usage(
         self, response: dict[str, Any] | None, request_ttl: str | None = None
     ) -> TokenUsage:
-        """Extract and normalize usage dict from a LiteLLM response object."""
         _zero: TokenUsage = {
             "input_tokens": 0,
             "output_tokens": 0,

@@ -2,20 +2,15 @@
 """
 Per-database connection factory.
 
-One instance per database file. Construction is what runs that database's migrations,
-so a caller holding a factory is holding a database already at its head version -- and
-because the DI container exposes each factory as a ``@cached_property``, a command that
-never touches a database never opens or migrates one.
+Construction runs that database's migrations, so a caller holding a factory holds a
+database already at its head version -- and since the DI container exposes each as a
+``@cached_property``, a command that touches no database opens and migrates none.
 
-Every path is a constructor argument. Nothing here reads a module-level constant, which
+Every path and PRAGMA set is a constructor argument, never a module-level constant, which
 is what lets a test point a whole database tree at ``tmp_path`` by constructing the DI
-``Core`` rather than by monkeypatching.
-
-The PRAGMA sets are constructor arguments for the same reason, defaulting to the shared
-tuples so existing callers are unaffected. A database whose storage profile differs from
-the registry's states its own set at the composition root -- the logs blob store wants a
-larger page size and incremental auto-vacuum, and neither can be applied after that
-database's first page exists.
+``Core``. A database whose storage profile differs states its own set at the composition
+root: the logs blob store wants a larger page size and incremental auto-vacuum, neither
+of which can be applied after its first page exists.
 """
 
 import sqlite3
@@ -68,17 +63,12 @@ class ConnectionFactory:
         """
         Permit :meth:`rw` for the duration of the block.
 
-        Write permission is opt-in per database, and outside a grant :meth:`rw` refuses.
-        That is what makes read-only consumers read-only structurally rather than by
-        discipline: the logs daemon never opens a grant, so no read it performs can
-        mutate the database however deep the call goes.
+        Outside a grant :meth:`rw` refuses, which makes read-only consumers read-only
+        structurally rather than by discipline: the logs daemon never opens a grant.
 
-        The flag is per factory and process-wide, deliberately not thread-local -- a
-        grant taken at a command's entry point has to cover the worker threads that
-        command spawns (``InspectService.build_report`` probes in a thread pool). What
-        keeps that comprehensible is the refusal to nest: there is exactly one window,
-        opened once at the top, and a second ``enable_writes()`` is a bug rather than a
-        wider permission.
+        Process-wide rather than thread-local, because a grant taken at a command's entry
+        point must cover the worker threads it spawns. Nesting is refused, so there is
+        exactly one window and a second ``enable_writes()`` is a bug.
         """
         if self._writes_enabled:
             msg = f"{self._name}: enable_writes() must not nest"
@@ -94,11 +84,8 @@ class ConnectionFactory:
         """
         Yield a read-write connection wrapping the block in one transaction.
 
-        Refuses outright unless the caller holds a grant from :meth:`enable_writes`.
-
-        Commits when the block completes, rolls back when it raises. Any ``sqlite3``
-        failure -- including a lock the busy timeout outlived -- surfaces as
-        :class:`StorageError`, so callers never have to know sqlite3's exception tree.
+        Refuses unless the caller holds a grant from :meth:`enable_writes`. Any
+        ``sqlite3`` failure surfaces as :class:`StorageError`.
         """
         if not self._writes_enabled:
             msg = f"{self._name}: writes are not enabled in this process"
@@ -124,13 +111,10 @@ class ConnectionFactory:
         """
         Yield a connection that cannot write, via ``PRAGMA query_only``.
 
-        Needs no grant from :meth:`enable_writes` -- reading is always permitted.
-
-        Deliberately not a ``file:...?mode=ro`` URI. Under WAL a read-only open needs
-        the ``-shm`` file to already exist and fails outright when it does not, which is
-        exactly the logs daemon's cold start -- a second process that may open this
-        database before any writer has run since boot. ``query_only`` gives the same
-        "this connection cannot write" guarantee with no such failure mode.
+        Deliberately not a ``file:...?mode=ro`` URI: under WAL that needs the ``-shm``
+        file to already exist and fails outright when it does not, which is exactly the
+        logs daemon's cold start. ``query_only`` gives the same guarantee with no such
+        failure mode.
         """
         connection = self._connect()
         try:
@@ -160,10 +144,9 @@ class ConnectionFactory:
         """
         Apply the persistent PRAGMAs and every pending migration, once.
 
-        Not gated by :meth:`enable_writes`, and does not go through :meth:`rw`. Schema
-        convergence is not what the grant protects against -- unpermitted *data* writes
-        are -- and gating it would leave a read-only consumer unable to open a database
-        that does not exist yet, which is a crash rather than a degradation.
+        Deliberately not gated by :meth:`enable_writes`: the grant protects against
+        unpermitted *data* writes, and gating schema convergence would leave a read-only
+        consumer unable to open a database that does not exist yet.
         """
         connection = self._connect()
         try:

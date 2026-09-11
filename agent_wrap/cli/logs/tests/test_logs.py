@@ -92,7 +92,6 @@ def test_foreground_dispatches_to_serve_foreground(runner: CliRunner) -> None:
 
 
 def test_already_running_prints_connect_line_and_skips_spawn(runner: CliRunner) -> None:
-    """When a server is already running, print connect line and skip spawn."""
     services.logs_service.running_server.return_value = {  # pyrefly: ignore [missing-attribute]
         "pid": 1,
         "port": 9123,

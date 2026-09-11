@@ -201,9 +201,6 @@ def test_image_claude_version_returns_none_on_invalid_json(
     assert image_claude_version("claude-agent") is None
 
 
-# --- latest_claude_version ---
-
-
 def test_latest_claude_version_returns_version_on_success(
     mocker: pytest_mock.MockFixture,
 ) -> None:
@@ -242,9 +239,6 @@ def test_latest_claude_version_uses_view_with_greater_timeout(
     assert "view" in argv
     assert "@anthropic-ai/claude-code" in argv
     assert mock_run.call_args[1]["timeout"] == 15
-
-
-# --- is_newer_version ---
 
 
 def test_is_newer_version_true_when_latest_newer() -> None:
@@ -363,9 +357,6 @@ def test_host_network_build_args_env_falsey(
     assert host_network_build_args() == []
 
 
-# --- daemon_reachable ---
-
-
 def test_daemon_reachable_true(mocker: pytest_mock.MockFixture) -> None:
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.return_value.stdout = "27.0.3"
@@ -377,9 +368,6 @@ def test_daemon_reachable_false_when_docker_absent(mocker: pytest_mock.MockFixtu
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.side_effect = FileNotFoundError()
     assert daemon_reachable() is False
-
-
-# --- list_container_names ---
 
 
 def test_list_container_names_parses_lines(mocker: pytest_mock.MockFixture) -> None:
@@ -418,9 +406,6 @@ def test_list_container_names_empty_on_failure(mocker: pytest_mock.MockFixture) 
     mock_run.return_value.stdout = ""
     mock_run.return_value.returncode = 1
     assert list_container_names("name=x") == []
-
-
-# --- inspect_containers ---
 
 
 def test_inspect_containers_returns_lines_and_rc(mocker: pytest_mock.MockFixture) -> None:
@@ -511,9 +496,6 @@ def test_list_images_empty_on_failure(mocker: pytest_mock.MockFixture) -> None:
     mock_run.return_value.stdout = "claude-agent\tlatest"
     mock_run.return_value.returncode = 1
     assert list_images(template="{{.Repository}}\t{{.Tag}}") == []
-
-
-# --- parse_docker_timestamp ---
 
 
 @pytest.mark.parametrize(

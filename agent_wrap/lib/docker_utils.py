@@ -19,7 +19,6 @@ _ZERO_TIMESTAMP_YEAR = 1
 
 
 def is_wsl() -> bool:
-    """Check if running on WSL (Microsoft kernel)."""
     try:
         return "microsoft" in Path("/proc/version").read_text().lower()
     except OSError:
@@ -70,9 +69,8 @@ def is_rootless() -> bool:
     """
     Check if Docker is running in rootless mode.
 
-    Cached: this shells out to ``docker info`` (10 s timeout) and the answer is
-    constant for the process lifetime. Tests that patch ``docker_run`` must call
-    ``is_rootless.cache_clear()`` so no value leaks between cases.
+    Cached for the process lifetime, so a test patching ``docker_run`` must call
+    ``is_rootless.cache_clear()`` or the value leaks between cases.
     """
     stdout, _ = docker_run("info", timeout=10)
     return "rootless" in stdout.lower()
@@ -82,8 +80,8 @@ def daemon_reachable() -> bool:
     """
     Report whether the Docker daemon answers at all.
 
-    Used to tell "no containers match" apart from "docker is down", which look
-    identical in a listing's empty output.
+    Tells "no containers match" apart from "docker is down", which look identical in a
+    listing's empty output.
     """
     _, rc = docker_run("version", "--format", "{{.Server.Version}}", timeout=10)
     return rc == 0
@@ -93,10 +91,9 @@ def list_container_names(*filters: str) -> list[str]:
     """
     List names of containers matching every ``docker ps --filter`` expression given.
 
-    Includes stopped containers (``-a``): a container that exited is exactly what a
-    diagnostic listing wants to surface, and the caller can read its state separately.
-    Returns [] when nothing matches or docker is unavailable — indistinguishable here
-    on purpose, so callers that care use :func:`daemon_reachable`.
+    Includes stopped containers (``-a``). Returns [] both when nothing matches and when
+    docker is unavailable -- indistinguishable on purpose, so callers that care about
+    the difference use :func:`daemon_reachable`.
     """
     args = ["ps", "-a", "--format", "{{.Names}}"]
     for expr in filters:
@@ -116,10 +113,9 @@ def inspect_containers(names: list[str], template: str) -> tuple[list[str], int]
     each container on a single line (wrap every composite field in ``{{json .Field}}``,
     which escapes newlines and tabs) or the line-to-container correspondence breaks.
 
-    The rc is returned rather than interpreted because a non-zero rc *with* output is
-    routine: a container that disappeared between listing and inspection makes docker
-    report an error for that name while still printing rows for the others. Only an
-    empty result is a real failure, and even then the caller decides.
+    The rc is returned rather than interpreted: a non-zero rc *with* output is routine,
+    since a container that vanished between listing and inspection makes docker report an
+    error for that name while still printing rows for the others.
     """
     if not names:
         return [], 0
@@ -133,19 +129,15 @@ def list_images(
     """
     List local images matching every ``docker image ls --filter`` expression given.
 
-    *template* is a Go template rendered once per image; it must keep each image on a
-    single line or the caller's field split breaks. *reference* narrows the listing to
-    one repository (``docker image ls <repo>`` lists every tag of it), which is how a
-    caller asks about a specific upstream image rather than the whole local store.
+    *template* must keep each image on a single line or the caller's field split breaks.
+    *reference* narrows the listing to one repository.
 
     *digests* passes ``--digests``, and a *template* naming ``{{.Digest}}`` must set it:
     the flag is what populates that field, so without it docker renders ``<none>`` for
-    every row rather than failing on the template. With it on, an image carrying several
-    repo digests renders one row per digest.
+    every row rather than failing on the template.
 
-    Returns [] when nothing matches or docker is unavailable — indistinguishable here on
-    purpose, matching :func:`list_container_names`, so callers that care about the
-    difference use :func:`daemon_reachable`.
+    Returns [] both when nothing matches and when docker is unavailable, as
+    :func:`list_container_names` does.
     """
     args = ["image", "ls", "--format", template]
     if digests:
@@ -165,13 +157,11 @@ def inspect_images(names: list[str], template: str) -> list[str]:
     Batch-inspect image *names* with a Go *template*, returning its output lines.
 
     ``image inspect`` for the same reason :func:`inspect_containers` uses ``container
-    inspect``: plain ``inspect`` matches either kind and would answer about the wrong
-    object. One docker call for the whole batch, so *template* must render each image on
-    a single line.
+    inspect``: plain ``inspect`` matches either kind. *template* must render each image
+    on a single line.
 
-    Unlike :func:`inspect_containers` the rc is dropped: every caller here is enriching a
-    listing it already has, and an image that vanished between the two calls is a row to
-    leave alone rather than a failure to report.
+    Unlike :func:`inspect_containers` the rc is dropped: an image that vanished between
+    the two calls is a row to leave alone rather than a failure to report.
     """
     if not names:
         return []
@@ -185,8 +175,7 @@ def remove_image(ref: str) -> bool:
 
     Deliberately without ``--force``: docker refuses to remove an image a container still
     references, and that refusal is the safety net a caller wants reported rather than
-    overridden. A False therefore means "still there, and docker had a reason" — the
-    caller decides whether that is worth surfacing.
+    overridden.
     """
     _, rc = docker_run("rmi", ref, timeout=60)
     return rc == 0
@@ -209,9 +198,6 @@ def parse_image_ref(ref: str) -> ImageRef:
     """
     Split an image reference into repository, tag and digest.
 
-    Handles the fully qualified ``repo:tag@sha256:...`` the wrapper pins its sidecars
-    with, as well as the plainer ``repo``, ``repo:tag`` and ``repo@sha256:...``.
-
     The tag is separated on the *last* colon, and only when no ``/`` follows it, so a
     registry port ("localhost:5000/img") is not mistaken for a tag.
     """
@@ -226,13 +212,11 @@ def parse_docker_timestamp(raw: str) -> datetime | None:
     """
     Parse a docker RFC3339 timestamp into a UTC-aware datetime, or None if unusable.
 
-    ``fromisoformat`` handles every shape docker emits: a trailing ``Z``, a colon-less
-    offset (``+0200``), and nanosecond precision (truncated to microseconds, which is
-    ample for the uptimes this feeds), so no hand-rolled normalizing is needed.
+    ``fromisoformat`` handles every shape docker emits, so no normalizing is needed.
 
-    Docker's zero timestamp (``0001-01-01T00:00:00Z``, meaning "never") returns None,
-    and so does a bare date: ``fromisoformat`` would happily read it as midnight, but
-    docker never emits one, so it means the caller was handed something else.
+    Docker's zero timestamp (meaning "never") returns None, and so does a bare date:
+    ``fromisoformat`` would read it as midnight, but docker never emits one, so it means
+    the caller was handed something else.
     """
     text = raw.strip()
     if "T" not in text and " " not in text:
@@ -249,7 +233,6 @@ def parse_docker_timestamp(raw: str) -> datetime | None:
 
 
 def image_exists(image: str) -> bool:
-    """Check if a Docker image exists locally."""
     _, rc = docker_run("image", "inspect", image, timeout=10)
     return rc == 0
 
@@ -274,12 +257,10 @@ def image_stamp(image: str) -> ImageStamp | None:
     """
     Id and labels of *image*, or None when it is absent or docker is unreachable.
 
-    Doubles as the existence probe, so a caller that wants both facts pays one docker
-    call rather than three. Labels come back as JSON rather than through
-    ``{{index .Config.Labels "k"}}``, which renders an absent key and an empty value
-    identically -- and absence is a state of its own here ("built before stamping").
-    Unparseable label JSON degrades to {} rather than to None: the image is genuinely
-    there, and an unreadable label reads as a label that was never set.
+    Doubles as the existence probe, so both facts cost one docker call. Labels come back
+    as JSON rather than through ``{{index .Config.Labels "k"}}``, which renders an absent
+    key and an empty value identically -- and absence is a state of its own here ("built
+    before stamping").
     """
     stdout, rc = docker_run(
         "image", "inspect", "--format", "{{.Id}} {{json .Config.Labels}}", image, timeout=10
@@ -300,10 +281,8 @@ def image_claude_version(image: str) -> str | None:
     """
     Return the @anthropic-ai/claude-code version inside *image*, or None.
 
-    Reads the installed global npm package via ``npm ls --json`` in a short-lived
-    container. Returns None when the command times out or the version cannot be
-    parsed. A non-zero npm exit code is tolerated: ``npm ls`` flags dependency
-    problems with rc=1 while still printing the JSON with the version.
+    A non-zero npm exit code is tolerated: ``npm ls`` flags dependency problems with rc=1
+    while still printing the JSON with the version.
     """
     stdout, _ = docker_run(
         "run",
@@ -333,11 +312,8 @@ def latest_claude_version(image: str) -> str | None:
     """
     Return the latest @anthropic-ai/claude-code version on the npm registry, or None.
 
-    Runs ``npm view`` — which queries the registry over the network — in a
-    short-lived container from *image*. Returns None when the command times out,
-    the registry is unreachable, or the output cannot be parsed. The timeout is
-    longer than :func:`image_claude_version`'s because this actually reaches the
-    network.
+    Runs ``npm view`` in a short-lived container, so this one reaches the network -- and
+    carries a longer timeout than :func:`image_claude_version` for that reason.
     """
     stdout, _ = docker_run(
         "run",
@@ -359,9 +335,8 @@ def is_newer_version(installed: str | None, latest: str | None) -> bool:
     """
     Whether *latest* is a newer version than *installed*.
 
-    Compares dot-separated numeric parts ("2.0.50" -> (2, 0, 50)) as tuples, so
-    "2.0.10" sorts after "2.0.9". Returns False when either side is None or
-    cannot be parsed — an unknown latest version must never look like an update.
+    Compared as integer tuples, so "2.0.10" sorts after "2.0.9". False when either side
+    is None or unparseable -- an unknown latest version must never look like an update.
     """
     if not installed or not latest:
         return False
@@ -376,7 +351,6 @@ def is_newer_version(installed: str | None, latest: str | None) -> bool:
 
 
 def network_exists(network: str) -> bool:
-    """Check if a Docker network exists."""
     _, rc = docker_run("network", "inspect", network, timeout=10)
     return rc == 0
 
@@ -385,12 +359,9 @@ def get_user_args() -> list[str]:
     """
     Get --user flags for docker run.
 
-    Rootful: pin the container to the host UID/GID so bind-mounted files are
-    host-user-owned. Rootless: pin to 0:0 — rootless maps container-root to the
-    host user, so this both writes mounts correctly AND overrides any non-root
-    USER baked into an image (e.g. the Telegram sidecar), which would otherwise
-    map to an unprivileged subuid that cannot write host-owned mounts. The agent
-    base image declares no USER, so 0:0 matches its existing rootless behavior.
+    Rootful pins the host UID/GID so bind-mounted files are host-user-owned. Rootless
+    pins 0:0, which maps to the host user -- and also overrides any non-root USER baked
+    into an image, which would otherwise map to a subuid that cannot write host mounts.
     """
     if is_rootless():
         return ["--user", "0:0"]
@@ -414,10 +385,8 @@ def get_tty_args() -> list[str]:
     """
     Return docker stdin/tty flags.
 
-    Allocate a pseudo-TTY (-t) only when our own stdin is a terminal; Docker
-    rejects -t when stdin is not a TTY (e.g. launched from a subprocess with
-    stdin=DEVNULL or a pipe). Always pass -i so piped stdin still reaches the
-    container.
+    ``-t`` only when our own stdin is a terminal: Docker rejects it otherwise. Always
+    ``-i``, so piped stdin still reaches the container.
     """
     if sys.stdin.isatty():
         return ["-it"]
@@ -428,10 +397,9 @@ class MountSpec(NamedTuple):
     """
     One mount declared on a ``docker run`` command line.
 
-    ``source`` is the host side exactly as it was authored, and only when the spec
-    names a host path at all: named and anonymous volumes carry ``None``. It is left
-    unresolved on purpose -- the caller knows which directory a relative path is
-    resolved against, and nothing here rewrites what the author wrote.
+    ``source`` is the host side exactly as authored, and ``None`` for named and anonymous
+    volumes. Left unresolved on purpose: only the caller knows which directory a relative
+    path is resolved against.
     """
 
     source: str | None
@@ -455,8 +423,6 @@ _MOUNT_FLAGS = {
 
 
 class _MountSpecParser:
-    """Parsers for the individual ``docker run`` mount spec syntaxes."""
-
     @staticmethod
     def short_form(spec: str) -> MountSpec | None:
         """Parse a ``-v``/``--volume`` spec: ``[src:]dst[:opts]``."""
@@ -505,10 +471,8 @@ def parse_mount_specs(args: list[str]) -> list[MountSpec]:
     """
     Extract every mount declared in a list of ``docker run`` flags.
 
-    Recognizes ``-v``/``--volume``, ``--mount`` and ``--tmpfs``, in both the
-    ``--flag value`` and ``--flag=value`` spellings. Unparseable specs are dropped
-    rather than reported: docker is the authority on what it accepts, and this parser
-    exists only to decide which host paths to pre-create.
+    Unparseable specs are dropped rather than reported: docker is the authority on what
+    it accepts, and this parser exists only to decide which host paths to pre-create.
     """
     specs: list[MountSpec] = []
     index = 0

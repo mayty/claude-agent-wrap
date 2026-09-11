@@ -468,8 +468,6 @@ def test_apply_already_up_to_date(
     display_mock.success.assert_any_call("Already up to date")
 
 
-# --- current_revision (local-only, read-only) ---
-
 _GIT = "agent_wrap.domain.updates.service._GitOps.git"
 
 

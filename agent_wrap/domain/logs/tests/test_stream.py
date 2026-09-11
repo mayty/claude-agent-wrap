@@ -117,7 +117,7 @@ def _timed(start: float, **overrides: Any) -> dict[str, Any]:
 
 
 def _untimed(**overrides: Any) -> dict[str, Any]:
-    """Build a record with an all-null timing, as every failure used to be written."""
+    """Build a record with an all-null timing, the shape a timing-less failure takes."""
     return _record(
         timing={"start": None, "completionStart": None, "end": None},
         status="failure",
@@ -385,11 +385,6 @@ def test_a_lone_surrogate_does_not_break_the_line_it_travels_on(
     assert _blobs(lines)["blob:1"]["content"] == "a���b"
 
 
-# ---------------------------------------------------------------------------
-# Order
-# ---------------------------------------------------------------------------
-
-
 def test_an_untimed_record_stays_where_it_was_appended(
     stream: SessionStream, index: Callable[..., None]
 ) -> None:
@@ -442,11 +437,6 @@ def test_two_providers_merge_chronologically(
         "deepseek-middle",
         "bedrock-late",
     ]
-
-
-# ---------------------------------------------------------------------------
-# The incremental read the browser's tick uses
-# ---------------------------------------------------------------------------
 
 
 def test_from_index_returns_only_the_records_after_it(

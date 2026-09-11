@@ -36,19 +36,21 @@ class KeyDerivation:
     """
     Three-component HMAC-SHA256 key derivation for the secrets store.
 
-    Mixes three components so an attacker needs all three to derive the key:
-    1. Keyfile — 32 random bytes, generated once per machine.
-    2. Machine-id — ``/etc/machine-id`` (stable per-machine).
-    3. First-commit hash — from git (stable per clone).
+    A 32-byte keyfile, ``/etc/machine-id``, and the repo's first-commit hash -- an
+    attacker needs all three.
     """
 
     @staticmethod
     @functools.lru_cache(maxsize=1)
     def derive_key(display: DisplayService) -> bytes:
-        """Derive the symmetric encryption key."""
+        """
+        Derive the symmetric encryption key.
+
+        The keyfile is mixed with ``/etc/machine-id`` and the repo's root commit, so a
+        copied secrets file is undecryptable on another computer or in another clone.
+        """
         keyfile_path = SECRETS_KEYFILE_PATH
 
-        # -- keyfile --
         try:
             keyfile_bytes = keyfile_path.read_bytes()
         except FileNotFoundError, OSError:
@@ -60,7 +62,6 @@ class KeyDerivation:
 
         h = hmac.new(keyfile_bytes, digestmod=hashlib.sha256)
 
-        # -- machine-id (prevents copy-paste to another computer) --
         try:
             machine_id = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
             if not machine_id:
@@ -70,7 +71,6 @@ class KeyDerivation:
             machine_id = ""
         h.update(machine_id.encode())
 
-        # -- repo identity (prevents copy-paste to another clone) --
         result = subprocess.run(
             ["git", "rev-list", "--max-parents=0", "HEAD"],
             capture_output=True,
@@ -94,9 +94,8 @@ class EncryptionPrimitives:
         """
         Encrypt *plaintext* using HMAC-SHA256 in CTR mode.
 
-        Format: ``nonce(16) || ciphertext || hmac(32)``.
-        Two sub-keys are derived from *key* for the encryption and
-        authentication steps so the same key is never used for both operations.
+        ``nonce(16) || ciphertext || hmac(32)``. Separate sub-keys are derived for
+        encryption and authentication so one key is never used for both.
         """
         nonce = os.urandom(16)
 
@@ -127,8 +126,7 @@ class EncryptionPrimitives:
         """
         Decrypt *payload* and verify the authentication tag.
 
-        Returns the plaintext on success, ``None`` on HMAC mismatch or
-        structural corruption (too short to contain nonce + MAC).
+        ``None`` on HMAC mismatch or structural corruption.
         """
         if len(payload) < EncryptionPrimitives.MIN_PAYLOAD_LEN:
             return None
@@ -166,26 +164,12 @@ class EncryptedFileStore:
         """
         Migrate old ``~/claude_keys.json`` secrets to the encrypted store, once.
 
-        Called from :func:`read` and :func:`write` so every entry point
-        transparently triggers migration.
+        Called from both :func:`read` and :func:`write`, so every entry point triggers
+        it. The key mapping is :data:`LEGACY_KEY_MAP`.
 
-        Mapping from old flat keys to new namespaced keys:
-
-        ====================================  ================================
-        Old key (``~/claude_keys.json``)      New namespaced key
-        ====================================  ================================
-        ``BedrockBearerToken``                ``litellm-bedrock:api_key``
-        ``ServiceSpecificCredential``         ``litellm-bedrock:api_key``
-        ``DashScopeAPIKey``                   ``litellm-dashscope:api_key``
-        ``DeepSeekAPIKey``                    ``litellm-deepseek:api_key``
-        ``TelegramBotToken``                  ``telegram:TelegramBotToken``
-        ``TelegramChatId``                    ``telegram:TelegramChatId``
-        ====================================  ================================
-
-        ``ServiceSpecificCredential`` is a nested dict whose value is at the
-        key ``ServiceCredentialSecret``.  It is only used when
-        ``BedrockBearerToken`` is missing or empty (preserving the old fallback
-        order from the per-provider ``read_secret_key`` methods).
+        ``ServiceSpecificCredential`` is a nested dict whose value sits at
+        ``ServiceCredentialSecret``, and is used only when ``BedrockBearerToken`` is
+        missing or empty -- the old per-provider fallback order.
         """
         old_path = OLD_SECRETS_PATH
         if not old_path.is_file():
@@ -203,7 +187,6 @@ class EncryptedFileStore:
         data = EncryptedFileStore.read_all(display)
         migrated = 0
 
-        # --- Bedrock ---
         bedrock_new_key = "litellm-bedrock:api_key"
         bedrock_value: str = old_data.get("BedrockBearerToken", "") or ""
         if not bedrock_value:
@@ -214,7 +197,6 @@ class EncryptedFileStore:
             data[bedrock_new_key] = bedrock_value
             migrated += 1
 
-        # --- DashScope ---
         dashscope_value: str = old_data.get("DashScopeAPIKey", "") or ""
         if dashscope_value:
             ds_key = "litellm-dashscope:api_key"
@@ -222,7 +204,6 @@ class EncryptedFileStore:
                 data[ds_key] = dashscope_value
                 migrated += 1
 
-        # --- DeepSeek ---
         deepseek_value: str = old_data.get("DeepSeekAPIKey", "") or ""
         if deepseek_value:
             deepseek_key = "litellm-deepseek:api_key"
@@ -230,7 +211,6 @@ class EncryptedFileStore:
                 data[deepseek_key] = deepseek_value
                 migrated += 1
 
-        # --- Telegram ---
         tg_bot: str = old_data.get("TelegramBotToken", "") or ""
         if tg_bot:
             tg_bot_key = "telegram:TelegramBotToken"
@@ -261,8 +241,7 @@ class EncryptedFileStore:
         """
         Decrypt and return all stored secrets.
 
-        Returns an empty dict when the file doesn't exist, cannot be decrypted
-        (key changed / tampering), or contains invalid JSON.
+        Empty when the file is absent, undecryptable, or not valid JSON.
         """
         path = SECRETS_ENCRYPTED_FILE_PATH
         if not path.is_file():
@@ -300,12 +279,7 @@ class EncryptedFileStore:
 
     @staticmethod
     def write_all(data: dict[str, str], *, display: DisplayService) -> None:
-        """
-        Encrypt *data* and atomically write it to the secrets file.
-
-        Uses a sibling temp file + rename for atomicity; the parent directory
-        is created if missing.
-        """
+        """Encrypt *data* and atomically write it to the secrets file."""
         path = SECRETS_ENCRYPTED_FILE_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         key = KeyDerivation.derive_key(display)

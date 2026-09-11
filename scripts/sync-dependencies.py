@@ -92,7 +92,6 @@ def rewrite_body(body: str, versions: dict[str, str]) -> tuple[str, list[tuple[s
 
 
 def update_dependencies(section: str, tree: str) -> int:
-    """Sync one pyproject.toml array against *tree*. Returns a process exit code."""
     versions = parse_tree(tree)
     if not versions:
         print(f"no dependencies found in the {section} tree", file=sys.stderr)

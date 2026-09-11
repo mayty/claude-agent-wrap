@@ -15,12 +15,9 @@ class DaemonState(TypedDict):
     """
     State of a logs viewer daemon that is running or coming up.
 
-    *starting* is True between the spawn claim and the moment the viewer actually binds
-    its port: the claim is written by the spawning side as soon as it knows the pid, so a
-    concurrent launcher sees the slot taken instead of starting a second viewer. The
-    viewer itself clears the flag once it is listening, and corrects *port* at the same
-    time -- until then *port* is the port that was requested, not necessarily the one
-    finally bound.
+    *starting* is True between the spawn claim and the viewer binding its port, so a
+    concurrent launcher sees the slot taken instead of starting a second viewer. Until
+    it clears, *port* is the port *requested*, not necessarily the one bound.
     """
 
     pid: int
@@ -32,10 +29,9 @@ class Fingerprint(TypedDict):
     """
     Change-marker the browser polls, and the wire shape of the ``*-stat`` endpoints.
 
-    ``rev`` is the newest ``sessions.last_ingested_at`` in scope (unix ns, ``None`` when
-    the scope holds nothing) and ``count`` is how many session rows it covers. It used to
-    be a max mtime and a summed size over every ``messages.jsonl`` in scope; both halves
-    now come from the index, so what the marker describes is what a fetch would return.
+    ``rev`` is the newest ``sessions.last_ingested_at`` in scope (unix ns, ``None`` for
+    an empty scope) and ``count`` how many session rows it covers. Both come from the
+    index, so the marker describes exactly what a fetch would return.
     """
 
     rev: int | None
@@ -47,9 +43,8 @@ class ViewerState:
     """
     A logs-viewer snapshot for reporting, including its logfile's liveness.
 
-    Distinct from :class:`DaemonState`: that is the on-disk state file's shape, read on
-    the path that also *repairs* it. This adds what a report wants (is the logfile
-    growing?) and is produced without touching anything.
+    Distinct from :class:`DaemonState`, which is the state file's shape and is read on
+    the path that also *repairs* it. This is produced without touching anything.
     """
 
     running: bool
@@ -65,8 +60,6 @@ class ViewerState:
 
 
 class GroupInfo(TypedDict):
-    """A transient project group."""
-
     root: Path
     name: str
     paths: list[Path]
@@ -74,8 +67,6 @@ class GroupInfo(TypedDict):
 
 
 class ProjectInfo(TypedDict):
-    """Summary row for a project in the viewer listing."""
-
     id: int
     path: str
     name: str
@@ -84,8 +75,6 @@ class ProjectInfo(TypedDict):
 
 
 class CombinedSessionMeta(TypedDict):
-    """Per-session metadata merged across providers."""
-
     providers: list[str]
     session_id: str
     alias: str | None
@@ -99,12 +88,10 @@ class NormalizedRecordBase(TypedDict):
     """
     Core fields of one request as the viewer consumes it, before cost enrichment.
 
-    The three request-side fields carry ``blob:<id>`` *references*, not content: the
-    values behind them travel once per session rather than once per record, which is
-    what keeps a session's payload proportional to its length instead of its square.
-    See :mod:`agent_wrap.domain.logs.stream`. ``tools`` is ``[]`` rather than a
-    reference when the request carried none, so the client's "are there any" test
-    reads the same as it did when the array was inline.
+    The three request-side fields carry ``blob:<id>`` *references*, not content, which
+    keeps a session's payload proportional to its length rather than its square. ``tools``
+    is ``[]`` rather than a reference when the request carried none, so the client's "are
+    there any" test needs no special case.
     """
 
     timing: RequestTiming | None
@@ -131,10 +118,8 @@ class NormalizedRecord(NormalizedRecordBase, total=False):
     """
     One request as the viewer consumes it, priced.
 
-    The four fields in the ``total=False`` subclass are what ``enrich_with_costs`` adds
-    on top of the record's own columns and content. They are derived at read time, never
-    stored: the pricing tables move, and a cost column would freeze each request at
-    whatever the rates were on the day it was ingested.
+    The ``total=False`` fields are derived at read time, never stored: pricing tables
+    move, and a cost column would freeze each request at the day it was ingested.
     """
 
     context_tokens: int
@@ -144,8 +129,6 @@ class NormalizedRecord(NormalizedRecordBase, total=False):
 
 
 class ExtractedFields(NamedTuple):
-    """Fields extracted from one raw or resolved log record."""
-
     data: dict[str, Any]
     agent_id: str | None
     reply: dict[str, Any]
@@ -158,15 +141,12 @@ class IngestReport:
     """
     What one ingest pass over the log tree did.
 
-    ``sessions_seen`` counts every session directory the walk found, whether or not it
-    had anything new; ``sessions_changed`` counts those that actually advanced a
-    watermark. The two differing is the normal state of a warm tree — that is the point
-    of the watermarks — so a report of "613 seen, 0 changed" means up to date, not idle.
+    The two counts differing is the normal state of a warm tree, so "613 seen, 0 changed"
+    means up to date rather than idle.
 
-    ``failed`` names the session directories that raised, one entry each, rather than
-    aborting the pass. A backfill spanning hundreds of sessions should not be lost to
-    one unreadable directory, but a failure must still be visible and must still make
-    the verb exit non-zero, so it is collected here rather than suppressed.
+    ``failed`` names the session directories that raised rather than aborting the pass: a
+    backfill of hundreds should not be lost to one unreadable directory, but the failure
+    must still make the verb exit non-zero.
     """
 
     sessions_seen: int
@@ -193,7 +173,6 @@ class IndexLag(NamedTuple):
 
     @property
     def is_stale(self) -> bool:
-        """Whether anything is missing from the index."""
         return self.behind > 0
 
 
@@ -201,18 +180,12 @@ class ExpiredSession(NamedTuple):
     """
     One session directory old enough for retention to delete, with what that costs.
 
-    ``path`` is carried rather than rebuilt from ``key`` so that the directory the
-    survey measured is the directory the run removes — the same no-re-walk discipline
-    ``CleanupScope`` keeps for orphaned projects.
+    ``path`` is carried rather than rebuilt from ``key``, so the directory the survey
+    measured is the directory the run removes.
 
-    ``messages_offset`` is the index's watermark, kept so the run can re-ask the one
-    question that makes this safe: has the index read the whole file? A session whose
-    file has grown since is not expired at all — the growth is newer than the age that
-    selected it — and re-checking under the ingest lock is what turns that from a
-    survey-time observation into a property of the delete.
-
-    ``size_bytes`` is the directory's apparent size when it was surveyed, and is what
-    gets reported as freed.
+    ``messages_offset`` is the index's watermark, kept so the run can re-ask under the
+    lock whether the index has read the whole file. A session whose file has grown since
+    is not expired at all -- the growth is newer than the age that selected it.
     """
 
     key: SessionKey
@@ -226,9 +199,8 @@ class RetentionScope:
     """
     What retention would delete, surveyed before anything is removed.
 
-    ``days`` is ``AGENT_LOGS_RETENTION_DAYS`` as it was read, and ``0`` means retention
-    is switched off — which is the default, and the reason this scope is usually empty
-    for a reason worth telling apart from "nothing is old enough yet".
+    ``days`` of ``0`` means retention is switched off -- the default, and worth telling
+    apart from "nothing is old enough yet".
     """
 
     days: int
@@ -236,7 +208,6 @@ class RetentionScope:
 
     @property
     def is_empty(self) -> bool:
-        """Whether there is nothing for retention to delete."""
         return not self.sessions
 
     @property
@@ -249,9 +220,8 @@ class RetentionResult(NamedTuple):
     """
     What retention actually deleted: session directories, and the bytes they held.
 
-    ``freed_bytes`` is log-tree bytes only. The index rows those sessions owned go in
-    the same step, but the content behind them is reclaimed by the blob sweep that
-    follows, and is reported separately because it is a different disk.
+    ``freed_bytes`` is log-tree bytes only: the content behind the deleted rows is
+    reclaimed by the blob sweep that follows, and reported separately as a different disk.
     """
 
     sessions: int
@@ -262,10 +232,8 @@ class IndexReclaim(NamedTuple):
     """
     Both halves of one reclaim pass: retention first, then the blob sweep.
 
-    They are one result because they are one lock and one order. Retention deletes the
-    session rows, which is what makes their content unreachable; the sweep is the only
-    thing that then reclaims it. Run the other way round, retention would free nothing
-    in the database at all until the *next* cleanup.
+    One result because they are one lock and one order -- reversed, retention would free
+    nothing in the database until the *next* cleanup.
     """
 
     retention: RetentionResult

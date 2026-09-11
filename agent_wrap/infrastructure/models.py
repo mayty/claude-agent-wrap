@@ -8,7 +8,5 @@ if TYPE_CHECKING:
 
 
 class MigrationFile(NamedTuple):
-    """One discovered ``NNNN_<slug>.sql`` migration script."""
-
     version: int
     path: Path

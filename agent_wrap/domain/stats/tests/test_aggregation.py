@@ -2,11 +2,9 @@
 """
 Domain-layer tests for rolling the request index up into the render inputs.
 
-These went through a file scan before the cutover and now go through the index, but
-what they assert is unchanged: how projects group, how a window narrows, and where
-spend with no owning project ends up. Each writes a log tree, indexes it, and asks
-``StatsService`` — see this package's ``conftest.py`` for the three fixtures that do
-the writing and indexing.
+What they assert: how projects group, how a window narrows, and where spend with no
+owning project ends up. Each writes a log tree, indexes it, and asks ``StatsService`` --
+see this package's ``conftest.py`` for the three fixtures that do the writing.
 """
 
 from collections import defaultdict

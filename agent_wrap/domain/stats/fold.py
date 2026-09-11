@@ -2,16 +2,10 @@
 """
 Folding the index's usage cells into priced buckets for the stats command.
 
-Nothing here reads a file. The whole population arrives as :class:`UsageCell`s from one
-aggregate over ``logs.db`` -- see ``agent_wrap/domain/logs/ingest.py`` for why no
-consumer parses a log file any more -- and this module's job is to turn those cells into
-the ``{outer key: {model: Bucket}}`` shape the renderer consumes, priced per hour.
-
-The two-stage shape survives from the file scan and is still load-bearing. A cell is
-folded into an *unpriced* bucket keyed by its UTC ``(weekday, hour)``, and only then is
-:func:`price_buckets` allowed to collapse that axis -- because a provider may charge a
-different rate by time of day, and pricing a whole day at one representative instant
-would silently misprice it.
+The two-stage shape is load-bearing: a cell is folded into an *unpriced* bucket keyed by
+its UTC ``(weekday, hour)``, and only then may :func:`price_buckets` collapse that axis.
+A provider may charge a different rate by time of day, so pricing a whole day at one
+representative instant would silently misprice it.
 """
 
 from collections import defaultdict
@@ -36,11 +30,8 @@ def hour_bucket_dt(hour_bucket: int) -> datetime:
     """
     Return the UTC instant an hour bucket starts at.
 
-    The inverse of the index's ``started_at_us / 3600000000`` expression, and the only
-    place a bucket is turned back into a calendar. The bucket is a count of whole hours
-    since the epoch, so this is exact rather than approximate -- and it is deliberately
-    the *start* of the hour, since every derived field (the weekday, the UTC hour, the
-    ``DAY_START_HOURS``-shifted stats day) is constant across the hour it names.
+    The only place a bucket is turned back into a calendar. Exact, not approximate, and
+    deliberately the *start* of the hour -- every derived field is constant across it.
     """
     return datetime.fromtimestamp(hour_bucket * SECONDS_PER_HOUR, tz=UTC)
 
@@ -49,15 +40,12 @@ def usage_from_cell(cell: UsageCell) -> TokenUsage:
     """
     Present one cell's token counts as the usage shape the pricing domain charges.
 
-    ``cache_creation`` is left empty on purpose, which routes the whole
-    ``cache_write_tokens`` total through ``Bucket.add``'s last-resort rule and charges
-    it at the 5-minute rate. The index *does* store the 5m/1h split, and this
-    deliberately does not spend it: no consumer read that split before the index
-    existed either -- ``Bucket.add`` only ever looked at ``usage.cache_creation``, which
-    0 of 45,403 records in the log tree populate -- so honouring it here would change
-    what users are told they spent as a side effect of a storage change. Correcting the
-    tier is its own change; ``cache_write_5m`` / ``cache_write_1h`` are what make it
-    possible without re-ingesting.
+    ``cache_creation`` is left empty on purpose, routing the whole ``cache_write_tokens``
+    total through ``Bucket.add``'s last-resort rule and charging it at the 5-minute rate.
+    The index *does* store the 5m/1h split and this deliberately does not spend it:
+    honouring it would change what users are told they spent. Correcting the tier is its
+    own change, which ``cache_write_5m`` / ``cache_write_1h`` make possible without a
+    re-ingest.
     """
     return {
         "input_tokens": cell.input_tokens,
@@ -80,15 +68,12 @@ def fold_cells(
     Fold usage cells into one priced :class:`HashUsage` per project hash.
 
     The hash is the outermost key because it is the only project identity the index
-    holds -- resolving a hash to a path (or to no path at all, which is what makes a
-    session orphaned) is a question about the registry *now*, and belongs to the caller.
+    holds; resolving it to a path is a question about the registry *now*.
 
-    Each cell contributes to both breakdowns, keyed by stats day and by usage source, so
-    the verbose table and the default table are computed in one pass over the same
-    population and cannot disagree. ``day_in_range`` is applied per cell even though the
-    query is already bounded: the bound is an hour bucket and this is the day rule the
-    rest of the domain uses, so re-stating it here is what keeps the ``"?"`` bucket's
-    all-time-only behaviour in one place.
+    Each cell contributes to both breakdowns in one pass, so the verbose and default
+    tables cannot disagree. ``day_in_range`` is applied per cell even though the query is
+    bounded: that bound is an hour bucket, and re-stating the day rule here keeps the
+    ``"?"`` bucket's all-time-only behaviour in one place.
     """
     by_hash_day: dict[str, HourBuckets] = defaultdict(dict)
     by_hash_source: dict[str, HourBuckets] = defaultdict(dict)
@@ -141,9 +126,8 @@ def _display_model(cell: UsageCell, pricing: PricingService) -> str:
     """
     Return the ``provider/model`` key a cell renders under.
 
-    The provider comes from the session's own directory name, which is the sidecar's
-    name (``litellm-bedrock``) rather than the upstream vendor's, and the model is
-    normalized so two spellings of one model collapse to a single row.
+    The provider is the *sidecar's* name (``litellm-bedrock``), not the upstream
+    vendor's, and the model is normalized so two spellings collapse to one row.
     """
     clean = cell.model.rsplit("/", 1)[-1]
     return f"{cell.provider}/{pricing.normalize_model(clean) or clean}"
@@ -155,13 +139,7 @@ def _accumulate(
     bucket: Bucket,
     pricing: PricingService,
 ) -> None:
-    """
-    Merge *bucket* into ``buckets[outer][hour][model]``, creating the path as needed.
-
-    The three keys travel as one tuple because they are one address, and because the
-    caller has two of them to spell out per cell -- the day breakdown and the usage
-    source breakdown differ only in their outer key.
-    """
+    """Merge *bucket* into ``buckets[outer][hour][model]``, creating the path as needed."""
     outer_key, hour_key, model = address
     buckets.setdefault(outer_key, {}).setdefault(hour_key, {}).setdefault(
         model, pricing.new_bucket()
@@ -169,7 +147,6 @@ def _accumulate(
 
 
 def _micros_to_dt(value: int | None) -> datetime | None:
-    """Convert an epoch-microseconds instant to a UTC datetime, or None."""
     if value is None:
         return None
     return datetime.fromtimestamp(value / 1_000_000, tz=UTC)
@@ -196,10 +173,8 @@ def price_buckets(
     """
     Price every Bucket in *buckets*, then collapse the hour/weekday axis.
 
-    Each ``(outer_key, (weekday, hour), model)`` bucket is priced at its own UTC
-    weekday and hour, then merged into the ``{outer_key: {model: Bucket}}`` shape
-    the rest of the stats pipeline consumes. Pricing before collapsing is what
-    keeps a day's usage from being priced at a single representative instant.
+    Each bucket is priced at its own UTC weekday and hour first: pricing before
+    collapsing is what keeps a day's usage off a single representative instant.
     """
     collapsed: dict[str, dict[str, Bucket]] = defaultdict(lambda: defaultdict(pricing.new_bucket))
     for outer_key, by_hour in buckets.items():

@@ -219,11 +219,10 @@ def test_the_preview_says_the_spend_will_stop_being_reported(
     runner: CliRunner, display_mock_service: Mock
 ) -> None:
     """
-    Deleting logs now deletes their spend, and the prompt has to say so before it asks.
+    Deleting logs deletes their spend, and the prompt has to say so before it asks.
 
-    It used to be archived and kept appearing under ``<orphaned>`` forever. Removing
-    that is a change in what a user loses by confirming, so the preview names it rather
-    than leaving them to notice afterwards.
+    It is what a user loses by confirming, so the preview names it rather than leaving
+    them to notice afterwards.
     """
     display_mock_service.prompt_confirm.return_value = False
 

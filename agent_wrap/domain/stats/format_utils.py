@@ -36,7 +36,6 @@ def hour_bounds(from_iso: str | None, until_iso: str | None) -> tuple[int | None
 
 
 def _day_start_hour(day_iso: str) -> int:
-    """Return the hour bucket a stats day begins in."""
     midnight = datetime.fromisoformat(day_iso).replace(tzinfo=UTC)
     start = midnight + timedelta(hours=DAY_START_HOURS)
     return int(start.timestamp()) // SECONDS_PER_HOUR

@@ -181,6 +181,5 @@ class BedrockProvider(Provider):
 
     @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
-        """Return the cached AWS Bedrock pricing table for this provider."""
         cache_path = self._state_dir() / "pricing.json"
         return _BedrockPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)

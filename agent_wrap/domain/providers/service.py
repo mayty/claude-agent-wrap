@@ -31,7 +31,6 @@ class ProviderService:
         self._display = display_service
 
     def discover_providers(self) -> dict[str, type[Provider]]:
-        """Scan provider subdirectories for concrete Provider subclasses."""
         registry: dict[str, type[Provider]] = {}
         for item in PROVIDERS_DIR.iterdir():
             if not item.is_dir():

@@ -2,25 +2,16 @@
 """
 The NDJSON one open session is served as, assembled from the request index.
 
-This replaced a read of every record file the session had, and the shape of what goes
-over the wire is the whole point. A conversation prefix is re-sent on every turn, so a
-session's messages are quadratic in its length when each record carries its own copy: the
-largest session in the current tree is 910 records holding 131,000 message references --
-behind which stand 2,442 distinct values. Sending each value once, keyed, and the
-references as ``blob:<id>`` takes that session's response from 59 MB to 11.6 MB.
+The shape of what goes over the wire is the whole point. A conversation prefix is re-sent
+every turn, so a session's messages are quadratic in its length when each record carries
+its own copy: the largest session in the tree is 910 records holding 131,000 message
+references behind which stand 2,442 distinct values. Sending each value once, keyed, and
+the references as ``blob:<id>`` takes that response from 59 MB to 11.6 MB. Incrementally,
+``from`` returns 9 to 400 KB rather than the whole session every second.
 
-The refresh is where it tells. The browser re-reads an open session once a second, and
-what it used to re-read was the whole thing -- 52 MB of records plus a 7 MB strings
-response, every second, for one appended turn. Now ``from`` returns the new records and
-only the content they introduced: 9 to 400 KB, measured across the four longest sessions
-in the tree, in single-digit milliseconds.
-
-The client resolves a reference the same way it has always resolved a ``hash:`` pointer:
-one dictionary, filled from the stream ahead of the records that need it. That is why
-both kinds of content travel as the same line type. Order within the stream is a
-contract, not an accident -- strings before the blobs whose text quotes them, blobs
-before the records that reference them -- so a consumer can render progressively and
-never has to hold a line back waiting for content.
+Order within the stream is a contract, not an accident -- strings before the blobs whose
+text quotes them, blobs before the records that reference them -- so a consumer renders
+progressively and never holds a line back waiting for content.
 """
 
 import json
@@ -64,12 +55,9 @@ class SessionStream:
     """
     Serves one session the user opened, as the lines the browser consumes.
 
-    Holds no state between calls: every request re-reads the index, which is what makes
-    the hot-session cache this replaced unnecessary. The whole of the longest session in
-    the current tree is ~105 ms of reads, decompression and serialization, and the
-    incremental case -- what the viewer's one-second tick asks for -- is single-digit
-    milliseconds, because the content the client already has is excluded rather than
-    re-sent.
+    Holds no state between calls: every request re-reads the index, which is cheap enough
+    that no session cache is needed -- the longest session in the tree is ~105 ms whole,
+    and the viewer's one-second tick is single-digit milliseconds.
     """
 
     def __init__(
@@ -90,15 +78,12 @@ class SessionStream:
         """
         Yield the NDJSON lines for one session, without the trailing newlines.
 
-        *meta* is the merged summary the session list already holds, passed in rather
-        than recomputed: it is the same rows this would have to re-read, and the header
-        the browser draws before any record arrives must agree with the list entry the
-        user clicked.
+        *meta* is passed in rather than recomputed so the header the browser draws agrees
+        with the list entry the user clicked.
 
-        *from_index* is a position in the order this yields records in, so a client that
-        holds the first *n* asks for the rest by number. *limit* caps how many records
-        follow; ``session_meta`` still reports the session's true length, so a capped
-        response is recognisable as one.
+        *from_index* is a position in the order this yields records in. *limit* caps how
+        many follow; ``session_meta`` still reports the true length, so a capped response
+        is recognisable as one.
         """
         yield _line({"__type__": SESSION_META_TYPE, **(meta or {})})
 
@@ -123,19 +108,14 @@ class SessionStream:
         """
         Return every record of a merged session, in the order the viewer shows them.
 
-        Chronological by start instant, across the directories the session spans -- a
-        provider switch mid-session, or two member projects of a grouped transient
-        project sharing one session id. The sort is stable, so records sharing an
-        instant stay in the order their directories were read, which is
-        ``sessions_for``'s key order.
+        Chronological by start instant across the directories the session spans. The sort
+        is stable, so records sharing an instant keep ``sessions_for``'s key order.
 
         A record with no start instant inherits the last one seen rather than sorting as
-        zero. Every failure used to be written with an all-null timing, so keying on
-        "start or 0" hoisted them to the top of the stream: the session-start quota
-        probe's 429 appeared above the conversation it preceded by milliseconds. A
-        directory's records are append-ordered, so carrying the previous instant forward
-        reproduces where the record actually was. Leading records with no instant keep a
-        key of zero and stay first, which is where they were appended.
+        zero -- otherwise a timing-less failure is hoisted to the top of the stream,
+        above the conversation it preceded by milliseconds. A directory's records are
+        append-ordered, so carrying the previous instant forward reproduces where the
+        record actually was.
         """
         positions: list[_Position] = []
         for session in sessions:
@@ -164,10 +144,9 @@ class SessionStream:
         """
         Yield one batch's content and records, content first.
 
-        The two sets are read *and* written here: they are what makes each batch send
-        only the content the batches before it did not, which is also what bounds this
-        method's memory. Without them a batch covering record 900 would carry the whole
-        conversation again.
+        The two sets are read *and* written here, which is what makes a batch send only
+        the content earlier batches did not -- without them, a batch covering record 900
+        would carry the whole conversation again.
         """
         rows = self._rows(batch)
         wanted = _blob_ids(rows.values()) - sent_blobs
@@ -192,7 +171,6 @@ class SessionStream:
         yield from records
 
     def _rows(self, batch: Iterable[_Position]) -> dict[tuple[int, int], IndexedRequest]:
-        """Fetch this batch's request rows, keyed by ``(session row id, ordinal)``."""
         by_session: dict[int, list[int]] = {}
         for _key, session, ordinal in batch:
             by_session.setdefault(session.session_id, []).append(ordinal)
@@ -206,14 +184,11 @@ class SessionStream:
         """
         Yield a line for every interned string this batch's text quotes and has not sent.
 
-        The scan is over the finished text rather than a walk of parsed values: a
-        pointer is 69 characters of a fixed shape, and the blobs are spliced onto the
-        wire as the canonical JSON the index already stores -- never parsed on this
-        path at all.
+        Scanned over the finished text rather than parsed values: a pointer is 69
+        characters of fixed shape, and blobs are spliced onto the wire as stored JSON,
+        never parsed on this path.
 
-        Deliberately one level deep. A resolved string may itself contain the literal
-        text of a pointer, and it stays literal, which is what the reader this replaced
-        did.
+        Deliberately one level deep -- a pointer inside a resolved string stays literal.
         """
         pointers = {
             pointer
@@ -240,9 +215,7 @@ class SessionStream:
         Build one record in the shape the viewer consumes.
 
         The request side travels as references and is never parsed here. The response
-        side is: the reply the viewer renders is ``choices[0].message`` and the usage it
-        prices is ``usage``, both of which are inside the one stored response blob, and
-        both are read through the same extraction ingest used so the two cannot drift.
+        side is, through the same extraction ingest used, so the two cannot drift.
         """
         raw_response = _decode(texts.get(row.response_blob)) if row.response_blob else None
         _data, _agent_id, reply, usage, _finish = extract_record_fields(
@@ -287,11 +260,9 @@ def _blob_line(ref: str, value_json: str) -> str:
     """
     Build a content line by splicing *value_json* in verbatim.
 
-    A structural blob is stored as the canonical JSON of its value, so it is already
-    exactly what belongs on the right of ``"value":`` -- parsing it would be a parse and
-    a re-serialization of every byte of a multi-megabyte response for a result identical
-    to its input. The encoding guarantees there is no newline in it to break the line,
-    since ``json.dumps`` escapes one inside a string and emits none outside.
+    A structural blob is already the canonical JSON of its value, so parsing it would
+    re-serialize every byte of a multi-megabyte response for an identical result.
+    ``json.dumps`` emits no bare newline, so the line cannot be broken by the splice.
     """
     return f'{{"__type__":"{BLOB_LINE_TYPE}","ref":{json.dumps(ref)},"value":{value_json}}}'
 
@@ -301,7 +272,6 @@ def _line(record: Mapping[str, Any]) -> str:
 
 
 def _blob_ids(rows: Iterable[IndexedRequest]) -> set[int]:
-    """Return every structural blob the given records point at."""
     found: set[int] = set()
     for row in rows:
         found.update(row.message_blobs)

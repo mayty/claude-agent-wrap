@@ -60,10 +60,8 @@ class PathTreeNode[T]:
     """
     One node in the trie: a path segment, its children, and an optional payload.
 
-    A node is either *structural* (``row is None`` -- the root, or an intermediate
-    segment nothing was registered at) or a *leaf* carrying one caller row. Both kinds
-    can have children; only a structural node is guaranteed to, since ``build_path_tree``
-    splits a row-carrying node that does.
+    Structural (``row is None``) or a leaf carrying one caller row. Both can have
+    children, though ``build_path_tree`` splits a row-carrying node that does.
     """
 
     __slots__ = ("children", "name", "row", "subtree_row_count")
@@ -77,8 +75,6 @@ class PathTreeNode[T]:
 
 
 class PathTreeLine[T](NamedTuple):
-    """One visible line of a walked tree."""
-
     #: Tree prefix plus the node's name, with a trailing "/" when it has children.
     label: str
     #: Length of the glyph prefix alone, so a renderer can leave it unstyled.
@@ -95,15 +91,11 @@ def build_path_tree[T](
     """
     Build the trie over ``(path, row)`` pairs and normalize it for display.
 
-    Every node -- including the synthetic root and the synthetic ``.`` children -- comes
-    from *node_factory*, so a caller carrying extra per-node state gets its own subclass
-    throughout and never has to tell the two apart.
+    Every node, synthetic ones included, comes from *node_factory*, so a caller's
+    subclass is used throughout.
 
-    A path with no segments at all is skipped rather than attached to the root: it
-    names no node, and silently making it the root's own row would put an unnamed line
-    at the top of the tree. Callers that can produce one are responsible for saying so
-    themselves. Relative paths are placed under the root as well -- they should not
-    normally appear, and hanging them off the root is the reading that renders.
+    A path with no segments is skipped rather than attached to the root: making it the
+    root's own row would put an unnamed line at the top of the tree.
     """
     root = node_factory(ROOT_NAME)
     for path, row in rows:
@@ -213,29 +205,21 @@ def expand_widest_chain[T](root: PathTreeNode[T]) -> bool:
     """
     Give one segment back on the widest folded line's whole sibling group.
 
-    The inverse of `_compress`: the widest line that fold produced (``home/me/work``
-    becoming ``home`` + ``me/work``) gives its first segment to a new structural parent.
-    Callers drive this in a loop -- render, measure, call again -- until the output fits, or
-    until this returns ``False``, which it does once nothing is left to chop.
+    The inverse of `_compress`. Callers drive it in a loop -- render, measure, call again
+    -- until the output fits or it returns ``False``.
 
-    A whole sibling group is split at once, not just the widest line, because a level that
-    is half folded reads as a mistake: the unsplit sibling sits a column left of the split
-    one, and worse, splitting changes where a sibling *sorts* -- it becomes a subtree node,
-    and `walk_path_tree` puts those after the leaves -- so chopping one line of a group
-    reorders the group around it. Splitting the group keeps the level uniform and the order
-    put. Siblings already down to a single segment simply have nothing to give.
+    A whole sibling group is split at once, because splitting turns a sibling into a
+    subtree node and `walk_path_tree` sorts those after the leaves: chopping one line of
+    a group would reorder the group around it.
 
-    A split is not free, and not always a win: the folded line loses its leading segment,
-    but everything under it drops a level and so gains a character of glyph. Splitting
-    ``home/me/`` above ``wotp-be`` *widens* the tree, because the deep leaf, not the folded
-    node, was already setting the width. So the group's split is measured as a whole, and
-    one that would make the widest label wider is undone and reported as nothing left to
-    do -- there is no other lever on the tree, and a caller looping on this must be told to
-    stop.
+    A split is not always a win. Everything under the folded line drops a level and gains
+    a character of glyph, so a split can *widen* the tree when a deep leaf was already
+    setting the width. The group is therefore measured as a whole, and a widening split is
+    undone and reported as nothing left to do.
 
-    Ties are allowed through: two equally wide groups have to be split one at a time, and
-    refusing the first because it alone changes nothing would stall the pair. The loop still
-    terminates, since every call that returns ``True`` removes at least one ``/``.
+    Ties are allowed through: two equally wide groups must be split one at a time, and
+    refusing the first would stall the pair. Termination holds because every ``True``
+    removes at least one ``/``.
     """
     before = _max_label_width(root, 1)
     found = _widest_folded(root, 1, None)
@@ -272,10 +256,8 @@ def _widest_folded[T](
     """
     Find the widest line carrying a folded name, as ``(width, parent, node)``.
 
-    *depth* is the depth of *node*'s children, and width is derived from it rather than
-    measured off a walk: a line's glyph prefix is exactly one character per level, so the
-    label ``walk_path_tree`` would yield is the depth, plus the name, plus the ``/`` a node
-    with children carries.
+    Width is derived from *depth* rather than measured off a walk: a glyph prefix is
+    exactly one character per level.
     """
     for child in node.children.values():
         if "/" in child.name:
@@ -290,12 +272,12 @@ def _split_first_segment[T](parent: PathTreeNode[T], node: PathTreeNode[T]) -> P
     """
     Move *node*'s leading segment into a new structural parent, and return that parent.
 
-    *parent*'s dict is rebuilt rather than mutated, because the key is the child's name: the
-    new node has to take the old key's *position*, so that the insertion order
+    *parent*'s dict is rebuilt rather than mutated: the key is the child's name, and the
+    new node has to take the old key's *position* so the insertion order
     ``walk_path_tree`` reads is the one the tree was built with.
 
-    The new node is built from ``type(node)`` rather than from a factory passed in again, so
-    a caller's ``PathTreeNode`` subclass cannot drift from the one `build_path_tree` used.
+    Built from ``type(node)``, so a caller's subclass cannot drift from the one
+    `build_path_tree` used.
     """
     old_key = node.name
     head, _, tail = old_key.partition("/")
@@ -328,16 +310,14 @@ def _copy_subtree_state[T](dst: PathTreeNode[T], src: PathTreeNode[T]) -> None:
     """
     Copy every subtree aggregate from *src* onto *dst*, leaving *dst*'s own identity alone.
 
-    A split stem stands for exactly the subtree it took its segment from -- one child, and
-    no row of its own -- so every aggregate transfers verbatim rather than being recomputed.
-    That is what lets a caller re-walk an expanded tree without re-running its aggregation
-    pass, which is generally not idempotent: an aggregate that accumulates in place would
-    double.
+    A split stem stands for exactly the subtree it took its segment from, so aggregates
+    transfer verbatim rather than being recomputed -- which is what lets a caller re-walk
+    an expanded tree without re-running an aggregation pass that is not idempotent.
 
-    Slot-driven, so a ``node_factory`` subclass's extra aggregates come along without this
-    module knowing what any of them mean. ``hasattr`` guards the read because a subclass may
-    declare a slot it fills later -- ``agent_wrap.cli.stats.tree.Node.subtree_bucket`` is
-    annotated at class level and assigned by a separate pass.
+    Slot-driven, so a subclass's extra aggregates come along. ``hasattr`` guards the read
+    because a subclass may declare a slot it fills later --
+    ``agent_wrap.cli.stats.tree.Node.subtree_bucket`` is annotated at class level and
+    assigned by a separate pass.
     """
     for klass in type(src).__mro__:
         for slot in getattr(klass, "__slots__", ()):

@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 
 def test_create_delegates_to_service(runner: CliRunner) -> None:
-    """CLI entry point delegates to services.create_service.create()."""
     services.create_service.create.return_value = 0  # pyrefly: ignore [missing-attribute]
     result = runner.invoke(cli_root, ["create"])
     assert result.exit_code == 0

@@ -129,7 +129,6 @@ def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequest
             else:
                 self._serve_static(path)
 
-        # ------------------------------------------------------------------
         # Cache-served list endpoints — no I/O of any kind on the request path
         #
         # Every one of these is answered from the cache's snapshot of the request
@@ -137,7 +136,6 @@ def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequest
         # endpoints return a {rev, count} fingerprint the browser polls: `rev` is
         # the newest ingest instant in scope and `count` the number of indexed
         # sessions, which together move for every change either list can show.
-        # ------------------------------------------------------------------
 
         def _handle_projects(self, _qs: dict[str, list[str]]) -> None:
             self._send_json(cache.get_projects())
@@ -169,14 +167,12 @@ def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequest
                 cache.get_session_fingerprint(project_id, session_id) or {"rev": None, "count": 0}
             )
 
-        # ------------------------------------------------------------------
         # The one endpoint that reads content — straight off the request index
         #
         # No cache in front of it, and nothing to invalidate. The read is bounded by
         # the session the user opened rather than by the log tree, and its incremental
         # form -- `from`, which the browser's one-second tick uses -- returns the
         # records added since plus only the content those records introduced.
-        # ------------------------------------------------------------------
 
         def _handle_session(self, qs: dict[str, list[str]]) -> None:
             hashes, project_id = self._resolve_project(qs)
@@ -209,7 +205,6 @@ def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequest
             self._send_body(body.encode("utf-8"), NDJSON_CONTENT_TYPE)
 
         def _accepts_gzip(self) -> bool:
-            """Report whether the client advertised gzip in ``Accept-Encoding``."""
             header = self.headers.get("Accept-Encoding", "")
             # Split off q-values so "gzip;q=0.8, deflate" matches on the token alone.
             return any(
@@ -270,7 +265,6 @@ def bind_port(
     port: int,
     handler: type[BaseHTTPRequestHandler],
 ) -> ThreadingHTTPServer:
-    """Bind a ``ThreadingHTTPServer`` to the given port."""
     for _offset in range(PORT_SCAN_LIMIT):
         try:
             return ThreadingHTTPServer(("127.0.0.1", port), handler)

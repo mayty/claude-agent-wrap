@@ -5,8 +5,6 @@ from enum import StrEnum
 
 
 class Ansi(StrEnum):
-    """Terminal control sequences."""
-
     # Empty sentinel for "no styling" — falsy, so `if style:` guards skip it.
     NONE = ""
     RESET = "\033[0m"

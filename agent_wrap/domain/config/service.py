@@ -1,11 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
-"""
-Configuration file manipulation for agent-wrap.
-
-Replaces the bash _agent_ensure_statusline, _agent_ensure_telegram_hooks,
-_agent_record_project, and related config-prep helpers. Uses stdlib json
-instead of jq.
-"""
+"""Configuration file manipulation for agent-wrap."""
 
 import contextlib
 import json
@@ -50,24 +44,17 @@ def _load_json(path: Path) -> dict[str, Any] | None:
 
 
 class ConfigService:
-    """Configuration file manipulation for agent-wrap."""
-
     def __init__(
         self, display_service: DisplayService, projects_repository: ProjectsRepository
     ) -> None:
         self._display = display_service
         self._projects = projects_repository
 
-    # statusline / hooks
-
     def _ensure_statusline(self, settings_path: Path) -> None:
         """
         Idempotently inject statusLine key into settings.json.
 
-        If the key is absent, adds it pointing to the statusline.py script
-        (invoked directly — the script has its execute bit set).
-        If the file is empty or missing, creates it with {}.
-        If the JSON is malformed, does nothing (don't clobber user's file).
+        Malformed JSON is left alone rather than clobbered.
         """
         if not settings_path.exists() or settings_path.stat().st_size == 0:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,19 +78,13 @@ class ConfigService:
         Idempotently configure Claude Code's prompt spell checking.
 
         The feature only reads this tier -- a ``spellcheck`` block in a project's
-        ``.claude/settings.json`` is ignored outright -- so the wrapper-global user
-        settings are the only place it can be turned on from.
+        ``.claude/settings.json`` is ignored outright -- so wrapper-global user settings
+        are the only place it can be turned on from.
 
-        With no block present, one is written: on, ``hunspell``, and the dictionary list
-        in force. With a block already there, the file wins and it is left alone, except
-        that an explicitly set ``AGENT_SPELLCHECK`` / ``AGENT_SPELLCHECK_LANG`` overrides
-        the corresponding key on every launch -- otherwise the env vars would be inert
-        the moment a previous launch had written the block. Keys the user added by hand
-        (``color``, a different ``checker``) are always preserved, and the file is
-        rewritten only when a value actually changed.
-
-        If the file is empty or missing, creates it with {}.
-        If the JSON is malformed, does nothing.
+        An existing block wins, except that an explicitly set ``AGENT_SPELLCHECK`` /
+        ``AGENT_SPELLCHECK_LANG`` overrides its key on every launch: otherwise the env
+        vars would be inert the moment a previous launch had written the block. Keys the
+        user added by hand are preserved, and malformed JSON is left alone.
         """
         if not settings_path.exists() or settings_path.stat().st_size == 0:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,10 +122,7 @@ class ConfigService:
         """
         Idempotently inject PermissionRequest/Stop/StopFailure/SessionEnd hooks.
 
-        Each hook runs telegram-notify.sh directly (the script has its
-        execute bit set).
-        If the file is empty or missing, creates it with {}.
-        If the JSON is malformed, does nothing.
+        Malformed JSON is left alone rather than clobbered.
         """
         if not settings_path.exists() or settings_path.stat().st_size == 0:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +141,6 @@ class ConfigService:
         atomic_write_json(settings_path, data)
 
     def _ensure_hook(self, data: dict[str, Any], event: str, command: str) -> None:
-        """Add a hook entry to an event if not already present."""
         hooks = data.setdefault("hooks", {})
         event_hooks = hooks.setdefault(event, [])
 
@@ -181,25 +158,17 @@ class ConfigService:
         )
 
     def _ensure_claude_md(self) -> None:
-        """Copy default-CLAUDE.md to the global config dir if not already present."""
         template_path = OPS_DIR / "default-CLAUDE.md"
         target = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
         if not target.exists() and template_path.exists():
             template_path.copy(target, preserve_metadata=True)
-
-    # global / per-project config
 
     def prepare_global_config(
         self,
         *,
         telegram_available: bool = False,
     ) -> None:
-        """
-        Prepare the global config directory for agent launch.
-
-        Creates the directory structure, secures config files, injects
-        statusline, spell checking and telegram hooks, and copies default-CLAUDE.md.
-        """
+        """Prepare the global config directory for agent launch."""
         global_config_dir = GLOBAL_CONFIG_DIR
         claude_dir = global_config_dir / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -236,14 +205,12 @@ class ConfigService:
         """
         Create per-project .claude/ directories and files.
 
-        Pre-creating these as the host user prevents Docker from materializing
-        them as root when the bind-mount targets don't yet exist -- and, for a
-        file source, from creating a *directory* where a file was meant.
+        Pre-creating these as the host user stops Docker materializing them as root when
+        a bind-mount target does not exist -- and, for a file source, from creating a
+        *directory* where a file was meant.
 
-        Both arguments accept nested, `/`-separated paths (per-container state
-        arrives as ``instances/<id>/...``); missing parents are created for
-        files as well as directories, so neither list depends on the other
-        having built the intervening directories first.
+        Both arguments accept nested paths, and missing parents are created for files as
+        well as directories, so neither list depends on the other's ordering.
         """
         claude_dir = project_dir / ".claude"
         for subdir in state_dirs:
@@ -274,24 +241,21 @@ class ConfigService:
         """
         Pre-create the host side of every mount a project Dockerfile declares.
 
-        Same rationale as :meth:`prepare_project_dirs`, applied to the mounts an image
-        author asked for via ``agent-run-args``: whatever docker has to materialize
-        itself lands as ``root:root`` and the agent cannot write it. One spec can call for
-        two *different* host paths: the bind *source*, and -- when the container-side
-        target sits under ``/workspace`` -- the mountpoint docker needs inside the bind
-        mount of the project, which is what makes an anonymous
-        ``-v /workspace/node_modules`` volume leave a root-owned directory behind. A spec
-        whose source already exists can still need that second path created.
+        Same rationale as :meth:`prepare_project_dirs`, for the mounts an image author
+        asked for via ``agent-run-args``. One spec can call for two *different* host
+        paths: the bind *source*, and -- when the container-side target sits under
+        ``/workspace`` -- the mountpoint docker needs inside the project's own bind
+        mount, which is what makes an anonymous ``-v /workspace/node_modules`` leave a
+        root-owned directory behind. A spec whose source exists can still need that
+        second path.
 
-        A read-only source is never invented: an author who wrote ``:ro`` asked for
-        content that already exists, so a missing one fails the launch instead of
-        silently mounting an empty directory. Everything is reported at once, and
-        nothing is created until the whole declaration checks out.
+        A read-only source is never invented: ``:ro`` asks for content that already
+        exists, so a missing one fails the launch instead of silently mounting an empty
+        directory. Nothing is created until the whole declaration checks out.
 
-        Author-supplied tokens are passed to docker untouched, so this resolves paths
-        exactly the way docker will: absolute as written, relative against the directory
-        the launch runs from. ``~`` is left to fail on docker's side -- no shell is
-        involved to expand it -- with a warning that says so.
+        Paths resolve exactly the way docker will -- absolute as written, relative
+        against the launch directory. ``~`` is left to fail on docker's side, since no
+        shell is involved to expand it.
         """
         specs = parse_mount_specs(run_args)
 
@@ -331,7 +295,6 @@ class ConfigService:
         return (project_dir / source).resolve()
 
     def _prepare_mountpoint(self, target: str, source: Path | None, project_dir: Path) -> None:
-        """Create the host-side mountpoint for a target nested under ``/workspace``."""
         prefix = f"{WORKSPACE_MOUNT}/"
         stripped = target.rstrip("/")
         if not stripped.startswith(prefix):
@@ -364,17 +327,9 @@ class ConfigService:
         """
         Point ``project_dir/.claude/litellm-logs`` at the shared per-project subtree.
 
-        The shared sidecar writes logs to ``<tool_dir>/litellm-logs/<project_hash>/``;
-        the viewer reads ``project/.claude/litellm-logs/<provider>/<session>``. This
-        symlink bridges the two so the viewer needs no changes.
-
-        Idempotent and non-destructive:
-          * pre-creates the shared target so the symlink is never dangling;
-          * if the link is already correct, does nothing;
-          * if it is a stale symlink, repoints it;
-          * if it is a REAL directory/file from the old per-project scheme, it is
-            moved aside to ``litellm-logs-bkp`` (``-2``, ``-3``… on collision) rather
-            than clobbered, then the symlink is created.
+        Idempotent and non-destructive: the target is pre-created so the symlink is never
+        dangling, a stale symlink is repointed, and a REAL directory or file in its place
+        is moved aside to ``litellm-logs-bkp`` rather than clobbered.
 
         Best-effort: any OSError is swallowed so logging never blocks a launch.
         """
@@ -403,23 +358,17 @@ class ConfigService:
         except OSError:
             pass  # non-fatal — logging must never block a launch
 
-    # project registry -------------------------------------------------
-
     def read_project_paths(self) -> list[Path]:
         """
         Return every registered project path, ordered as the registry stores them.
 
-        An empty table is what triggers the one-time import of a pre-SQLite
-        ``projects.txt``. The rows this already fetches *are* that check, so the steady
-        state costs nothing beyond the query it was going to run anyway.
+        An empty table triggers the one-time import of a pre-SQLite ``projects.txt``, so
+        the steady state costs nothing beyond the query it was going to run anyway.
 
-        That import is a write, reached from a read, which is safe only because the
-        storage layer refuses it outright unless the process holds a write grant. A
-        command that never asked for one -- the logs daemon above all -- gets
-        :class:`WritesNotEnabledError` here and reads an empty registry rather than
-        mutating host state. The advice is worth printing because the state it describes
-        is fixable and otherwise inexplicable: an empty project list with a
-        ``projects.txt`` sitting right there.
+        That import is a write reached from a read, safe only because the storage layer
+        refuses it without a write grant: a command that never asked for one -- the logs
+        daemon above all -- gets :class:`WritesNotEnabledError` and reads an empty
+        registry rather than mutating host state.
         """
         try:
             projects = self._projects.list_projects()
@@ -443,19 +392,13 @@ class ConfigService:
         """
         Record cwd in the project registry, deduping aliases.
 
-        Existing entries that resolve to the same canonical target as cwd are
-        replaced by the current path — so a stale ``/mnt/...`` entry gets dropped
-        once the user starts launching from its ``/home/.../symlink`` alias. Aliases
-        are re-resolved on every call rather than cached in a column, so a symlink
-        repointed after registration cannot leave a stale answer behind.
+        Entries resolving to the same canonical target as cwd are replaced by the current
+        path. Aliases are re-resolved on every call rather than cached in a column, so a
+        symlink repointed after registration cannot leave a stale answer behind.
 
-        The alias scan goes through :meth:`read_project_paths`, which is also what
-        imports a pre-SQLite ``projects.txt`` — so a launch, the likeliest first touch
-        after an update, cannot lose the old registry.
-
-        Failures are non-fatal — the agent launch must not depend on this. That
-        includes ``StorageError``: a database another launch holds locked past the busy
-        timeout costs this launch its registration, not its run.
+        Failures are non-fatal -- the agent launch must not depend on this. That includes
+        ``StorageError``: a database another launch holds locked past the busy timeout
+        costs this launch its registration, not its run.
         """
         try:
             cwd = self._current_project_path()
@@ -483,14 +426,12 @@ class ConfigService:
         """
         Find registered project paths whose logs directory no longer exists.
 
-        These are projects deleted or renamed after being registered — the ones
-        ``agent stats`` already flags as ``(missing)``. An entry that cannot be
-        stat'd counts as stale too: it is no more useful than a missing one.
+        An entry that cannot be stat'd counts as stale too: it is no more useful than a
+        missing one.
         """
         return [path for path in self.read_project_paths() if not self._has_logs_dir(path)]
 
     def _has_logs_dir(self, path: Path) -> bool:
-        """Report whether *path* still has a usable ``.claude/litellm-logs`` directory."""
         try:
             return (path / ".claude" / LITELLM_LOGS_DIRNAME).is_dir()
         except OSError:
@@ -500,10 +441,9 @@ class ConfigService:
         """
         Remove *stale* from the project registry and return what was removed.
 
-        Takes the exact list :meth:`stale_project_paths` returned rather than
-        recomputing it, so the caller reports on and acts upon the same entries.
-        Failures are non-fatal, matching :meth:`record_project` — the registry is
-        a convenience index, not a source of truth.
+        Takes the exact list :meth:`stale_project_paths` returned, so the caller reports
+        on and acts upon the same entries. Failures are non-fatal: the registry is a
+        convenience index, not a source of truth.
         """
         with contextlib.suppress(StorageError):
             self._projects.delete([str(path) for path in stale])
@@ -513,11 +453,9 @@ class ConfigService:
         """
         Return a cheap value that changes whenever the registry does.
 
-        The logs viewer folds this into the ETag it serves for the projects list. It
-        replaces the ``stat()`` that used to read the registry file's mtime and size,
-        and behaves the same way: ``last_change`` moves on every ``agent run`` because
-        recording a project refreshes its ``last_seen_at``, exactly as rewriting the
-        file used to move its mtime.
+        Folded into the ETag the logs viewer serves for the projects list.
+        ``last_change`` moves on every ``agent run``, because recording a project
+        refreshes its ``last_seen_at``.
         """
         try:
             revision = self._projects.revision()
@@ -529,20 +467,18 @@ class ConfigService:
         """
         Copy a pre-SQLite ``projects.txt`` into an empty projects table.
 
-        Called only when the table has no rows, which is the whole gate: once the import
-        has landed, every later read sees rows and never looks at the file again. Two
-        launches racing here both write the same paths through an upsert keyed on the
-        path, so neither can double-insert or lose a row.
+        Called only when the table has no rows, which is the whole gate. Two launches
+        racing here write the same paths through an upsert keyed on the path, so neither
+        can double-insert or lose a row.
 
-        A write, and therefore refused with :class:`WritesNotEnabledError` in a process
-        holding no grant. The caller reports that; here it simply propagates.
+        A write, so it propagates :class:`WritesNotEnabledError` in a process holding no
+        grant.
 
-        The file is decoded with :class:`ProjectRegistry` — the compressed, grouped
-        encoding it used is why that class still exists — and is then left exactly where
-        it is. Nothing rewrites or removes it: it is the only copy of the pre-migration
-        registry, and one failed import must not be able to destroy it. The single
-        ``record_many`` means a failure part-way writes nothing, so the next call retries
-        a still-empty table.
+        The file is decoded with :class:`ProjectRegistry` -- the compressed, grouped
+        encoding is why that class still exists -- and then left exactly where it is. It
+        is the only copy of the pre-migration registry, and one failed import must not be
+        able to destroy it. The single ``record_many`` writes nothing on a part-way
+        failure, so the next call retries a still-empty table.
         """
         legacy = AGENT_LAUNCHES_DIR / PROJECT_REGISTRY_FILENAME
         try:

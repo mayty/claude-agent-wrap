@@ -15,8 +15,6 @@ if TYPE_CHECKING:
 
 @dataclass
 class UsageArgs:
-    """The resolved selection window and filters for one ``agent stats`` invocation."""
-
     from_iso: str | None = None
     until_iso: str | None = None
     verbose: bool = False
@@ -65,8 +63,6 @@ type UsageCache = dict[str, HashUsage]
 
 
 class _ProjectRowBase(TypedDict):
-    """Fields common to project rows and model display rows."""
-
     path: Path
     exists: bool
     sessions: int
@@ -89,8 +85,6 @@ class ProjectRow(_ProjectRowBase, total=False):
 
 
 class OrphanedResult(TypedDict):
-    """Aggregated result for orphaned sessions."""
-
     sessions: int
     last_ts: datetime | None
     total: Bucket
@@ -145,7 +139,6 @@ class CleanupScope(NamedTuple):
 
     @property
     def is_empty(self) -> bool:
-        """Whether there is nothing to clean up."""
         return not self.orphaned_dirs and not self.stale_paths
 
 

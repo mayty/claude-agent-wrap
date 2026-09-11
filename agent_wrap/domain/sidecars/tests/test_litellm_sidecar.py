@@ -282,7 +282,7 @@ def test_prepare_pulls_image(tmp_path: Path, mocker: pytest_mock.MockFixture) ->
 
 
 def test_ensure_does_not_pull(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """ensure() no longer pulls — that moved to prepare()."""
+    """Pulling belongs to prepare(), which runs lock-free; ensure() must not pull."""
     sc = _sidecar(tmp_path)
     ensure_image = mocker.patch.object(sc, "_ensure_image", autospec=True)
     mocker.patch.object(sc, "_ensure_network", autospec=True)
@@ -496,7 +496,6 @@ def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockF
 
 
 def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """_start mounts the logging callback and the host log dir into the sidecar."""
     (tmp_path / "config.yaml").write_text("model: test")
     log_dir = tmp_path / "logs"
     callback_dir = tmp_path / "callbacks"

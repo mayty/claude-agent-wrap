@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
 
 def range_label(from_iso: str | None, until_iso: str | None) -> str:
-    """Human-readable label for an inclusive range, for table titles."""
     if from_iso is None and until_iso is None:
         return "all time"
     if from_iso is None:
@@ -258,13 +257,11 @@ def render_core(  # noqa: PLR0913
     n_shared = len(shared_headers)
     label = range_label(from_iso, until_iso)
 
-    # === Projects table: per-project tree ===
     total_headers = ["PROJECT", "SESSIONS", "LAST LAUNCH", *shared_headers]
     total_aligns = ["<", ">", "<", *shared_aligns]
 
     tree_root = build_project_tree(rows)
 
-    # === By-day table: models (in window) + per-day (in window) + TOTAL ===
     recent_headers = ["MODEL / DATE", *shared_headers]
     recent_aligns = ["<", *shared_aligns]
 

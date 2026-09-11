@@ -30,8 +30,6 @@ if TYPE_CHECKING:
 
 
 class _TextStyler:
-    """ANSI text styling helpers."""
-
     @staticmethod
     def color(s: str, code: Ansi, *, stream: TextIO = sys.stdout) -> str:
         """Wrap *s* in *code* / RESET when *stream* is a TTY, else return unchanged."""
@@ -56,8 +54,6 @@ class _TextStyler:
 
 
 class _TableRenderer:
-    """Table layout computation and rendering helpers."""
-
     @staticmethod
     def table_width(widths: list[int]) -> int:
         """Return a table's rendered width: each cell padded a space either side, plus borders."""
@@ -108,7 +104,6 @@ class _TableRenderer:
         leading: int,
         shared_widths: list[int],
     ) -> list[int]:
-        """Compute column widths for a table."""
         leading_widths = [len(headers[j]) for j in range(leading)]
         for item in body:
             if isinstance(item, str):  # divider sentinel
@@ -126,7 +121,6 @@ class _TableRenderer:
         style: Ansi = Ansi.NONE,
         prefix_len: int = 0,
     ) -> str:
-        """Render a single table row with alignment and optional styling."""
         parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
         sep = _TextStyler.color("│", Ansi.DIM)
         if style:
@@ -143,20 +137,12 @@ class _TableRenderer:
 
     @staticmethod
     def make_border(widths: list[int], left: str, mid: str, right: str) -> str:
-        """Render a horizontal border line."""
         parts = ["─" * (w + 2) for w in widths]
         return _TextStyler.color(left + mid.join(parts) + right, Ansi.DIM)
 
 
 class DisplayService:
-    """Centralized terminal output: printing, formatting, tables, spinners, and prompts."""
-
-    # ------------------------------------------------------------------
-    # Basic output
-    # ------------------------------------------------------------------
-
     def info(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stdout."""
         print(message, end=end, flush=flush)
 
     def error(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
@@ -213,12 +199,7 @@ class DisplayService:
         self.info(_TextStyler.color(f"> {text}", Ansi.MAGENTA, stream=sys.stdout))
 
     def newline(self) -> None:
-        """Print a blank line to stdout."""
         self.info("")
-
-    # ------------------------------------------------------------------
-    # Formatting helpers
-    # ------------------------------------------------------------------
 
     def format_count(self, n: int) -> str:
         """Abbreviate large integers: ``1000`` → ``"1.0K"``, ``1_500_000`` → ``"1.50M"``."""
@@ -297,10 +278,6 @@ class DisplayService:
         if unknown:
             return f"${c:.2f}+?"
         return f"${c:.2f}"
-
-    # ------------------------------------------------------------------
-    # Table rendering
-    # ------------------------------------------------------------------
 
     def render_table(  # noqa: PLR0913, PLR0917
         self,
@@ -404,7 +381,6 @@ class DisplayService:
         tables: list[tuple[list[str], list[RowItemOrDivider], int]],
         n_shared: int,
     ) -> list[int]:
-        """Compute shared column widths across multiple tables."""
         shared_widths = [0] * n_shared
         for headers, body, leading in tables:
             for j in range(n_shared):
@@ -415,10 +391,6 @@ class DisplayService:
                 for j in range(n_shared):
                     shared_widths[j] = max(shared_widths[j], len(item.cells[leading + j]))
         return shared_widths
-
-    # ------------------------------------------------------------------
-    # Spinner (public API delegates to Spinner collaborator)
-    # ------------------------------------------------------------------
 
     def spin_while[T](
         self,
@@ -450,10 +422,6 @@ class DisplayService:
             poll_interval=poll_interval,
         )
 
-    # ------------------------------------------------------------------
-    # Interactive prompts
-    # ------------------------------------------------------------------
-
     def prompt_confirm(self, prompt: str) -> bool:
         """Prompt the user for y/N confirmation. Returns True for ``y`` or ``Y``."""
         self.info(prompt, end=" ")
@@ -464,7 +432,6 @@ class DisplayService:
         return ans.strip().lower() == "y"
 
     def prompt_secret(self, description: str) -> str:
-        """Prompt the user for a secret value, echoing input hidden."""
         try:
             return getpass(f"Enter {description}: ")
         except EOFError as exc:

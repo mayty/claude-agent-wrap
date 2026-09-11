@@ -18,21 +18,13 @@ from agent_wrap.domain.config.models import Entry
 
 
 class ProjectRegistry:
-    """Internal helpers — called by ``ConfigService``."""
-
-    # ------------------------------------------------------------------
-    # compression
-    # ------------------------------------------------------------------
-
     @staticmethod
     def compress(paths: list[str]) -> list[str]:
-        """Compress a sorted, deduplicated list of absolute paths."""
         if not paths:
             return []
 
         paths = sorted(set(paths))
 
-        # -- Pass 1: sibling grouping ---------------------------------
         entries: list[Entry] = []
         i = 0
         while i < len(paths):
@@ -56,7 +48,6 @@ class ProjectRegistry:
             )
             i = j
 
-        # -- Pass 2: prefix sharing -----------------------------------
         result: list[str] = [entries[0].compressed]
         for k in range(1, len(entries)):
             prev = entries[k - 1]
@@ -72,13 +63,8 @@ class ProjectRegistry:
 
         return result
 
-    # ------------------------------------------------------------------
-    # decompression
-    # ------------------------------------------------------------------
-
     @staticmethod
     def decompress(lines: list[str]) -> list[str]:
-        """Expand compressed *lines* back to absolute paths."""
         result: list[str] = []
         last_path: str | None = None
 
@@ -110,13 +96,8 @@ class ProjectRegistry:
 
         return result
 
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _shared_segments(path_a: str, path_b: str) -> int:
-        """Return the number of non-root path components shared by two absolute paths."""
         parts_a = PurePosixPath(path_a).parts
         parts_b = PurePosixPath(path_b).parts
         n = 0
@@ -129,7 +110,6 @@ class ProjectRegistry:
 
     @staticmethod
     def _try_expand_siblings(path: str) -> list[str] | None:
-        """Expand a terminal ``/{leaf,...}`` group, or return *None*."""
         m = SIBLING_RE.search(path)
         if m and "," in m.group(1):
             parent = path[: m.start()]

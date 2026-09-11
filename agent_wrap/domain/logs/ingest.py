@@ -52,20 +52,14 @@ def discover_sessions(logs_root: Path) -> list[tuple[SessionKey, Path]]:
     """
     Return every session directory under *logs_root*, keyed and sorted.
 
-    The tree is ``<logs_root>/<project_hash>/<provider>/<claude_session_id>/`` — the
-    layout :class:`SessionKey` mirrors — so the walk is three fixed levels deep rather
-    than an ``os.walk``. Anything that is not a directory at the depth it should be, or
-    that holds no ``messages.jsonl``, is skipped rather than guessed at.
+    Three fixed levels deep rather than an ``os.walk``. Anything that is not a directory
+    at the depth it should be, or holds no ``messages.jsonl``, is skipped.
 
-    Walking the *central* tree rather than each project's ``.claude/litellm-logs``
-    symlink is deliberate. The central tree is the one the sidecars actually write, it
-    names each project's hash directly, and it includes the dirs of deleted projects —
-    which is what lets ``agent cleanup`` and the stats orphan bucket agree with the
-    index instead of diverging from it.
+    Walks the *central* tree rather than each project's ``.claude/litellm-logs`` symlink:
+    it names each project's hash directly and includes the dirs of deleted projects,
+    which is what lets ``agent cleanup`` and the stats orphan bucket agree with the index.
 
-    Sorted so a backfill's progress is reproducible and two runs report the same order.
-    An enumeration is not a read: this opens no log file, so the constraint that only
-    this module does is untouched.
+    Sorted so a backfill's progress is reproducible.
     """
     if not logs_root.is_dir():
         return []
@@ -98,8 +92,6 @@ def _subdirectories(parent: Path) -> list[Path]:
 
 
 class LogFiles:
-    """Locating and sanity-checking the two files that make up a session on disk."""
-
     @staticmethod
     def messages(session_dir: Path) -> Path:
         return session_dir / MESSAGES_FILENAME
@@ -113,12 +105,9 @@ class LogFiles:
         """
         Report whether *path* names a session's record file.
 
-        Asked by the two callers that route filesystem events -- the watcher, deciding
-        what to forward, and the cache, mapping a forwarded path to a group. Neither
-        opens the file, and both used to compare against the filename constant
-        themselves. The predicate lives here so that nothing outside this module names a
-        log file at all, which is exactly what ``EH001`` in ``make arch-check`` asserts:
-        a rule about a *name* is checkable, where "does this read the file" is not.
+        The predicate lives here so nothing outside this module names a log file, which
+        is what ``EH001`` in ``make arch-check`` asserts -- a rule about a *name* is
+        checkable, where "does this read the file" is not.
         """
         return path.name == MESSAGES_FILENAME
 
@@ -127,11 +116,9 @@ class LogFiles:
         """
         Report whether either file is now smaller than its own watermark.
 
-        Both files are strictly append-only, so this can only mean the file was
-        replaced rather than appended to -- at which point every stored offset is
-        meaningless and the session has to be re-ingested from zero. A missing file is
-        not truncation: it is a session that has been deleted out of band, which the
-        directory walk handles.
+        Both files are strictly append-only, so this means the file was replaced and
+        every stored offset is meaningless. A missing file is not truncation -- that is a
+        session deleted out of band, which the directory walk handles.
         """
         for path, offset in (
             (LogFiles.messages(session_dir), state.messages_offset),
@@ -143,16 +130,13 @@ class LogFiles:
 
 
 class RecordParser:
-    """Turning one raw log record into the row and blobs the database stores."""
-
     @staticmethod
     def to_micros(value: object) -> int | None:
         """
         Convert an epoch-seconds timing to integer microseconds.
 
-        Integers rather than floats so ordering and windowing are exact. ``None`` is
-        preserved rather than defaulted, because a record with no timing feeds the
-        stats layer's "?" day key and must not be given a fabricated instant.
+        Integers so ordering and windowing are exact. ``None`` is preserved rather than
+        defaulted: it feeds the stats layer's "?" day key and must not be fabricated.
         """
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             return None
@@ -164,10 +148,8 @@ class RecordParser:
         Return the ``(5m, 1h)`` ephemeral cache-write split, or ``(0, 0)``.
 
         Read from ``prompt_tokens_details.cache_creation_token_details`` and nowhere
-        else: across the whole current log tree, every one of the 19,296 records that
-        carries a split reports it only there. Storing it does not change today's
-        arithmetic -- no consumer reads it yet -- but it is what makes the separate
-        cache-tier fix possible without a re-ingest.
+        else: across the whole log tree, all 19,296 records carrying a split report it
+        only there. No consumer reads it yet; storing it avoids a later re-ingest.
         """
         details = usage.get("prompt_tokens_details")
         if not isinstance(details, dict):
@@ -237,13 +219,9 @@ class _BlobAccumulator:
     """
     Collects the distinct content a pass has seen, addressed and already encoded.
 
-    Deduplication happens here rather than in SQL because it is what keeps the work
-    proportional: a conversation prefix is re-sent on every turn, so one session's
-    3,000 message references resolve to a few hundred distinct values, and only those
-    are ever compressed or handed to the database.
-
-    The ``seen`` set spans the whole session pass, not one chunk, so the prefix is
-    encoded once no matter how many chunks the session is split across.
+    Deduplicating here rather than in SQL is what keeps the work proportional: one
+    session's 3,000 message references resolve to a few hundred distinct values, and only
+    those are ever compressed. ``seen`` spans the whole session pass, not one chunk.
     """
 
     def __init__(self) -> None:
@@ -264,8 +242,7 @@ class _BlobAccumulator:
         """
         Intern a string the sidecar already hashed, addressed by its own pointer.
 
-        The pointer *is* the content address -- ``StringHasher`` computes an unsalted
-        global SHA-256 -- so the same string interned in two different sessions
+        The pointer *is* the content address, so the same string in two sessions
         collapses to one row. The digest is recomputed rather than trusted: a corrupt
         line would otherwise store content under an address nothing resolves to.
         """
@@ -385,9 +362,8 @@ def _read_strings(session_dir: Path, offset: int, blobs: _BlobAccumulator) -> in
     """
     Intern every string appended to ``strings.jsonl`` past *offset*, and return the new one.
 
-    Read to EOF deliberately. Reading further than the messages watermark is safe and
-    is the point: strings are always flushed ahead of the record that references them,
-    so anything extra here belongs to a record a later pass will take.
+    Read to EOF deliberately: strings are always flushed ahead of the record referencing
+    them, so anything past the messages watermark belongs to a record a later pass takes.
     """
     strings_path = LogFiles.strings(session_dir)
     if not strings_path.is_file():
@@ -416,11 +392,10 @@ def _read_strings(session_dir: Path, offset: int, blobs: _BlobAccumulator) -> in
 
 class _SummaryAccumulator:
     """
-    Maintains the five columns ``meta.json`` used to cache, carried forward per pass.
+    Maintains the session's five summary columns, carried forward per pass.
 
-    Mirrors ``io._accumulate_session_meta`` exactly, including that ``last_event_at``
-    is the *last* record's end rather than the maximum -- the file is append-ordered,
-    so the two agree, but reproducing the rule keeps the cutover bit-identical.
+    ``last_event_at`` is the *last* record's end rather than the maximum; the file is
+    append-ordered, so the two agree.
     """
 
     def __init__(self, prior: SessionSummary) -> None:

@@ -817,9 +817,6 @@ def test_resolve_no_dockerfile_uses_base(
     assert result.image == "claude-agent"
 
 
-# --- locate_dockerfile: the single discovery point -----------------------------------
-
-
 def test_locate_prefers_the_current_location(tmp_path: Path, build_svc: BuildService) -> None:
     current = _write_project_dockerfile(tmp_path, "# agent-name: new\n")
 
@@ -911,9 +908,6 @@ def test_resolve_base_skips_discovery_entirely(
     (tmp_path / LEGACY_AGENT_DOCKERFILE_NAME).write_text("# agent-name: old\n")
 
     assert build_svc.resolve_image(use_base=True).image == "claude-agent"
-
-
-# --- agent-enable-startup ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

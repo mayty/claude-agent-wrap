@@ -143,6 +143,25 @@ A `Makefile` provides all QA targets. Follow these rules:
   functions that share a micro-domain must be grouped into a namespace class
   (``@staticmethod``-only, no instance state) instead of being divided by
   ``# --- Topic ---`` comment separators.
+- **A comment must earn its line.** Keep one only when it names something a reader
+  cannot recover from the code: an external system's non-obvious behaviour (Docker,
+  SQLite, LiteLLM, inotify, WSLg, Claude Code), an ordering/locking/threading
+  invariant whose violation is *silent*, a rejected alternative and the reason it
+  was rejected, or a measured number. Everything else is noise, because the name and
+  the type signature are already the documentation.
+  - Do **not** write a docstring that restates the signature
+    (`"""Check if a Docker network exists."""` on `network_exists`), an `Args:` /
+    `Returns:` block that repeats the annotations, a comment narrating the next line
+    (`# Handle primitive types`), or a `# ---- Topic ----` banner.
+  - Do **not** describe how the system used to work. "X used to be Y", "this
+    replaces Z", and references to deleted artifacts age into lies; state the
+    present invariant instead. The exception is a sentence that explains why
+    something *still exists* — keep that.
+  - Docstrings are optional: `D100`–`D105` and `D107` are all ignored, so a function
+    whose name and signature answer the question should carry none. Four things
+    still must not be removed: the 14 click callback docstrings (they are
+    `agent --help`), a public *nested* class docstring (`D106`), a `# noqa` /
+    `# type: ignore` / `# pyrefly: ignore` directive, and `help=` on a click option.
 
 ## Architecture
 

@@ -79,12 +79,8 @@ if TYPE_CHECKING:
     )
     from agent_wrap.lib.path_tree import PathTreeLine, PathTreeNode
 
-#: Divider sentinel understood by ``DisplayService.render_table``.
-
 
 class Cells:
-    """Value-to-cell conversions shared by the tables."""
-
     @staticmethod
     def port(port: int | None) -> str:
         return UNKNOWN if port is None else str(port)
@@ -106,12 +102,9 @@ class Cells:
         """
         Shorten a sidecar's image reference to the part that identifies the build.
 
-        Sidecars are pinned by digest, so the reference docker reports is around 110
-        characters — long enough to wrap the row on any normal terminal. The digest is
-        dropped because nobody reads a sha256 off a table, and the registry path with
-        it: whether a build came from ghcr.io or Docker Hub is a property of the pin,
-        not of this container. Drift from the pin is already flagged on the CONTAINER
-        cell, so the name and tag left here are what tells you *which* build drifted.
+        A digest-pinned reference is ~110 characters and would wrap the row. Drift from
+        the pin is already flagged on the CONTAINER cell, so the name and tag left here
+        are what say *which* build drifted.
         """
         return image.split("@", 1)[0].rsplit("/", 1)[-1] or UNKNOWN
 
@@ -120,9 +113,8 @@ class Cells:
         """
         Build one stale-images row from a walked tree line.
 
-        A structural line stands for a directory and says nothing else: it has no image to
-        rebuild and no reason to report, so the two remaining cells stay empty rather than
-        carrying a subtotal nobody would act on.
+        A structural line is a directory with no image to rebuild, so its two remaining
+        cells stay empty rather than carrying a subtotal nobody would act on.
         """
         row = line.node.row
         if row is None:
@@ -140,7 +132,6 @@ class Cells:
 
     @staticmethod
     def row(label: str, value: str, style: Ansi = Ansi.NONE) -> RowItem:
-        """Build one two-column details row."""
         return RowItem(cells=[label, value], style=style, prefix_len=0)
 
 
@@ -152,9 +143,8 @@ class Tables:
         """
         Render the sidecar table, plus the footnotes about the shared sidecar lock.
 
-        The queued-launch count lives here rather than with the details below, because it
-        is a fact about this table's containers: those launches are blocked waiting to
-        start or attach to one of them.
+        The queued-launch count belongs here because those launches are blocked waiting on
+        one of this table's containers.
         """
         if not rows:
             lines = ["No sidecars are running."]
@@ -192,9 +182,8 @@ class Tables:
         """
         Note idle sidecars and queued launches under the sidecar table.
 
-        Both are stated as facts, with no suggested action: teardown clears registrations
-        before it stops the container, so an idle sidecar is a normal transient state,
-        and a queued launch resolves itself once the lock is free.
+        Stated without a suggested action: teardown clears registrations before stopping
+        the container, so an idle sidecar is a normal transient state.
         """
         lines: list[str] = []
         if idle:
@@ -234,33 +223,15 @@ class Tables:
         """
         Render one row per registered project whose own image is already stale.
 
-        Returns nothing for both of the empty cases, which are different facts and are
-        both reported elsewhere: None means the sweep did not run (lite mode says so on its
-        closing line; an unreachable daemon is already the report's headline), and an empty
-        list is the good news ``run.py`` prints in green instead of an empty table.
+        Both empty cases render nothing and are reported elsewhere: None means the sweep
+        did not run, and an empty list is the good news ``run.py`` prints in green.
 
-        ``PROJECT`` is a path tree rather than a column of absolute paths, the same
-        rendering `agent stats` gives its projects: registered projects cluster under a few
-        parents, so the shared prefix is worth stating once instead of once per row. The
-        column is measured rather than capped, and chopped down to the console when the
-        measurement does not fit -- the fold that states a shared prefix once is the same
-        fold that makes one node very wide, so it is undone a segment at a time until the
-        table fits.
+        ``PROJECT`` is chopped a segment at a time until the table fits, before ``IMAGE``
+        and ``REASON`` give up characters -- chopping costs height, not information, and a
+        truncated path identifies nothing. ``PROJECT`` never ellipsises.
 
-        Chopping comes first because it costs nothing but height. Only once the tree is as
-        narrow as it goes do ``IMAGE`` and ``REASON`` start giving up characters and ending
-        in an ellipsis, and ``PROJECT`` never does: a path is what the reader acts on, and
-        half of one identifies nothing. ``-j``/``--json`` carries every reason in full
-        whatever the console does here.
-
-        Every project row is yellow, unlike the container tables where the style
-        distinguishes rows from each other: here it is the whole table that is the
-        actionable finding, and a plain row would read as a project that is fine. The
-        directory rows the tree adds are the exception, dim and blank across the other two
-        columns: they are scaffolding, and a directory is not a thing to go and rebuild.
-
-        The title counts projects, not lines, so it keeps agreeing with ``--json`` however
-        the tree comes out.
+        The title counts projects, not lines, so it agrees with ``--json`` however the
+        tree comes out.
         """
         if not rows:
             return []
@@ -303,9 +274,8 @@ class Tables:
         """
         Lay the stale-image rows out under the tree, rebuildable as the tree is chopped.
 
-        A row whose project is empty names no path and cannot be placed in the tree.
-        Dropping it would leave the title counting a row nothing shows, so it is listed flat
-        underneath, the way `agent stats` hangs its `<orphaned>` row off the root.
+        A row whose project is empty cannot be placed in the tree, and dropping it would
+        leave the title counting a row nothing shows -- so it is listed flat underneath.
         """
         body: list[RowItemOrDivider] = []
         if root is not None:
@@ -337,7 +307,6 @@ class Details:
         storage: StorageRow,
         display: DisplayService,
     ) -> list[RowItem]:
-        """Report the logs viewer's liveness and the on-disk footprint of what it serves."""
         if viewer.running:
             detail = f"(pid {viewer.pid}" if viewer.pid is not None else "("
             if viewer.log_size is not None:
@@ -379,15 +348,9 @@ class Details:
         """
         Report the index's size, what it holds, and how far behind the log files it is.
 
-        The size sits beside `logs storage` above it because the pair is the whole
-        point of the index: one is the append-only tree every consumer used to re-parse,
-        the other is what they read now.
-
-        Freshness is stated as an age rather than a date -- the question a reader has is
-        whether ingest is keeping up, not when it last ran. A shortfall is styled as a
-        warning and names `agent reindex`, because it is the one thing here the reader
-        can act on. It is deliberately silent about lag in `--lite` mode rather than
-        reporting zero: not measured is not the same as up to date.
+        Freshness is an age rather than a date: the question is whether ingest is keeping
+        up. Deliberately silent about lag in `--lite` mode rather than reporting zero --
+        not measured is not the same as up to date.
         """
         parts = [
             display.format_bytes(storage.index_bytes),
@@ -408,10 +371,9 @@ class Details:
         """
         Whether the next `agent run` would start the viewer, and what decides it.
 
-        The casing is inverted relative to `host network`: this feature is on by default,
-        so "off" is the state worth noticing. Requested-but-ignored is flagged for the
-        same reason there — a variable that is set and does nothing otherwise reads as the
-        setting simply not working.
+        Inverted relative to `host network`: this is on by default, so "off" is the state
+        worth noticing. Requested-but-ignored is flagged because a variable that is set
+        and does nothing otherwise reads as the setting not working.
         """
         if autostart.effective:
             return "on", Ansi.NONE
@@ -427,9 +389,8 @@ class Details:
         """
         One row per known provider/sidecar and its secret readiness.
 
-        Readiness is stated as one of two states and nothing more. The required key
-        names are deliberately left out: `agent secrets check` prints them, and here
-        they only pad the row with detail that does not change what the reader does.
+        The required key names are deliberately left out -- `agent secrets check` prints
+        them.
         """
         if not rows:
             return [Cells.row("providers", "none discovered")]
@@ -449,9 +410,8 @@ class Details:
         """
         Report the installed revision, then the host facts behind most surprises.
 
-        The project image sits directly under the base image it inherits from, because the
-        two are read together: which one ``agent run`` will actually launch here, and
-        whether the Claude Code inside it has fallen behind.
+        The project image sits directly under the base image it inherits from, since the
+        two are read together.
         """
         host_net, host_net_style = Details.host_network(environment)
         return [
@@ -490,15 +450,12 @@ class Details:
         """
         Report the provisioned CPython, flagged when it has fallen behind the pin.
 
-        A drifted interpreter is not broken -- the old one still runs -- so it is a
-        warning and not an error. It does mean the wrapper is running on something
-        other than what this revision pins, which is worth saying out loud since
-        nothing else in the report would reveal it.
+        A drifted interpreter still runs, so it is a warning rather than an error --
+        but nothing else in the report would reveal it.
 
-        Stale dependencies are the same shape of drift and get the same treatment. It
-        only shows up after a manual ``git pull``: ``agent update`` re-runs the bootstrap
-        itself. The pin is reported first when both have moved, because one bootstrap
-        run fixes both and there is no value in naming it twice.
+        Stale dependencies are the same shape of drift and only show up after a manual
+        ``git pull``, since ``agent update`` re-runs the bootstrap itself. The pin is
+        reported first when both have moved: one bootstrap run fixes both.
         """
         running = wrapper.python_version
         pinned = wrapper.python_pinned
@@ -523,13 +480,11 @@ class Details:
         """
         Whether the base image exists, which Claude Code it carries, and if that is stale.
 
-        Yellow when absent, when the next launch would rebuild it, or when it is behind the
-        registry (an update is available); plain when present and current, including when
-        the registry was not consulted at all — ``--lite`` leaves the latest version
-        unknown, and an unknown latest must never look like an update.
+        Plain when present and current, *including* when the registry was not consulted --
+        ``--lite`` leaves the latest version unknown, and an unknown latest must never
+        look like an update.
 
-        Absence is no longer an instruction: ``agent run`` builds a missing image itself,
-        so the row says when that will happen rather than what to type.
+        Absence is not an instruction: ``agent run`` builds a missing image itself.
         """
         if not environment.base_image_present:
             return Cells.row(
@@ -558,14 +513,11 @@ class Details:
         Describe the image this project's Dockerfile declares, or nothing when it declares
         none.
 
-        Absent from the report rather than reported as empty: a project with no
-        `.claude-agent-wrap/Dockerfile` has nothing to say here, and a row saying so would
-        be noise in every project that never customized anything. Colour follows the base
-        image above it, and for the same reasons.
+        Absent rather than reported as empty, which would be noise in every project that
+        never customized anything.
 
         The available version is read off *environment*: there is one registry answer per
-        report and both image rows are measured against it, so naming it here rather than
-        saying "newer" keeps the two rows directly comparable.
+        report, and naming it keeps the two image rows directly comparable.
         """
         if project is None:
             return []
@@ -597,8 +549,7 @@ class Details:
         """
         Whether the shared sidecar network exists.
 
-        Absent is stated without alarm and without yellow: docker creates it on the next
-        launch, so unlike a missing image there is nothing for the reader to do.
+        Absent is stated without yellow: docker creates it on the next launch.
         """
         if environment.network_present:
             return Cells.row("network", f"{environment.network_name} present")
@@ -623,9 +574,8 @@ class Details:
         """
         Describe the resolved stats day boundary, noting an explicit override.
 
-        The offset is stated against UTC midnight, which is the only reading that makes
-        a bare number meaningful. The sign is dropped at zero, where there is no
-        direction to signal and "+0h" reads as a formatting artefact.
+        Stated against UTC midnight, the only reading that makes a bare number meaningful.
+        The sign is dropped at zero, where "+0h" reads as a formatting artefact.
         """
         hours = environment.day_start_hours
         day = f"{hours:+d}h UTC" if hours else "0h UTC"
@@ -637,7 +587,6 @@ class Details:
 
     @staticmethod
     def table(report: InspectReport, display: DisplayService) -> list[str]:
-        """Render the three groups as one table, dividing group from group."""
         groups = [
             Details.logs_rows(report.viewer, report.logs_autostart, report.storage, display),
             Details.secrets_rows(report.providers),
@@ -657,7 +606,6 @@ class Details:
 
 
 def render(report: InspectReport, display: DisplayService) -> list[str]:
-    """Render the whole report as terminal lines, containers first."""
     lines: list[str] = []
     if not report.docker.available:
         lines.append(report.docker.error)

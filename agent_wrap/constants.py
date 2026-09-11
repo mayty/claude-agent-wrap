@@ -16,8 +16,6 @@ CLI_CONTEXT_SETTINGS: Final[dict[str, list[str]]] = {"help_option_names": ["-h",
 
 
 class PollResult(Enum):
-    """Verdict a poll callback returns each tick to ``DisplayService.poll_until``."""
-
     PENDING = auto()
     SUCCESS = auto()
     FAILURE = auto()
@@ -143,7 +141,6 @@ TELEGRAM_IMAGE = (
     "@sha256:db00b47cf61c4a59d436e016039ea0184a0f07ad6c68ba9e42db242f6dce2898"
 )
 
-# ── logs viewer ──────────────────────────────────────────────────────────────
 
 # Env var name used by the detached logs-viewer child process to find the same
 # tool_dir (and thus state file) as the parent that launched it.
@@ -169,7 +166,6 @@ LOGS_CONTENT_TYPES = {
     ".svg": "image/svg+xml",
 }
 
-# ── stats ────────────────────────────────────────────────────────────────────
 
 # Hours in a day -- AGENT_DAY_START_UTC must fall strictly within (-HOURS_PER_DAY, HOURS_PER_DAY).
 HOURS_PER_DAY = 24
@@ -206,7 +202,6 @@ UNRECOVERABLE_SOURCE = "unrecoverable"
 # that no longer have an entry in the project registry.
 ORPHANED_LABEL = "<orphaned>"
 
-# ── project agent assets ─────────────────────────────────────────────────────
 
 # Per-project wrapper assets live in this directory, checked into the project (unlike
 # the git-ignored ``.claude/`` state tree next to it). Note that a ``.gitignore``
@@ -224,8 +219,6 @@ LEGACY_AGENT_DOCKERFILE_NAME = "Dockerfile.agent"
 # Optional host-side script run before launch, gated by ``# agent-enable-startup:``.
 AGENT_STARTUP_SCRIPT_NAME = "startup.sh"
 
-
-# ── run ──────────────────────────────────────────────────────────────────────
 
 # In-container mount point for the agent-wrap ops directory.
 AGENT_WRAP_MOUNT = "/opt/agent-wrap"
@@ -249,7 +242,6 @@ SKIP_SAFETY_CHECK_ENV = "AGENT_SKIP_SAFETY_CHECK"
 # ``agent_wrap/domain/launch/constants.py``.
 STATE_FILES = ("history.jsonl",)
 
-# ── spell checking ───────────────────────────────────────────────────────────
 
 # Env var gating Claude Code's prompt spell checking. Unset means on; an explicitly
 # falsy value turns it off. Explicit beats the settings file either way -- see
@@ -337,7 +329,6 @@ SPELLCHECK_LANG_OVERRIDE = _parsed_spellcheck_lang()
 #: settings block names.
 SPELLCHECK_LANG = SPELLCHECK_LANG_OVERRIDE or DEFAULT_SPELLCHECK_LANG
 
-# ── display / sidecars ────────────────────────────────────────────────────────
 
 # Sentinel marking a horizontal divider in a table body list. Typed Final so it
 # narrows to the Literal that ``RowItemOrDivider`` (display/models.py) expects.

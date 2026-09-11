@@ -49,7 +49,6 @@ def test_compress_prefix_no_shared() -> None:
 
 
 def test_compress_combined_from_spec() -> None:
-    """The combined example from the design spec."""
     paths = [
         "/home/p_pikirenya/GSR/playground/wtrcal",
         "/home/p_pikirenya/GSR/wgsh",

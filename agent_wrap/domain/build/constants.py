@@ -60,8 +60,6 @@ PROJECT_BUILD_CACHE_NOTE = "this build runs with --no-cache and re-runs every RU
 
 
 class BuildReason(Enum):
-    """Why an image is about to be built."""
-
     #: No image by that name exists on this host.
     MISSING = auto()
     #: Present, but carries no wrapper build stamp -- built before stamping existed.
@@ -91,8 +89,6 @@ BUILD_REASON_TEXT = {
 
 
 class ImageCleanupReason(Enum):
-    """Why an image is no longer needed and ``agent cleanup`` offers to remove it."""
-
     #: An untagged wrapper build, left behind by a later build of the same tag.
     SUPERSEDED = auto()
     #: A ``claude-agent-<name>`` tag no registered project resolves to any more.

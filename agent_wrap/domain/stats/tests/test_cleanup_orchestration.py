@@ -97,12 +97,10 @@ def test_run_deletes_the_surveyed_dirs_and_prunes(stats: StatsService, config: M
 
 def test_the_registry_is_pruned_even_when_a_dir_survived(stats: StatsService, config: Mock):
     """
-    A failed ``rmtree`` no longer holds the registry hostage.
+    A failed ``rmtree`` does not hold the registry hostage.
 
-    It used to: the two-phase archive could leave spend committed only to a staging
-    file, and pruning the registry then would have destroyed the one clue about what
-    the dirs had been. With no archive there is no half-committed state to protect —
-    a dir that survives is simply still orphaned next time.
+    There is no half-committed state to protect: a dir that survives is simply still
+    orphaned next time.
     """
     stats.delete_orphaned_logs.return_value = CleanupResult(removed=1, freed_bytes=8)  # pyrefly: ignore [missing-attribute]
 

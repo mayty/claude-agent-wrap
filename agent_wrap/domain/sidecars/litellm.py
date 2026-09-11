@@ -120,8 +120,6 @@ class LiteLLMSidecar(Sidecar):
     def required_secrets(self) -> list[tuple[str, str]]:
         return list(self.config.required_secrets)
 
-    # --- Public: prepare / ensure ---
-
     @override
     def prepare(self) -> None:
         """Pull the image lock-free, before the runner takes the shared lock."""
@@ -169,7 +167,6 @@ class LiteLLMSidecar(Sidecar):
         )
 
     def _ensure_sidecar(self, *, use_host_net: bool, secrets: dict[str, str]) -> str:
-        """Ensure the sidecar is running + healthy. Returns its network mode."""
         # Migration: sidecar from before agent-wrap-net refactor
         if (
             self._is_running()
@@ -221,7 +218,6 @@ class LiteLLMSidecar(Sidecar):
         agent_in_host_netns: bool,
         agent_network: str | None,
     ) -> list[str]:
-        """Build env var flags and connectivity args for the agent container."""
         base_url = f"http://{self.container_name}:{self.port}"
         agent_env = dict(self.config.get_agent_env(self._master_key, base_url))
 
@@ -257,8 +253,6 @@ class LiteLLMSidecar(Sidecar):
             return [*env_args, "--network", self.network_name]
         return [*env_args]
 
-    # --- Public: release ---
-
     @override
     def release(self) -> None:
         # Runs under the runner's shared lock, only after its SidecarTracker reported
@@ -278,8 +272,6 @@ class LiteLLMSidecar(Sidecar):
             done_message="stopped",
             work=lambda: docker_run("stop", self.container_name),
         )
-
-    # --- Internal helpers ---
 
     def _config_path(self) -> Path:
         """Return the resolved config.yaml path, validating it exists."""
@@ -354,7 +346,6 @@ class LiteLLMSidecar(Sidecar):
         raise SystemExit(1)
 
     def _port_recovery_error(self, reason: str) -> str:
-        """Build the abort message for an unrecoverable recorded port."""
         return (
             f"{self._label}: {SIDECAR_PORT_ENV} not recoverable from "
             f"{self.container_name} ({reason}); aborting\n"

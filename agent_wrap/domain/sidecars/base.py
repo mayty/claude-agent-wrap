@@ -2,27 +2,15 @@
 """
 The ``Sidecar`` interface.
 
-A sidecar is a shared container an agent run depends on. The interface is kept as
-narrow as possible: the runner only needs to ensure each sidecar (getting back the
-``docker run`` flags the agent needs to reach it), release each on exit, and read
-the timing knobs that size the concurrency lock.
-
-``ensure()`` returns a flat ``list[str]`` of ``docker run`` flags (env + connectivity)
-— the same shape the runner splices into the agent's launch command — so a sidecar is
-free to emit whatever ``-e`` / ``--network`` / ``--add-host`` flags its connectivity
-needs without a wider contract.
-
 Locking and the start/stop decision are NOT a sidecar concern: the runner holds one
 shared lock around the whole ensure-all / release-all phase and consults a single
-``SidecarTracker``.  So ``ensure()`` and ``release()`` are pure container
-mechanics — they run with the lock already held and must not lock, announce, or
-decide whether to stop.  Lock-free pre-work (e.g. the image pull) goes in ``prepare()``,
-which the runner runs *before* taking the lock.
+``SidecarTracker``. So ``ensure()`` and ``release()`` are pure container mechanics --
+they run with the lock already held and must not lock, announce, or decide whether to
+stop. Lock-free pre-work such as the image pull goes in ``prepare()``, which the runner
+runs *before* taking the lock.
 
 The one thing a sidecar contributes to that decision is its ``container_name``: the
-runner refcounts live agents **per container name**, so two sidecars naming different
-containers are torn down independently while two naming the same container share one
-refcount.
+runner refcounts live agents **per container name**.
 """
 
 from abc import ABC, abstractmethod
@@ -37,11 +25,9 @@ class Sidecar(ABC):
         """
         The Docker container this sidecar manages — also its refcount identity.
 
-        The runner keys its ``running/`` registration on this value, so sidecars with
-        different container names are refcounted (and released) independently, while
-        sidecars sharing one — the single Telegram container across every provider —
-        share one refcount. Docker names match ``[a-zA-Z0-9][a-zA-Z0-9_.-]*``, so the
-        value is safe to use verbatim as a single path component.
+        Sidecars with different container names are released independently; those sharing
+        one -- the single Telegram container -- share a refcount. Docker names match
+        ``[a-zA-Z0-9][a-zA-Z0-9_.-]*``, so this is safe as a path component.
         """
 
     @property
@@ -59,8 +45,7 @@ class Sidecar(ABC):
         """
         Return ``(key_name, description)`` tuples for secrets this sidecar needs.
 
-        Simple key names — the orchestrator prepends the sidecar name for storage.
-        Default empty.
+        Simple key names -- the orchestrator prepends the sidecar name for storage.
         """
         return []
 
@@ -68,8 +53,8 @@ class Sidecar(ABC):
         """
         Lock-free pre-work, run by the runner *before* the shared lock is taken.
 
-        Default no-op. ``LiteLLMSidecar`` overrides it to pull the image — a cold
-        pull must never happen under the lock, or the whole launch herd blocks on it.
+        Default no-op. ``LiteLLMSidecar`` overrides it to pull the image: a cold pull
+        under the lock would block the whole launch herd.
         """
 
     @abstractmethod
@@ -83,16 +68,11 @@ class Sidecar(ABC):
         """
         Make the sidecar running + healthy and return the agent's ``docker run`` flags.
 
-        Runs with the runner's shared lock already held — must not lock or announce.
-        The returned flags (env vars + connectivity such as ``--network`` /
-        ``--add-host``) are spliced into the agent container's launch command so it
-        can reach this sidecar.
+        Runs with the runner's shared lock already held -- must not lock or announce. The
+        returned flags are spliced into the agent container's launch command.
 
-        *secrets* is an optional dict of resolved key→value pairs from the
-        secrets store.  Sidecars that need credentials extract them from this
-        dict rather than reading configuration files directly.
-
-        Raises on failure.
+        *secrets* carries resolved key->value pairs; sidecars needing credentials take
+        them from there rather than reading configuration files directly.
         """
 
     @abstractmethod
@@ -100,19 +80,15 @@ class Sidecar(ABC):
         """
         Stop the sidecar container.
 
-        Runs with the shared lock held and only after the runner's ``SidecarTracker``
-        has reported no other live agent on this ``container_name``. Must be idempotent
-        / a no-op when the container is not running (the runner considers every sidecar
-        it began ensuring, in reverse order, including one whose ``ensure()`` raised
-        mid-start).
+        Runs with the shared lock held, only once no other live agent holds this
+        ``container_name``. Must be a no-op when the container is not running: the runner
+        releases every sidecar it *began* ensuring, including one that raised mid-start.
         """
 
     def on_exit(self) -> None:  # noqa: B027 -- intentional optional no-op hook
         """
         Per-agent cleanup, run by the runner *before* the shared lock is taken.
 
-        Called in reverse ensure order for every sidecar this agent began ensuring.
-        Default no-op. ``TelegramSidecar`` overrides it to tear down the per-run
-        auth token via ``/unregister``. Must not raise — a failure here must not
-        prevent the runner from reaching ``release()``.
+        Called in reverse ensure order. Must not raise: a failure here must not stop the
+        runner reaching ``release()``.
         """

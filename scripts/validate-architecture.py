@@ -42,10 +42,6 @@ import ast
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 ROOT = Path(__file__).resolve().parent.parent
 DOMAIN_DIR = ROOT / "agent_wrap" / "domain"
 PACKAGE_PREFIX = "agent_wrap.domain."
@@ -121,11 +117,6 @@ def _collect_provider_subpackages(providers_dir: Path, found: list[str]) -> None
 KNOWN_SUBPACKAGES: tuple[str, ...] = _discover_subpackages(DOMAIN_DIR)
 
 
-# ---------------------------------------------------------------------------
-# Subpackage key resolution
-# ---------------------------------------------------------------------------
-
-
 def source_subpackage_key(file_path: Path) -> str | None:
     """
     Return the domain subpackage key for *file_path*, or *None* if the file
@@ -163,13 +154,7 @@ def target_subpackage_key(module_path: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# AST helpers
-# ---------------------------------------------------------------------------
-
-
 def _build_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
-    """Build a ``child -> parent`` mapping for every node in *tree*."""
     parent_map: dict[ast.AST, ast.AST] = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
@@ -178,7 +163,6 @@ def _build_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
 
 
 def _test_references_type_checking(test_node: ast.expr) -> bool:
-    """Return *True* if *test_node* references ``TYPE_CHECKING``."""
     if isinstance(test_node, ast.Name) and test_node.id == "TYPE_CHECKING":
         return True
     # Compound condition:  if TYPE_CHECKING and ...:
@@ -188,7 +172,6 @@ def _test_references_type_checking(test_node: ast.expr) -> bool:
 
 
 def _is_type_checking_guarded(node: ast.AST, parent_map: dict[ast.AST, ast.AST]) -> bool:
-    """Return *True* if *node* sits inside ``if TYPE_CHECKING:``."""
     current = node
     while current in parent_map:
         parent = parent_map[current]
@@ -228,23 +211,15 @@ def _resolve_relative_import(node: ast.ImportFrom, file_path: Path) -> str | Non
     return ".".join(base_parts)
 
 
-# ---------------------------------------------------------------------------
-# File helpers
-# ---------------------------------------------------------------------------
-
-
 def _is_excluded(rel_path: str) -> bool:
-    """Return *True* if *rel_path* should be excluded from all checks."""
     return any(rel_path.startswith(ex) for ex in EXCLUDED_PATHS)
 
 
 def _is_test_file(file_path: Path) -> bool:
-    """Return *True* if *file_path* lives under a ``tests/`` directory."""
     return "tests" in file_path.parts
 
 
 def _is_litellm_runtime(file_path: Path) -> bool:
-    """Return *True* if *file_path* is under the litellm_runtime directory."""
     try:
         rel = str(file_path.relative_to(ROOT))
     except ValueError:
@@ -253,7 +228,6 @@ def _is_litellm_runtime(file_path: Path) -> bool:
 
 
 def _find_python_files(root_dir: Path) -> list[Path]:
-    """Yield every ``.py`` file under *root_dir*, respecting exclusions."""
     files: list[Path] = []
     for py_file in root_dir.rglob("*.py"):
         parts = frozenset(py_file.parts)
@@ -267,11 +241,6 @@ def _find_python_files(root_dir: Path) -> list[Path]:
             continue
         files.append(py_file)
     return sorted(files)
-
-
-# ---------------------------------------------------------------------------
-# Rule checks
-# ---------------------------------------------------------------------------
 
 
 def _check_rule_a(
@@ -745,11 +714,6 @@ def _check_models_constants_rules(
         violations.extend(_check_rule_e(file_path, tree))
         violations.extend(_check_rule_f(file_path, tree))
     return violations
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:

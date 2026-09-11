@@ -108,7 +108,6 @@ class UsageRepository:
 
     @staticmethod
     def _session_owners(connection: sqlite3.Connection) -> dict[int, tuple[str, str]]:
-        """Return ``session id -> (project hash, provider)`` for every indexed session."""
         return {
             row["id"]: (row["project_hash"], row["provider"])
             for row in connection.execute("SELECT id, project_hash, provider FROM sessions")

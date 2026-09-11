@@ -33,7 +33,6 @@ EXTERNAL_PREFIXES = ("http://", "https://")
 
 
 def get_md_files(root_dir: Path) -> list[Path]:
-    """Find all .md files in the specified directories."""
     md_files: list[Path] = []
 
     # Project root (non-recursive), excluding CLAUDE.md which we add separately
@@ -158,7 +157,6 @@ def check_reachability(md_files: list[Path], root_dir: Path) -> list[str]:
 
 
 def process_file(md_file: Path, root_dir: Path) -> tuple[int, int, int, list[str], list[str]]:
-    """Process a single markdown file and return validation results."""
     errors = 0
     warnings = 0
     links_checked = 0

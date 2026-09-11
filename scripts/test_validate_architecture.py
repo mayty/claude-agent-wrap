@@ -275,7 +275,6 @@ def test_rule_b_test_files_allowed_private_import_in_test_dir(make: _Maker) -> N
 
 
 def test_rule_c_litellm_runtime_runtime_agent_wrap_import_flagged(make: _Maker) -> None:
-    """Files under litellm_runtime/ must not import from agent_wrap at runtime."""
     make.write(
         "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
@@ -290,7 +289,6 @@ def test_rule_c_litellm_runtime_runtime_agent_wrap_import_flagged(make: _Maker) 
 def test_rule_c_litellm_runtime_runtime_import_agent_wrap_statement_flagged(
     make: _Maker,
 ) -> None:
-    """Plain ``import agent_wrap.foo`` in litellm_runtime is also flagged."""
     make.write(
         "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
@@ -303,7 +301,6 @@ def test_rule_c_litellm_runtime_runtime_import_agent_wrap_statement_flagged(
 
 
 def test_rule_c_litellm_runtime_type_checking_guard_allowed(make: _Maker) -> None:
-    """TYPE_CHECKING-guarded agent_wrap imports are allowed in litellm_runtime."""
     make.write(
         "agent_wrap/domain/providers/litellm_runtime/callback.py",
         """\
@@ -393,9 +390,6 @@ def test_edge_case_import_agent_wrap_not_domain(make: _Maker) -> None:
     assert check_file(fp) == []
 
 
-# --- Rule D: types belong in models.py -------------------------------------
-
-
 @pytest.mark.parametrize(
     ("name", "body"),
     [
@@ -442,9 +436,6 @@ def test_rule_d_skips_test_files(make: _Maker) -> None:
     assert "ED001" not in _violation_codes(check_file(fp))
 
 
-# --- Rule G: no __future__ annotations import --------------------------------
-
-
 def test_rule_g_future_annotations_flagged(make: _Maker) -> None:
     make.write(
         "agent_wrap/domain/stats/scan.py",
@@ -478,9 +469,6 @@ def test_rule_g_applies_to_tests_too(make: _Maker) -> None:
     )
     fp = make.root / "agent_wrap" / "domain" / "stats" / "tests" / "test_scan.py"
     assert "EG001" in _violation_codes(check_file(fp))
-
-
-# --- Rule H: only the ingester names a log file ------------------------------
 
 
 def test_rule_h_filename_literal_flagged(make: _Maker) -> None:
@@ -565,9 +553,6 @@ def test_rule_h_tests_are_exempt(make: _Maker) -> None:
     assert "EH001" not in _violation_codes(check_file(fp))
 
 
-# --- Rule F: enums belong in constants.py -----------------------------------
-
-
 @pytest.mark.parametrize(
     ("name", "body"),
     [
@@ -627,9 +612,6 @@ def test_rule_f_package_root_constants_allowed(make: _Maker) -> None:
     assert "EF001" not in _violation_codes(check_file(fp))
 
 
-# --- Rule E: constants belong in constants.py ------------------------------
-
-
 def test_rule_e_constant_outside_constants_flagged(make: _Maker) -> None:
     make.write("agent_wrap/domain/stats/scan.py", "MAX_FILES = 64\n")
     fp = make.root / "agent_wrap" / "domain" / "stats" / "scan.py"
@@ -657,12 +639,10 @@ def test_rule_e_constant_inside_constants_allowed(make: _Maker) -> None:
 
 def test_rule_e_has_no_exemptions(make: _Maker) -> None:
     """
-    ``USAGE``/``SUMMARY`` used to be exempt here.
+    ``USAGE``/``SUMMARY`` get no exemption.
 
-    ``cli/commands.py`` read them reflectively off each verb's ``run`` module, so they
-    could not move. They are now a click ``options_metavar`` argument and the command
-    docstring's summary line, so the exemption is gone and a constant in a verb module is
-    a violation like any other.
+    They are a click ``options_metavar`` argument and the command docstring's summary
+    line, so a constant in a verb module is a violation like any other.
     """
     make.write("agent_wrap/cli/stats/run.py", "USAGE = '[-v]'\nSUMMARY = 'Show stats'\n")
     fp = make.root / "agent_wrap" / "cli" / "stats" / "run.py"

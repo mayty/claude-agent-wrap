@@ -565,7 +565,7 @@ def test_human_output_marks_an_unmeasured_logs_footprint(
 def test_human_output_reports_the_index_footprint_beside_the_tree(
     runner: CliRunner, display_mock_service: Mock, inspect_mock: Mock
 ) -> None:
-    """The pair is the point: the tree every consumer used to re-parse, and the index."""
+    """The pair is the point: the append-only tree, and the index every consumer reads."""
     inspect_mock.build_report.return_value = _report()
     runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)

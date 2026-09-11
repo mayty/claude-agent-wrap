@@ -10,8 +10,6 @@ if TYPE_CHECKING:
 
 
 class DockerfileDirectives(NamedTuple):
-    """Parsed directives from a project Dockerfile."""
-
     agent_user: str
     port_args: list[str]
     extra_run_args: list[str]
@@ -20,16 +18,12 @@ class DockerfileDirectives(NamedTuple):
 
 
 class HostNetworkResult(NamedTuple):
-    """Resolved host-network configuration."""
-
     use_host_net: bool
     host_net_args: list[str]
     port_args: list[str]
 
 
 class SidecarAssembly(NamedTuple):
-    """Assembled sidecars with their secrets and Telegram availability."""
-
     sidecars: list[Sidecar]
     per_sidecar_secrets: dict[Sidecar, dict[str, str]]
     telegram_available: bool

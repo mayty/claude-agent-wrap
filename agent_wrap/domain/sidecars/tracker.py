@@ -19,12 +19,11 @@ keep running, and never touches theirs. Sidecars that genuinely share one contai
 the single Telegram container, whatever the provider — share one refcount, which is the
 same question asked correctly.
 
-Liveness is tested by **lockability**, never by PID: a file whose ``flock`` can be
-taken has lost its owner (the kernel drops the lock on process death), so it is
-stale and gets reaped; a file that cannot be locked has a live owner. This is immune
-to PID recycling and needs no explicit crash cleanup.
+Liveness is tested by **lockability**, never by PID: a file whose ``flock`` can be taken
+has lost its owner, since the kernel drops the lock on process death. This is immune to
+PID recycling and needs no explicit crash cleanup.
 
-``lock_path`` and ``start_waiters_dir`` stay **global**, deliberately unpartitioned —
+``lock_path`` and ``start_waiters_dir`` stay **global**, deliberately unpartitioned --
 partitioning them per container would break three things:
 
 * the master-key approval hooks (``on_started`` / ``on_stopping``) read-modify-write a
@@ -83,17 +82,17 @@ class SidecarTracker:
         """
         return self.running_dir / container_name
 
-    # --- registration (the caller holds the returned handle for the lock's life) ---
-
     def register_running(self, container_name: str, instance_id: str) -> TextIO | None:
-        """Create + lock this run's registration on *container_name*; return its handle."""
+        """
+        Create + lock this run's registration on *container_name*.
+
+        The caller must hold the returned handle for the lock's life: the registration is
+        live only while it is open.
+        """
         return lock_and_hold(self.running_dir_for(container_name) / instance_id)
 
     def clear_running(self, handle: TextIO | None, container_name: str, instance_id: str) -> None:
-        """Release this run's registration on *container_name* and remove it."""
         clear_lock_handle(handle, self.running_dir_for(container_name) / instance_id)
-
-    # --- liveness probes (lockability, reaping stale files as a side effect) ---
 
     def has_live_runners(self, container_name: str, *, exclude_id: str) -> bool:
         """
@@ -102,5 +101,7 @@ class SidecarTracker:
         This is the teardown predicate: ``False`` means the caller is the last agent out
         on *container_name* and may stop it. Registrations under other container names
         are invisible here, which is what lets providers be torn down independently.
+
+        Probing is not read-only: an unlockable registration file is reaped as it goes.
         """
         return any_live_locks(self.running_dir_for(container_name), exclude_id=exclude_id)

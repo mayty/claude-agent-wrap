@@ -5,16 +5,12 @@ from typing import NamedTuple
 
 
 class GitFullResult(NamedTuple):
-    """Full git command result including stderr."""
-
     stdout: str
     returncode: int
     stderr: str
 
 
 class BehindCountResult(NamedTuple):
-    """Result of checking how far behind origin a branch is."""
-
     branch: str
     commits_behind: int
     target_ref: str
