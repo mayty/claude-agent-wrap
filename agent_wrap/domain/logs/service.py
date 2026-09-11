@@ -573,25 +573,27 @@ class LogsService:
         # Wait for the viewer to publish its listening state, or timeout. Animate a
         # spinner so the user isn't staring at a blank screen during the cold start.
         pid = claimed["pid"]
-        captured_port: list[int | None] = [None]
 
-        def _wait_for_child() -> None:
+        def _wait_for_child() -> int | None:
             deadline = time.monotonic() + SPAWN_TIMEOUT_SEC
             while time.monotonic() < deadline:
                 state = self.running_server()
                 if state is not None and state["pid"] == pid and not state["starting"]:
-                    captured_port[0] = state["port"]
-                    return
+                    return state["port"]
                 time.sleep(POLL_INTERVAL_SEC)
+            return None
 
-        self._display.spin_while(
+        def _connect_line(listening: int | None) -> str | None:
+            return self.connect_line(listening) if listening is not None else None
+
+        listening_port = self._display.spin_while(
             label=LOGS_VIEWER_LABEL,
             message="starting…",
-            done_message=lambda: self.connect_line(captured_port[0]) if captured_port[0] else None,
+            done_message=_connect_line,
             work=_wait_for_child,
         )
 
-        if captured_port[0] is not None:
+        if listening_port is not None:
             return 0
 
         # Timed out — clean up the orphaned viewer and the claim it never honoured.

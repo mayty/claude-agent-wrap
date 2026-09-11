@@ -3,16 +3,12 @@
 
 import dataclasses
 import json
-from typing import TYPE_CHECKING
 
 import click
 
 from agent_wrap.cli.inspect.constants import INSPECT_LABEL, NO_STALE_IMAGES
 from agent_wrap.cli.inspect.render import render
 from agent_wrap.containers import services
-
-if TYPE_CHECKING:
-    from agent_wrap.domain.status.models import InspectReport
 
 
 @click.command("inspect")
@@ -63,18 +59,15 @@ def inspect_command(ctx: click.Context, *, as_json: bool, lite: bool) -> None:
     """
     dsp = services.display_service
 
-    captured: list[InspectReport] = []
     if as_json:
         # No spinner: its animation goes to stdout, which would corrupt the document.
-        captured.append(services.inspect_service.build_report(lite=lite))
+        report = services.inspect_service.build_report(lite=lite)
     else:
-        dsp.spin_while(
+        report = dsp.spin_while(
             label=INSPECT_LABEL,
             message="collecting…",
-            done_message=lambda: None,
-            work=lambda: captured.append(services.inspect_service.build_report(lite=lite)),
+            work=lambda: services.inspect_service.build_report(lite=lite),
         )
-    report = captured[0]
 
     if as_json:
         # asdict is safe because every model in the report is a frozen dataclass of

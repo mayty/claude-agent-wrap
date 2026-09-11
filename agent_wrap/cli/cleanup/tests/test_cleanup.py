@@ -265,7 +265,6 @@ def test_scope_spinner_runs_before_empty_scope_check(
     call = display_mock_service.spin_while.call_args
     assert call.kwargs["label"] == CLEANUP_LABEL
     assert call.kwargs["message"] == "scanning…"
-    assert call.kwargs["done_message"]() is None
     assert callable(call.kwargs["work"])
 
 

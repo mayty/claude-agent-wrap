@@ -45,7 +45,6 @@ def reindex_command(ctx: click.Context, *, prune: bool) -> None:
     """
     dsp = services.display_service
     logs = services.logs_service
-    reports = []
 
     # Checked before the walk, not after it: a `--prune` that cannot prune is a mistake
     # in the invocation, and saying so costs nothing next to a backfill the user would
@@ -61,14 +60,12 @@ def reindex_command(ctx: click.Context, *, prune: bool) -> None:
     # from it and is deliberately ungranted -- the grant is unconditional here. It covers
     # the ingest call only; the walk and the report do not write.
     with core.logs_db.enable_writes():
-        dsp.spin_while(
+        report = dsp.spin_while(
             label=REINDEX_LABEL,
             message="reading log tree…",
-            done_message=lambda: None,
-            work=lambda: reports.append(logs.ingest_tree()),
+            work=logs.ingest_tree,
         )
 
-    report = reports[0]
     if report is None:
         dsp.warning(
             "another process is already reading the log tree (the `agent logs` viewer, "

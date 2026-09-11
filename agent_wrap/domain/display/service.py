@@ -420,16 +420,16 @@ class DisplayService:
     # Spinner (public API delegates to Spinner collaborator)
     # ------------------------------------------------------------------
 
-    def spin_while(
+    def spin_while[T](
         self,
         *,
         label: str,
         message: str | Callable[[], str],
-        done_message: str | Callable[[], str | None],
-        work: Callable[[], object],
-    ) -> None:
-        """Animate a spinner while running *work* on a background thread."""
-        Spinner(label).spin_while(message=message, done_message=done_message, work=work)
+        work: Callable[[], T],
+        done_message: str | Callable[[T], str | None] | None = None,
+    ) -> T:
+        """Animate a spinner while running *work* on a background thread, returning its result."""
+        return Spinner(label).spin_while(message=message, done_message=done_message, work=work)
 
     def poll_until(  # noqa: PLR0913
         self,

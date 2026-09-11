@@ -18,33 +18,31 @@ def ds() -> DisplayService:
     return DisplayService()
 
 
-def test_spin_while_runs_work_non_tty(
+def test_spin_while_returns_work_result_non_tty(
     mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
 ) -> None:
     mocker.patch("sys.stderr.isatty", return_value=False)
-    ran = []
-    ds.spin_while(
+    result = ds.spin_while(
         label="my-op",
         message="doing…",
         done_message="done",
-        work=lambda: ran.append(True),
+        work=lambda: "payload",
     )
-    assert ran == [True]
+    assert result == "payload"
     assert "my-op: doing…" in capsys.readouterr().err
 
 
-def test_spin_while_runs_work_tty(
+def test_spin_while_returns_work_result_tty(
     mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
 ) -> None:
     mocker.patch("sys.stderr.isatty", return_value=True)
-    ran = []
-    ds.spin_while(
+    result = ds.spin_while(
         label="my-op",
         message="doing…",
         done_message="done",
-        work=lambda: ran.append(True),
+        work=lambda: "payload",
     )
-    assert ran == [True]
+    assert result == "payload"
     assert "my-op: done" in capsys.readouterr().err
 
 
@@ -61,19 +59,58 @@ def test_spin_while_dynamic_message_non_tty(
     assert "my-op: computed" in capsys.readouterr().err
 
 
-def test_spin_while_done_message_none(
+def test_spin_while_done_message_omitted(
     mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
 ) -> None:
     mocker.patch("sys.stderr.isatty", return_value=True)
-    ds.spin_while(
-        label="my-op",
-        message="doing…",
-        done_message=lambda: None,
-        work=lambda: None,
-    )
+    ds.spin_while(label="my-op", message="doing…", work=lambda: None)
     err = capsys.readouterr().err
     assert err.endswith("\n")
     assert "done" not in err
+
+
+def test_spin_while_done_message_receives_result(
+    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+) -> None:
+    mocker.patch("sys.stderr.isatty", return_value=True)
+
+    def done(port: int) -> str:
+        return f"listening on {port}"
+
+    ds.spin_while(label="my-op", message="doing…", done_message=done, work=lambda: 8080)
+    assert "my-op: listening on 8080" in capsys.readouterr().err
+
+
+def test_spin_while_propagates_work_error_tty(
+    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+) -> None:
+    """The TTY path re-raises, matching the non-TTY path that always did."""
+    mocker.patch("sys.stderr.isatty", return_value=True)
+
+    def work() -> None:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        ds.spin_while(label="my-op", message="doing…", done_message="done", work=work)
+
+    err = capsys.readouterr().err
+    # The spinner line is closed before the error surfaces, and never claims success.
+    assert err.endswith("\n")
+    assert "my-op: done" not in err
+
+
+def test_spin_while_propagates_work_error_non_tty(
+    mocker: pytest_mock.MockFixture, ds: DisplayService
+) -> None:
+    mocker.patch("sys.stderr.isatty", return_value=False)
+
+    def work() -> None:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        ds.spin_while(label="my-op", message="doing…", done_message="done", work=work)
 
 
 def _frozen_clock(mocker: pytest_mock.MockFixture) -> None:

@@ -3,8 +3,8 @@
 
 import random
 import sys
-import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import PollResult
@@ -35,45 +35,68 @@ class Spinner:
         sleep_time = duration / len(frames)
         return frames, sleep_time
 
+    def _done_line[T](
+        self, done_message: str | Callable[[T], str | None] | None, result: T
+    ) -> str | None:
+        """Collapse the three ``done_message`` forms into a final line, None meaning none."""
+        if done_message is None or isinstance(done_message, str):
+            return done_message
+        return done_message(result)
+
     # -- public --
 
-    def spin_while(
+    def spin_while[T](
         self,
         *,
         message: str | Callable[[], str],
-        done_message: str | Callable[[], str | None],
-        work: Callable[[], object],
-    ) -> None:
-        """Run *work* on a background thread while animating a TTY spinner."""
+        work: Callable[[], T],
+        done_message: str | Callable[[T], str | None] | None = None,
+    ) -> T:
+        """
+        Run *work* on a background thread while animating a TTY spinner, returning its result.
+
+        *done_message* is the line the spinner settles on: a literal string, a callable
+        handed whatever *work* returned, or None (the default) for no final line at all.
+        An exception from *work* propagates on both the TTY and the non-TTY path.
+        """
         msg_fn = (lambda: message) if isinstance(message, str) else message
-        done_fn = (lambda: done_message) if isinstance(done_message, str) else done_message
 
         if not sys.stderr.isatty():
             print(f"{self._label}: {msg_fn()}", file=sys.stderr)
-            work()
-            return
+            return work()
 
         frames, render_interval = self._choose_spinner()
 
         start = time.monotonic()
-        thread = threading.Thread(target=work)
-        thread.start()
-        n = 0
-        while thread.is_alive():
-            elapsed = int(time.monotonic() - start)
-            print(
-                self._frame(frames, n, f"{msg_fn()} ({elapsed}s)"),
-                end="",
-                file=sys.stderr,
-            )
-            n += 1
-            thread.join(timeout=render_interval)
+        # The future is the typed carrier for the result and for anything *work* raises,
+        # neither of which a bare thread can hand back.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(work)
+            n = 0
+            while not future.done():
+                elapsed = int(time.monotonic() - start)
+                print(
+                    self._frame(frames, n, f"{msg_fn()} ({elapsed}s)"),
+                    end="",
+                    file=sys.stderr,
+                )
+                n += 1
+                wait([future], timeout=render_interval)
+
+        error = future.exception()
+        if error is not None:
+            # Close the spinner line first: the traceback must not land mid-frame.
+            print(file=sys.stderr)
+            raise error
+
+        result = future.result()
         elapsed = int(time.monotonic() - start)
-        final = done_fn()
+        final = self._done_line(done_message, result)
         if final is None:
             print(file=sys.stderr)
         else:
             print(self._final(f"{final} ({elapsed}s)"), file=sys.stderr)
+        return result
 
     def poll_until(
         self,
@@ -89,27 +112,27 @@ class Spinner:
         if not sys.stderr.isatty():
             return self._poll_quiet(poll, deadline, poll_interval)
 
+        # *status* stays a closure variable because *message* reads it while the spinner
+        # runs; only the verdict can travel back as a return value.
         status = ""
-        ok = False
 
-        def work() -> None:
-            nonlocal status, ok
+        def work() -> bool:
+            nonlocal status
             while time.monotonic() < deadline:
                 verdict, poll_status = poll()
                 status = poll_status
                 if verdict is PollResult.SUCCESS:
-                    ok = True
-                    return
+                    return True
                 if verdict is PollResult.FAILURE:
-                    return
+                    return False
                 time.sleep(poll_interval)
+            return False
 
-        self.spin_while(
+        return self.spin_while(
             message=lambda: f"{message} [{status or '?'}]",
-            done_message=lambda: done_message if ok else None,
+            done_message=lambda ok: done_message if ok else None,
             work=work,
         )
-        return ok
 
     def _poll_quiet(
         self,

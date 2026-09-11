@@ -222,15 +222,13 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
     build = services.build_service
     logs = services.logs_service
 
-    scoped: list[CleanupScope] = []
-    image_scoped: list[ImageCleanupScope] = []
-    retention_scoped: list[RetentionScope] = []
-
-    def survey() -> None:
+    def survey() -> tuple[CleanupScope, ImageCleanupScope, RetentionScope]:
         """All three surveys, so one spinner covers the whole scan. None changes anything."""
-        scoped.append(stats.cleanup_scope())
-        image_scoped.append(build.image_cleanup_scope(services.config_service.read_project_paths()))
-        retention_scoped.append(logs.retention_scope())
+        return (
+            stats.cleanup_scope(),
+            build.image_cleanup_scope(services.config_service.read_project_paths()),
+            logs.retention_scope(),
+        )
 
     # The survey's only write is the one-time projects.txt import, and it has to happen
     # here rather than before `clean`: the scope `clean` deletes from is built in this
@@ -238,12 +236,9 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
     # --dry-run takes no grant and so previews exactly that -- read_project_paths says
     # why on stderr.
     with contextlib.nullcontext() if dry_run else core.projects_db.enable_writes():
-        dsp.spin_while(
-            label=CLEANUP_LABEL, message="scanning…", done_message=lambda: None, work=survey
+        scope, image_scope, retention_scope = dsp.spin_while(
+            label=CLEANUP_LABEL, message="scanning…", work=survey
         )
-    scope = scoped[0]
-    image_scope = image_scoped[0]
-    retention_scope = retention_scoped[0]
 
     if scope.is_empty and image_scope.is_empty and retention_scope.is_empty:
         dsp.info(
@@ -264,11 +259,7 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
         dsp.info("Cleanup cancelled.")
         ctx.exit(0)
 
-    outcomes: list[CleanupOutcome] = []
-    image_outcomes: list[ImageCleanupOutcome] = []
-    reclaims: list[IndexReclaim | None] = []
-
-    def clean() -> None:
+    def clean() -> tuple[ImageCleanupOutcome, CleanupOutcome, IndexReclaim | None]:
         """
         Remove the images first, then the logs, their index rows, and the registry.
 
@@ -282,9 +273,13 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
         retention inside it took that row. Reversed, it would find every one of those
         blobs still reachable and reclaim nothing.
         """
-        image_outcomes.append(build.remove_images(image_scope))
-        outcomes.append(stats.run_cleanup(scope))
-        reclaims.append(logs.reclaim_index(retention_scope))
+        # Bound to names rather than returned as one tuple literal -- unlike `survey`, the
+        # order here is the contract the docstring describes, and a literal evaluates in
+        # the same order while reading as though it did not matter.
+        image_outcome = build.remove_images(image_scope)
+        outcome = stats.run_cleanup(scope)
+        reclaim = logs.reclaim_index(retention_scope)
+        return image_outcome, outcome, reclaim
 
     # Two grants, constructed fresh rather than reusing the registry one above: a
     # @contextmanager instance is single-use, and nullcontext is not, so a shared
@@ -295,7 +290,7 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
     # The logs grant is what lets it forget a deleted project's requests; without it the
     # directories would go while their spend stayed in `agent stats` forever.
     with core.projects_db.enable_writes(), core.logs_db.enable_writes():
-        dsp.spin_while(
-            label=CLEANUP_LABEL, message="cleaning up…", done_message=lambda: None, work=clean
+        image_outcome, outcome, reclaim = dsp.spin_while(
+            label=CLEANUP_LABEL, message="cleaning up…", work=clean
         )
-    ctx.exit(_CleanupReport.summarize(outcomes[0], image_outcomes[0], reclaims[0], dsp))
+    ctx.exit(_CleanupReport.summarize(outcome, image_outcome, reclaim, dsp))
