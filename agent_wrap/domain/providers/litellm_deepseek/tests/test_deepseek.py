@@ -15,6 +15,7 @@ from agent_wrap.domain.providers.litellm_deepseek.provider import (
     DeepSeekProvider,
     _DeepSeekPricing,
 )
+from agent_wrap.domain.providers.pricing import PricingCache
 from agent_wrap.domain.sidecars.service import SidecarService
 
 if TYPE_CHECKING:
@@ -55,7 +56,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
     tmp_path: Path, mocker: pytest_mock.MockFixture
 ):
     cache_path = _fresh_cache(tmp_path)
-    http_get = mocker.patch.object(_DeepSeekPricing, "http_get", autospec=True)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
 
     prices = _DeepSeekPricing.load_prices(cache_path)
 
@@ -66,7 +67,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
 def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_mock.MockFixture):
     """``refresh_pricing_data=True`` bypasses even a brand-new cache and re-fetches."""
     cache_path = _fresh_cache(tmp_path)
-    http_get = mocker.patch.object(_DeepSeekPricing, "http_get", autospec=True)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.return_value = _PAGE_HTML.encode()
 
     prices = _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=True)
@@ -110,7 +111,7 @@ def test_extract_peak_hours_returns_none_without_footnote():
 
 def test_load_prices_persists_peak_hours(tmp_path: Path, mocker: pytest_mock.MockFixture):
     cache_path = _fresh_cache(tmp_path)
-    http_get = mocker.patch.object(_DeepSeekPricing, "http_get", autospec=True)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.return_value = _PAGE_HTML.encode()
 
     _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=True)

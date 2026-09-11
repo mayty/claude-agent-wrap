@@ -1,20 +1,31 @@
 # This file has been created with the assistance of an AI tool.
 """
-Tiered-pricing arithmetic for providers.
+Pricing arithmetic and pricing-table caching for providers.
 
-Two stateless namespace classes used by ``Provider``: ``ModelKeyMatcher`` resolves a
-request's model identifier to a pricing-table key, and ``CostComputer`` turns a tier
-plus a token-usage record into a USD cost. Neither knows anything about sidecars or
-provider identity — they are pure functions over a pricing table.
+Three stateless namespace classes used by ``Provider``: ``ModelKeyMatcher`` resolves a
+request's model identifier to a pricing-table key, ``CostComputer`` turns a tier plus a
+token-usage record into a USD cost, and ``PricingCache`` fetches and caches a scraped
+table for the providers whose prices are not a literal. None knows anything about
+sidecars or provider identity.
 """
 
-from typing import TYPE_CHECKING
+import json
+import time
+from typing import TYPE_CHECKING, Any
+
+import httpx2
+
+from agent_wrap.domain.providers.constants import (
+    PRICING_CACHE_TTL_SECONDS,
+    PRICING_FETCH_TIMEOUT,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
+    from pathlib import Path
 
     from agent_wrap.domain.pricing.models import TokenUsage
-    from agent_wrap.domain.providers.models import Tier
+    from agent_wrap.domain.providers.models import PriceTable, Tier
 
 
 class ModelKeyMatcher:
@@ -102,3 +113,92 @@ class CostComputer:
             ),
             default=0.0,
         )
+
+
+class PricingCache:
+    """
+    Fetching and caching a scraped pricing table, for the providers that scrape one.
+
+    The protocol is the same for every such provider: read the cached document, use it
+    while it is fresh, otherwise scrape and write a new one -- and on any failure fall
+    back to whatever stale document is on disk rather than to no prices at all, because a
+    week-old table is a far better answer than reporting every request as unpriced.
+    """
+
+    @staticmethod
+    def http_get(url: str) -> bytes:
+        """
+        Fetch *url* and return its raw bytes.
+
+        ``raise_for_status`` is not optional here: unlike urlopen, httpx2 returns a 4xx
+        or 5xx as an ordinary response, so without it an error page would be handed to
+        the caller's scraper and parsed as pricing.
+        """
+        response = httpx2.get(
+            url,
+            headers={"User-Agent": "agent-wrap/agent_usage"},
+            timeout=PRICING_FETCH_TIMEOUT,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        return response.content
+
+    @staticmethod
+    def load(
+        cache_path: Path,
+        *,
+        refresh: bool,
+        scrape: Callable[[], tuple[PriceTable, dict[str, Any]]],
+        still_valid: Callable[[dict[str, Any]], bool] = lambda _cached: True,
+    ) -> PriceTable:
+        """
+        Return the cached prices at *cache_path*, scraping when they are stale or absent.
+
+        *scrape* returns the table plus any extra fields that provider persists alongside
+        it -- a region label, off-peak hours -- which are written into the same document
+        and handed back to *still_valid* on the next read. *still_valid* is the provider's
+        own freshness test on top of the TTL: a document scraped for a different region
+        is fresh and useless at once.
+
+        An empty scrape counts as a failure, not as "this provider costs nothing".
+        """
+        cached: dict[str, Any] | None = None
+        if cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            except OSError, json.JSONDecodeError:
+                cached = None
+
+        def stale() -> PriceTable:
+            return (cached or {}).get("prices") or {}
+
+        fresh_enough = (
+            cached is not None
+            and isinstance(cached.get("fetched_at"), (int, float))
+            and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
+            and still_valid(cached)
+        )
+        if not refresh and fresh_enough:
+            return stale()
+
+        try:
+            prices, extra = scrape()
+        except httpx2.HTTPError, OSError, json.JSONDecodeError:
+            return stale()
+        if not prices:
+            return stale()
+
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(
+                    {"fetched_at": time.time(), "prices": prices, **extra},
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # an unwritable cache costs a re-scrape next time, nothing more
+
+        return prices

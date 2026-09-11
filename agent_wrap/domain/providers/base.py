@@ -25,6 +25,7 @@ from agent_wrap.constants import (
 from agent_wrap.domain.providers.constants import (
     DEFAULT_SIDECAR_PORT,
     MODEL_CONTEXT_SUFFIX_RE,
+    PRICING_CACHE_FILENAME,
     UNKNOWN_MODEL_COST_THRESHOLD_USD,
 )
 from agent_wrap.domain.providers.pricing import CostComputer, ModelKeyMatcher
@@ -80,6 +81,9 @@ class Provider(ABC):
     internal_port: ClassVar[int] = DEFAULT_SIDECAR_PORT
     health_timeout_sec: ClassVar[int] = 90
     health_endpoint: ClassVar[str] = "/health/liveliness"
+    #: Ceiling on the image pull. Generous: the LiteLLM image is large, and a cold pull
+    #: on a slow link is the one step here that legitimately takes minutes.
+    pull_timeout_sec: ClassVar[int] = 900
     #: Seconds a cold start takes (docker run + health poll). The one launcher that
     #: wins the shared lock pays this; it dominates the lock-timeout budget. Kept
     #: above health_timeout_sec for the docker-run + reap tail.
@@ -135,6 +139,7 @@ class Provider(ABC):
             "provider_name": self.name,
             "health_timeout_sec": self.health_timeout_sec,
             "health_endpoint": self.health_endpoint,
+            "pull_timeout_sec": self.pull_timeout_sec,
             "cold_start_time": self.cold_start_time,
             "short_circuit_time": self.short_circuit_time,
             "config_path": self._config_path(),
@@ -175,6 +180,10 @@ class Provider(ABC):
 
     def _config_path(self) -> Path:
         return self._state_dir() / "config.yaml"
+
+    def _pricing_cache_path(self) -> Path:
+        """Where a provider that scrapes its prices keeps the table it last resolved."""
+        return self._state_dir() / PRICING_CACHE_FILENAME
 
     def _state_dir(self) -> Path:
         """Resolve the provider's source directory (for lock/activity/state files)."""

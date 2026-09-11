@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING
 import click
 
 from agent_wrap.cli.cleanup.constants import (
-    CLEANUP_IMAGE_ALIGNS,
-    CLEANUP_IMAGE_ELIDE,
-    CLEANUP_IMAGE_HEADERS,
+    CLEANUP_IMAGE_TABLE,
     CLEANUP_IMAGE_TITLE,
     CLEANUP_LABEL,
     INDEX_RECLAIM_SKIPPED,
@@ -83,19 +81,8 @@ class _CleanupReport:
                 for image in rows
             )
 
-        headers = list(CLEANUP_IMAGE_HEADERS)
-        # Every column is measured here (leading=0), unlike the inspect tables that hold a
-        # path tree back as a per-table leading column: there is one table and no tree, so
-        # `leading` plus the shared count has to add up to all three headers.
-        shared = dsp.compute_shared_widths([(headers, body, 0)], len(headers))
         return dsp.render_table(
-            CLEANUP_IMAGE_TITLE.format(count=len(scope.images)),
-            headers,
-            list(CLEANUP_IMAGE_ALIGNS),
-            body,
-            0,
-            shared,
-            elide=CLEANUP_IMAGE_ELIDE,
+            CLEANUP_IMAGE_TITLE.format(count=len(scope.images)), CLEANUP_IMAGE_TABLE, body
         )
 
     @staticmethod

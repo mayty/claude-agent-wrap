@@ -3,6 +3,10 @@
 
 from typing import Any, TypedDict
 
+#: A flat pricing table: canonical model identifier -> per-unit costs in USD per 1M
+#: tokens, keyed by the same field names as `Tier` minus the tier bound.
+type PriceTable = dict[str, dict[str, float]]
+
 
 class Tier(TypedDict):
     """

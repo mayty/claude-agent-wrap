@@ -91,9 +91,9 @@ def display_mock_service() -> Mock:
     # Rendered as plain "cell | cell" lines: the borders and widths are DisplayService's own
     # tested concern, and what these tests assert is which rows and headings reach the table.
     dsp.render_table.side_effect = (  # pyrefly: ignore [missing-attribute]
-        lambda title, *args, **_kwargs: [
+        lambda title, _spec, body, _shared=None: [
             title,
-            *[" | ".join(item.cells) if not isinstance(item, str) else "---" for item in args[2]],
+            *[" | ".join(item.cells) if not isinstance(item, str) else "---" for item in body],
         ]
     )
     return dsp

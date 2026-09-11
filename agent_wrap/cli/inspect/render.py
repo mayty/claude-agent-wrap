@@ -33,21 +33,16 @@ import time
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.inspect.constants import (
-    AGENT_ALIGNS,
-    AGENT_HEADERS,
-    DETAILS_ALIGNS,
-    DETAILS_HEADERS,
+    AGENT_TABLE,
+    DETAILS_TABLE,
     DETAILS_TITLE,
     LEGACY_DOCKERFILE_NOTE,
     LITE_NOTE,
     NONE_CELL,
     NOT_MEASURED,
     PROJECT_IMAGE_LABEL,
-    SIDECAR_ALIGNS,
-    SIDECAR_HEADERS,
-    STALE_IMAGES_ALIGNS,
-    STALE_IMAGES_ELIDE,
-    STALE_IMAGES_HEADERS,
+    SIDECAR_TABLE,
+    STALE_IMAGES_TABLE,
     UNKNOWN,
 )
 from agent_wrap.constants import (
@@ -167,11 +162,7 @@ class Tables:
             )
             for row in rows
         ]
-        headers = list(SIDECAR_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        lines = display.render_table(
-            f"Sidecars ({len(rows)}):", headers, list(SIDECAR_ALIGNS), body, 1, shared
-        )
+        lines = display.render_table(f"Sidecars ({len(rows)}):", SIDECAR_TABLE, body)
         idle = [
             row.name for row in rows if row.status == RUNNING_STATUS and not row.attached_agents
         ]
@@ -212,11 +203,7 @@ class Tables:
             )
             for row in rows
         ]
-        headers = list(AGENT_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        return display.render_table(
-            f"Agents ({len(rows)}):", headers, list(AGENT_ALIGNS), body, 1, shared
-        )
+        return display.render_table(f"Agents ({len(rows)}):", AGENT_TABLE, body)
 
     @staticmethod
     def stale_images(rows: list[StaleImageRow] | None, display: DisplayService) -> list[str]:
@@ -239,32 +226,16 @@ class Tables:
         placed = [row for row in rows if row.project]
         unplaceable = [row for row in rows if not row.project]
         root = build_path_tree([(row.project, row) for row in placed]) if placed else None
-        headers = list(STALE_IMAGES_HEADERS)
 
-        def measure() -> tuple[list[RowItemOrDivider], list[int]]:
-            """Return the body as the tree stands now, plus the widths of its other columns."""
-            body = Tables.stale_body(root, unplaceable)
-            return body, display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-
-        # Chop the tree only while the tree is the thing that does not fit -- that is what
-        # `table_overflow` reports once told which columns can be cut instead. Then `elide`
-        # cuts those. Both are no-ops when there is no terminal width to respect.
-        body, shared = measure()
-        while (
-            root is not None
-            and display.table_overflow(headers, body, 1, shared, elide=STALE_IMAGES_ELIDE)
-            and expand_widest_chain(root)
-        ):
-            body, shared = measure()
-
+        # Chop the tree only while the tree is the thing that does not fit; the spec's
+        # elidable columns absorb whatever is left over at render time.
+        body, shared = display.fit_table(
+            STALE_IMAGES_TABLE,
+            lambda: Tables.stale_body(root, unplaceable),
+            shrink=lambda: root is not None and expand_widest_chain(root),
+        )
         return display.render_table(
-            f"Stale images ({len(rows)}):",
-            headers,
-            list(STALE_IMAGES_ALIGNS),
-            body,
-            1,
-            shared,
-            elide=STALE_IMAGES_ELIDE,
+            f"Stale images ({len(rows)}):", STALE_IMAGES_TABLE, body, shared
         )
 
     @staticmethod
@@ -600,9 +571,7 @@ class Details:
                 body.append(DIVIDER)
             body.extend(group)
 
-        headers = list(DETAILS_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        return display.render_table(DETAILS_TITLE, headers, list(DETAILS_ALIGNS), body, 1, shared)
+        return display.render_table(DETAILS_TITLE, DETAILS_TABLE, body)
 
 
 def render(report: InspectReport, display: DisplayService) -> list[str]:

@@ -13,14 +13,14 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.domain.display.constants import DEFAULT_TERM_WIDTH, Ansi
-from agent_wrap.domain.display.models import RowItem
+from agent_wrap.domain.display.models import RowItem, TableSpec
 from agent_wrap.domain.display.service import DisplayService
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.models import RowItemOrDivider
 
-HEADERS = ["PROJECT", "COUNT"]
-ALIGNS = ["<", ">"]
+HEADERS = ("PROJECT", "COUNT")
+ALIGNS = ("<", ">")
 
 
 @pytest.fixture
@@ -50,8 +50,16 @@ def _tree_body() -> list[RowItemOrDivider]:
     ]
 
 
-def _render(display: DisplayService, body: list[RowItemOrDivider], **kwargs: object) -> list[str]:
-    return display.render_table("T:", HEADERS, ALIGNS, body, 1, [5], **kwargs)  # type: ignore[arg-type]
+def _table(elide: tuple[int, ...] = ()) -> TableSpec:
+    return TableSpec(headers=HEADERS, aligns=ALIGNS, leading=1, elide=elide)
+
+
+def _render(
+    display: DisplayService, body: list[RowItemOrDivider], elide: tuple[int, ...] = ()
+) -> list[str]:
+    # COUNT's width is stated rather than measured, so these assertions stay pinned to the
+    # header floor they were written against.
+    return display.render_table("T:", _table(elide), body, [5])
 
 
 def _project_cells(lines: list[str]) -> list[str]:
@@ -108,7 +116,7 @@ def test_terminal_width_falls_back_when_a_terminal_will_not_say(
 def test_table_overflow_is_zero_when_there_is_no_width_to_respect(
     display: DisplayService,
 ) -> None:
-    assert display.table_overflow(HEADERS, _tree_body(), 1, [5]) == 0
+    assert display.table_overflow(_table(), _tree_body(), [5]) == 0
 
 
 def test_table_overflow_reports_the_excess(
@@ -116,14 +124,14 @@ def test_table_overflow_reports_the_excess(
 ) -> None:
     """PROJECT measures 24, COUNT 5: 26 + 7 columns of cells plus 3 borders."""
     monkeypatch.setenv("COLUMNS", "30")
-    assert display.table_overflow(HEADERS, _tree_body(), 1, [5]) == 6
+    assert display.table_overflow(_table(), _tree_body(), [5]) == 6
 
 
 def test_table_overflow_is_zero_when_the_table_fits(
     display: DisplayService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("COLUMNS", "200")
-    assert display.table_overflow(HEADERS, _tree_body(), 1, [5]) == 0
+    assert display.table_overflow(_table(), _tree_body(), [5]) == 0
 
 
 def test_table_overflow_discounts_what_an_elidable_column_could_give_up(
@@ -136,7 +144,7 @@ def test_table_overflow_discounts_what_an_elidable_column_could_give_up(
     over, every one of which the prose column can surrender on its own.
     """
     monkeypatch.setenv("COLUMNS", "40")
-    headers = ["PROJECT", "REASON"]
+    spec = TableSpec(headers=("PROJECT", "REASON"), aligns=("<", "<"), leading=1)
     body: list[RowItemOrDivider] = [
         RowItem(
             cells=["├home/me/work/wargaming/", "a fairly long reason string"],
@@ -144,8 +152,8 @@ def test_table_overflow_discounts_what_an_elidable_column_could_give_up(
             prefix_len=1,
         )
     ]
-    assert display.table_overflow(headers, body, 1, [27]) == 18
-    assert display.table_overflow(headers, body, 1, [27], elide=(1,)) == 0
+    assert display.table_overflow(spec, body, [27]) == 18
+    assert display.table_overflow(spec._replace(elide=(1,)), body, [27]) == 0
 
 
 def test_render_table_leaves_a_table_with_no_elidable_column_alone(
@@ -203,9 +211,8 @@ def test_render_table_spreads_the_cut_across_several_elidable_columns(
             prefix_len=0,
         )
     ]
-    lines = display.render_table(
-        "T:", ["PROJECT", "IMAGE"], ["<", "<"], body, 1, [25], elide=(0, 1)
-    )
+    spec = TableSpec(headers=("PROJECT", "IMAGE"), aligns=("<", "<"), leading=1, elide=(0, 1))
+    lines = display.render_table("T:", spec, body, [25])
     assert {len(line) for line in lines[1:]} == {40}
     # 16 and 17 columns: neither gave up more than a character more than the other.
     assert lines[4] == "│ a-fairly-long-p… │ an-even-longer-i… │"
@@ -231,3 +238,90 @@ def test_render_table_keeps_a_divider_spanning_the_cut_widths(
     lines = _render(display, body, elide=(0,))
     assert {len(line) for line in lines[1:]} == {30}
     assert lines[-3].startswith("├")
+
+
+def test_render_table_measures_its_own_shared_widths_when_not_given_any(
+    display: DisplayService,
+) -> None:
+    """A single table needs no width list: its shared columns come from its own body."""
+    body: list[RowItemOrDivider] = [_row("/srv", 0)]
+    assert display.render_table("T:", _table(), body) == display.render_table(
+        "T:", _table(), body, display.compute_shared_widths([(_table(), body)])
+    )
+
+
+def test_compute_shared_widths_takes_its_count_from_the_first_spec(
+    display: DisplayService,
+) -> None:
+    """The arithmetic callers used to pass: leading plus the count covers every header."""
+    body: list[RowItemOrDivider] = [_row("/srv", 0)]
+    assert display.compute_shared_widths([(_table(), body)]) == [len("COUNT")]
+
+
+def test_compute_shared_widths_sizes_a_column_across_every_table_in_the_group(
+    display: DisplayService,
+) -> None:
+    """Stacked tables share one width so their figures line up vertically."""
+    wide = TableSpec(headers=("MODEL", "COUNT"), aligns=("<", ">"), leading=1)
+    narrow: list[RowItemOrDivider] = [_row("/srv", 0)]
+    broad: list[RowItemOrDivider] = [RowItem(cells=["m", "1234567"], style=Ansi.NONE, prefix_len=0)]
+    assert display.compute_shared_widths([(_table(), narrow), (wide, broad)]) == [7]
+
+
+def test_fit_table_stops_once_the_table_fits(
+    display: DisplayService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMNS", "200")
+    calls: list[int] = []
+
+    def shrink() -> bool:
+        calls.append(1)
+        return True
+
+    body, shared = display.fit_table(_table(), _tree_body, shrink=shrink)
+    assert calls == []
+    assert shared == [len("COUNT")]
+    assert len(body) == len(_tree_body())
+
+
+def test_fit_table_gives_up_when_shrinking_reports_nothing_left(
+    display: DisplayService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The table then simply overflows, which beats cutting a column nothing nominated."""
+    monkeypatch.setenv("COLUMNS", "10")
+    _, shared = display.fit_table(_table(), _tree_body, shrink=lambda: False)
+    assert display.table_overflow(_table(), _tree_body(), shared) > 0
+
+
+def test_fit_table_rebuilds_the_body_until_shrinking_makes_it_fit(
+    display: DisplayService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """*build_body* is a callable because a chopped tree's labels are only known once built."""
+    monkeypatch.setenv("COLUMNS", "30")
+    # Three chops' worth of labels: the first two still overflow a 30-column console.
+    widths = [24, 24, 11]
+    chops = 0
+
+    def build_body() -> list[RowItemOrDivider]:
+        return [_row("x" * widths[chops], 0)]
+
+    def shrink() -> bool:
+        nonlocal chops
+        chops += 1
+        return chops < len(widths)
+
+    body, _shared = display.fit_table(_table(), build_body, shrink=shrink)
+    assert chops == 2
+    assert body == [_row("x" * 11, 0)]
+
+
+def test_fit_table_counts_a_companion_table_in_the_shared_widths(
+    display: DisplayService,
+) -> None:
+    """*others* do not shrink, but their content still sets the widths the group shares."""
+    wide = TableSpec(headers=("MODEL", "COUNT"), aligns=("<", ">"), leading=1)
+    broad: list[RowItemOrDivider] = [RowItem(cells=["m", "1234567"], style=Ansi.NONE, prefix_len=0)]
+    _body, shared = display.fit_table(
+        _table(), _tree_body, shrink=lambda: False, others=[(wide, broad)]
+    )
+    assert shared == [7]

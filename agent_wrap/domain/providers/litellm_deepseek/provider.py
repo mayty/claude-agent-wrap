@@ -3,47 +3,26 @@
 
 import json
 import re
-import time
 from typing import TYPE_CHECKING, Any, ClassVar, override
-
-import httpx2
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
 from agent_wrap.domain.providers.litellm_deepseek.constants import (
     MIN_MODEL_COUNT,
     PEAK_WEEKDAYS,
-    PRICING_CACHE_TTL_SECONDS,
-    PRICING_FETCH_TIMEOUT,
     PRICING_PAGE_URL,
 )
+from agent_wrap.domain.providers.pricing import PricingCache
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from agent_wrap.domain.pricing.models import TokenUsage
+    from agent_wrap.domain.providers.models import PriceTable
 
 
 class _DeepSeekPricing:
     """Scrapes the official DeepSeek pricing page and caches for 7 days."""
-
-    @staticmethod
-    def http_get(url: str) -> bytes:
-        """
-        Fetch *url* and return its raw bytes.
-
-        ``raise_for_status`` is not optional here: unlike urlopen, httpx2 returns a 4xx
-        or 5xx as an ordinary response, so without it an error page would be handed to
-        the parser below and scraped as pricing.
-        """
-        response = httpx2.get(
-            url,
-            headers={"User-Agent": "agent-wrap/agent_usage"},
-            timeout=PRICING_FETCH_TIMEOUT,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        return response.content
 
     @staticmethod
     def extract_dollar_amounts(text: str) -> list[float]:
@@ -148,54 +127,25 @@ class _DeepSeekPricing:
         return frozenset(hours)
 
     @staticmethod
-    def load_prices(
-        cache_path: Path, *, refresh_pricing_data: bool = False
-    ) -> dict[str, dict[str, float]]:
+    def scrape() -> tuple[PriceTable, dict[str, Any]]:
+        """
+        Scrape the peak-rate table, and the peak-hours footnote when the page states one.
+
+        The hours ride along in the cached document because ``compute_cost`` needs them
+        per request and must not re-fetch the page to find out which rate applies.
+        """
+        page = PricingCache.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
+        prices = _DeepSeekPricing.parse_pricing_page(page)
+        peak_hours = _DeepSeekPricing.extract_peak_hours(page)
+        extra = {} if peak_hours is None else {"peak_hours": sorted(peak_hours)}
+        return prices, extra
+
+    @staticmethod
+    def load_prices(cache_path: Path, *, refresh_pricing_data: bool = False) -> PriceTable:
         """Return cached or freshly-scraped DeepSeek pricing (peak rates)."""
-        cached: dict[str, Any] | None = None
-        if cache_path.is_file():
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except OSError, json.JSONDecodeError:
-                cached = None
-
-        fresh_enough = (
-            cached is not None
-            and isinstance(cached.get("fetched_at"), (int, float))
-            and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
+        return PricingCache.load(
+            cache_path, refresh=refresh_pricing_data, scrape=_DeepSeekPricing.scrape
         )
-
-        if not refresh_pricing_data and cached is not None and fresh_enough:
-            return cached.get("prices") or {}
-
-        try:
-            page = _DeepSeekPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
-            prices = _DeepSeekPricing.parse_pricing_page(page)
-            peak_hours = _DeepSeekPricing.extract_peak_hours(page)
-        except httpx2.HTTPError, OSError, json.JSONDecodeError:
-            if cached is not None:
-                return cached.get("prices") or {}
-            return {}
-
-        if not prices:
-            if cached is not None:
-                return cached.get("prices") or {}
-            return {}
-
-        # Persist the freshly-scraped table (plus peak hours, when the page says)
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            doc: dict[str, Any] = {"fetched_at": time.time(), "prices": prices}
-            if peak_hours is not None:
-                doc["peak_hours"] = sorted(peak_hours)
-            cache_path.write_text(
-                json.dumps(doc, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-
-        return prices
 
     @staticmethod
     def load_peak_hours(cache_path: Path) -> frozenset[int] | None:
@@ -238,9 +188,10 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         }
 
     @override
-    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
-        cache_path = self._state_dir() / "pricing.json"
-        return _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> PriceTable:
+        return _DeepSeekPricing.load_prices(
+            self._pricing_cache_path(), refresh_pricing_data=refresh_pricing_data
+        )
 
     @override
     def compute_cost(
@@ -266,7 +217,7 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         )
         if cost is None or hour is None or weekday is None:
             return cost
-        peak_hours = _DeepSeekPricing.load_peak_hours(self._state_dir() / "pricing.json")
+        peak_hours = _DeepSeekPricing.load_peak_hours(self._pricing_cache_path())
         if peak_hours is None:
             return cost
         is_peak = weekday in PEAK_WEEKDAYS and hour in peak_hours

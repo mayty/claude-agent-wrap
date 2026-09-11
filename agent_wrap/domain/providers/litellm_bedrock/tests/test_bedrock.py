@@ -16,6 +16,7 @@ from agent_wrap.domain.providers.litellm_bedrock.constants import DEFAULT_REGION
 from agent_wrap.domain.providers.litellm_bedrock.provider import (
     _BedrockPricing,
 )
+from agent_wrap.domain.providers.pricing import PricingCache
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.sidecars.service import (
     LiteLLMSidecar,
@@ -169,7 +170,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
     tmp_path: Path, mocker: pytest_mock.MockFixture
 ):
     cache_path = _fresh_cache(tmp_path)
-    http_get = mocker.patch.object(_BedrockPricing, "http_get", autospec=True)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
 
     prices = _BedrockPricing.load_prices(cache_path)
 
@@ -180,7 +181,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
 def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_mock.MockFixture):
     """``refresh_pricing_data=True`` bypasses even a brand-new cache and re-fetches."""
     cache_path = _fresh_cache(tmp_path)
-    http_get = mocker.patch.object(_BedrockPricing, "http_get", autospec=True)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.side_effect = [_PAGE_HTML.encode(), _price_data_json()]
 
     prices = _BedrockPricing.load_prices(cache_path, refresh_pricing_data=True)

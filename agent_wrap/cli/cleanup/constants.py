@@ -1,19 +1,28 @@
 # This file has been created with the assistance of an AI tool.
 """Constants for `agent cleanup`."""
 
+from agent_wrap.domain.display.models import TableSpec
+
 # Spinner label shown while scanning for orphaned dirs and while cleaning up.
 CLEANUP_LABEL = "cleanup"
 
-#: Columns of the outdated-images table. The image leads because it is what `docker rmi`
-#: would name; SIZE is docker's own figure per image and is deliberately never totalled,
-#: since images share layers and a sum would overstate the reclaim.
-CLEANUP_IMAGE_HEADERS = ("IMAGE", "SIZE", "WHY")
-CLEANUP_IMAGE_ALIGNS = ("<", ">", "<")
-
-#: Columns of that table which may be cut short on a narrow console: the image reference
-#: (a `repo@sha256:...` runs long) and the reason prose. SIZE is absent -- a truncated size
-#: reads as a wrong figure rather than a shortened one.
-CLEANUP_IMAGE_ELIDE = (0, 2)
+#: The outdated-images table. The image leads because it is what `docker rmi` would name;
+#: SIZE is docker's own figure per image and is deliberately never totalled, since images
+#: share layers and a sum would overstate the reclaim.
+#:
+#: ``leading=0`` unlike the inspect tables, which hold a path tree back as a per-table
+#: leading column: there is one table here and no tree, so every column is measured with
+#: the rest.
+#:
+#: Its elidable columns are the image reference (a `repo@sha256:...` runs long) and the
+#: reason prose. SIZE is absent -- a truncated size reads as a wrong figure rather than a
+#: shortened one.
+CLEANUP_IMAGE_TABLE = TableSpec(
+    headers=("IMAGE", "SIZE", "WHY"),
+    aligns=("<", ">", "<"),
+    leading=0,
+    elide=(0, 2),
+)
 
 #: Title of that table, formatted with ``count``.
 CLEANUP_IMAGE_TITLE = "Outdated images ({count}):"

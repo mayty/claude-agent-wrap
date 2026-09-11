@@ -4,7 +4,8 @@
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.stats.render import range_label, render_core
+from agent_wrap.cli.stats.constants import SOURCE_TABLE
+from agent_wrap.cli.stats.render import range_label, render_core, usage_cells
 from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
 from agent_wrap.constants import DIVIDER, USAGE_SOURCES
 from agent_wrap.domain.display.constants import Ansi
@@ -62,12 +63,7 @@ def _build_model_section(
                 cells=[
                     dr.label,
                     *blanks,
-                    display.format_count(dr.bucket.msgs),
-                    display.format_count(dr.bucket.in_),
-                    display.format_count(dr.bucket.out),
-                    display.format_count(dr.bucket.cw),
-                    display.format_count(dr.bucket.cr),
-                    dr.cost_str,
+                    *usage_cells(dr.bucket, cost=dr.cost_str, display=display),
                 ],
                 style=style,
                 prefix_len=dr.prefix_len,
@@ -128,19 +124,15 @@ def render_source_breakdown(
         source: Bucket.merged(by_model.values()) for source, by_model in totals_by_source.items()
     }
 
-    headers = ["SOURCE", "MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
-    aligns = ["<", ">", ">", ">", ">", ">", ">"]
-
     def _row(label: str, b: Bucket, style: Ansi) -> RowItem:
         return RowItem(
             cells=[
                 label,
-                display.format_count(b.msgs),
-                display.format_count(b.in_),
-                display.format_count(b.out),
-                display.format_count(b.cw),
-                display.format_count(b.cr),
-                display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                *usage_cells(
+                    b,
+                    cost=display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                    display=display,
+                ),
             ],
             style=style,
             prefix_len=0,
@@ -158,6 +150,5 @@ def render_source_breakdown(
     body.append(DIVIDER)
     body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
 
-    shared_widths = display.compute_shared_widths([(headers, body, 1)], 6)
     title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
-    return "\n".join(display.render_table(title, headers, aligns, body, 1, shared_widths))
+    return "\n".join(display.render_table(title, SOURCE_TABLE, body))

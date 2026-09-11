@@ -22,11 +22,11 @@ from agent_wrap.domain.display.constants import (
 from agent_wrap.domain.display.spinner import Spinner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import datetime
 
     from agent_wrap.constants import PollResult
-    from agent_wrap.domain.display.models import RowItemOrDivider
+    from agent_wrap.domain.display.models import RowItemOrDivider, TableSpec
 
 
 class _TextStyler:
@@ -75,7 +75,7 @@ class _TableRenderer:
 
     @staticmethod
     def squeeze(
-        widths: list[int], elide: tuple[int, ...], headers: list[str], limit: int
+        widths: list[int], elide: tuple[int, ...], headers: Sequence[str], limit: int
     ) -> list[int]:
         """
         Take a table's overflow out of its *elide* columns, widest first, down to their headers.
@@ -99,24 +99,23 @@ class _TableRenderer:
 
     @staticmethod
     def widths_for(
-        headers: list[str],
+        spec: TableSpec,
         body: list[RowItemOrDivider],
-        leading: int,
         shared_widths: list[int],
     ) -> list[int]:
-        leading_widths = [len(headers[j]) for j in range(leading)]
+        leading_widths = [len(spec.headers[j]) for j in range(spec.leading)]
         for item in body:
             if isinstance(item, str):  # divider sentinel
                 continue
             cells = item.cells
-            for j in range(leading):
+            for j in range(spec.leading):
                 leading_widths[j] = max(leading_widths[j], len(cells[j]))
         return leading_widths + shared_widths
 
     @staticmethod
     def render_row(
-        cells: list[str],
-        aligns: list[str],
+        cells: Sequence[str],
+        aligns: Sequence[str],
         widths: list[int],
         style: Ansi = Ansi.NONE,
         prefix_len: int = 0,
@@ -279,36 +278,34 @@ class DisplayService:
             return f"${c:.2f}+?"
         return f"${c:.2f}"
 
-    def render_table(  # noqa: PLR0913, PLR0917
+    def render_table(
         self,
         title: str,
-        headers: list[str],
-        aligns: list[str],
+        spec: TableSpec,
         body: list[RowItemOrDivider],
-        leading: int,
-        shared_widths: list[int],
-        elide: tuple[int, ...] = (),
+        shared_widths: list[int] | None = None,
     ) -> list[str]:
         """
         Render a complete table with Unicode box-drawing borders. Returns lines.
 
-        *elide* names the columns that may be cut short, with an ellipsis, when the table
-        would not fit the terminal. It is the last resort: a caller with a shrinkable path
-        tree should chop that first (see `table_overflow`), because a chopped tree loses
-        nothing and a cut cell does. Only prose belongs here -- a truncated date or token
-        count reads as a wrong figure rather than a shortened one, so a caller with nothing
-        safe to cut nominates nothing and lets the table overflow instead.
+        *shared_widths* is for a caller stacking two tables whose figures must line up:
+        omitted, the shared columns are measured from this body alone, which is what a
+        single table wants.
 
-        With no *elide* column, or no terminal width to respect, every column is sized to
-        its content exactly as before.
+        ``spec.elide`` is the last resort for a table that will not fit: a caller with a
+        shrinkable path tree should chop that first (see `fit_table`), because a chopped
+        tree loses nothing and a cut cell does. With no elidable column, or no terminal
+        width to respect, every column is sized to its content.
         """
-        widths = _TableRenderer.widths_for(headers, body, leading, shared_widths)
+        if shared_widths is None:
+            shared_widths = self.compute_shared_widths([(spec, body)])
+        widths = _TableRenderer.widths_for(spec, body, shared_widths)
         limit = self.terminal_width()
-        if elide and limit is not None:
-            widths = _TableRenderer.squeeze(widths, elide, headers, limit)
+        if spec.elide and limit is not None:
+            widths = _TableRenderer.squeeze(widths, spec.elide, spec.headers, limit)
         out: list[str] = [_TextStyler.color(title, Ansi.DIM)]
         out.append(_TableRenderer.make_border(widths, "┌", "┬", "┐"))
-        out.append(_TableRenderer.render_row(headers, aligns, widths, Ansi.DIM))
+        out.append(_TableRenderer.render_row(spec.headers, spec.aligns, widths, Ansi.DIM))
         out.append(_TableRenderer.make_border(widths, "├", "┼", "┤"))
         for item in body:
             if isinstance(item, str):  # divider sentinel
@@ -318,11 +315,13 @@ class DisplayService:
                 # can need cutting -- and `render_row`'s padding does not truncate, so the
                 # cut has to happen before it.
                 cells = [
-                    _TableRenderer.elide_cell(cell, widths[i]) if i in elide else cell
+                    _TableRenderer.elide_cell(cell, widths[i]) if i in spec.elide else cell
                     for i, cell in enumerate(item.cells)
                 ]
                 out.append(
-                    _TableRenderer.render_row(cells, aligns, widths, item.style, item.prefix_len)
+                    _TableRenderer.render_row(
+                        cells, spec.aligns, widths, item.style, item.prefix_len
+                    )
                 )
         out.append(_TableRenderer.make_border(widths, "└", "┴", "┘"))
         return out
@@ -345,24 +344,22 @@ class DisplayService:
 
     def table_overflow(
         self,
-        headers: list[str],
+        spec: TableSpec,
         body: list[RowItemOrDivider],
-        leading: int,
         shared_widths: list[int],
-        elide: tuple[int, ...] = (),
     ) -> int:
         """
         Characters this table overruns the terminal by that eliding cannot absorb.
 
-        The signal a caller's chop loop runs on, so *elide* must name the same columns the
-        matching `render_table` call does. Those columns are measured at their floor rather
-        than their content, which makes this "how far over budget are the columns you refuse
-        to cut" -- and that is the only question chopping the tree can answer. Reporting the
-        raw overflow instead would chop a tree that was never the problem: a 121-character
-        reason cannot fit any normal console, so the loop would run to exhaustion every time
-        and spend a five-row ladder per project to win the reason a few more characters.
+        The signal `fit_table`'s chop loop runs on. ``spec.elide``'s columns are measured
+        at their floor rather than their content, which makes this "how far over budget are
+        the columns you refuse to cut" -- and that is the only question chopping the tree
+        can answer. Reporting the raw overflow instead would chop a tree that was never the
+        problem: a 121-character reason cannot fit any normal console, so the loop would run
+        to exhaustion every time and spend a five-row ladder per project to win the reason a
+        few more characters.
 
-        With no *elide* column the two readings coincide, which is what a caller with
+        With no elidable column the two readings coincide, which is what a caller with
         nothing safe to cut wants: for it, any overflow is the tree's to absorb or to live
         with.
 
@@ -372,25 +369,66 @@ class DisplayService:
         limit = self.terminal_width()
         if limit is None:
             return 0
-        widths = _TableRenderer.widths_for(headers, body, leading, shared_widths)
-        floored = [len(headers[i]) if i in elide else w for i, w in enumerate(widths)]
+        widths = _TableRenderer.widths_for(spec, body, shared_widths)
+        floored = [len(spec.headers[i]) if i in spec.elide else w for i, w in enumerate(widths)]
         return max(0, _TableRenderer.table_width(floored) - limit)
 
     def compute_shared_widths(
         self,
-        tables: list[tuple[list[str], list[RowItemOrDivider], int]],
-        n_shared: int,
+        tables: Sequence[tuple[TableSpec, list[RowItemOrDivider]]],
     ) -> list[int]:
+        """
+        Size the non-leading columns across every table in *tables* at once.
+
+        The count comes from the first table's own ``n_shared``, so the arithmetic that
+        used to be a caller's argument is now the spec's to get right. Every table in a
+        group must agree on it -- they are being width-aligned to each other, which is only
+        meaningful if they share the same trailing columns.
+        """
+        n_shared = tables[0][0].n_shared
         shared_widths = [0] * n_shared
-        for headers, body, leading in tables:
+        for spec, body in tables:
+            leading = spec.leading
             for j in range(n_shared):
-                shared_widths[j] = max(shared_widths[j], len(headers[leading + j]))
+                shared_widths[j] = max(shared_widths[j], len(spec.headers[leading + j]))
             for item in body:
                 if isinstance(item, str):
                     continue
                 for j in range(n_shared):
                     shared_widths[j] = max(shared_widths[j], len(item.cells[leading + j]))
         return shared_widths
+
+    def fit_table(
+        self,
+        spec: TableSpec,
+        build_body: Callable[[], list[RowItemOrDivider]],
+        *,
+        shrink: Callable[[], bool],
+        others: Sequence[tuple[TableSpec, list[RowItemOrDivider]]] = (),
+    ) -> tuple[list[RowItemOrDivider], list[int]]:
+        """
+        Shrink *spec*'s body until the table fits, and return it with the group's widths.
+
+        *shrink* gives one measure of width back — `lib.path_tree.expand_widest_chain`
+        spends a line of height to buy a segment of width — and reports False once there is
+        nothing left to give. The body is rebuilt rather than adjusted because that is the
+        only way a tree's rendered labels are known, which is why *build_body* is a
+        callable and not a value.
+
+        *others* are companion tables whose content participates in the shared widths but
+        whose bodies do not shrink; only *spec*'s fit is judged. The loop ends when the
+        table fits, when there is no terminal width to respect, or when *shrink* gives up --
+        and then the table simply overflows, which beats cutting a column the caller said
+        must not be cut.
+        """
+        body = build_body()
+        group = [(spec, body), *others]
+        shared_widths = self.compute_shared_widths(group)
+        while self.table_overflow(spec, body, shared_widths) and shrink():
+            body = build_body()
+            group = [(spec, body), *others]
+            shared_widths = self.compute_shared_widths(group)
+        return body, shared_widths
 
     def spin_while[T](
         self,

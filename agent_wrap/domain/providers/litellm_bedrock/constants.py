@@ -12,8 +12,6 @@ PRICING_DATA_URL = (
     "https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/"
     "bedrockfoundationmodels/USD/current/bedrockfoundationmodels.json"
 )
-PRICING_CACHE_TTL_SECONDS = 7 * 24 * 3600
-PRICING_FETCH_TIMEOUT = 15
 DEFAULT_REGION_LABEL = "US East (N. Virginia)"
 
 # Two known column schemas on the AWS Bedrock pricing page, picked by key

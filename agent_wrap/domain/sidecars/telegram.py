@@ -23,9 +23,9 @@ if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.sidecars.models import TelegramSidecarConfig
 
-from agent_wrap.constants import TELEGRAM_SIDECAR_LABEL, PollResult
+from agent_wrap.constants import TELEGRAM_SIDECAR_LABEL
 from agent_wrap.domain.sidecars.base import Sidecar
-from agent_wrap.lib.docker_utils import docker_run, get_user_args, image_exists
+from agent_wrap.lib.docker_utils import docker_run, get_user_args
 
 
 class TelegramSidecar(Sidecar):
@@ -36,28 +36,20 @@ class TelegramSidecar(Sidecar):
         config: TelegramSidecarConfig,
         display_service: DisplayService,
     ) -> None:
+        super().__init__(config, display_service)
+        #: The same object the base holds as its container view, at the full type --
+        #: see ``Sidecar``'s docstring for why both exist.
         self.config = config
-        self._display = display_service
         self._auth_token: str = ""
         self._bot_token: str = ""
         self._chat_id: str = ""
 
     @property
     @override
-    def container_name(self) -> str:
-        # One container name for every provider, so the runner refcounts this sidecar
-        # across all of them — correct, since it is genuinely one shared container.
-        return self.config.container_name
-
-    @property
-    @override
-    def cold_start_time(self) -> float:
-        return self.config.cold_start_time
-
-    @property
-    @override
-    def short_circuit_time(self) -> float:
-        return self.config.short_circuit_time
+    def _label(self) -> str:
+        # A constant: there is one Telegram container for every provider, so the runner
+        # refcounts this sidecar across all of them.
+        return TELEGRAM_SIDECAR_LABEL
 
     @classmethod
     @override
@@ -72,17 +64,7 @@ class TelegramSidecar(Sidecar):
         """Pull the sidecar image lock-free, before the runner takes the shared lock."""
         if self.config.headless:
             return  # headless run never uses the sidecar — don't pull
-        if image_exists(self.config.image):
-            return
-        self._display.warning(
-            f"{TELEGRAM_SIDECAR_LABEL}: pulling {self.config.image} (first run, may take a moment)…"
-        )
-        _, rc = docker_run("pull", self.config.image, capture=False, timeout=600)
-        if rc != 0:
-            self._display.error(
-                f"{TELEGRAM_SIDECAR_LABEL}: failed to pull image {self.config.image}"
-            )
-            raise SystemExit(1)
+        self._ensure_image()
 
     @override
     def ensure(
@@ -123,7 +105,7 @@ class TelegramSidecar(Sidecar):
         else:
             self._start()
             if not self._health_poll():
-                self._display.error(f"{TELEGRAM_SIDECAR_LABEL}: health check failed; recent logs:")
+                self._display.error(f"{self._label}: health check failed; recent logs:")
                 try:
                     # Stream the container's stdout+stderr straight through
                     # (capture=False): a startup crash writes its traceback to
@@ -139,10 +121,7 @@ class TelegramSidecar(Sidecar):
 
         self._auth_token = self._register()
         if not self._auth_token:
-            self._display.warning(
-                f"{TELEGRAM_SIDECAR_LABEL}: /register returned no auth_token; "
-                "notifications will be unavailable"
-            )
+            self._warn("/register returned no auth_token; notifications will be unavailable")
 
         # Attach sidecar to agent's custom network if needed
         if agent_network and agent_network not in ("host", "none", self.config.network_name):
@@ -163,7 +142,7 @@ class TelegramSidecar(Sidecar):
         """
         if self._is_running():
             self._display.spin_while(
-                label=TELEGRAM_SIDECAR_LABEL,
+                label=self._label,
                 message="stopping…",
                 done_message="stopped",
                 work=self._stop_and_remove,
@@ -183,65 +162,8 @@ class TelegramSidecar(Sidecar):
         docker_run("stop", self.config.container_name)
         docker_run("rm", self.config.container_name)
 
-    def _ensure_network(self) -> None:
-        _, rc = docker_run("network", "inspect", self.config.network_name)
-        if rc == 0:
-            return
-        _, rc = docker_run("network", "create", self.config.network_name)
-        if rc != 0:
-            self._display.error(
-                f"{TELEGRAM_SIDECAR_LABEL}: failed to create docker network "
-                f"{self.config.network_name}"
-            )
-            raise SystemExit(1)
-
-    def _attach_to_network(self, network: str) -> None:
-        _, rc = docker_run("network", "inspect", network)
-        if rc != 0:
-            self._display.error(
-                f"{TELEGRAM_SIDECAR_LABEL}: network '{network}' (from agent-run-args) "
-                "does not exist"
-            )
-            raise SystemExit(1)
-
-        if self._is_on_network(network):
-            return
-
-        _, rc = docker_run("network", "connect", network, self.config.container_name)
-        if rc != 0:
-            self._display.error(
-                f"{TELEGRAM_SIDECAR_LABEL}: failed to attach "
-                f"{self.config.container_name} to network '{network}'"
-            )
-            raise SystemExit(1)
-
-    def _is_on_network(self, network: str) -> bool:
-        fmt = "{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}"
-        stdout, rc = docker_run("inspect", self.config.container_name, "--format", fmt)
-        return rc == 0 and network in stdout.splitlines()
-
-    def _sidecar_ip_on_network(self, network: str) -> str:
-        fmt = (
-            f'{{{{with index .NetworkSettings.Networks "{network}"}}}}{{{{.IPAddress}}}}{{{{end}}}}'
-        )
-        stdout, rc = docker_run("inspect", self.config.container_name, "--format", fmt)
-        return stdout.strip() if rc == 0 else ""
-
-    def _is_running(self) -> bool:
-        stdout, rc = docker_run(
-            "container",
-            "inspect",
-            "-f",
-            "{{.State.Running}}",
-            self.config.container_name,
-        )
-        return rc == 0 and stdout.strip() == "true"
-
     def _start(self) -> None:
-        # Reap any stopped container under our name
-        _, rc = docker_run("container", "inspect", self.config.container_name)
-        if rc == 0:
-            docker_run("rm", "-f", self.config.container_name)
+        self._reap_stale_container()
 
         # Prepare log directory and LOG_LOCATION
         dt = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
@@ -276,34 +198,8 @@ class TelegramSidecar(Sidecar):
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:
-            self._display.error(
-                f"{TELEGRAM_SIDECAR_LABEL}: failed to start {self.config.container_name}"
-            )
-            raise SystemExit(1)
-
-    def _health_poll(self) -> bool:
-        def poll() -> tuple[PollResult, str]:
-            stdout, rc = docker_run(
-                "inspect",
-                self.config.container_name,
-                "--format={{.State.Health.Status}}",
-            )
-            if rc != 0:
-                return PollResult.FAILURE, ""
-            status = stdout.strip()
-            if status == "healthy":
-                return PollResult.SUCCESS, status
-            if status == "unhealthy" or not self._is_running():
-                return PollResult.FAILURE, status
-            return PollResult.PENDING, status
-
-        return self._display.poll_until(
-            label=TELEGRAM_SIDECAR_LABEL,
-            poll=poll,
-            message="waiting for healthy",
-            done_message="ready",
-            timeout=self.config.health_timeout_sec,
-        )
+            msg = f"failed to start {self.config.container_name}"
+            raise self._fatal(msg)
 
     def _register(self) -> str:
         """POST /register — obtain an auth token for this agent run."""
@@ -324,12 +220,12 @@ class TelegramSidecar(Sidecar):
             response.raise_for_status()
             data = json.loads(response.content)
         except (httpx2.HTTPError, OSError, json.JSONDecodeError) as exc:
-            self._display.warning(f"{TELEGRAM_SIDECAR_LABEL}: /register failed ({exc})")
+            self._warn(f"/register failed ({exc})")
             return ""
 
         token = data.get("auth_token", "")
         if not token:
-            self._display.warning(f"{TELEGRAM_SIDECAR_LABEL}: /register returned no auth_token")
+            self._warn("/register returned no auth_token")
         return token
 
     def _unregister(self) -> None:

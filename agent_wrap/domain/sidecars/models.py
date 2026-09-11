@@ -10,23 +10,40 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class LiteLLMSidecarConfig:
+class SidecarConfig:
+    """
+    What every sidecar's container is made of, whatever the sidecar is for.
+
+    The fields ``Sidecar`` itself reads, so that the docker mechanics it implements --
+    running/health checks, network attachment, the image pull -- need to know nothing
+    about which subclass configured them.
+    """
+
     image: str
     container_name: str
     network_name: str
     internal_port: int
+
+    health_timeout_sec: int
+    cold_start_time: float
+    short_circuit_time: float
+
+    #: Ceiling on the image pull. Sized to the image: a cold LiteLLM pull is minutes.
+    pull_timeout_sec: int
+
+    log_dir: Path
+
+
+@dataclass(frozen=True)
+class LiteLLMSidecarConfig(SidecarConfig):
     master_key_prefix: str
     #: Provider name, passed to the sidecar as AGENT_WRAP_PROVIDER for log routing.
     provider_name: str
 
-    health_timeout_sec: int
     health_endpoint: str
-    cold_start_time: float
-    short_circuit_time: float
 
     config_path: Path
     callback_dir: Path
-    log_dir: Path
 
     get_sidecar_env: Callable[[dict[str, str]], dict[str, str]]
     get_agent_env: Callable[[str, str], dict[str, str]]
@@ -41,23 +58,10 @@ class LiteLLMSidecarConfig:
 
 
 @dataclass(frozen=True)
-class TelegramSidecarConfig:
-    image: str
-    container_name: str
-    network_name: str
-    internal_port: int
-
+class TelegramSidecarConfig(SidecarConfig):
     #: Per-run identity, sent to the sidecar's /register and /unregister endpoints.
     agent_name: str
     instance_id: str
-
-    health_timeout_sec: int
-    #: Seconds a cold start takes (docker run + health poll).
-    cold_start_time: float
-    #: Seconds one agent takes to walk the lock on the hot path.
-    short_circuit_time: float
-
-    log_dir: Path
 
     #: When true, Claude Code runs in a mode that never exercises the sidecar
     #: (--bare/--safe-mode disable hooks; -p/--print is non-interactive). The

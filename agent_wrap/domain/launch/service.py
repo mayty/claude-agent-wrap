@@ -663,6 +663,7 @@ class LaunchService:
             health_timeout_sec=30,
             cold_start_time=45.0,
             short_circuit_time=2.0,
+            pull_timeout_sec=600,
             log_dir=AGENT_LAUNCHES_DIR / "telegram-sidecar-logs",
             headless=headless,
         )

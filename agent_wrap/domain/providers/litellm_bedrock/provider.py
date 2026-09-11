@@ -3,49 +3,29 @@
 
 import html
 import json
-import time
 from typing import TYPE_CHECKING, Any, ClassVar, override
-
-import httpx2
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.litellm_bedrock.constants import (
     DEFAULT_REGION_LABEL,
     MODEL_KEY_RE,
     MODEL_NAME_RE,
-    PRICING_CACHE_TTL_SECONDS,
     PRICING_DATA_URL,
-    PRICING_FETCH_TIMEOUT,
     PRICING_PAGE_URL,
     PRICING_SCHEMAS,
     ROW_RE,
     SECTION_RE,
 )
+from agent_wrap.domain.providers.pricing import PricingCache
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from agent_wrap.domain.providers.models import PriceTable
 
 
 class _BedrockPricing:
     """Scrapes AWS Bedrock pricing and caches the result."""
-
-    @staticmethod
-    def http_get(url: str) -> bytes:
-        """
-        Fetch *url* and return its raw bytes.
-
-        ``raise_for_status`` is not optional here: unlike urlopen, httpx2 returns a 4xx
-        or 5xx as an ordinary response, so without it an error page would be handed to
-        the scrapers below and parsed as pricing.
-        """
-        response = httpx2.get(
-            url,
-            headers={"User-Agent": "agent-wrap/agent_usage"},
-            timeout=PRICING_FETCH_TIMEOUT,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        return response.content
 
     @staticmethod
     def scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[str]]]:
@@ -109,54 +89,28 @@ class _BedrockPricing:
         return table
 
     @staticmethod
-    def load_prices(
-        cache_path: Path, *, refresh_pricing_data: bool = False
-    ) -> dict[str, dict[str, float]]:
-        cached: dict[str, Any] | None = None
-        if cache_path.is_file():
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except OSError, json.JSONDecodeError:
-                cached = None
+    def scrape() -> tuple[PriceTable, dict[str, Any]]:
+        """
+        Join the pricing page's placeholders against the metered-unit map. Two fetches.
 
-        fresh_enough = (
-            cached is not None
-            and cached.get("region") == DEFAULT_REGION_LABEL
-            and isinstance(cached.get("fetched_at"), (int, float))
-            and (time.time() - cached["fetched_at"]) < PRICING_CACHE_TTL_SECONDS
+        The region travels into the cached document so a table scraped for one region is
+        not served for another -- see ``load_prices``.
+        """
+        page = PricingCache.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
+        data = json.loads(PricingCache.http_get(PRICING_DATA_URL))
+        prices = _BedrockPricing.build_pricing_table(page, data, DEFAULT_REGION_LABEL)
+        return prices, {"region": DEFAULT_REGION_LABEL}
+
+    @staticmethod
+    def load_prices(cache_path: Path, *, refresh_pricing_data: bool = False) -> PriceTable:
+        return PricingCache.load(
+            cache_path,
+            refresh=refresh_pricing_data,
+            scrape=_BedrockPricing.scrape,
+            # A document from a different region is fresh and useless at once: every
+            # figure in it is a price somewhere the agent is not running.
+            still_valid=lambda cached: cached.get("region") == DEFAULT_REGION_LABEL,
         )
-
-        if not refresh_pricing_data and fresh_enough and cached is not None:
-            return cached.get("prices") or {}
-
-        try:
-            page = _BedrockPricing.http_get(PRICING_PAGE_URL).decode("utf-8", errors="replace")
-            data = json.loads(_BedrockPricing.http_get(PRICING_DATA_URL))
-            prices = _BedrockPricing.build_pricing_table(page, data, DEFAULT_REGION_LABEL)
-        except httpx2.HTTPError, OSError, json.JSONDecodeError:
-            if cached:
-                return cached.get("prices") or {}
-            return {}
-
-        if not prices:
-            if cached:
-                return cached.get("prices") or {}
-            return {}
-
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                json.dumps(
-                    {"region": DEFAULT_REGION_LABEL, "fetched_at": time.time(), "prices": prices},
-                    indent=2,
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-
-        return prices
 
 
 class BedrockProvider(Provider):
@@ -180,6 +134,7 @@ class BedrockProvider(Provider):
         }
 
     @override
-    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
-        cache_path = self._state_dir() / "pricing.json"
-        return _BedrockPricing.load_prices(cache_path, refresh_pricing_data=refresh_pricing_data)
+    def _get_pricing(self, *, refresh_pricing_data: bool = False) -> PriceTable:
+        return _BedrockPricing.load_prices(
+            self._pricing_cache_path(), refresh_pricing_data=refresh_pricing_data
+        )

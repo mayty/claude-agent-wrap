@@ -25,6 +25,7 @@ Two things are injected by the caller:
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from agent_wrap.cli.stats.constants import PROJECTS_TABLE, RECENT_TABLE
 from agent_wrap.cli.stats.models import AggregatedDayRows, BuildModelSection, CostFn
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
 from agent_wrap.constants import DIVIDER, ORPHANED_LABEL
@@ -50,6 +51,28 @@ def range_label(from_iso: str | None, until_iso: str | None) -> str:
     return f"{from_iso} … {until_iso}"
 
 
+def usage_cells(bucket: Bucket, *, cost: str, display: DisplayService, scale: int = 1) -> list[str]:
+    """
+    Render *bucket* as the trailing columns of a usage table, in `USAGE_HEADERS` order.
+
+    *cost* is already formatted, because the callers reach it four different ways -- from
+    ``Bucket.cost``, from a subtree's known/unknown pair, from ``cost_fn``, or from a
+    `DisplayRow`'s precomputed string -- and the per-day rows must not read ``Bucket.cost``
+    directly (see this module's docstring).
+
+    *scale* divides every count, for the DAILY AVG row. It is a parameter rather than a
+    pre-divided `Bucket` because bucket construction stays inside the pricing domain.
+    """
+    return [
+        display.format_count(bucket.msgs // scale),
+        display.format_count(bucket.in_ // scale),
+        display.format_count(bucket.out // scale),
+        display.format_count(bucket.cw // scale),
+        display.format_count(bucket.cr // scale),
+        cost,
+    ]
+
+
 def _build_total_body(
     tree_root: Node,
     display_rows: list[DisplayRow],
@@ -64,13 +87,12 @@ def _build_total_body(
                 "/",
                 str(tree_root.subtree_sessions),
                 display.format_timestamp(tree_root.subtree_last_ts),
-                display.format_count(tree_root.subtree_bucket.msgs),
-                display.format_count(tree_root.subtree_bucket.in_),
-                display.format_count(tree_root.subtree_bucket.out),
-                display.format_count(tree_root.subtree_bucket.cw),
-                display.format_count(tree_root.subtree_bucket.cr),
-                display.format_cost_with_unknown(
-                    tree_root.subtree_known_cost, unknown=tree_root.subtree_unknown
+                *usage_cells(
+                    tree_root.subtree_bucket,
+                    cost=display.format_cost_with_unknown(
+                        tree_root.subtree_known_cost, unknown=tree_root.subtree_unknown
+                    ),
+                    display=display,
                 ),
             ],
             style=Ansi.DIM,
@@ -90,12 +112,7 @@ def _build_total_body(
                     dr.label,
                     str(dr.sessions),
                     display.format_timestamp(dr.last_ts),
-                    display.format_count(dr.bucket.msgs),
-                    display.format_count(dr.bucket.in_),
-                    display.format_count(dr.bucket.out),
-                    display.format_count(dr.bucket.cw),
-                    display.format_count(dr.bucket.cr),
-                    dr.cost_str,
+                    *usage_cells(dr.bucket, cost=dr.cost_str, display=display),
                 ],
                 style=style,
                 prefix_len=dr.prefix_len,
@@ -113,12 +130,11 @@ def _build_total_body(
                     ORPHANED_LABEL,
                     str(orphaned["sessions"]),
                     display.format_timestamp(orphaned["last_ts"]),
-                    display.format_count(b.msgs),
-                    display.format_count(b.in_),
-                    display.format_count(b.out),
-                    display.format_count(b.cw),
-                    display.format_count(b.cr),
-                    display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                    *usage_cells(
+                        b,
+                        cost=display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                        display=display,
+                    ),
                 ],
                 style=Ansi.CYAN,
                 prefix_len=0,
@@ -186,15 +202,7 @@ def _build_recent_body(
             cost_str = display.format_cost_with_unknown(day_cost, unknown=day_unknown)
             body.append(
                 RowItem(
-                    cells=[
-                        d,
-                        display.format_count(b.msgs),
-                        display.format_count(b.in_),
-                        display.format_count(b.out),
-                        display.format_count(b.cw),
-                        display.format_count(b.cr),
-                        cost_str,
-                    ],
+                    cells=[d, *usage_cells(b, cost=cost_str, display=display)],
                     style=Ansi.NONE,
                     prefix_len=0,
                 )
@@ -205,12 +213,11 @@ def _build_recent_body(
             RowItem(
                 cells=[
                     "TOTAL",
-                    display.format_count(total_b.msgs),
-                    display.format_count(total_b.in_),
-                    display.format_count(total_b.out),
-                    display.format_count(total_b.cw),
-                    display.format_count(total_b.cr),
-                    display.format_cost_with_unknown(total_cost, unknown=total_unknown),
+                    *usage_cells(
+                        total_b,
+                        cost=display.format_cost_with_unknown(total_cost, unknown=total_unknown),
+                        display=display,
+                    ),
                 ],
                 style=Ansi.BOLD_YELLOW,
                 prefix_len=0,
@@ -222,12 +229,14 @@ def _build_recent_body(
             RowItem(
                 cells=[
                     "DAILY AVG",
-                    display.format_count(total_b.msgs // n_days),
-                    display.format_count(total_b.in_ // n_days),
-                    display.format_count(total_b.out // n_days),
-                    display.format_count(total_b.cw // n_days),
-                    display.format_count(total_b.cr // n_days),
-                    display.format_cost_with_unknown(total_cost / n_days, unknown=total_unknown),
+                    *usage_cells(
+                        total_b,
+                        cost=display.format_cost_with_unknown(
+                            total_cost / n_days, unknown=total_unknown
+                        ),
+                        display=display,
+                        scale=n_days,
+                    ),
                 ],
                 style=Ansi.BOLD_YELLOW,
                 prefix_len=0,
@@ -250,69 +259,34 @@ def render_core(  # noqa: PLR0913
 ) -> str:
     # Two stacked tables over the same window: "Projects" (per-project tree) and
     # "By day" (per-model + per-day). Each table has internal sections separated
-    # by a `├─┼─┤` divider; widths of the trailing six numeric columns are shared
-    # across both tables so the numbers line up vertically.
-    shared_headers = ["MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
-    shared_aligns = [">", ">", ">", ">", ">", ">"]
-    n_shared = len(shared_headers)
+    # by a `├─┼─┤` divider; the trailing numeric columns are width-aligned across
+    # both, which is what `fit_table`'s `others` carries.
     label = range_label(from_iso, until_iso)
-
-    total_headers = ["PROJECT", "SESSIONS", "LAST LAUNCH", *shared_headers]
-    total_aligns = ["<", ">", "<", *shared_aligns]
-
     tree_root = build_project_tree(rows)
-
-    recent_headers = ["MODEL / DATE", *shared_headers]
-    recent_aligns = ["<", *shared_aligns]
 
     # Built before the Projects body because it does not depend on the project tree, and
     # the fit loop below rebuilds that body several times.
     recent_body = _build_recent_body(totals_by_day_by_model, cost_fn, build_model_section, display)
 
-    def measure() -> tuple[list[RowItemOrDivider], list[int]]:
-        """Return the Projects body as the tree stands now, and the widths it shares."""
-        body = _build_total_body(
-            tree_root, flatten_tree(tree_root, display=display), display, orphaned
-        )
-        return body, display.compute_shared_widths(
-            [(total_headers, body, 3), (recent_headers, recent_body, 1)],
-            n_shared,
-        )
-
     # Chop the tree down until the table fits the console: `_compress` folds a chain nothing
     # branches on into one very wide node, which is exactly the shape that overflows, and
-    # splitting it back out spends a line of height to buy a segment of width. Ends when the
-    # table fits, when there is no terminal width to respect, or when the tree is as narrow
-    # as it goes -- and then the table simply overflows, because every remaining column
-    # holds a date or a figure and half of one of those is worse than a long line.
-    total_body, shared_widths = measure()
-    while display.table_overflow(
-        total_headers, total_body, 3, shared_widths
-    ) and expand_widest_chain(tree_root):
-        total_body, shared_widths = measure()
+    # splitting it back out spends a line of height to buy a segment of width.
+    total_body, shared_widths = display.fit_table(
+        PROJECTS_TABLE,
+        lambda: _build_total_body(
+            tree_root, flatten_tree(tree_root, display=display), display, orphaned
+        ),
+        shrink=lambda: expand_widest_chain(tree_root),
+        others=[(RECENT_TABLE, recent_body)],
+    )
 
-    lines: list[str] = []
-    lines.extend(
-        display.render_table(
-            f"Projects ({label}):",
-            total_headers,
-            total_aligns,
-            total_body,
-            3,
-            shared_widths,
-        )
+    lines: list[str] = list(
+        display.render_table(f"Projects ({label}):", PROJECTS_TABLE, total_body, shared_widths)
     )
     if recent_body:
         lines.append("")
         lines.extend(
-            display.render_table(
-                f"By day ({label}):",
-                recent_headers,
-                recent_aligns,
-                recent_body,
-                1,
-                shared_widths,
-            )
+            display.render_table(f"By day ({label}):", RECENT_TABLE, recent_body, shared_widths)
         )
 
     return "\n".join(lines)
