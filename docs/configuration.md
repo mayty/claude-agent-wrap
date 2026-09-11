@@ -136,6 +136,21 @@ Two launches skip the autostart regardless of this variable. A headless `agent r
 
 [`agent inspect`](shell-commands.md#agent-inspect) reports the result as a `logs viewer autostart` row, directly under the viewer's own state: `on`, `OFF (AGENT_AUTOSTART_LOGS)` when you turned it off, or `OFF (<provider> does not use it)` when the provider is what declines it. Setting the variable to `1` under a provider that declines reads as `requested but IGNORED`, flagged in yellow — that combination does nothing, and a plain `off` would leave you guessing which of the two decided it. The report cannot account for headless launches, since that depends on one launch's arguments.
 
+## `AGENT_LOGS_RETENTION_DAYS` (request-log retention)
+
+The LiteLLM log tree under `<wrap-dir>/litellm-logs/` is append-only and nothing rotates it. `AGENT_LOGS_RETENTION_DAYS` sets how many days a session may go without activity before it is deleted — both its log files and its rows in the request index at `<wrap-dir>/.agent-launches/db/logs.db`.
+
+**Retention is off unless you set this.** Unset, empty and `0` all mean off, and that is the default on purpose: a session's log files are the only record of its spend, so an age-based default would quietly delete history nobody asked to lose. Enabling it is permanent for everything it takes — [`agent stats`](shell-commands.md#agent-stats) aggregates from the index, so a pruned session's cost leaves every total it appeared in, and there is no archive to restore it from.
+
+```sh
+# Keep 90 days of request logs, applied by the next cleanup.
+AGENT_LOGS_RETENTION_DAYS=90 agent cleanup
+```
+
+Nothing applies it on a timer. Two verbs do, and both are ones you ran on purpose: [`agent cleanup`](shell-commands.md#agent-cleanup), which surveys the expired sessions and names the count, the age and the size before its single confirmation prompt, and [`agent reindex --prune`](shell-commands.md#agent-reindex), which applies it straight after bringing the index up to date and does not prompt — the flag and this variable are both things you said. Passing `--prune` without setting this is a usage error rather than a silent no-op.
+
+A session is expired once its **newest** request is older than the cutoff, so a conversation you return to weekly is as new as its last call however old its first was. Two are never taken whatever their age: one whose records carry no timestamp at all, since there is nothing to compare, and one whose `messages.jsonl` holds bytes the index has not read yet, since deleting that would destroy requests no consumer has ever seen. A malformed value — anything that is not a whole number from 0 up — raises at the point of use rather than falling back to a default, the same philosophy as `AGENT_DAY_START_UTC` above and for a sharper reason: the fallback would delete on an age nobody chose.
+
 ## `AGENT_SPELLCHECK` (prompt spell checking)
 
 Claude Code can underline misspelled words in the prompt input as you type, but it ships no spell checker of its own — it drives an external one. The wrapper supplies that: `hunspell` and the configured dictionaries are installed in the base image, and a `spellcheck` block is injected into the wrapper-global `<wrap-dir>/.claude_config/.claude/settings.json` on launch (see [Injected settings](container-environment.md#injected-settings-not-env-vars)).

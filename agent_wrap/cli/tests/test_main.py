@@ -26,6 +26,7 @@ EXPECTED_VERBS = frozenset(
         "inspect",
         "logs",
         "rebuild",
+        "reindex",
         "run",
         "secrets",
         "stats",

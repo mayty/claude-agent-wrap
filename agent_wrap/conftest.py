@@ -18,10 +18,16 @@ from agent_wrap.constants import (
     LEGACY_AGENT_DOCKERFILE_NAME,
 )
 from agent_wrap.containers import Core, core, repositories
+from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.sidecars.service import SidecarService
+from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.infrastructure.constants import BACKUPS_DIRNAME, DB_DIRNAME
+from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+from agent_wrap.infrastructure.logs.repositories.usage import UsageRepository
 from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 if TYPE_CHECKING:
@@ -30,6 +36,7 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
+    from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.providers.models import Tier
 
 
@@ -51,7 +58,7 @@ def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         "agent_wrap.domain.logs.server",
         "agent_wrap.domain.logs.normalize",
         "agent_wrap.domain.logs.usage_tracker",
-        "agent_wrap.domain.stats.scan",
+        "agent_wrap.domain.stats.fold",
         "agent_wrap.domain.status.service",
         "agent_wrap.domain.launch.service",
         "agent_wrap.domain.build.service",
@@ -147,6 +154,79 @@ def projects_repository(db_core: Core) -> Iterator[ProjectsRepository]:
     factory = db_core.projects_db
     with factory.enable_writes():
         yield ProjectsRepository(connection_factory=factory)
+
+
+@pytest.fixture
+def log_ingest_repository(db_core: Core) -> Iterator[LogIngestRepository]:
+    """
+    Yield a ``LogIngestRepository`` over a migrated, empty logs database in ``tmp_path``.
+
+    Holds a write grant for the test's duration, as the daemon and ``agent reindex``
+    both do. A test that needs a write *refused* builds over ``read_only_core``.
+    """
+    factory = db_core.logs_db
+    with factory.enable_writes():
+        yield LogIngestRepository(connection_factory=factory)
+
+
+@pytest.fixture
+def usage_repository(db_core: Core) -> UsageRepository:
+    """
+    Return a ``UsageRepository`` over the migrated, empty logs database in ``tmp_path``.
+
+    No write grant: this repository only reads, and ``agent stats`` is the one verb
+    deliberately given no grant on either database. A test that seeds rows takes the
+    ``log_ingest_repository`` fixture alongside this one, and the two share a factory.
+    """
+    return UsageRepository(connection_factory=db_core.logs_db)
+
+
+@pytest.fixture
+def log_session_repository(db_core: Core) -> SessionRepository:
+    """
+    Return a ``SessionRepository`` over the migrated, empty logs database in ``tmp_path``.
+
+    No write grant, for the same reason ``usage_repository`` has none: this is the
+    viewer's read side. A test that needs rows in it takes ``log_ingest_repository``
+    alongside, which shares the factory.
+    """
+    return SessionRepository(connection_factory=db_core.logs_db)
+
+
+@pytest.fixture
+def log_request_repository(db_core: Core) -> RequestRepository:
+    """
+    Return a ``RequestRepository`` over the migrated, empty logs database in ``tmp_path``.
+
+    The viewer's content read side, and read-only for the same reason the other two are.
+    A test that needs requests in it takes ``log_ingest_repository`` alongside.
+    """
+    return RequestRepository(connection_factory=db_core.logs_db)
+
+
+@pytest.fixture
+def make_stats_service(
+    usage_repository: UsageRepository, log_ingest_repository: LogIngestRepository
+) -> Callable[[PricingService], StatsService]:
+    """
+    Return a factory building a ``StatsService`` over the test's own logs database.
+
+    A factory rather than a fixture because the pricing table is what varies: some
+    tests want exact costs from a fixed rate table, some want a bare mock, and one
+    wants a service with no pricing data at all. Here at the root because both the
+    stats tests and the logs tests need it -- the viewer's usage tracker asks a real
+    ``StatsService`` for the day's total.
+    """
+
+    def _make(pricing: PricingService) -> StatsService:
+        return StatsService(
+            pricing_service=pricing,
+            config_service=Mock(spec=ConfigService),
+            usage_repository=usage_repository,
+            log_ingest_repository=log_ingest_repository,
+        )
+
+    return _make
 
 
 @pytest.fixture

@@ -114,26 +114,3 @@ def json_safe(  # noqa: PLR0911
     # Fallback for unknown types: convert to string and optionally hash
     str_val = str(obj)
     return _hasher.hash_string(str_val) if _hasher else str_val
-
-
-def get_response_content_str(response: Any) -> str | None:
-    """
-    Pull the assistant's text content out of a JSON-safe response dict.
-
-    Handles the OpenAI-shaped ``choices[0].message.content`` and the older
-    ``choices[0].text`` variant. Returns None when no string content is found.
-    """
-    if not isinstance(response, dict):
-        return None
-    choices = response.get("choices")
-    if not (isinstance(choices, list) and choices):
-        return None
-    first = choices[0]
-    if not isinstance(first, dict):
-        return None
-    message = first.get("message")
-    if isinstance(message, dict) and isinstance(message.get("content"), str):
-        return message["content"]
-    if isinstance(first.get("text"), str):
-        return first["text"]
-    return None

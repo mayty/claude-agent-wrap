@@ -91,6 +91,8 @@ def _report(  # noqa: PLR0913
     logs_autostart: AutostartRow | None = None,
     stale_images: list[StaleImageRow] | None = None,
     safety_check_enabled: bool = True,
+    index_last_ingested: float | None = 1_700_000_000.0,
+    index_behind: int | None = 0,
 ) -> InspectReport:
     return InspectReport(
         docker=DockerStatus(
@@ -145,7 +147,16 @@ def _report(  # noqa: PLR0913
             day_start_overridden=day_start_overridden,
             day_start_timezone=day_start_timezone,
         ),
-        storage=StorageRow(logs_bytes=logs_bytes, projects_registered=24, projects_stale=2),
+        storage=StorageRow(
+            logs_bytes=logs_bytes,
+            projects_registered=24,
+            projects_stale=2,
+            index_bytes=301_989_888,
+            index_sessions=613,
+            index_requests=47_458,
+            index_last_ingested=index_last_ingested,
+            index_behind=index_behind,
+        ),
         project=project,
         stale_images=stale_images,
         lite=lite,
@@ -350,6 +361,7 @@ def test_human_output_includes_every_details_row(
         "logs viewer",
         "logs viewer autostart",
         "logs storage",
+        "request index",
         "wrapper",
         "base image",
         "network",
@@ -548,6 +560,46 @@ def test_human_output_marks_an_unmeasured_logs_footprint(
     out = _stdout(display_mock_service)
     assert "not measured (--lite)" in out
     assert "24 project(s) registered" in out
+
+
+def test_human_output_reports_the_index_footprint_beside_the_tree(
+    runner: CliRunner, display_mock_service: Mock, inspect_mock: Mock
+) -> None:
+    """The pair is the point: the tree every consumer used to re-parse, and the index."""
+    inspect_mock.build_report.return_value = _report()
+    runner.invoke(cli_root, ["inspect"])
+    out = _stdout(display_mock_service)
+    assert "288.0MB · 613 session(s), 47458 request(s)" in out
+    assert "last ingest" in out
+
+
+def test_human_output_says_when_nothing_has_ever_been_ingested(
+    runner: CliRunner, display_mock_service: Mock, inspect_mock: Mock
+) -> None:
+    """A host with an empty index reads differently from one that is merely idle."""
+    inspect_mock.build_report.return_value = _report(index_last_ingested=None)
+    runner.invoke(cli_root, ["inspect"])
+    assert "never ingested" in _stdout(display_mock_service)
+
+
+def test_human_output_points_a_behind_index_at_reindex(
+    runner: CliRunner, display_mock_service: Mock, inspect_mock: Mock
+) -> None:
+    """The one thing in this row a reader can act on, so it names the verb."""
+    inspect_mock.build_report.return_value = _report(index_behind=12)
+    runner.invoke(cli_root, ["inspect"])
+    assert "12 behind — run `agent reindex`" in _stdout(display_mock_service)
+
+
+def test_human_output_stays_silent_about_lag_it_did_not_measure(
+    runner: CliRunner, display_mock_service: Mock, inspect_mock: Mock
+) -> None:
+    """Lite mode skips the walk, and not measured is not the same as up to date."""
+    inspect_mock.build_report.return_value = _report(lite=True, index_behind=None)
+    runner.invoke(cli_root, ["inspect"])
+    out = _stdout(display_mock_service)
+    assert "behind" not in out
+    assert "613 session(s)" in out
 
 
 def test_human_output_closes_a_lite_report_with_what_it_skipped(

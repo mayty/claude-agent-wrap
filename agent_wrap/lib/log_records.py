@@ -1,10 +1,19 @@
 # This file has been edited with the assistance of an AI tool.
-"""Usage-source classification for the stats command."""
+"""
+Pure classification helpers over one raw log record.
 
-from typing import Any
+In ``lib/`` rather than a domain subpackage because both the ingester and the stats
+fold need it, and a runtime import between two domain subpackages is a layering break
+(EA001). Nothing here touches the filesystem or any service.
+"""
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
-def usage_source(rec: dict[str, Any]) -> str:
+def usage_source(rec: Mapping[str, Any]) -> str:
     """
     Classify how a success record's usage was obtained, for the verbose breakdown.
 

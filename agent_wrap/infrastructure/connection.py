@@ -10,6 +10,12 @@ never touches a database never opens or migrates one.
 Every path is a constructor argument. Nothing here reads a module-level constant, which
 is what lets a test point a whole database tree at ``tmp_path`` by constructing the DI
 ``Core`` rather than by monkeypatching.
+
+The PRAGMA sets are constructor arguments for the same reason, defaulting to the shared
+tuples so existing callers are unaffected. A database whose storage profile differs from
+the registry's states its own set at the composition root -- the logs blob store wants a
+larger page size and incremental auto-vacuum, and neither can be applied after that
+database's first page exists.
 """
 
 import sqlite3
@@ -30,15 +36,24 @@ if TYPE_CHECKING:
 class ConnectionFactory:
     """Opens connections to one SQLite database, and migrates it on construction."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- six keyword-only settings, not a positional signature
         self,
+        *,
         name: Databases,
         db_path: Path,
         migrations_dir: Path,
         backups_dir: Path,
+        database_pragmas: tuple[str, ...] = DATABASE_PRAGMAS,
+        connection_pragmas: tuple[str, ...] = CONNECTION_PRAGMAS,
     ) -> None:
         self._name = name
         self._db_path = db_path
+        # PRAGMAs are arguments for the same reason paths are (see the module docstring):
+        # a database with different storage characteristics -- the logs blob store above
+        # all -- states its own, and the composition root decides which set each gets.
+        # The defaults keep every existing caller unchanged.
+        self._database_pragmas = database_pragmas
+        self._connection_pragmas = connection_pragmas
         self._migrations = MigrationRunner(
             name=name,
             migrations_dir=migrations_dir,
@@ -134,7 +149,7 @@ class ConnectionFactory:
             # boundaries are the explicit ones rw() and the migration scripts state.
             connection = sqlite3.connect(self._db_path, isolation_level=None)
             connection.row_factory = sqlite3.Row
-            for pragma in CONNECTION_PRAGMAS:
+            for pragma in self._connection_pragmas:
                 connection.execute(pragma)
         except sqlite3.Error as exc:
             msg = f"{self._name}: could not open {self._db_path}: {exc}"
@@ -152,7 +167,7 @@ class ConnectionFactory:
         """
         connection = self._connect()
         try:
-            for pragma in DATABASE_PRAGMAS:
+            for pragma in self._database_pragmas:
                 connection.execute(pragma)
             self._migrations.run(connection)
         except sqlite3.Error as exc:

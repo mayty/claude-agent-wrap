@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agent_wrap.domain.providers.models import RequestTiming
+    from agent_wrap.infrastructure.logs.models import BlobSweep, SessionKey
 
 
 class DaemonState(TypedDict):
@@ -28,10 +29,17 @@ class DaemonState(TypedDict):
 
 
 class Fingerprint(TypedDict):
-    """Change-marker for detecting stale caches via mtime + size."""
+    """
+    Change-marker the browser polls, and the wire shape of the ``*-stat`` endpoints.
 
-    mtime: int | None
-    size: int | None
+    ``rev`` is the newest ``sessions.last_ingested_at`` in scope (unix ns, ``None`` when
+    the scope holds nothing) and ``count`` is how many session rows it covers. It used to
+    be a max mtime and a summed size over every ``messages.jsonl`` in scope; both halves
+    now come from the index, so what the marker describes is what a fetch would return.
+    """
+
+    rev: int | None
+    count: int
 
 
 @dataclass(frozen=True)
@@ -75,18 +83,6 @@ class ProjectInfo(TypedDict):
     last_ts: float | None
 
 
-class ProviderSessionMeta(TypedDict):
-    """Per-session metadata from a single provider."""
-
-    provider: str
-    session_id: str
-    alias: str | None
-    title: str | None
-    count: int
-    last_ts: float | None
-    models: list[str]
-
-
 class CombinedSessionMeta(TypedDict):
     """Per-session metadata merged across providers."""
 
@@ -100,15 +96,24 @@ class CombinedSessionMeta(TypedDict):
 
 
 class NormalizedRecordBase(TypedDict):
-    """Core fields of a normalized log record (before cost enrichment)."""
+    """
+    Core fields of one request as the viewer consumes it, before cost enrichment.
+
+    The three request-side fields carry ``blob:<id>`` *references*, not content: the
+    values behind them travel once per session rather than once per record, which is
+    what keeps a session's payload proportional to its length instead of its square.
+    See :mod:`agent_wrap.domain.logs.stream`. ``tools`` is ``[]`` rather than a
+    reference when the request carried none, so the client's "are there any" test
+    reads the same as it did when the array was inline.
+    """
 
     timing: RequestTiming | None
     status: str | None
     model: str | None
     agent_id: str | None
-    messages: list[Any]
+    messages: list[str]
     system: str | None
-    tools: list[Any]
+    tools: list[Any] | str
     response: dict[str, Any]
     usage: dict[str, Any]
     error: str | None
@@ -124,34 +129,18 @@ class NormalizedRecordBase(TypedDict):
 
 class NormalizedRecord(NormalizedRecordBase, total=False):
     """
-    Full normalized log record after cost enrichment.
+    One request as the viewer consumes it, priced.
 
-    Fields in the ``total=False`` subclass are added by ``enrich_with_costs``
-    after the core fields are built by ``normalize_record``.
+    The four fields in the ``total=False`` subclass are what ``enrich_with_costs`` adds
+    on top of the record's own columns and content. They are derived at read time, never
+    stored: the pricing tables move, and a cost column would freeze each request at
+    whatever the rates were on the day it was ingested.
     """
 
     context_tokens: int
     output_tokens: int
     cache_percent: int | None
     cost: float | None
-
-
-class ReadSessionResult(TypedDict):
-    """Return type for :func:`read_session`."""
-
-    reqs: list[NormalizedRecord]
-    session_meta: CombinedSessionMeta | None
-
-
-class SessionMeta:
-    """Accumulates cheap per-session metadata as records are scanned."""
-
-    def __init__(self) -> None:
-        self.count = 0
-        self.last_ts: float | None = None
-        self.models: set[str] = set()
-        self.derived_alias: str | None = None
-        self.derived_title: str | None = None
 
 
 class ExtractedFields(NamedTuple):
@@ -164,9 +153,120 @@ class ExtractedFields(NamedTuple):
     finish_reason: str | None
 
 
-class ProviderSessionRead(NamedTuple):
-    """Return type for :func:`_read_provider_session`."""
+@dataclass(frozen=True)
+class IngestReport:
+    """
+    What one ingest pass over the log tree did.
 
-    records: list[NormalizedRecord]
-    meta: ProviderSessionMeta | None
-    strings: dict[str, str]
+    ``sessions_seen`` counts every session directory the walk found, whether or not it
+    had anything new; ``sessions_changed`` counts those that actually advanced a
+    watermark. The two differing is the normal state of a warm tree — that is the point
+    of the watermarks — so a report of "613 seen, 0 changed" means up to date, not idle.
+
+    ``failed`` names the session directories that raised, one entry each, rather than
+    aborting the pass. A backfill spanning hundreds of sessions should not be lost to
+    one unreadable directory, but a failure must still be visible and must still make
+    the verb exit non-zero, so it is collected here rather than suppressed.
+    """
+
+    sessions_seen: int
+    sessions_changed: int
+    sessions_reset: int
+    records_ingested: int
+    failed: tuple[tuple[Path, str], ...]
+
+    @property
+    def ok(self) -> bool:
+        """Report whether every session the pass looked at was ingested."""
+        return not self.failed
+
+
+# How far behind the log files the index is, as `agent stats` reports it.
+#
+# Two counts rather than a list: the warning names a shortfall and points at
+# `agent reindex`, and a user who wants the sessions themselves runs that. *behind* is
+# the number of indexed sessions whose file has grown past its watermark, plus every
+# session directory the index has never seen at all.
+class IndexLag(NamedTuple):
+    behind: int
+    total: int
+
+    @property
+    def is_stale(self) -> bool:
+        """Whether anything is missing from the index."""
+        return self.behind > 0
+
+
+class ExpiredSession(NamedTuple):
+    """
+    One session directory old enough for retention to delete, with what that costs.
+
+    ``path`` is carried rather than rebuilt from ``key`` so that the directory the
+    survey measured is the directory the run removes — the same no-re-walk discipline
+    ``CleanupScope`` keeps for orphaned projects.
+
+    ``messages_offset`` is the index's watermark, kept so the run can re-ask the one
+    question that makes this safe: has the index read the whole file? A session whose
+    file has grown since is not expired at all — the growth is newer than the age that
+    selected it — and re-checking under the ingest lock is what turns that from a
+    survey-time observation into a property of the delete.
+
+    ``size_bytes`` is the directory's apparent size when it was surveyed, and is what
+    gets reported as freed.
+    """
+
+    key: SessionKey
+    path: Path
+    messages_offset: int
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class RetentionScope:
+    """
+    What retention would delete, surveyed before anything is removed.
+
+    ``days`` is ``AGENT_LOGS_RETENTION_DAYS`` as it was read, and ``0`` means retention
+    is switched off — which is the default, and the reason this scope is usually empty
+    for a reason worth telling apart from "nothing is old enough yet".
+    """
+
+    days: int
+    sessions: tuple[ExpiredSession, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether there is nothing for retention to delete."""
+        return not self.sessions
+
+    @property
+    def freed_estimate(self) -> int:
+        """Bytes the log tree would give back, summed over the surveyed directories."""
+        return sum(session.size_bytes for session in self.sessions)
+
+
+class RetentionResult(NamedTuple):
+    """
+    What retention actually deleted: session directories, and the bytes they held.
+
+    ``freed_bytes`` is log-tree bytes only. The index rows those sessions owned go in
+    the same step, but the content behind them is reclaimed by the blob sweep that
+    follows, and is reported separately because it is a different disk.
+    """
+
+    sessions: int
+    freed_bytes: int
+
+
+class IndexReclaim(NamedTuple):
+    """
+    Both halves of one reclaim pass: retention first, then the blob sweep.
+
+    They are one result because they are one lock and one order. Retention deletes the
+    session rows, which is what makes their content unreachable; the sweep is the only
+    thing that then reclaims it. Run the other way round, retention would free nothing
+    in the database at all until the *next* cleanup.
+    """
+
+    retention: RetentionResult
+    sweep: BlobSweep

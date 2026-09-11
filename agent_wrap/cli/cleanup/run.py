@@ -12,6 +12,10 @@ from agent_wrap.cli.cleanup.constants import (
     CLEANUP_IMAGE_HEADERS,
     CLEANUP_IMAGE_TITLE,
     CLEANUP_LABEL,
+    INDEX_RECLAIM_SKIPPED,
+    INDEX_SWEEP_NOTE,
+    RETENTION_CONSEQUENCE,
+    RETENTION_NOTE,
     SKIPPED_IMAGE_NOTE,
     STALE_REBUILD_NOTE,
     UNATTRIBUTABLE_NOTE,
@@ -30,6 +34,7 @@ if TYPE_CHECKING:
     from agent_wrap.domain.build.models import ImageCleanupOutcome, ImageCleanupScope
     from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
+    from agent_wrap.domain.logs.models import IndexReclaim, RetentionScope
     from agent_wrap.domain.stats.models import CleanupOutcome, CleanupScope
 
 
@@ -94,18 +99,26 @@ class _CleanupReport:
         )
 
     @staticmethod
-    def preview(scope: CleanupScope, image_scope: ImageCleanupScope, dsp: DisplayService) -> None:
+    def preview(
+        scope: CleanupScope,
+        image_scope: ImageCleanupScope,
+        retention: RetentionScope,
+        dsp: DisplayService,
+    ) -> None:
         """
         Describe everything the run would remove, in the order it would remove it.
 
         Each half is silent when it has nothing, so a cleanup that is only about images
-        does not print a line claiming zero logs — and vice versa.
+        does not print a line claiming zero logs — and vice versa. Retention is silent
+        twice over: it says nothing when it is switched off, which is the default, and
+        nothing when it is on but nothing is old enough yet.
         """
         if not scope.is_empty:
             dsp.info(
                 f"{len(scope.orphaned_dirs)} project log(s) will be deleted, "
                 f"freeing ~{dsp.format_bytes(scope.freed_estimate)}."
             )
+            dsp.info("Their spend will no longer appear in `agent stats` under <orphaned>.")
             if scope.stale_paths:
                 dsp.info(
                     f"{len(scope.stale_paths)} stale project registry entr(y/ies) will be removed."
@@ -117,37 +130,65 @@ class _CleanupReport:
                 dsp.info(STALE_REBUILD_NOTE)
         if image_scope.unattributable:
             dsp.info(UNATTRIBUTABLE_NOTE.format(count=image_scope.unattributable))
+        if not retention.is_empty:
+            dsp.info(
+                RETENTION_NOTE.format(
+                    count=len(retention.sessions),
+                    days=retention.days,
+                    size=dsp.format_bytes(retention.freed_estimate),
+                )
+            )
+            dsp.info(RETENTION_CONSEQUENCE)
+        # Unconditional, because it is the only thing that ever says it: the sweep runs
+        # on every real cleanup, including one that has no orphaned logs at all. A
+        # session re-ingested after its log file was replaced leaves content behind that
+        # no request reaches, and this verb is the only place that reclaims it.
+        dsp.info(INDEX_SWEEP_NOTE)
 
     @staticmethod
     def summarize(
-        outcome: CleanupOutcome, image_outcome: ImageCleanupOutcome, dsp: DisplayService
+        outcome: CleanupOutcome,
+        image_outcome: ImageCleanupOutcome,
+        reclaim: IndexReclaim | None,
+        dsp: DisplayService,
     ) -> int:
         """
         Report what the run actually did, and return the command's exit code.
 
         A skipped image is a warning rather than a failure: ``remove_images`` never
         forces, so docker refusing one is the safety net working, and the rest of the run
-        still happened. An unfinalized usage archive *is* a failure, and the one the
-        caller has to act on by hand — it is reported last so the manual ``mv`` is the
-        final line on screen.
+        still happened. A reclaim that did not run is reported the same way and for the
+        same reason: everything else still happened, and the content it would have
+        reclaimed is still reachable-or-not exactly as it was.
+
+        Retention gets its own line whenever it deleted anything, rather than being
+        folded into the cleanup total. The two are different questions — one is about
+        projects that are gone, the other about sessions in projects that are not — and
+        a reader has to be able to see which of them took a directory.
         """
         for image in image_outcome.skipped:
             dsp.warning(f"{image.display}: {SKIPPED_IMAGE_NOTE}")
 
         result = outcome.result
-        if not result.finalized:
-            dsp.error(
-                "Deleted logs but failed to finalize the usage archive. "
-                f"Run: mv {result.staging_path} {result.archive_path}"
-            )
-            return 1
-
         dsp.success(
             f"Cleanup complete: {result.removed} project log(s) deleted "
             f"({dsp.format_bytes(result.freed_bytes)} freed), "
             f"{len(outcome.removed_paths)} stale registry entr(y/ies) removed, "
             f"{len(image_outcome.removed)} image(s) removed."
         )
+        if reclaim is None:
+            dsp.warning(INDEX_RECLAIM_SKIPPED)
+            return 0
+        if reclaim.retention.sessions:
+            dsp.info(
+                f"Retention deleted {reclaim.retention.sessions} expired session log(s) "
+                f"({dsp.format_bytes(reclaim.retention.freed_bytes)} freed)."
+            )
+        if reclaim.sweep.removed:
+            dsp.info(
+                f"Reclaimed {dsp.format_bytes(reclaim.sweep.freed_bytes)} from the request "
+                f"index ({reclaim.sweep.removed} unreachable blob(s))."
+            )
         return 0
 
 
@@ -168,21 +209,28 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
     project, registry entries whose project directory is gone, and docker images that are
     untagged, orphaned, stale, or superseded by a newer pinned sidecar digest.
 
-    Every log directory's token counts are archived before it is deleted, so historical
-    spend keeps appearing in `agent stats` under the <orphaned> row. The whole plan is
-    previewed and confirmed once before anything is removed.
+    A deleted log directory's spend stops appearing in `agent stats`: the totals are
+    aggregated from the request index, and the index forgets a project along with its
+    logs. The whole plan is previewed and confirmed once before anything is removed.
+
+    When AGENT_LOGS_RETENTION_DAYS is set, sessions with no activity for that many days
+    are deleted too — their log files and their index rows together — and appear in the
+    same preview. Retention is off unless that variable is set.
     """
     dsp = services.display_service
     stats = services.stats_service
     build = services.build_service
+    logs = services.logs_service
 
     scoped: list[CleanupScope] = []
     image_scoped: list[ImageCleanupScope] = []
+    retention_scoped: list[RetentionScope] = []
 
     def survey() -> None:
-        """Both surveys, so one spinner covers the whole scan. Neither changes anything."""
+        """All three surveys, so one spinner covers the whole scan. None changes anything."""
         scoped.append(stats.cleanup_scope())
         image_scoped.append(build.image_cleanup_scope(services.config_service.read_project_paths()))
+        retention_scoped.append(logs.retention_scope())
 
     # The survey's only write is the one-time projects.txt import, and it has to happen
     # here rather than before `clean`: the scope `clean` deletes from is built in this
@@ -195,8 +243,9 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
         )
     scope = scoped[0]
     image_scope = image_scoped[0]
+    retention_scope = retention_scoped[0]
 
-    if scope.is_empty and image_scope.is_empty:
+    if scope.is_empty and image_scope.is_empty and retention_scope.is_empty:
         dsp.info(
             "Nothing to clean up: no orphaned logs, stale registry entries or outdated "
             "images found."
@@ -205,7 +254,7 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
             dsp.info(UNATTRIBUTABLE_NOTE.format(count=image_scope.unattributable))
         ctx.exit(0)
 
-    _CleanupReport.preview(scope, image_scope, dsp)
+    _CleanupReport.preview(scope, image_scope, retention_scope, dsp)
 
     if dry_run:
         ctx.exit(0)
@@ -217,27 +266,36 @@ def cleanup_command(ctx: click.Context, *, dry_run: bool) -> None:
 
     outcomes: list[CleanupOutcome] = []
     image_outcomes: list[ImageCleanupOutcome] = []
+    reclaims: list[IndexReclaim | None] = []
 
     def clean() -> None:
         """
-        Remove the images first, then the logs and the registry.
+        Remove the images first, then the logs, their index rows, and the registry.
 
-        Image removal cannot half-succeed the way the usage archive can, so putting it
-        first leaves the archive's own abort path alone: that path returns early on a
-        failed promotion, and the images are already dealt with by then rather than
-        skipped because of it.
+        Images first because their removal is independent of everything else: docker
+        refusing one is reported as a warning and changes nothing about the log and
+        registry work that follows.
+
+        The reclaim goes last, and has to. It applies retention and then sweeps, and
+        the sweep deletes the content no request reaches any more — so it must run
+        after every row that referenced it is gone, whether the orphan delete above or
+        retention inside it took that row. Reversed, it would find every one of those
+        blobs still reachable and reclaim nothing.
         """
         image_outcomes.append(build.remove_images(image_scope))
         outcomes.append(stats.run_cleanup(scope))
+        reclaims.append(logs.reclaim_index(retention_scope))
 
-    # A second grant, constructed fresh rather than reusing the one above: a
+    # Two grants, constructed fresh rather than reusing the registry one above: a
     # @contextmanager instance is single-use, and nullcontext is not, so a shared
     # variable would work under --dry-run and break on every real run. Unconditional
-    # because the --dry-run exit is above -- and needed because `clean` prunes the stale
-    # registry entries. Without it prune_stale_projects suppresses the refusal, returns
+    # because the --dry-run exit is above. The registry grant is what lets `clean` prune
+    # stale entries -- without it prune_stale_projects suppresses the refusal, returns
     # the paths anyway, and the summary reports entries as removed that are still there.
-    with core.projects_db.enable_writes():
+    # The logs grant is what lets it forget a deleted project's requests; without it the
+    # directories would go while their spend stayed in `agent stats` forever.
+    with core.projects_db.enable_writes(), core.logs_db.enable_writes():
         dsp.spin_while(
             label=CLEANUP_LABEL, message="cleaning up…", done_message=lambda: None, work=clean
         )
-    ctx.exit(_CleanupReport.summarize(outcomes[0], image_outcomes[0], dsp))
+    ctx.exit(_CleanupReport.summarize(outcomes[0], image_outcomes[0], reclaims[0], dsp))

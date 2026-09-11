@@ -195,6 +195,15 @@ Providers access sidecar functionality through an injected `SidecarService` (see
     exception is ``providers/litellm_runtime/``, which runs on the LiteLLM image's
     older Python and still needs it to keep ``TYPE_CHECKING`` imports out of
     runtime annotations — the same carve-out rule 3 (EC001) draws.
+13. **Only the ingester names a log file** (EH001). The two filenames a session is
+    made of on disk, and the constants holding them, may appear in
+    ``logs/constants.py`` (which declares them), ``logs/ingest.py`` (the only module
+    permitted to open one), ``providers/litellm_runtime/`` (the callback that writes
+    them, which EC001 forbids any ``agent_wrap`` import so it carries its own
+    literals) and tests. Everything else reads ``logs.db`` — that is what makes a
+    read cost what was asked for rather than the whole log history, and a caller with
+    a question *about* such a path asks ``LogFiles``. The rule is about the name
+    rather than about opening the file, because a name is what an AST can check.
 
 ## The interpreter, and the dependency policy
 
@@ -367,7 +376,7 @@ so the two never have to share the more conservative number.
   check: inotify accepts a watch on `drvfs`/`9p`/`nfs` and then silently delivers nothing,
   which cannot be probed for at runtime, so the install location is checked instead.
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
-- **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
+- **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.
 
 ## Anti-patterns (explicitly forbidden)

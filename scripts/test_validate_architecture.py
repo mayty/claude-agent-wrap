@@ -480,6 +480,91 @@ def test_rule_g_applies_to_tests_too(make: _Maker) -> None:
     assert "EG001" in _violation_codes(check_file(fp))
 
 
+# --- Rule H: only the ingester names a log file ------------------------------
+
+
+def test_rule_h_filename_literal_flagged(make: _Maker) -> None:
+    make.write(
+        "agent_wrap/domain/logs/reader.py",
+        'path = session_dir / "messages.jsonl"\n',
+    )
+    fp = make.root / "agent_wrap" / "domain" / "logs" / "reader.py"
+    assert "EH001" in _violation_codes(check_file(fp))
+
+
+def test_rule_h_filename_constant_flagged(make: _Maker) -> None:
+    """Going through the constant is the same violation -- it is the same knowledge."""
+    make.write(
+        "agent_wrap/domain/stats/service.py",
+        """\
+        from agent_wrap.domain.logs.constants import MESSAGES_FILENAME
+
+        path = session_dir / MESSAGES_FILENAME
+        """,
+    )
+    fp = make.root / "agent_wrap" / "domain" / "stats" / "service.py"
+    codes = _violation_codes(check_file(fp))
+    assert "EH001" in codes
+
+
+def test_rule_h_prose_is_not_a_reference(make: _Maker) -> None:
+    """
+    A docstring mentioning the file is not naming it.
+
+    The check is an equality test on a string constant's value, so a longer string that
+    merely contains the filename never matches -- which is what keeps every explanatory
+    comment and docstring in the logs domain legal.
+    """
+    make.write(
+        "agent_wrap/domain/logs/cache.py",
+        '"""Each path is a messages.jsonl a filesystem event reported."""\n',
+    )
+    fp = make.root / "agent_wrap" / "domain" / "logs" / "cache.py"
+    assert "EH001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_h_constants_and_ingest_own_the_names(make: _Maker) -> None:
+    """The module that declares them and the one that reads them are the exemptions."""
+    make.write("agent_wrap/domain/logs/constants.py", 'MESSAGES_FILENAME = "messages.jsonl"\n')
+    make.write(
+        "agent_wrap/domain/logs/ingest.py",
+        """\
+        from agent_wrap.domain.logs.constants import MESSAGES_FILENAME, STRINGS_FILENAME
+
+        def messages(session_dir):
+            return session_dir / MESSAGES_FILENAME
+        """,
+    )
+    for name in ("constants.py", "ingest.py"):
+        fp = make.root / "agent_wrap" / "domain" / "logs" / name
+        assert "EH001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_h_litellm_runtime_writes_them(make: _Maker) -> None:
+    """
+    The sidecar callback is the writer, and cannot import the constants at all.
+
+    EC001 forbids it any agent_wrap import at runtime, so it carries its own literals --
+    the exact complement of this rule, as with EG001.
+    """
+    make.write(
+        "agent_wrap/domain/providers/litellm_runtime/callback.py",
+        'log_file = log_dir / "messages.jsonl"\n',
+    )
+    fp = make.root / "agent_wrap" / "domain" / "providers" / "litellm_runtime" / "callback.py"
+    assert "EH001" not in _violation_codes(check_file(fp))
+
+
+def test_rule_h_tests_are_exempt(make: _Maker) -> None:
+    """A test writes the tree a sidecar would, so it has to name the files in it."""
+    make.write(
+        "agent_wrap/domain/logs/tests/test_stream.py",
+        '(session_dir / "messages.jsonl").write_text("")\n',
+    )
+    fp = make.root / "agent_wrap" / "domain" / "logs" / "tests" / "test_stream.py"
+    assert "EH001" not in _violation_codes(check_file(fp))
+
+
 # --- Rule F: enums belong in constants.py -----------------------------------
 
 

@@ -57,16 +57,7 @@ def _empty_stats_scope() -> CleanupScope:
 
 
 def _stats_outcome() -> CleanupOutcome:
-    return CleanupOutcome(
-        result=CleanupResult(
-            removed=0,
-            freed_bytes=0,
-            archive_path=Path("/wrap/.agent-launches/orphaned-usage-archive.json"),
-            staging_path=Path("/wrap/.agent-launches/orphaned-usage-archive.new.json"),
-            finalized=True,
-        ),
-        removed_paths=[],
-    )
+    return CleanupOutcome(result=CleanupResult(removed=0, freed_bytes=0), removed_paths=[])
 
 
 @pytest.fixture
@@ -275,30 +266,30 @@ def test_a_refused_removal_warns_without_failing(
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_unfinalized_archive_still_reports_the_images_it_removed(
+def test_a_log_dir_that_survived_still_reports_the_images_it_removed(
     runner: CliRunner,
     display_mock_service: Mock,
 ) -> None:
-    """Images go first, so an archive failure must not hide what already happened."""
+    """
+    Images go first, so a log dir that could not be deleted must not hide their removal.
+
+    The run also stays successful. A dir that survives is simply still orphaned next
+    time, unlike the old half-committed archive, which was a state only the user could
+    repair and so exited non-zero.
+    """
     display_mock_service.prompt_confirm.return_value = True
     services.stats_service.run_cleanup.return_value = CleanupOutcome(  # pyrefly: ignore [missing-attribute]
-        result=CleanupResult(
-            removed=0,
-            freed_bytes=0,
-            archive_path=Path("/wrap/archive.json"),
-            staging_path=Path("/wrap/archive.new.json"),
-            finalized=False,
-        ),
+        result=CleanupResult(removed=0, freed_bytes=0),
         removed_paths=[],
     )
     services.build_service.remove_images.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupOutcome(removed=[], skipped=[_image("w01")])
     )
 
-    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 1
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
     out = _stdout(display_mock_service)
     assert SKIPPED_IMAGE_NOTE in out
-    assert "failed to finalize the usage archive" in out
+    assert "0 project log(s) deleted" in out
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")

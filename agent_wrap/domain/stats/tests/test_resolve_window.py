@@ -7,23 +7,27 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.constants import DEFAULT_DAYS
 from agent_wrap.domain.stats.models import WindowError
-from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_mock import MockerFixture
+
+    from agent_wrap.domain.stats.service import StatsService
 
 # A fixed "today" so relative offsets and defaults are deterministic.
 _TODAY = date(2026, 6, 29)
 
 
 @pytest.fixture
-def stats(mocker: MockerFixture) -> StatsService:
+def stats(
+    mocker: MockerFixture, make_stats_service: Callable[[PricingService], StatsService]
+) -> StatsService:
     """Return a StatsService whose "today" is pinned to _TODAY at plain UTC."""
-    svc = StatsService(Mock(spec=PricingService), Mock(spec=ConfigService))
+    svc = make_stats_service(Mock(spec=PricingService))
     frozen = datetime(_TODAY.year, _TODAY.month, _TODAY.day, 12, 0, 0, tzinfo=UTC)
     mocker.patch.object(svc, "now_utc", return_value=frozen, autospec=True)
     # Pin the day boundary to 0 so get_day() reduces to UTC-date extraction

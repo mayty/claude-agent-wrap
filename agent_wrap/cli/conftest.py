@@ -19,7 +19,8 @@ import pytest
 from click.testing import CliRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
 
     import pytest_mock
 
@@ -57,23 +58,33 @@ def runner() -> CliRunner:
 @pytest.fixture
 def write_grants(mocker: pytest_mock.MockFixture) -> list[str]:
     """
-    Return a list that records every database write grant the command takes.
+    Return a list that records every database write grant the command takes, by database.
 
     Which verbs may write is a safety property rather than a detail: the logs daemon
-    (``agent logs --foreground``) and ``agent cleanup --dry-run`` must take no grant, and
-    a stray one there is as much a bug as a missing one on ``agent run``. Asserting on
-    this list makes both directions a test failure.
+    (``agent logs --foreground``) and ``agent cleanup --dry-run`` must take no grant on
+    the registry, and a stray one there is as much a bug as a missing one on ``agent
+    run``. Asserting on this list makes both directions a test failure.
+
+    Every database is patched, not just the registry, and each grant records *which* one
+    it was — otherwise the two would be indistinguishable, and the whole point of the
+    fixture is that a grant on the wrong database is a bug. The daemon is the case that
+    makes this matter: it takes a ``logs`` grant to ingest and must still take no
+    ``projects`` grant, so a list that could not tell them apart would assert nothing.
     """
     taken: list[str] = []
 
-    @contextlib.contextmanager
-    def grant() -> Generator[None]:
-        taken.append("projects")
-        yield
+    def grant_for(name: str) -> Callable[[], AbstractContextManager[None]]:
+        @contextlib.contextmanager
+        def grant() -> Generator[None]:
+            taken.append(name)
+            yield
 
-    factory = mocker.Mock(spec=ConnectionFactory)
-    factory.enable_writes.side_effect = grant
-    mocker.patch.object(core, "projects_db", factory)
+        return grant
+
+    for attribute, name in (("projects_db", "projects"), ("logs_db", "logs")):
+        factory = mocker.Mock(spec=ConnectionFactory)
+        factory.enable_writes.side_effect = grant_for(name)
+        mocker.patch.object(core, attribute, factory)
     return taken
 
 

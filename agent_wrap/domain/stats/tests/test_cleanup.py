@@ -1,34 +1,34 @@
 # This file has been created with the assistance of an AI tool.
-"""Domain-layer tests for archiving and deleting orphaned log dirs."""
+"""
+Domain-layer tests for deleting orphaned log dirs and forgetting their requests.
 
-import json
+Two deletes have to agree: the directory on disk and the session rows in the index. The
+order matters and so does what happens when half of it fails, so most of what is here
+is about the halves rather than about the happy path.
+"""
+
 import shutil
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
-from agent_wrap.domain.stats.constants import ORPHANED_ARCHIVE_FILENAME
-from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
     from unittest.mock import Mock
 
     import pytest_mock
 
     from agent_wrap.conftest import FakeProvider
-
+    from agent_wrap.domain.stats.service import StatsService
 
 _RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
-# Pre-built OSError messages (ruff EM101 forbids literals at the raise site).
+# Pre-built OSError message (ruff EM101 forbids literals at the raise site).
 _DENIED = "permission denied"
-_CROSS_DEVICE = "cross-device link"
 
 
 @pytest.fixture
@@ -36,74 +36,36 @@ def stats_svc(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
     make_fake_provider: Callable[..., FakeProvider],
+    make_stats_service: Callable[[PricingService], StatsService],
 ) -> StatsService:
-    """Return a StatsService whose pricing knows claude-opus-4-8."""
+    """Return a StatsService over the test's own logs database, with real pricing."""
     mock_ps = mocker.Mock(spec=ProviderService)
     mock_ps.get_provider.return_value = make_fake_provider(flat={"claude-opus-4-8": _RATES})
     pricing = PricingService(provider_service=mock_ps, display_service=display_mock)
-    return StatsService(pricing, config_service=mocker.Mock(spec=ConfigService))
+    return make_stats_service(pricing)
 
 
-@pytest.fixture
-def archive_path(tmp_path: Path) -> Path:
-    """Return the archive path the service writes to (AGENT_LAUNCHES_DIR is patched)."""
-    return tmp_path / ".agent-launches" / ORPHANED_ARCHIVE_FILENAME
-
-
-@pytest.fixture
-def broken_staging_promotion(mocker: pytest_mock.MockFixture, archive_path: Path) -> None:
-    """
-    Make promoting the staging file over the real archive fail.
-
-    Scoped to that one rename so the atomic write that *creates* the staging file
-    still succeeds — the point is a durable staging file the caller cannot commit.
-    """
-    staging = archive_path.with_suffix(".new.json")
-    real_replace = Path.replace
-
-    def selective(self: Path, target: Any) -> Path:
-        if self == staging:
-            raise OSError(_CROSS_DEVICE)
-        return real_replace(self, target)
-
-    mocker.patch.object(Path, "replace", selective)
-
-
-def _rec(ts: datetime, *, in_tokens: int = 1000, out_tokens: int = 500) -> dict[str, Any]:
+def _rec() -> dict[str, Any]:
     return {
         "status": "success",
         "model": "claude-opus-4-8",
-        "timing": {"start": ts.timestamp()},
-        "response": {"usage": {"prompt_tokens": in_tokens, "completion_tokens": out_tokens}},
+        "timing": {"start": 1_800_000_000.0},
+        "response": {"usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
     }
 
 
-def _write_log_dir(
-    root: Path, hash_name: str, records: list[dict[str, Any]], *, session: str = "s1"
-) -> Path:
-    """Create a central ``<hash>`` log dir holding *records* and return it."""
-    sdir = root / hash_name / "litellm-bedrock" / session
-    sdir.mkdir(parents=True)
-    with (sdir / "messages.jsonl").open("w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r) + "\n")
-    return root / hash_name
-
-
-def _total_msgs(doc: dict[str, Any]) -> int:
+def _indexed_requests(stats_svc: StatsService) -> int:
+    """Count the requests the index still holds, over the whole of time."""
+    cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
     return sum(
-        leaf["msgs"]
-        for by_hour in doc.values()
-        for by_model in by_hour.values()
-        for by_source in by_model.values()
-        for leaf in by_source.values()
+        bucket.msgs
+        for usage in cache.values()
+        for by_model in usage.by_day.values()
+        for bucket in by_model.values()
     )
 
 
-# --- orphaned_disk_usage ---------------------------------------------------
-
-
-def test_orphaned_disk_usage_sums_across_dirs(stats_svc: StatsService, tmp_path: Path) -> None:
+def test_disk_usage_sums_across_dirs(stats_svc: StatsService, tmp_path: Path) -> None:
     a = tmp_path / "a"
     b = tmp_path / "b"
     (a / "nested").mkdir(parents=True)
@@ -114,140 +76,79 @@ def test_orphaned_disk_usage_sums_across_dirs(stats_svc: StatsService, tmp_path:
     assert stats_svc.orphaned_disk_usage([a, b]) == 175
 
 
-def test_orphaned_disk_usage_empty_dir_is_zero(stats_svc: StatsService, tmp_path: Path) -> None:
+def test_disk_usage_of_an_empty_dir_is_zero(stats_svc: StatsService, tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
     assert stats_svc.orphaned_disk_usage([empty]) == 0
 
 
-def test_orphaned_disk_usage_no_dirs_is_zero(stats_svc: StatsService) -> None:
+def test_disk_usage_of_no_dirs_is_zero(stats_svc: StatsService) -> None:
     assert stats_svc.orphaned_disk_usage([]) == 0
 
 
-# --- archive_and_delete_orphaned ------------------------------------------
-
-
-def test_archives_and_deletes(stats_svc: StatsService, tmp_path: Path, archive_path: Path) -> None:
-    logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 5, tzinfo=UTC))]
-    )
-    result = stats_svc.archive_and_delete_orphaned([logs])
-
-    assert result.finalized is True
-    assert result.removed == 1
-    assert not logs.exists()
-    doc = json.loads(archive_path.read_text(encoding="utf-8"))
-    leaf = doc["2026-07-20"]["14"]["litellm-bedrock/claude-opus-4-8"]["native"]
-    assert leaf["msgs"] == 1
-    assert leaf["input_tokens"] == 1000
-
-
-def test_removes_no_staging_file_on_success(
-    stats_svc: StatsService, tmp_path: Path, archive_path: Path
-) -> None:
-    logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))]
-    )
-    result = stats_svc.archive_and_delete_orphaned([logs])
-    assert result.staging_path == archive_path.with_suffix(".new.json")
-    assert not result.staging_path.exists()
-
-
-def test_staging_written_before_any_delete(
+def test_deleting_a_dir_also_forgets_its_requests(
     stats_svc: StatsService,
     tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-    archive_path: Path,
+    write_session: Callable[..., Path],
+    index_logs: Callable[[], None],
 ) -> None:
-    """The merged stats must be durable while the source dir still exists."""
-    logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))]
-    )
-    staging = archive_path.with_suffix(".new.json")
-    observed: dict[str, Any] = {}
+    """
+    Both halves, in one call: the spend goes with the logs.
 
-    def spy_rmtree(path: Path) -> None:
-        observed["dir_still_there"] = path.exists()
-        observed["staging_msgs"] = _total_msgs(json.loads(staging.read_text(encoding="utf-8")))
+    This is the behaviour change the archive used to prevent — cleaned-up spend stayed
+    visible under ``<orphaned>`` forever, sourced from a JSON side-copy of it. Now the
+    index forgets a project along with its directory.
+    """
+    project = tmp_path / "gone"
+    project.mkdir()
+    logs = write_session(project, "s1", [_rec()]).parent.parent
+    index_logs()
+    assert _indexed_requests(stats_svc) == 1
 
-    mocker.patch("agent_wrap.domain.stats.service.shutil.rmtree", side_effect=spy_rmtree)
-    stats_svc.archive_and_delete_orphaned([logs])
+    result = stats_svc.delete_orphaned_logs([logs])
 
-    assert observed["dir_still_there"] is True
-    assert observed["staging_msgs"] == 1
+    assert result.removed == 1
+    assert not logs.exists()
+    assert _indexed_requests(stats_svc) == 0
 
 
-def test_merges_into_existing_archive(
-    stats_svc: StatsService, tmp_path: Path, archive_path: Path
+def test_freed_bytes_matches_the_dirs_removed(
+    stats_svc: StatsService,
+    tmp_path: Path,
+    write_session: Callable[..., Path],
 ) -> None:
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_path.write_text(
-        json.dumps(
-            {
-                "2026-07-20": {
-                    "14": {
-                        "litellm-bedrock/claude-opus-4-8": {
-                            "native": {
-                                "msgs": 5,
-                                "input_tokens": 1,
-                                "output_tokens": 0,
-                                "cache_write_5m": 0,
-                                "cache_write_1h": 0,
-                                "cache_read": 0,
-                                "unrecorded": 0,
-                            }
-                        }
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 30, tzinfo=UTC))]
-    )
-    stats_svc.archive_and_delete_orphaned([logs])
-
-    doc = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert doc["2026-07-20"]["14"]["litellm-bedrock/claude-opus-4-8"]["native"]["msgs"] == 6
-
-
-def test_archives_records_outside_any_stats_window(
-    stats_svc: StatsService, tmp_path: Path, archive_path: Path
-) -> None:
-    """Cleanup scans unwindowed, so ancient records are preserved, not dropped."""
-    logs = _write_log_dir(
-        tmp_path / "central",
-        "hashA",
-        [
-            _rec(datetime(2019, 1, 2, 3, 0, tzinfo=UTC)),
-            _rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC)),
-        ],
-    )
-    stats_svc.archive_and_delete_orphaned([logs])
-    doc = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert set(doc) == {"2019-01-02", "2026-07-20"}
-
-
-def test_freed_bytes_matches_removed_dirs(stats_svc: StatsService, tmp_path: Path) -> None:
-    central = tmp_path / "central"
-    logs = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
+    project = tmp_path / "gone"
+    project.mkdir()
+    logs = write_session(project, "s1", [_rec()]).parent.parent
     expected = stats_svc.orphaned_disk_usage([logs])
-    result = stats_svc.archive_and_delete_orphaned([logs])
+
+    result = stats_svc.delete_orphaned_logs([logs])
+
     assert result.freed_bytes == expected
     assert expected > 0
 
 
-def test_failed_rmtree_skips_dir_and_continues(
+def test_a_dir_that_cannot_be_deleted_keeps_its_requests(
     stats_svc: StatsService,
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
-    archive_path: Path,
+    write_session: Callable[..., Path],
+    index_logs: Callable[[], None],
 ) -> None:
-    """A dir that cannot be deleted must not be archived — else it double-counts."""
-    central = tmp_path / "central"
-    bad = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
-    good = _write_log_dir(central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=UTC))])
+    """
+    The rows go only for directories that are actually gone.
+
+    Dropping them first, or unconditionally, would blank a project's spend while its
+    logs sat on disk waiting for the next ingest to read them all back in — which is
+    both a wrong total and a pointless re-parse.
+    """
+    bad_project = tmp_path / "stuck"
+    good_project = tmp_path / "gone"
+    for project in (bad_project, good_project):
+        project.mkdir()
+    bad = write_session(bad_project, "s1", [_rec()]).parent.parent
+    good = write_session(good_project, "s1", [_rec()]).parent.parent
+    index_logs()
     real_rmtree = shutil.rmtree
 
     def selective(path: Path) -> None:
@@ -256,24 +157,27 @@ def test_failed_rmtree_skips_dir_and_continues(
         real_rmtree(path)
 
     mocker.patch("agent_wrap.domain.stats.service.shutil.rmtree", side_effect=selective)
-    result = stats_svc.archive_and_delete_orphaned([bad, good])
+    result = stats_svc.delete_orphaned_logs([bad, good])
 
-    assert result.finalized is True
     assert result.removed == 1
     assert bad.exists()
     assert not good.exists()
-    doc = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert set(doc) == {"2026-07-21"}
+    # The surviving dir keeps exactly its own request, and the deleted one's is gone.
+    assert _indexed_requests(stats_svc) == 1
 
 
-def test_failed_rmtree_excluded_from_freed_bytes(
+def test_a_dir_that_cannot_be_deleted_is_excluded_from_freed_bytes(
     stats_svc: StatsService,
     tmp_path: Path,
     mocker: pytest_mock.MockFixture,
+    write_session: Callable[..., Path],
 ) -> None:
-    central = tmp_path / "central"
-    bad = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
-    good = _write_log_dir(central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=UTC))])
+    bad_project = tmp_path / "stuck"
+    good_project = tmp_path / "gone"
+    for project in (bad_project, good_project):
+        project.mkdir()
+    bad = write_session(bad_project, "s1", [_rec()]).parent.parent
+    good = write_session(good_project, "s1", [_rec()]).parent.parent
     good_size = stats_svc.orphaned_disk_usage([good])
     real_rmtree = shutil.rmtree
 
@@ -283,59 +187,55 @@ def test_failed_rmtree_excluded_from_freed_bytes(
         real_rmtree(path)
 
     mocker.patch("agent_wrap.domain.stats.service.shutil.rmtree", side_effect=selective)
-    result = stats_svc.archive_and_delete_orphaned([bad, good])
-    assert result.freed_bytes == good_size
+
+    assert stats_svc.delete_orphaned_logs([bad, good]).freed_bytes == good_size
 
 
-@pytest.mark.usefixtures("broken_staging_promotion")
-def test_failed_promotion_reports_unfinalized(
+def test_the_directory_is_gone_before_its_rows_are(
     stats_svc: StatsService,
     tmp_path: Path,
-    archive_path: Path,
+    mocker: pytest_mock.MockFixture,
+    write_session: Callable[..., Path],
+    index_logs: Callable[[], None],
 ) -> None:
-    logs = _write_log_dir(
-        tmp_path / "central", "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))]
-    )
-    result = stats_svc.archive_and_delete_orphaned([logs])
+    """
+    The ordering, asserted directly rather than inferred from the outcome.
 
-    assert result.finalized is False
-    assert result.archive_path == archive_path
-    assert result.staging_path == archive_path.with_suffix(".new.json")
-    # The staging file survives so the user can move it into place by hand.
-    assert result.staging_path.is_file()
+    Both orders reach the same end state when nothing fails, so only a spy sees which
+    one ran — and the order is what makes the failure modes benign in the direction
+    they are.
+    """
+    project = tmp_path / "gone"
+    project.mkdir()
+    logs = write_session(project, "s1", [_rec()]).parent.parent
+    index_logs()
+    observed: dict[str, bool] = {}
 
+    real_delete = stats_svc._ingest.delete_projects
 
-@pytest.mark.usefixtures("broken_staging_promotion")
-def test_failed_promotion_stops_remaining_dirs(
-    stats_svc: StatsService,
-    tmp_path: Path,
-) -> None:
-    """Stopping keeps the second dir intact rather than deleting it unarchived."""
-    central = tmp_path / "central"
-    first = _write_log_dir(central, "hashA", [_rec(datetime(2026, 7, 20, 14, 0, tzinfo=UTC))])
-    second = _write_log_dir(central, "hashB", [_rec(datetime(2026, 7, 21, 15, 0, tzinfo=UTC))])
-    result = stats_svc.archive_and_delete_orphaned([first, second])
+    def spy(hashes: list[str]) -> None:
+        observed["dir_already_gone"] = not logs.exists()
+        real_delete(hashes)
 
-    assert result.finalized is False
-    assert result.removed == 0
-    assert not first.exists()
-    assert second.exists()
+    mocker.patch.object(stats_svc._ingest, "delete_projects", side_effect=spy)
+
+    stats_svc.delete_orphaned_logs([logs])
+
+    assert observed["dir_already_gone"] is True
 
 
-def test_no_dirs_finalizes_without_writing(stats_svc: StatsService, archive_path: Path) -> None:
-    result = stats_svc.archive_and_delete_orphaned([])
-    assert result.finalized is True
-    assert result.removed == 0
-    assert result.freed_bytes == 0
-    assert not archive_path.exists()
+def test_no_dirs_deletes_nothing(stats_svc: StatsService) -> None:
+    result = stats_svc.delete_orphaned_logs([])
+
+    assert (result.removed, result.freed_bytes) == (0, 0)
 
 
-def test_empty_log_dir_is_deleted_with_empty_archive(
-    stats_svc: StatsService, tmp_path: Path, archive_path: Path
-) -> None:
+def test_an_empty_log_dir_is_deleted(stats_svc: StatsService, tmp_path: Path) -> None:
+    """A hash directory the sidecar created and never wrote to is still a directory."""
     logs = tmp_path / "central" / "hashA"
     logs.mkdir(parents=True)
-    result = stats_svc.archive_and_delete_orphaned([logs])
+
+    result = stats_svc.delete_orphaned_logs([logs])
+
     assert result.removed == 1
     assert not logs.exists()
-    assert json.loads(archive_path.read_text(encoding="utf-8")) == {}

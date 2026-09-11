@@ -26,6 +26,8 @@ from agent_wrap.infrastructure.constants import (
     DB_DIRNAME,
     DB_FILE_SUFFIX,
     INFRASTRUCTURE_DIR,
+    LOGS_CONNECTION_PRAGMAS,
+    LOGS_DATABASE_PRAGMAS,
     MIGRATIONS_DIRNAME,
     Databases,
 )
@@ -48,6 +50,10 @@ if TYPE_CHECKING:
     from agent_wrap.domain.status.service import InspectService
     from agent_wrap.domain.updates.service import UpdateService
     from agent_wrap.infrastructure.connection import ConnectionFactory
+    from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+    from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+    from agent_wrap.infrastructure.logs.repositories.usage import UsageRepository
     from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 
@@ -78,6 +84,26 @@ class Core:
             backups_dir=self._backups_dir,
         )
 
+    @cached_property
+    def logs_db(self) -> ConnectionFactory:
+        """
+        The ingested index over the sidecar's JSONL log tree.
+
+        Takes its own PRAGMA sets rather than the shared defaults: this database is a
+        blob store two orders of magnitude larger than the registry, and two of the
+        settings it needs cannot be applied once its first page exists.
+        """
+        from agent_wrap.infrastructure.connection import ConnectionFactory
+
+        return ConnectionFactory(
+            name=Databases.LOGS,
+            db_path=self._db_dir / f"{Databases.LOGS}{DB_FILE_SUFFIX}",
+            migrations_dir=INFRASTRUCTURE_DIR / Databases.LOGS / MIGRATIONS_DIRNAME,
+            backups_dir=self._backups_dir,
+            database_pragmas=LOGS_DATABASE_PRAGMAS,
+            connection_pragmas=LOGS_CONNECTION_PRAGMAS,
+        )
+
 
 class Repositories:
     """
@@ -95,6 +121,30 @@ class Repositories:
         from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
         return ProjectsRepository(connection_factory=self._core.projects_db)
+
+    @cached_property
+    def log_ingest_repository(self) -> LogIngestRepository:
+        from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+
+        return LogIngestRepository(connection_factory=self._core.logs_db)
+
+    @cached_property
+    def log_session_repository(self) -> SessionRepository:
+        from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+
+        return SessionRepository(connection_factory=self._core.logs_db)
+
+    @cached_property
+    def log_request_repository(self) -> RequestRepository:
+        from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+
+        return RequestRepository(connection_factory=self._core.logs_db)
+
+    @cached_property
+    def usage_repository(self) -> UsageRepository:
+        from agent_wrap.infrastructure.logs.repositories.usage import UsageRepository
+
+        return UsageRepository(connection_factory=self._core.logs_db)
 
 
 class Services:
@@ -213,6 +263,9 @@ class Services:
             stats_service=self.stats_service,
             config_service=self.config_service,
             display_service=self.display_service,
+            log_ingest_repository=self._repositories.log_ingest_repository,
+            log_session_repository=self._repositories.log_session_repository,
+            log_request_repository=self._repositories.log_request_repository,
         )
 
     @cached_property
@@ -227,6 +280,7 @@ class Services:
             updates_service=self.update_service,
             config_service=self.config_service,
             build_service=self.build_service,
+            log_session_repository=self._repositories.log_session_repository,
         )
 
     @cached_property
@@ -236,6 +290,8 @@ class Services:
         return StatsService(
             pricing_service=self.pricing_service,
             config_service=self.config_service,
+            usage_repository=self._repositories.usage_repository,
+            log_ingest_repository=self._repositories.log_ingest_repository,
         )
 
 

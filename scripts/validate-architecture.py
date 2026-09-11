@@ -25,6 +25,12 @@
 #           the import only downgrades annotations back to plain strings. The
 #           carve-out is the exact complement of EC001's scope: litellm_runtime/
 #           runs on the LiteLLM image's older Python, which still needs it.
+#   EH001 — Log-file reference outside the ingester: naming `messages.jsonl` or
+#           `strings.jsonl`, by literal or through the filename constants,
+#           anywhere but domain/logs/constants.py (which defines them),
+#           domain/logs/ingest.py (the only module that reads one),
+#           litellm_runtime/ (the sidecar callback, which writes them) and
+#           tests.  See docs/infrastructure.md: every consumer reads logs.db.
 #
 # Usage: python3 scripts/validate-architecture.py
 #
@@ -54,6 +60,22 @@ EXCLUDED_PATHS: tuple[str, ...] = ()
 # are mounted into the LiteLLM sidecar and must not depend on agent_wrap at
 # runtime.  Rule EC001 enforces this.
 _LITELLM_RUNTIME = "agent_wrap/domain/providers/litellm_runtime"
+
+# The two files a session is made of on disk, and the constants that hold their names.
+# EH001 keeps both out of every module but the four that own them.
+_LOG_FILENAMES = frozenset({"messages.jsonl", "strings.jsonl"})
+_LOG_FILENAME_CONSTANTS = frozenset({"MESSAGES_FILENAME", "STRINGS_FILENAME"})
+
+# Where naming a log file is legitimate: constants.py declares the two names, ingest.py
+# is the only module permitted to open one, and litellm_runtime/ is the sidecar callback
+# that writes them -- it cannot import from agent_wrap at all (EC001), so it carries its
+# own literals. Test files are exempt as they are for every other rule here.
+_LOG_FILE_OWNERS = frozenset(
+    {
+        "agent_wrap/domain/logs/constants.py",
+        "agent_wrap/domain/logs/ingest.py",
+    }
+)
 
 
 def _discover_subpackages(domain_dir: Path) -> tuple[str, ...]:
@@ -536,6 +558,64 @@ def _check_rule_g(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, s
     ]
 
 
+def _check_rule_h(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
+    """
+    Return EH001 violations found in *tree*.
+
+    The whole basis of the logs rework is that ``domain/logs/ingest.py`` is the only
+    module that reads a session's record files -- every consumer reads ``logs.db``
+    instead, which is what makes a read cost what was asked for rather than the whole
+    2.2 GB history. Without a mechanical guard, a fallback reader creeps back the first
+    time something looks slow.
+
+    What is checkable is the *name*: "does this open the file" is not a question an AST
+    answers reliably, but "does this module know what a log file is called" is. So the
+    two filenames, and the constants that hold them, may appear only in the module that
+    defines them, the module that reads them, the sidecar callback that writes them, and
+    tests. A caller that needs to ask a question about such a path -- the watcher routing
+    an event, the stats layer comparing a size against a watermark -- goes through
+    ``LogFiles``.
+
+    Prose is untouched: a docstring mentioning ``messages.jsonl`` is a longer string than
+    the filename, so an equality test on the constant's value never sees it.
+    """
+    rel_file = str(file_path.relative_to(ROOT))
+    violations: list[tuple[str, int, str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Constant, ast.Name, ast.ImportFrom)):
+            continue
+        named = _log_file_reference(node)
+        if named is not None:
+            violations.append(
+                (
+                    rel_file,
+                    node.lineno,
+                    "EH001",
+                    f"{named} names a log file outside the ingester; read logs.db instead",
+                )
+            )
+    return violations
+
+
+def _log_file_reference(node: ast.Constant | ast.Name | ast.ImportFrom) -> str | None:
+    """Describe how *node* names a log file, or return None if it does not."""
+    if isinstance(node, ast.Constant):
+        return f"literal {node.value!r}" if node.value in _LOG_FILENAMES else None
+    if isinstance(node, ast.Name):
+        return node.id if node.id in _LOG_FILENAME_CONSTANTS else None
+    imported = [a.name for a in node.names if a.name in _LOG_FILENAME_CONSTANTS]
+    return ", ".join(imported) if imported else None
+
+
+def _is_log_file_owner(file_path: Path) -> bool:
+    """Report whether *file_path* is one of the modules EH001 exempts."""
+    try:
+        rel = file_path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return True
+    return rel in _LOG_FILE_OWNERS or _is_litellm_runtime(file_path)
+
+
 def _check_rule_e(file_path: Path, tree: ast.AST) -> list[tuple[str, int, str, str]]:
     """
     Return EE001 violations found in *tree*.
@@ -643,14 +723,27 @@ def check_file(file_path: Path) -> list[tuple[str, int, str, str]]:
     else:
         violations.extend(_check_rule_g(file_path, tree))
 
+    # Rule H: only the ingester knows what a session's record files are called.
+    if not _is_test_file(file_path) and not _is_log_file_owner(file_path):
+        violations.extend(_check_rule_h(file_path, tree))
+
     # Rules D/E/F: types belong in models.py, constants (incl. enums) in constants.py.
+    violations.extend(_check_models_constants_rules(file_path, tree))
+
+    return violations
+
+
+def _check_models_constants_rules(
+    file_path: Path, tree: ast.AST
+) -> list[tuple[str, int, str, str]]:
+    """Run ED001/EE001/EF001 against *file_path*, if its package is in their scope."""
+    violations: list[tuple[str, int, str, str]] = []
     scope = _models_constants_scope(file_path)
     if scope in ("models", "both"):
         violations.extend(_check_rule_d(file_path, tree))
     if scope in ("constants", "both"):
         violations.extend(_check_rule_e(file_path, tree))
         violations.extend(_check_rule_f(file_path, tree))
-
     return violations
 
 
@@ -671,7 +764,7 @@ def main() -> None:
             print(f"{rel_path}:{line}: error: {code}: {msg}", file=sys.stderr)
 
         parts: list[str] = []
-        for code in ("EA001", "EB001", "EC001", "ED001", "EE001", "EF001", "EG001"):
+        for code in ("EA001", "EB001", "EC001", "ED001", "EE001", "EF001", "EG001", "EH001"):
             count = sum(1 for v in violations if v[2] == code)
             if count:
                 parts.append(f"{count} {code}")

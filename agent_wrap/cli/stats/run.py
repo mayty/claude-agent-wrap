@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     import re
     from datetime import date
 
+    from agent_wrap.domain.display.service import DisplayService
+    from agent_wrap.domain.logs.models import IndexLag
+
 
 @click.command("stats")
 @click.option(
@@ -80,20 +83,24 @@ def stats_command(  # noqa: PLR0913
     pattern: re.Pattern[str] | None,
 ) -> None:
     """
-    Show token usage stats (reads from .claude/litellm-logs/)
+    Show token usage stats (reads the request index)
 
-    Print aggregated usage stats from the .claude/litellm-logs/ directory of every
-    project in the registry. Output is a per-project table plus a per-model and per-day
-    breakdown, both over the same usage window. Models are displayed as
-    <provider>/<model>. Day buckets use host-local time by default; override with
-    AGENT_DAY_START_UTC.
+    Print aggregated usage stats for every project in the registry. Output is a
+    per-project table plus a per-model and per-day breakdown, both over the same usage
+    window. Models are displayed as <provider>/<model>. Day buckets use host-local time
+    by default; override with AGENT_DAY_START_UTC.
 
     At most two of --from, --until and --days may be combined. No flags means the last 28
     days; --from alone means [from, now]; --days N alone means the last N days
     [now-(N-1), now]; --until alone means 28 days ending at until; --days 0 alone means
     all time [open, now].
 
-    Pricing is fetched dynamically per-provider as logs are scanned.
+    Totals come from the request index, not from the log files -- so they cover exactly
+    what has been indexed. `agent logs` fills the index as requests arrive and
+    `agent reindex` catches it up on demand; this command reports when the two have
+    drifted apart, and never writes either.
+
+    Pricing is fetched dynamically per-provider as the totals are computed.
 
     Projects are recorded by `agent` on each launch -- a project that has never had
     `agent` invoked from it will not appear here.
@@ -124,11 +131,16 @@ def stats_command(  # noqa: PLR0913
         ctx.exit(0)
 
     report = services.stats_service.build_report(projects, parsed)
+    lag = services.logs_service.index_lag()
     if not report.rows and report.orphaned is None:
         if parsed.pattern is not None:
             dsp.info(f"no logs found for any project matching '{parsed.pattern.pattern}'.")
         else:
-            dsp.info("no LiteLLM logs found for any registered project.")
+            dsp.info("no indexed requests found for any registered project.")
+        # Reported on this path too, and it matters most here: an empty report on a host
+        # whose logs have simply never been indexed reads as "you have spent nothing",
+        # which is the one wrong conclusion the warning exists to prevent.
+        _warn_if_stale(lag, dsp)
         ctx.exit(0)
 
     dsp.info(
@@ -157,4 +169,23 @@ def stats_command(  # noqa: PLR0913
             "contribute $0 to the totals above (response logged without a usage "
             "block). Cost is understated by their unknown amount."
         )
+    # Last, so the command to run is the final line on screen.
+    _warn_if_stale(lag, dsp)
     ctx.exit(0)
+
+
+def _warn_if_stale(lag: IndexLag, dsp: DisplayService) -> None:
+    """
+    Say so when the index is behind the log files, and name the fix.
+
+    Never silently absorbed and never worked around: this command reads the index and
+    only the index, so a request the index has not seen is missing from the totals
+    above. Saying which sessions are behind and what to run is the whole remedy —
+    reading the files here to fill the gap is what the index exists to stop.
+    """
+    if not lag.is_stale:
+        return
+    dsp.warning(
+        f"{lag.behind} of {lag.total} session(s) are behind the log files; totals may "
+        "understate spend. Run: agent reindex"
+    )

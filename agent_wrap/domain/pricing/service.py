@@ -11,6 +11,8 @@ from agent_wrap.domain.pricing.constants import (
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.providers.service import ProviderService
 
@@ -34,15 +36,25 @@ class PricingService:
         """Return a fresh, empty :class:`Bucket` for token-count accumulation."""
         return Bucket()
 
+    def merged_bucket(self, buckets: Iterable[Bucket]) -> Bucket:
+        """
+        Return a fresh Bucket holding the sum of *buckets*.
+
+        Lets a caller total a collection without constructing an empty Bucket of its
+        own, so bucket creation stays inside the pricing domain.
+        """
+        return Bucket.merged(buckets)
+
     def bucket_from_usage(self, usage: TokenUsage, *, msgs: int, unrecorded: int = 0) -> Bucket:
         """
         Return a Bucket holding an already-aggregated *msgs* requests' worth of *usage*.
 
-        For callers that hold pre-summed token totals rather than per-request
-        usage (e.g. the stats usage archive). Token math still goes through
-        ``Bucket.add`` so its 5m/1h cache-write tier attribution stays the single
-        source of truth; only the two counters that cannot be derived from token
-        counts are then set explicitly, since ``add`` counts exactly one message.
+        For callers that hold pre-summed token totals rather than per-request usage —
+        the stats fold, whose unit is a whole ``(hour, session, model, source)`` cell.
+        Token math still goes through ``Bucket.add`` so its 5m/1h cache-write tier
+        attribution stays the single source of truth; only the two counters that cannot
+        be derived from token counts are then set explicitly, since ``add`` counts
+        exactly one message.
         """
         bucket = Bucket()
         bucket.add(usage, 0.0)

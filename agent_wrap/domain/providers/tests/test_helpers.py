@@ -33,7 +33,6 @@ _helpers = _import_runtime_module("helpers")
 # (helpers.py does ``from string_hasher import StringHasher``).
 _string_hasher = sys.modules["string_hasher"]
 
-get_response_content_str = _helpers.get_response_content_str
 json_safe = _helpers.json_safe
 REDACTED_VALUE = _helpers.REDACTED_VALUE
 StringHasher = _string_hasher.StringHasher
@@ -298,63 +297,3 @@ def test_json_safe_does_not_mutate_source_mapping() -> None:
     headers = {"authorization": "Bearer sk-ant-oat01-secret"}
     json_safe({"headers": headers})
     assert headers == {"authorization": "Bearer sk-ant-oat01-secret"}
-
-
-def test_get_response_content_str_message_content() -> None:
-    """Extracts text from choices[0].message.content."""
-    response = {"choices": [{"message": {"content": "Hello world"}}]}
-    assert get_response_content_str(response) == "Hello world"
-
-
-def test_get_response_content_str_text_fallback() -> None:
-    """Falls back to choices[0].text when no message.content."""
-    response = {"choices": [{"text": "Fallback text"}]}
-    assert get_response_content_str(response) == "Fallback text"
-
-
-def test_get_response_content_str_message_preferred_over_text() -> None:
-    """message.content is preferred over text when both are present."""
-    response = {"choices": [{"message": {"content": "Message content"}, "text": "Text fallback"}]}
-    assert get_response_content_str(response) == "Message content"
-
-
-def test_get_response_content_str_non_dict_input() -> None:
-    """Returns None for non-dict inputs."""
-    assert get_response_content_str("string") is None
-    assert get_response_content_str(42) is None
-    assert get_response_content_str(None) is None
-    assert get_response_content_str(["not", "a", "dict"]) is None
-
-
-def test_get_response_content_str_missing_choices() -> None:
-    """Returns None when choices key is missing."""
-    assert get_response_content_str({}) is None
-    assert get_response_content_str({"no_choices_here": []}) is None
-
-
-def test_get_response_content_str_choices_not_list() -> None:
-    """Returns None when choices is not a list."""
-    assert get_response_content_str({"choices": "not-a-list"}) is None
-    assert get_response_content_str({"choices": None}) is None
-
-
-def test_get_response_content_str_empty_choices() -> None:
-    """Returns None when choices is an empty list."""
-    assert get_response_content_str({"choices": []}) is None
-
-
-def test_get_response_content_str_first_choice_not_dict() -> None:
-    """Returns None when the first choice is not a dict."""
-    assert get_response_content_str({"choices": ["a-string"]}) is None
-    assert get_response_content_str({"choices": [42]}) is None
-    assert get_response_content_str({"choices": [None]}) is None
-
-
-def test_get_response_content_str_no_message_content_or_text() -> None:
-    """Returns None when neither message.content nor text are present or string."""
-    # Message exists but content is missing
-    assert get_response_content_str({"choices": [{"message": {"role": "assistant"}}]}) is None
-    # Message exists but content is not a string
-    assert get_response_content_str({"choices": [{"message": {"content": 123}}]}) is None
-    # No message and no text at all
-    assert get_response_content_str({"choices": [{"role": "assistant"}]}) is None

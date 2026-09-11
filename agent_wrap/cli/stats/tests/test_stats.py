@@ -13,6 +13,7 @@ from agent_wrap.cli.stats.display import render, render_source_breakdown
 from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.logs.models import IndexLag
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.stats.models import ProjectRow, StatsReport
 
@@ -121,6 +122,9 @@ def wired_services(tmp_path: Path) -> None:
     services.config_service.read_project_paths.return_value = [tmp_path / "proj"]  # pyrefly: ignore [missing-attribute]
     services.stats_service.resolve_window.return_value = (None, None)  # pyrefly: ignore [missing-attribute]
     services.stats_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
+    # A fully indexed host, so the staleness warning stays out of the way of every test
+    # that is about something else. The two that are about it override this.
+    services.logs_service.index_lag.return_value = IndexLag(behind=0, total=7)  # pyrefly: ignore [missing-attribute]
 
 
 def _report(
@@ -186,7 +190,7 @@ def test_run_notes_when_report_is_empty(runner: CliRunner, mocker: MockerFixture
     assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     render_spy.assert_not_called()
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
-    assert "no LiteLLM logs found" in message
+    assert "no indexed requests found" in message
 
 
 @pytest.mark.usefixtures("wired_services")
@@ -338,6 +342,72 @@ def test_render_reports_the_same_totals_however_far_the_tree_was_chopped(
 
 def test_stats_takes_no_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
     """A reporting command does not get write permission just to migrate data."""
+    runner.invoke(cli_root, ["stats"])
+
+    assert write_grants == []
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_a_lagging_index_is_warned_about_and_names_the_fix(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
+    """
+    Lag is surfaced, never absorbed: this command reads the index and only the index.
+
+    A request the index has not seen is simply missing from the totals, and there is no
+    fallback that would go and find it -- reading the log files here is what the index
+    exists to stop. So the remedy is to say which sessions are behind and what to run.
+    """
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
+    services.logs_service.index_lag.return_value = IndexLag(behind=12, total=613)  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
+    warnings = [call[0][0] for call in services.display_service.warning.call_args_list]  # pyrefly: ignore [missing-attribute]
+    assert "12 of 613 session(s) are behind the log files" in warnings[-1]
+    assert "agent reindex" in warnings[-1]
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_a_current_index_is_not_warned_about(runner: CliRunner, mocker: MockerFixture) -> None:
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
+    warnings = [call[0][0] for call in services.display_service.warning.call_args_list]  # pyrefly: ignore [missing-attribute]
+    assert not any("behind the log files" in w for w in warnings)
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_an_empty_report_still_warns_about_a_lagging_index(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
+    """
+    The case the warning matters most in, and the one an early return would skip.
+
+    A host whose logs have never been indexed produces an empty report, and "no indexed
+    requests found" reads as "you have spent nothing" -- which is the single wrong
+    conclusion this warning exists to prevent.
+    """
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.logs_service.index_lag.return_value = IndexLag(behind=613, total=613)  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
+    warnings = [call[0][0] for call in services.display_service.warning.call_args_list]  # pyrefly: ignore [missing-attribute]
+    assert "613 of 613 session(s) are behind the log files" in warnings[-1]
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_stats_takes_no_write_grant_on_either_database(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    A command that only reports may not mutate host state as a side effect of reading.
+
+    Both databases, asserted together: the registry has always been off limits here, and
+    the index now is too -- filling it is `agent logs`' and `agent reindex`'s job, and a
+    grant here would make a plain `agent stats` able to rewrite spend history.
+    """
     runner.invoke(cli_root, ["stats"])
 
     assert write_grants == []

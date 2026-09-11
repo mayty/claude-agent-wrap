@@ -6,6 +6,7 @@ from agent_wrap.cli.create.run import create_command
 from agent_wrap.cli.inspect.run import inspect_command
 from agent_wrap.cli.logs.run import logs_command
 from agent_wrap.cli.rebuild.run import rebuild_command
+from agent_wrap.cli.reindex.run import reindex_command
 from agent_wrap.cli.run.run import run_command
 from agent_wrap.cli.secrets.run import secrets_group
 from agent_wrap.cli.stats.run import stats_command
@@ -20,6 +21,7 @@ command_groups = (
     inspect_command,
     logs_command,
     rebuild_command,
+    reindex_command,
     run_command,
     secrets_group,
     stats_command,

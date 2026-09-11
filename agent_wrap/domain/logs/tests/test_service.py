@@ -20,20 +20,37 @@ from agent_wrap.exceptions import LockTimeoutError
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
+    from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+    from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+
 
 @pytest.fixture
-def logs_svc(display_mock: Mock) -> LogsService:
+def logs_svc(
+    display_mock: Mock,
+    log_ingest_repository: LogIngestRepository,
+    log_session_repository: SessionRepository,
+    log_request_repository: RequestRepository,
+) -> LogsService:
     """
     Return a LogsService with no-op pricing and stats dependencies.
 
     Takes the shared ``display_mock`` rather than building its own, so a test can
     assert on what the service told the user without reaching into the instance.
+
+    The ingest repository is the *real* one from the root conftest, over an empty
+    database in ``tmp_path`` -- a mock would make the ingest tests assert that calls
+    were made rather than that rows landed, which is the only thing worth asserting
+    about an ingest pass.
     """
     return LogsService(
         pricing_service=Mock(spec=PricingService),
         stats_service=Mock(spec=StatsService),
         config_service=Mock(spec=ConfigService),
         display_service=display_mock,
+        log_ingest_repository=log_ingest_repository,
+        log_session_repository=log_session_repository,
+        log_request_repository=log_request_repository,
     )
 
 

@@ -40,10 +40,10 @@ from watchdog.observers import Observer
 from agent_wrap.domain.logs.constants import (
     CACHE_HEARTBEAT_INTERVAL_SEC,
     CACHE_STOP_TIMEOUT_SEC,
-    MESSAGES_FILENAME,
     WATCH_STOP,
 )
 from agent_wrap.domain.logs.daemon import log_debug, log_info
+from agent_wrap.domain.logs.ingest import LogFiles
 
 if TYPE_CHECKING:
     from watchdog.events import FileSystemEvent
@@ -69,15 +69,19 @@ class _LogTreeHandler(FileSystemEventHandler):
     """
     Queue writes to session record files. Runs on a watchdog emitter thread.
 
-    Only ``messages.jsonl`` is forwarded, because only ``messages.jsonl`` is what the
-    cache tracks -- every manifest entry and every ``Fingerprint`` in ``io.py`` is
-    keyed off it. The filter earns its place three times over: it drops the directory
-    ``modified`` event inotify raises for every single write, which would otherwise
-    degrade each batch to a full rescan; it drops the ``meta.json`` the viewer itself
-    writes into this tree after a slow scan, which would otherwise make every
-    incremental update schedule a redundant pass behind itself; and it drops the
-    ``strings.jsonl`` the sidecar writes beside each record file, which is not
-    fingerprinted and always accompanies a ``messages.jsonl`` write anyway.
+    Only a session's record file is forwarded, because a write to it is the one event
+    that means there are records to ingest -- the ingester owns the predicate, since it
+    owns what such a file is called. The filter drops the directory ``modified``
+    event inotify raises for every single write, which would otherwise wake the
+    consumer once per write on top of the write itself; it drops the ``strings.jsonl``
+    the sidecar writes beside each record file, which is always flushed just *before*
+    the record referencing it and so is never the last write of a pair; and it drops
+    the sidecar's ``meta.json``, a per-session cache the request index replaced and
+    that no reader opens any more.
+
+    Nothing here writes into the watched tree, so there is no feedback loop left to
+    filter out. The viewer used to seed ``meta.json`` after a slow scan and depended on
+    this filter to keep that from scheduling a pass behind itself.
     """
 
     def __init__(self, queue: SimpleQueue[object]) -> None:
@@ -88,7 +92,7 @@ class _LogTreeHandler(FileSystemEventHandler):
         # `dispatch`, not one of the `on_*` hooks the base class routes to: every event
         # is treated identically here, so the routing would be pure overhead.
         for path in event_paths(event):
-            if path.name == MESSAGES_FILENAME:
+            if LogFiles.is_messages(path):
                 self._queue.put(path)
 
 
@@ -97,8 +101,7 @@ class CacheWatcher:
     Drives :class:`~agent_wrap.domain.logs.cache.LogsCache` from filesystem events.
 
     Owns the observer and the single consumer thread. Every call into the cache
-    happens on that thread, so the cache needs no lock beyond the one guarding its
-    hot-session slot.
+    happens on that thread, so the cache needs no lock at all.
 
     Only the logs tree is watched. The project registry deliberately is not, even
     though a registration is a change the viewer cares about: every project's logs land

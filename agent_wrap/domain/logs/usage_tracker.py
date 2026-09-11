@@ -1,4 +1,4 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """Daily usage tracking for the logs viewer background thread."""
 
 import contextlib
@@ -11,95 +11,51 @@ from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.daytime import get_day
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from agent_wrap.domain.pricing.models import Bucket
-    from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.service import StatsService
 
 
 class UsageTracker:
     """
-    Tracks today's LLM usage by incrementally re-scanning changed messages.jsonl files.
+    Maintains ``usage.json`` — today's LLM usage, for the statusline.
 
-    Maintains a per-file bucket contribution and ``(mtime_ns, size)`` fingerprint so
-    that ``update_file`` skips files whose metadata hasn't changed — regardless of
-    which code path calls it.
+    One aggregate over the request index per flush, and nothing else. There is no
+    per-file state here any more: no bucket per file, no ``(mtime_ns, size)``
+    fingerprint, no rescan of a session's whole ``messages.jsonl`` on every append.
+    That scheme was quadratic in the worst place possible — a session's log file is
+    re-read in full each time a request is appended to it, so a 68 MB session cost
+    ~2.3 GB of parsing across its life to keep a 130-byte file up to date. The index
+    makes the cost proportional to the *day*: a few dozen usage cells, summed in SQL.
 
-    * A changed file is re-scanned and its old contribution is replaced.
-    * A deleted file has its contribution removed.
-    * Day rollover (per :data:`DAY_START_HOURS`) resets all state.
+    What is left is the day boundary, which is genuinely stateful — ``usage.json`` says
+    "today", so the tracker has to notice when today changes.
 
     All public methods are called exclusively from the watcher's single consumer
     thread, via ``LogsCache``, so no internal locking is needed.
     """
 
-    def __init__(self, pricing: PricingService, stats: StatsService) -> None:
-        self._pricing = pricing
+    def __init__(self, stats: StatsService) -> None:
         self._stats = stats
         self._output_path = GLOBAL_CONFIG_DIR / USAGE_JSON_RELPATH
 
         # Today's ISO day key (e.g. "2026-07-16") from DAY_START_HOURS.
         self._today_key = self._current_day_key()
 
-        # Per-file bucket contributions and stat fingerprints for today only.
-        self._file_buckets: dict[Path, Bucket] = {}
-        self._fingerprints: dict[Path, tuple[int, int]] = {}
-
         # Last payload written to usage.json; None until this process writes one, so
         # the first flush always rewrites — that is what clears a payload left behind
         # by a previous run on an earlier day.
         self._last_output: dict[str, int | str] | None = None
-
-    # ------------------------------------------------------------------
-    # Public API (called from LogsCache, on the watcher's consumer thread)
-    # ------------------------------------------------------------------
 
     def detect_rollover(self) -> bool:
         """Return True when the calendar day (per :data:`DAY_START_HOURS`) has changed."""
         return self._current_day_key() != self._today_key
 
     def reset(self) -> None:
-        """Clear all tracked state (called on day rollover or full rebuild)."""
+        """Adopt the current day as today's, so the next flush reports that day."""
         self._today_key = self._current_day_key()
-        self._file_buckets.clear()
-        self._fingerprints.clear()
-
-    def update_file(self, file_path: Path, stat_info: tuple[int, int]) -> None:
-        """
-        Re-scan *file_path* for today's records if its stat fingerprint changed.
-
-        The file is left alone when its fingerprint is unchanged, or when its mtime
-        predates today's day boundary (it then cannot hold today's records).
-
-        The provider name is extracted from the path structure::
-
-            <logs_dir>/<provider_name>/<session_id>/messages.jsonl
-        """
-        if self._fingerprints.get(file_path) == stat_info:
-            return
-
-        # If the file's mtime predates today's day boundary, it can't contain
-        # today's records — store the fingerprint and skip I/O entirely.
-        mtime_ns = stat_info[0]
-        mtime_dt = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=UTC)
-        if get_day(mtime_dt, DAY_START_HOURS).isoformat() < self._today_key:
-            self._fingerprints[file_path] = stat_info
-            return
-
-        self._fingerprints[file_path] = stat_info
-        provider = file_path.parent.parent.name
-        bucket = self._stats.scan_day_file(provider, file_path, self._today_key)
-        self._file_buckets[file_path] = bucket
-
-    def remove_file(self, file_path: Path) -> None:
-        """Remove a deleted file's tracked contribution and fingerprint."""
-        self._file_buckets.pop(file_path, None)
-        self._fingerprints.pop(file_path, None)
 
     def flush(self) -> None:
         """
-        Aggregate all tracked file contributions and write ``usage.json``.
+        Aggregate today's usage from the index and write ``usage.json``.
 
         The payload is atomically rewritten whenever it differs from the one this
         process last wrote, or the file is missing; otherwise the file is only
@@ -116,10 +72,7 @@ class UsageTracker:
         if self.detect_rollover():
             self.reset()
 
-        total = self._pricing.new_bucket()
-        for bucket in self._file_buckets.values():
-            total.merge(bucket)
-
+        total = self._stats.day_totals(self._today_key)
         cost_str = f"${total.cost:.2f}" if not total.cost_unknown else "?"
 
         output: dict[str, int | str] = {
@@ -137,10 +90,6 @@ class UsageTracker:
         else:
             with contextlib.suppress(OSError):
                 self._output_path.touch()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _current_day_key() -> str:

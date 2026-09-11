@@ -10,7 +10,14 @@ from agent_wrap.__main__ import cli_root
 from agent_wrap.cli.cleanup.constants import CLEANUP_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.build.models import ImageCleanupOutcome, ImageCleanupScope
+from agent_wrap.domain.logs.models import (
+    ExpiredSession,
+    IndexReclaim,
+    RetentionResult,
+    RetentionScope,
+)
 from agent_wrap.domain.stats.models import CleanupOutcome, CleanupResult, CleanupScope
+from agent_wrap.infrastructure.logs.models import BlobSweep, SessionKey
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -34,15 +41,9 @@ def _scope(
     )
 
 
-def _outcome(*, finalized: bool = True, removed_paths: list[Path] | None = None) -> CleanupOutcome:
+def _outcome(*, removed_paths: list[Path] | None = None) -> CleanupOutcome:
     return CleanupOutcome(
-        result=CleanupResult(
-            removed=2,
-            freed_bytes=2_097_152,
-            archive_path=Path("/wrap/.agent-launches/orphaned-usage-archive.json"),
-            staging_path=Path("/wrap/.agent-launches/orphaned-usage-archive.new.json"),
-            finalized=finalized,
-        ),
+        result=CleanupResult(removed=2, freed_bytes=2_097_152),
         removed_paths=list(_STALE) if removed_paths is None else removed_paths,
     )
 
@@ -54,6 +55,32 @@ def stats_mock() -> Mock:
     stats.cleanup_scope.return_value = _scope()  # pyrefly: ignore [missing-attribute]
     stats.run_cleanup.return_value = _outcome()  # pyrefly: ignore [missing-attribute]
     return stats
+
+
+def _reclaim(
+    *, sessions: int = 0, retention_bytes: int = 0, removed: int = 0, freed_bytes: int = 0
+) -> IndexReclaim:
+    return IndexReclaim(
+        retention=RetentionResult(sessions=sessions, freed_bytes=retention_bytes),
+        sweep=BlobSweep(removed=removed, freed_bytes=freed_bytes),
+    )
+
+
+@pytest.fixture(autouse=True)
+def logs_mock() -> Mock:
+    """
+    Return the mocked LogsService, seeded as a host that reclaimed nothing.
+
+    Autouse and silent by default, so the cases in this file that predate the blob
+    sweep and retention read as they did: retention switched off adds no line to the
+    preview, and a sweep that found nothing adds none to the summary.
+    """
+    logs = services.logs_service
+    logs.retention_scope.return_value = RetentionScope(  # pyrefly: ignore [missing-attribute]
+        days=0, sessions=()
+    )
+    logs.reclaim_index.return_value = _reclaim()  # pyrefly: ignore [missing-attribute]
+    return logs
 
 
 @pytest.fixture(autouse=True)
@@ -188,17 +215,22 @@ def test_success_message_reports_actual_freed_bytes(
 
 
 @pytest.mark.usefixtures("stats_mock")
-def test_unfinalized_archive_reports_manual_fallback(
+def test_the_preview_says_the_spend_will_stop_being_reported(
     runner: CliRunner, display_mock_service: Mock
 ) -> None:
-    display_mock_service.prompt_confirm.return_value = True
-    services.stats_service.run_cleanup.return_value = _outcome(finalized=False, removed_paths=[])  # pyrefly: ignore [missing-attribute]
+    """
+    Deleting logs now deletes their spend, and the prompt has to say so before it asks.
 
-    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 1
-    message = display_mock_service.error.call_args[0][0]
-    assert "failed to finalize" in message
-    assert "mv /wrap/.agent-launches/orphaned-usage-archive.new.json" in message
-    assert "/wrap/.agent-launches/orphaned-usage-archive.json" in message
+    It used to be archived and kept appearing under ``<orphaned>`` forever. Removing
+    that is a change in what a user loses by confirming, so the preview names it rather
+    than leaving them to notice afterwards.
+    """
+    display_mock_service.prompt_confirm.return_value = False
+
+    runner.invoke(cli_root, ["cleanup"])
+
+    out = _stdout(display_mock_service)
+    assert "no longer appear in `agent stats` under <orphaned>" in out
 
 
 @pytest.mark.usefixtures("stats_mock")
@@ -272,17 +304,18 @@ def test_cleanup_takes_a_registry_write_grant_per_writing_phase(
     runner: CliRunner, display_mock_service: Mock, write_grants: list[str]
 ) -> None:
     """
-    Two grants, one per phase that writes.
+    Three grants: one per phase that writes, and one per database the clean writes.
 
-    The survey takes one so the one-time ``projects.txt`` import lands before the scope
-    is computed; the clean takes one so the stale registry entries can be pruned. The
-    phases between them — preview, confirm — touch no database and hold nothing.
+    The survey takes a registry grant so the one-time ``projects.txt`` import lands
+    before the scope is computed. The clean takes a registry grant to prune stale
+    entries and a logs grant to forget a deleted project's requests. The phases between
+    them — preview, confirm — touch no database and hold nothing.
     """
     display_mock_service.prompt_confirm.return_value = True
 
     runner.invoke(cli_root, ["cleanup"])
 
-    assert write_grants == ["projects", "projects"]
+    assert write_grants == ["projects", "projects", "logs"]
 
 
 @pytest.mark.usefixtures("stats_mock", "display_mock_service")
@@ -299,3 +332,186 @@ def test_cleanup_dry_run_takes_no_registry_write_grant(
     runner.invoke(cli_root, ["cleanup", "--dry-run"])
 
     assert write_grants == []
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_the_preview_says_unreachable_index_content_will_go(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    """
+    The sweep is not part of the surveyed scope, so the preview is the only warning.
+
+    Counting what it would reclaim costs the same full pass as reclaiming it, so the
+    preview states that it happens rather than how much it will find.
+    """
+    display_mock_service.prompt_confirm.return_value = False
+
+    runner.invoke(cli_root, ["cleanup"])
+
+    assert "no request reaches any more will be reclaimed" in _stdout(display_mock_service)
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_the_sweep_runs_after_the_logs_are_forgotten(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    """
+    Order is the whole correctness of it: the rows first, then the content they held.
+
+    Reversed, every blob would still be reachable and the sweep would reclaim nothing.
+    """
+    display_mock_service.prompt_confirm.return_value = True
+    order: list[str] = []
+
+    def delete(_scope: CleanupScope) -> CleanupOutcome:
+        order.append("delete")
+        return _outcome()
+
+    def reclaim(_scope: RetentionScope) -> IndexReclaim:
+        order.append("reclaim")
+        return _reclaim()
+
+    services.stats_service.run_cleanup.side_effect = delete  # pyrefly: ignore [missing-attribute]
+    services.logs_service.reclaim_index.side_effect = reclaim  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
+    assert order == ["delete", "reclaim"]
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_a_sweep_that_reclaimed_something_reports_it(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    display_mock_service.prompt_confirm.return_value = True
+    services.logs_service.reclaim_index.return_value = _reclaim(  # pyrefly: ignore [missing-attribute]
+        removed=17, freed_bytes=4_194_304
+    )
+
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
+    out = _stdout(display_mock_service)
+    assert "Reclaimed <4194304B> from the request index (17 unreachable blob(s))." in out
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_a_sweep_the_ingest_lock_blocked_is_a_warning_not_a_failure(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    """Everything else in the run happened, and nothing was lost by skipping it."""
+    display_mock_service.prompt_confirm.return_value = True
+    services.logs_service.reclaim_index.return_value = None  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
+    display_mock_service.success.assert_called_once()
+    assert "another process is ingesting" in display_mock_service.warning.call_args[0][0]
+
+
+def _expired(count: int = 2, *, size: int = 1_048_576) -> RetentionScope:
+    """Build a retention scope of *count* expired sessions, each *size* bytes."""
+    return RetentionScope(
+        days=90,
+        sessions=tuple(
+            ExpiredSession(
+                key=SessionKey(
+                    project_hash="hashA", provider="litellm-bedrock", claude_session_id=f"s{i}"
+                ),
+                path=Path(f"/wrap/litellm-logs/hashA/litellm-bedrock/s{i}"),
+                messages_offset=4096,
+                size_bytes=size,
+            )
+            for i in range(count)
+        ),
+    )
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_the_preview_names_what_retention_would_delete(
+    runner: CliRunner, display_mock_service: Mock, logs_mock: Mock
+) -> None:
+    """
+    Surveyed, unlike the sweep: this one deletes log files, so it is priced before the prompt.
+
+    The consequence line goes with it. Losing the spend permanently is the whole reason
+    the variable is off by default, so the run that acts on it says so.
+    """
+    logs_mock.retention_scope.return_value = _expired()
+    display_mock_service.prompt_confirm.return_value = False
+
+    runner.invoke(cli_root, ["cleanup"])
+
+    out = _stdout(display_mock_service)
+    assert "2 indexed session log(s) have had no activity for 90 day(s)" in out
+    assert "<2097152B>" in out
+    assert "leaves 'agent stats' permanently" in out
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_retention_switched_off_says_nothing_at_all(
+    runner: CliRunner, display_mock_service: Mock
+) -> None:
+    """The default. A line on every cleanup announcing a disabled feature is noise."""
+    display_mock_service.prompt_confirm.return_value = False
+
+    runner.invoke(cli_root, ["cleanup"])
+
+    assert "no activity for" not in _stdout(display_mock_service)
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_expired_sessions_alone_are_enough_to_run(
+    runner: CliRunner, display_mock_service: Mock, logs_mock: Mock
+) -> None:
+    """
+    A host with nothing orphaned and no stale images can still have sessions to prune.
+
+    Without retention in the emptiness test the command would print "nothing to clean
+    up" and exit while holding a scope that names directories it was about to delete.
+    """
+    services.stats_service.cleanup_scope.return_value = _scope(orphaned=[], stale=[])  # pyrefly: ignore [missing-attribute]
+    logs_mock.retention_scope.return_value = _expired(1)
+    display_mock_service.prompt_confirm.return_value = True
+
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
+    assert "Nothing to clean up" not in _stdout(display_mock_service)
+    logs_mock.reclaim_index.assert_called_once_with(_expired(1))
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_retention_gets_its_own_summary_line(
+    runner: CliRunner, display_mock_service: Mock, logs_mock: Mock
+) -> None:
+    """
+    Not folded into the cleanup total: a reader has to see which half took a directory.
+
+    One is about projects that are gone, the other about sessions inside projects that
+    are not, and the two answers lead to different places.
+    """
+    logs_mock.retention_scope.return_value = _expired()
+    logs_mock.reclaim_index.return_value = _reclaim(sessions=2, retention_bytes=2_097_152)
+    display_mock_service.prompt_confirm.return_value = True
+
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
+    out = _stdout(display_mock_service)
+    assert "Retention deleted 2 expired session log(s) (<2097152B> freed)." in out
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_retention_that_deleted_nothing_prints_no_line(
+    runner: CliRunner, display_mock_service: Mock, logs_mock: Mock
+) -> None:
+    """A survey can name a session the run then refuses -- a file that grew in between."""
+    logs_mock.retention_scope.return_value = _expired()
+    display_mock_service.prompt_confirm.return_value = True
+
+    assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
+    assert "Retention deleted" not in _stdout(display_mock_service)
+
+
+@pytest.mark.usefixtures("stats_mock")
+def test_dry_run_previews_retention_without_applying_it(
+    runner: CliRunner, display_mock_service: Mock, logs_mock: Mock
+) -> None:
+    logs_mock.retention_scope.return_value = _expired()
+
+    assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
+    assert "no activity for 90 day(s)" in _stdout(display_mock_service)
+    logs_mock.reclaim_index.assert_not_called()

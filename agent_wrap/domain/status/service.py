@@ -62,6 +62,7 @@ from agent_wrap.domain.status.constants import (
     DEV_VENV_SUFFIX,
     DOCKER_UNREACHABLE,
     HOST_NETWORK_ENV,
+    NANOSECONDS_PER_SECOND,
     PROBE_THREAD_PREFIX,
     PROBE_WORKERS,
     TIMEZONE_ENV,
@@ -100,6 +101,7 @@ if TYPE_CHECKING:
     from agent_wrap.domain.sidecars.models import AgentContainer, SidecarContainer
     from agent_wrap.domain.sidecars.service import SidecarService
     from agent_wrap.domain.updates.service import UpdateService
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
 
 
 class InspectService:
@@ -114,6 +116,7 @@ class InspectService:
         updates_service: UpdateService,
         config_service: ConfigService,
         build_service: BuildService,
+        log_session_repository: SessionRepository,
     ) -> None:
         self._sidecars = sidecar_service
         self._providers = provider_service
@@ -122,6 +125,7 @@ class InspectService:
         self._updates = updates_service
         self._config = config_service
         self._build = build_service
+        self._log_sessions = log_session_repository
 
     def build_report(self, *, lite: bool = False) -> InspectReport:
         """
@@ -159,6 +163,11 @@ class InspectService:
             logs_future = (
                 None if lite else pool.submit(directory_size, TOOL_DIR / LITELLM_LOGS_DIRNAME)
             )
+            # The second thing lite mode drops, and for the same reason: deciding how far
+            # behind the index is means stat()ing every session's messages file and
+            # walking the tree for directories it has never seen. The index's own size
+            # and counts are one probe and are always reported.
+            lag_future = None if lite else pool.submit(self._logs.index_lag)
             # The same verdict ``agent run`` acts on, asked of the one service that owns
             # it — a second implementation here would be free to disagree with the build
             # that actually happens.
@@ -181,6 +190,7 @@ class InspectService:
             found_sidecars = sidecars_future.result() if sidecars_future else []
             found_agents = agents_future.result() if agents_future else []
             logs_bytes = logs_future.result() if logs_future else None
+            behind = lag_future.result().behind if lag_future else None
             staleness = staleness_future.result() if staleness_future else None
             stale_images = (
                 self._stale_image_rows(stale_images_future.result())
@@ -203,7 +213,7 @@ class InspectService:
                 network_present=network_present,
                 staleness=staleness,
             ),
-            storage=self._storage_row(logs_bytes=logs_bytes),
+            storage=self._storage_row(logs_bytes=logs_bytes, index_behind=behind),
             project=self._project_image_row(
                 resolved, presence=presence, versions=versions, staleness=staleness
             ),
@@ -553,11 +563,29 @@ class InspectService:
             day_start_timezone=day_start_timezone,
         )
 
-    def _storage_row(self, *, logs_bytes: int | None) -> StorageRow:
-        """Count registry entries, and record the logs footprint the pool measured."""
+    def _storage_row(self, *, logs_bytes: int | None, index_behind: int | None) -> StorageRow:
+        """
+        Count registry entries, and report both footprints: the log tree and the index.
+
+        The two sizes answer different questions and are both worth having. The tree is
+        the append-only source of truth and grows forever; the index is what every
+        consumer actually reads, and its ratio to the tree is the compression the blob
+        store bought. Freshness sits next to the index size because that is the pair a
+        reader needs: an index that is small *and* behind is not a compression win.
+        """
         registered = self._config.read_project_paths()
+        footprint = self._log_sessions.footprint()
         return StorageRow(
             logs_bytes=logs_bytes,
             projects_registered=len(registered),
             projects_stale=len(self._config.stale_project_paths()),
+            index_bytes=footprint.database_bytes,
+            index_sessions=footprint.sessions,
+            index_requests=footprint.requests,
+            index_last_ingested=(
+                None
+                if footprint.last_ingested_ns is None
+                else footprint.last_ingested_ns / NANOSECONDS_PER_SECOND
+            ),
+            index_behind=index_behind,
         )

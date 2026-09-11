@@ -1,23 +1,40 @@
 # This file has been created with the assistance of an AI tool.
-"""Record normalization for the logs viewer."""
+"""
+Reading a log record's fields, and pricing what it reported.
+
+What is left of the old record normalizer. ``extract_record_fields`` is the one place
+that knows the two shapes a request body arrives in, and both readers of a record go
+through it: the ingester, on the way into ``logs.db``, and
+:mod:`agent_wrap.domain.logs.stream`, rebuilding the response side on the way out.
+``enrich_with_costs`` prices one record at read time, which is why no cost is stored --
+a pricing-table change reaches history instead of only the records ingested after it.
+"""
 
 import json
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.logs.constants import ALIAS_NAME_RE, TITLE_RE
-from agent_wrap.domain.logs.hash_resolver import resolve_hashes
-from agent_wrap.domain.logs.models import ExtractedFields, NormalizedRecordBase
+from agent_wrap.domain.logs.models import ExtractedFields
 from agent_wrap.lib.daytime import epoch_to_dt
 
 if TYPE_CHECKING:
+    from agent_wrap.domain.logs.models import NormalizedRecordBase
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.providers.models import LogRecord
 
 
-def _extract_record_fields(
+def extract_record_fields(
     rec: LogRecord,
 ) -> ExtractedFields:
-    """Extract (data, agent_id, reply, usage, finish_reason) from one record."""
+    """
+    Extract ``(data, agent_id, reply, usage, finish_reason)`` from one record.
+
+    Public because the ingester needs it too, and importing a private name across
+    modules is forbidden. It is the one place that knows a request body comes in two
+    shapes -- ``request.body`` for some providers and ``request.body.data`` for others,
+    a 43/57 split across the current log tree -- so both the read path and ingest must
+    go through it or half the corpus reads as empty.
+    """
     psr = rec.get("request")
     data: dict[str, Any] = {}
     agent_id: str | None = None
@@ -50,51 +67,6 @@ def _extract_record_fields(
                     finish_reason = raw_reason
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
     return ExtractedFields(data, agent_id, reply, usage, finish_reason)
-
-
-def normalize_record_unresolved(rec: LogRecord) -> NormalizedRecordBase:
-    """
-    Reduce one raw log record to the shape the UI consumes, WITHOUT resolving
-    ``hash:<sha256>`` pointers.  Callers that want hash resolution should use
-    :func:`normalize_record` instead.
-
-    Pure (no I/O) so it can be unit-tested directly.
-    """
-    data, agent_id, reply, usage, finish_reason = _extract_record_fields(rec)
-    raw_max_tokens = data.get("max_tokens")
-    # bool is an int subclass, and a stray True here would render as a cap of 1.
-    max_tokens = (
-        raw_max_tokens
-        if isinstance(raw_max_tokens, int) and not isinstance(raw_max_tokens, bool)
-        else None
-    )
-
-    return {
-        "timing": rec.get("timing"),
-        "status": rec.get("status"),
-        "model": rec.get("model"),
-        "agent_id": agent_id,
-        "messages": data.get("messages") or [],
-        "system": data.get("system"),
-        "tools": data.get("tools") or [],
-        "response": reply,
-        "usage": usage,
-        "error": rec.get("error"),
-        "finish_reason": finish_reason,
-        "max_tokens": max_tokens,
-    }
-
-
-def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecordBase:
-    """
-    Reduce one raw log record to the shape the UI consumes.
-
-    Pure (no I/O) so it can be unit-tested directly. Pulls the real prompt
-    from ``request.body.data`` and the reply from
-    ``response.choices[0].message``, resolving ``hash:<sha256>`` pointers.
-    """
-    resolved = resolve_hashes(rec, strings)
-    return normalize_record_unresolved(resolved)
 
 
 def enrich_with_costs(

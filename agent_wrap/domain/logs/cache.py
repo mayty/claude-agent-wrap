@@ -3,34 +3,28 @@
 
 import bisect
 import operator
-import threading
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from agent_wrap.constants import (
     LITELLM_LOGS_DIRNAME,
     ORPHANED_LABEL,
     TOOL_DIR,
 )
-from agent_wrap.domain.logs.constants import MESSAGES_FILENAME
 from agent_wrap.domain.logs.daemon import log_debug, log_info
-from agent_wrap.domain.logs.io import (
-    list_groups,
-    list_sessions,
-    read_session,
-    read_strings,
-    scan_session_meta,
-    session_fingerprint,
-    sessions_fingerprint,
-)
+from agent_wrap.domain.logs.ingest import LogFiles
+from agent_wrap.domain.logs.io import list_groups
 from agent_wrap.domain.logs.io import (
     logs_dir as project_logs_dir,
 )
+from agent_wrap.domain.logs.listing import fingerprint, merge_sessions, rows_by_hash
 from agent_wrap.domain.logs.usage_tracker import UsageTracker
 from agent_wrap.domain.logs.watcher import CacheWatcher
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.logs.models import (
         CombinedSessionMeta,
@@ -38,8 +32,9 @@ if TYPE_CHECKING:
         GroupInfo,
         ProjectInfo,
     )
-    from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.stats.service import StatsService
+    from agent_wrap.infrastructure.logs.models import Revision
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
 
 
 class LogsCache:
@@ -51,37 +46,46 @@ class LogsCache:
     :meth:`apply_paths` for the ``messages.jsonl`` files a filesystem event
     named and :meth:`reconcile` for everything else.
 
-    The watcher's single consumer thread is the sole writer of all cached
-    state — it builds fresh structures and atomically swaps references so
-    HTTP handler threads see consistent snapshots without any lock.  Only
-    the single-slot hot session cache needs a lock (both that thread and
-    HTTP handler threads write it).  Watchdog's own emitter threads never
-    reach this class; they only put paths on the watcher's queue.
+    Both entry points do the same two things: bring the request index up to date, then
+    re-derive the lists from it. A filesystem event is a *trigger*, never a source --
+    nothing here parses a log file, and the only thing a path is used for is deciding
+    whether the group it belongs to is already known.
+
+    What it holds is lists and change markers, never session content: the session view
+    is read off the index per request, so there is no cached copy of a session to keep
+    current and nothing an HTTP handler thread writes.
+
+    The watcher's single consumer thread is therefore the sole writer of every cached
+    structure — it builds fresh ones and atomically swaps the references, so handler
+    threads see consistent snapshots with no lock at all. Watchdog's own emitter threads
+    never reach this class; they only put paths on the watcher's queue.
     """
 
     def __init__(
         self,
         stats_service: StatsService,
         config_service: ConfigService,
-        pricing_service: PricingService,
+        session_repository: SessionRepository,
+        ingest: Callable[[], object] | None = None,
     ) -> None:
         self._stats_service = stats_service
-        self._pricing_service = pricing_service
         self._config = config_service
-        self._hot_lock = threading.Lock()
+        self._sessions_repo = session_repository
+        # Called at the start of every reconcile to bring the request index up to date.
+        # A callable rather than the service that owns the pass, because that service
+        # owns *this* -- taking it as a dependency would be a cycle. Its return value is
+        # deliberately ignored: the daemon has nowhere to report a per-session failure
+        # to, and a session it could not read is one the next tick tries again. Defaults
+        # to None so a test can start a cache without an index behind it.
+        self._ingest = ingest
 
         # --- cached data (written only by the watcher's consumer thread) ---
         self._groups: list[GroupInfo] = []
         self._projects: list[ProjectInfo] = []
-        self._projects_fp: Fingerprint = {"mtime": None, "size": None}
+        self._projects_fp: Fingerprint = {"rev": None, "count": 0}
         self._sessions: dict[int, list[CombinedSessionMeta]] = {}
         self._sessions_fp: dict[int, Fingerprint] = {}
         self._session_fp: dict[tuple[int, str], Fingerprint] = {}
-
-        # --- hot session cache (protected by _hot_lock) ---
-        self._hot_session_key: tuple[int, str] | None = None
-        self._hot_records: list[dict[str, Any]] | None = None
-        self._hot_strings: str | None = None
 
         # --- filesystem tracking (consumer thread only) ---
         # The tree every sidecar actually writes to. Each group's logs_dirs are
@@ -89,15 +93,19 @@ class LogsCache:
         self._logs_tree_path = TOOL_DIR / LITELLM_LOGS_DIRNAME
         self._registry_last_change: int | None = None
         self._registry_count: int | None = None
-        self._known_messages: dict[Path, tuple[int, int]] = {}  # path -> (mtime_ns, size)
         self._known_project_paths: set[str] = set()
-        # Logs dir -> project id, so a path from a filesystem event or from a directory
-        # walk maps to a session without a scan. Registered under both spellings a logs
-        # dir can be reached by -- see _reindex_roots.
+        # Logs dir -> project id, so a path from a filesystem event maps to a group
+        # without a scan. Registered under both spellings a logs dir can be reached by,
+        # alongside the project hashes each group owns -- see _reindex_roots.
         self._root_to_pid: dict[Path, int] = {}
+        self._group_hashes: list[list[str]] = []
+        # The index revision the cached lists were derived from, so a heartbeat that
+        # found nothing new rebuilds nothing. None means "unknown", which forces the
+        # next refresh -- see _refresh_from_index.
+        self._index_revision: Revision | None = None
 
         # --- daily usage tracking ---
-        self._usage_tracker = UsageTracker(pricing_service, stats_service)
+        self._usage_tracker = UsageTracker(stats_service)
 
         self._watcher: CacheWatcher | None = None
 
@@ -122,52 +130,32 @@ class LogsCache:
     def get_session_fingerprint(self, project_id: int, session_id: str) -> Fingerprint | None:
         return self._session_fp.get((project_id, session_id))
 
-    def get_logs_dirs(self, project_id: int) -> list[Path] | None:
-        if 0 <= project_id < len(self._groups):
-            return list(self._groups[project_id]["logs_dirs"])
+    def get_session_meta(self, project_id: int, session_id: str) -> CombinedSessionMeta | None:
+        """
+        Return one session's merged summary from the cached list, or ``None``.
+
+        What the session view's header is drawn from. Served from the list rather than
+        re-derived so the header and the list entry the user clicked cannot disagree,
+        and so opening a session costs no query for its own metadata.
+        """
+        for meta in self._sessions.get(project_id, ()):
+            if meta["session_id"] == session_id:
+                return meta
         return None
 
-    # ------------------------------------------------------------------
-    # Hot session cache
-    # ------------------------------------------------------------------
-
-    def get_hot_session(
-        self, project_id: int, session_id: str
-    ) -> tuple[list[dict[str, Any]], str] | None:
+    def get_project_hashes(self, project_id: int) -> list[str] | None:
         """
-        Return ``(records, strings_content)`` or ``None`` on miss.
+        Return the project hashes one group owns, or ``None`` for an unknown id.
 
-        *records* is ``[meta_line_dict, req_0, req_1, ...]`` — the full
-        session response ready for NDJSON serialization.  The caller may
-        safely slice it without holding the hot lock because the list is
-        never mutated in place.
+        The group's identity in the request index -- one hash per member of a grouped
+        transient project, and for the ``<orphaned>`` group the central directories
+        themselves. An empty list is a real answer and not the same as ``None``: a
+        project whose logs dir resolves outside the shared tree owns no hash, so it has
+        nothing indexed while remaining a project the viewer knows.
         """
-        with self._hot_lock:
-            if (
-                self._hot_session_key == (project_id, session_id)
-                and self._hot_records is not None
-                and self._hot_strings is not None
-            ):
-                return self._hot_records, self._hot_strings
-            return None
-
-    def set_hot_session(
-        self,
-        project_id: int,
-        session_id: str,
-        records: list[dict[str, Any]],
-        strings_content: str,
-    ) -> None:
-        """
-        Store *records* and *strings_content* for the given session.
-
-        *records* should be ``[meta_line_dict, req_0, req_1, ...]`` — the
-        same shape as returned by :meth:`get_hot_session`.
-        """
-        with self._hot_lock:
-            self._hot_session_key = (project_id, session_id)
-            self._hot_records = records
-            self._hot_strings = strings_content
+        if 0 <= project_id < len(self._group_hashes):
+            return list(self._group_hashes[project_id])
+        return None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -198,56 +186,33 @@ class LogsCache:
 
     def apply_paths(self, paths: set[Path]) -> None:
         """
-        Update just the sessions owning *paths* — the filesystem-event fast path.
+        Ingest and re-derive the lists — the filesystem-event fast path.
 
-        Each path is a ``messages.jsonl`` a watch reported. Mapping one to its session
-        is pure path arithmetic, so a burst of appends costs a stat and a rescan per
-        *changed* session rather than a walk of every session on the host.
+        Each path is a ``messages.jsonl`` a watch reported, and the only question asked
+        of it is whether the group it belongs to is already known. It is not read: the
+        appended records reach the cache through the index, and the refresh that follows
+        is bounded by the number of *sessions* on the host rather than by what any of
+        them contains, so there is nothing left for a per-path scan to save.
 
         Any path that cannot be mapped — the project registry, or a log dir belonging
-        to no known group — falls back to :meth:`reconcile`. That is the single rule
-        keeping the two paths consistent: both leave ``_known_messages`` in the same
-        state, so a later reconcile never re-reports work this method already did.
+        to no known group — falls back to :meth:`reconcile`, which re-reads the registry
+        and so is the only thing that can turn that dir into a group.
         """
-        # A day rollover has to re-offer every tracked file to the usage tracker, not
-        # just this batch's, so it is reconcile's job. Cheap to check and true once a day.
+        # A day rollover changes which day usage.json reports, so it is reconcile's job
+        # rather than this batch's. Cheap to check and true once a day.
         if self._usage_tracker.detect_rollover():
             self.reconcile()
             return
 
-        owners: dict[Path, tuple[int, str]] = {}
-        for path in paths:
-            owner = self._resolve_message_path(path)
-            if owner is None:
-                self.reconcile()
-                return
-            owners[path] = owner
+        if any(self._resolve_message_path(path) is None for path in paths):
+            self.reconcile()
+            return
 
-        for path in owners:
-            self._restat_message_file(path)
-
-        hot_refresh_needed = False
-        for pid, session_id in set(owners.values()):
-            logs_dirs = self._groups[pid]["logs_dirs"]
-            combined = self._scan_session_across_providers(logs_dirs, session_id)
-            self._upsert_session(pid, session_id, combined)
-            if combined is None:
-                self._session_fp.pop((pid, session_id), None)
-            else:
-                self._session_fp[(pid, session_id)] = session_fingerprint(logs_dirs, session_id)
-            if self._hot_session_key == (pid, session_id):
-                hot_refresh_needed = True
-
-        self._projects = self._recompute_projects_from_cache()
-        for pid in {pid for pid, _ in owners.values()}:
-            self._sessions_fp[pid] = self._recompute_session_fp_for_project(pid)
-        # After the loop: the projects fingerprint sums _sessions_fp, so computing it
-        # first would publish the previous pass's value.
-        self._projects_fp = self._recompute_projects_fp_from_cache()
-
-        if hot_refresh_needed:
-            self._refresh_hot_cache()
-
+        # Index this batch's appends before the refresh below reads the index for them.
+        # Still a whole-tree pass rather than one scoped to *paths*: it is incremental,
+        # so the cost of the sessions this batch did not touch is a stat each.
+        self._ingest_now()
+        self._refresh_from_index()
         self._usage_tracker.flush()
 
     def _resolve_message_path(self, path: Path) -> tuple[int, str] | None:
@@ -257,8 +222,12 @@ class LogsCache:
         Pure path arithmetic against ``_root_to_pid`` — no filesystem access, so it
         works for a file that has just been deleted as readily as for one being
         appended to.
+
+        What a record file is *called* is the ingester's business, so the predicate is
+        asked rather than restated: nothing outside it names a log file, which is what
+        ``EH001`` checks.
         """
-        if path.name != MESSAGES_FILENAME:
+        if not LogFiles.is_messages(path):
             return None
         session_dir = path.parent
         pid = self._root_to_pid.get(session_dir.parent.parent)
@@ -266,51 +235,64 @@ class LogsCache:
             return None
         return pid, session_dir.name
 
-    def _restat_message_file(self, path: Path) -> None:
-        """Refresh one manifest entry and the usage tracker's view of it."""
-        try:
-            st = path.stat()
-        except OSError:
-            self._known_messages.pop(path, None)
-            self._usage_tracker.remove_file(path)
-        else:
-            stat_info = (st.st_mtime_ns, st.st_size)
-            self._known_messages[path] = stat_info
-            self._usage_tracker.update_file(path, stat_info)
-
     def _reindex_roots(self) -> None:
         """
-        Rebuild ``_root_to_pid`` from ``_groups``.
+        Rebuild ``_root_to_pid`` and ``_group_hashes`` from ``_groups``.
 
         Each logs dir is registered under both spellings it can be reached by: as the
-        group lists it -- a project's ``.claude/litellm-logs`` symlink, which is what a
-        directory walk of that group produces -- and resolved, the real dir under the
-        shared tree, which is what a filesystem event names. One mapping then answers for
-        event paths and manifest paths alike, so nothing has to scan the group list.
+        group lists it -- a project's ``.claude/litellm-logs`` symlink -- and resolved,
+        the real dir under the shared tree, which is what a filesystem event names. One
+        mapping then answers for either spelling without scanning the group list.
+
+        Resolving is also how a group learns its project hashes, which is the only
+        identity the index stores. The hash is taken from the resolved directory's name
+        *and only when its parent is the central tree*, exactly as
+        ``StatsService.project_owners`` does it: a project whose symlink points somewhere
+        else is disowned rather than credited with a hash that may collide with a real
+        one.
 
         Called wherever ``_groups`` settles, since a project id is an index into it and
         every insertion shifts the ones after it.
         """
+        central = self._resolve_path_safe(self._logs_tree_path)
         roots: dict[Path, int] = {}
+        hashes: list[list[str]] = []
         for pid, group in enumerate(self._groups):
+            group_hashes: list[str] = []
             for group_logs_dir in group["logs_dirs"]:
+                resolved = self._resolve_path_safe(group_logs_dir)
                 roots[group_logs_dir] = pid
-                roots[self._resolve_path_safe(group_logs_dir)] = pid
+                roots[resolved] = pid
+                if resolved.parent == central:
+                    group_hashes.append(resolved.name)
+            hashes.append(group_hashes)
         self._root_to_pid = roots
+        self._group_hashes = hashes
 
     def reconcile(self) -> None:
         """
-        Re-derive every cached structure from disk.
+        Re-derive every cached structure — the complete pass.
 
-        The complete pass: the registry, a walk of every group's log dirs, a diff
-        against the last manifest, and the usage tracker. Run at startup, on the
-        watcher's heartbeat, and whenever :meth:`apply_paths` sees a path it cannot
-        attribute to a session.
+        The request index, the registry, the lists derived from the index, and the usage
+        tracker. Run at startup, on the watcher's heartbeat, and whenever
+        :meth:`apply_paths` sees a path it cannot attribute to a group.
 
-        It stays a full walk on purpose. This is what notices a log dir that
-        disappeared out of band — ``agent cleanup`` archiving and deleting orphaned
-        dirs — and what reseeds fingerprints after any change no event described.
+        What separates it from :meth:`apply_paths` is now only the registry step: a
+        project registered since the last pass has no group, so no event about its log
+        dir can be attributed to one, and re-reading the registry is what creates it.
+        The session lists themselves are re-derived identically by both, because both
+        derive them from the whole index rather than from a walk.
+
+        A log directory deleted out of band is no longer what this notices — the index
+        is the source of the lists, so a project's sessions disappear when its rows do,
+        which is ``agent cleanup``'s doing and is atomic with the deletion.
         """
+        # 0. Bring the request index up to date, before anything reads from it. This is
+        # the daemon's half of the arrangement that lets every consumer read the index
+        # instead of the log files: nothing else on a normal host ingests, so a viewer
+        # that skipped this would serve totals frozen at the last `agent reindex`.
+        self._ingest_now()
+
         # 1. Check the registry for added/removed paths. Gated on its *contents*, not its
         # revision: a path whose logs dir does not exist yet is deliberately left out of
         # _known_project_paths, so comparing contents is what retries it on a later pass.
@@ -321,109 +303,80 @@ class LogsCache:
             with log_debug("Update", "handling registry change", threshold=timedelta(seconds=2)):
                 self._handle_registry_change(current_paths)
 
-        # 2. Walk known groups' logs_dirs, stat messages.jsonl files, diff.
-        with log_debug("Update", "scanning session directories", threshold=timedelta(seconds=2)):
-            new_manifest = self._gather_directory_manifest()
+        # 2. Re-derive the project and session lists from the index.
+        with log_debug("Update", "refreshing session lists", threshold=timedelta(seconds=1)):
+            self._refresh_from_index()
 
-        # Snapshot before incremental updates overwrite _known_messages.
-        old_manifest = dict(self._known_messages)
+        # 3. Update daily usage.json. Unconditional, and nothing is handed over:
+        # the tracker re-aggregates today's usage out of the request index, so what
+        # changed on disk tells it nothing it needs. It still runs on every pass because
+        # a flush that finds no change touches usage.json, and that mtime is the
+        # liveness signal the statusline reads.
+        if self._usage_tracker.detect_rollover():
+            self._usage_tracker.reset()
+        self._usage_tracker.flush()
 
-        with log_debug("Update", "diffing manifest", threshold=timedelta(milliseconds=500)):
-            changed, deleted = self._diff_manifest(new_manifest)
-
-        if changed or deleted:
-            with log_debug(
-                "Update", "applying incremental updates", threshold=timedelta(seconds=1)
-            ):
-                self._apply_incremental_updates(changed, deleted, new_manifest)
-        else:
-            self._known_messages = new_manifest
-
-        # 3. Update daily usage.json.
-        self._update_usage_tracker(new_manifest, old_manifest)
-
-    def _update_usage_tracker(
-        self,
-        new_manifest: dict[Path, tuple[int, int]],
-        old_manifest: dict[Path, tuple[int, int]],
-    ) -> None:
+    def _ingest_now(self) -> None:
         """
-        Update ``UsageTracker`` from the current manifest.
+        Run one ingest pass, if this cache was given one, and never let it stop the tick.
 
-        Fingerprint comparison is owned by ``UsageTracker.update_file`` — every
-        file in *new_manifest* is offered and the tracker decides whether to
-        re-scan.  Deletions are detected via set difference on the manifest keys.
-        Whether ``usage.json`` is rewritten or merely touched is decided by
-        ``flush`` from the aggregated payload itself.
+        Every failure mode here is transient by construction. The pass returns without
+        doing anything when another process holds the ingest lock, collects a
+        per-session failure rather than raising, and is idempotent — so the honest
+        response to any of them is the next tick, not an aborted refresh of the
+        viewer's own caches.
         """
-        tracker = self._usage_tracker
+        if self._ingest is None:
+            return
+        with log_debug("Update", "ingesting new requests", threshold=timedelta(seconds=2)):
+            self._ingest()
 
-        if tracker.detect_rollover():
-            tracker.reset()
-
-        for path, stat_info in new_manifest.items():
-            tracker.update_file(path, stat_info)
-
-        for path in set(old_manifest) - set(new_manifest):
-            tracker.remove_file(path)
-
-        tracker.flush()
-
-    def _gather_directory_manifest(self) -> dict[Path, tuple[int, int]]:
+    def _refresh_from_index(self) -> None:
         """
-        Stat every messages.jsonl under known groups in a single walk.
+        Re-derive every list and fingerprint from the request index.
 
-        Returns ``path -> (mtime_ns, size)``. Every key is attributable to a session by
-        :meth:`_resolve_message_path`, because the walk only ever descends a group's own
-        ``logs_dirs`` and ``_reindex_roots`` registered exactly those spellings.
+        One query for the whole ``sessions`` table, then pure Python: group the rows by
+        project hash, hand each group's rows to
+        :func:`~agent_wrap.domain.logs.listing.merge_sessions`, and recompute the
+        fingerprints from the same rows. This is what replaced a walk of every session
+        directory under every group plus a ``stat()`` of all 1,834 record files.
+
+        Rebuilt wholesale rather than diffed. The rows are the index's own summary --
+        ~600 of them on a 2.2 GB tree, one per session directory, already aggregated by
+        ingest -- so there is nothing a diff could avoid that is more expensive than the
+        bookkeeping it would need. The revision gate above is what keeps a quiet
+        heartbeat from doing even this much.
+
+        Nothing here touches the open session's *content*. That is read off the index per
+        request, so what this publishes is only the lists and the change markers the
+        browser polls -- and a marker moving is what makes the browser ask for the rest.
         """
-        manifest: dict[Path, tuple[int, int]] = {}
-        for group in self._groups:
-            for logs_dir in group["logs_dirs"]:
-                if not logs_dir.is_dir():
-                    continue
-                for provider_dir in logs_dir.iterdir():
-                    if not provider_dir.is_dir():
-                        continue
-                    for session_dir in provider_dir.iterdir():
-                        if not session_dir.is_dir():
-                            continue
-                        mf = session_dir / MESSAGES_FILENAME
-                        if not mf.is_file():
-                            continue
-                        try:
-                            st = mf.stat()
-                        except OSError:
-                            continue
-                        manifest[mf] = (st.st_mtime_ns, st.st_size)
-        return manifest
+        revision = self._sessions_repo.revision()
+        if revision == self._index_revision:
+            return
 
-    def _diff_manifest(
-        self, new_manifest: dict[Path, tuple[int, int]]
-    ) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
-        """
-        Compare *new_manifest* against ``_known_messages``; return (changed, deleted).
+        grouped = rows_by_hash(self._sessions_repo.sessions())
+        sessions: dict[int, list[CombinedSessionMeta]] = {}
+        sessions_fp: dict[int, Fingerprint] = {}
+        session_fp: dict[tuple[int, str], Fingerprint] = {}
+        for pid, hashes in enumerate(self._group_hashes):
+            rows = [row for project_hash in hashes for row in grouped.get(project_hash, ())]
+            sessions[pid] = merge_sessions(rows)
+            sessions_fp[pid] = fingerprint(rows)
+            for meta in sessions[pid]:
+                session_id = meta["session_id"]
+                session_fp[(pid, session_id)] = fingerprint(
+                    [row for row in rows if row.key.claude_session_id == session_id]
+                )
 
-        Both lists are deduplicated. The manifest is keyed per *file*, so a session
-        written under several providers appears once per provider, while
-        :meth:`_apply_changes` rescans *all* of a session's providers per entry — leaving
-        the duplicates in would make a reconcile quadratic in the provider count.
-        """
-        changed: dict[tuple[int, str], None] = {}
-        for mf_path, stat_info in new_manifest.items():
-            if self._known_messages.get(mf_path) == stat_info:
-                continue
-            owner = self._resolve_message_path(mf_path)
-            if owner is not None:
-                changed[owner] = None
-
-        deleted: dict[tuple[int, str], None] = {}
-        for mf_path in set(self._known_messages) - set(new_manifest):
-            owner = self._resolve_message_path(mf_path)
-            if owner is not None:
-                deleted[owner] = None
-
-        return list(changed), list(deleted)
+        self._sessions = sessions
+        self._sessions_fp = sessions_fp
+        self._session_fp = session_fp
+        self._projects = self._recompute_projects_from_cache()
+        # After the loop: the projects fingerprint sums _sessions_fp, so computing it
+        # first would publish the previous pass's value.
+        self._projects_fp = self._recompute_projects_fp_from_cache()
+        self._index_revision = revision
 
     # ------------------------------------------------------------------
     # Rebuild
@@ -431,10 +384,10 @@ class LogsCache:
 
     def rebuild(self) -> None:
         """
-        Full rebuild from disk — the synchronous startup pass.
+        Full rebuild — the synchronous startup pass.
 
         Re-derives the group list, drops every cached structure, then delegates to
-        :meth:`reconcile`, which walks the tree once and fills all of them. Everything a
+        :meth:`reconcile`, which refills all of them from the index. Everything a
         separate startup scan used to compute is a subset of what reconcile produces, and
         computing it twice made a project's session count mean two different things
         before and after the first update: the startup pass counted session *directories*
@@ -443,12 +396,12 @@ class LogsCache:
         update since has counted the sessions actually cached. The table could say three
         where the drill-down rendered two.
 
-        ``_sessions`` is pre-seeded with an empty list per group because reconcile only
-        creates entries for groups owning at least one record file, and
-        ``_prune_removed_paths`` indexes ``_sessions_fp`` by the same key set.
+        ``_sessions`` is pre-seeded with an empty list per group because a group whose
+        sessions are not in the index yet still has to answer ``/api/sessions`` with an
+        empty list rather than a 400.
 
         The usage tracker is still seeded here rather than left to the first update —
-        reconcile ends in ``_update_usage_tracker``. ``usage.json``'s mtime is the
+        reconcile ends in a flush of it. ``usage.json``'s mtime is the
         liveness signal the statusline reads, and updates are event-driven now: on a
         quiet host the first one is a heartbeat up to a minute away, and until then the
         statusline would show no totals at all on a machine that had never run a viewer.
@@ -456,42 +409,24 @@ class LogsCache:
         with log_info("Rebuild", "listing groups"):
             self._groups = list_groups(self._stats_service, self._config.read_project_paths())
 
-        # Reset explicitly rather than relying on reconcile to overwrite: it skips its
-        # update step entirely when nothing changed, which on a host with no records at
-        # all would leave whatever a previous call had put here.
+        # Reset explicitly rather than relying on reconcile to overwrite: its refresh is
+        # gated on the index revision having moved, which on a rebuild against an
+        # unchanged index would leave whatever a previous call had put here. Clearing
+        # `_index_revision` is what re-opens that gate.
         self._projects = []
-        self._projects_fp = {"mtime": None, "size": None}
+        self._projects_fp = {"rev": None, "count": 0}
         self._sessions = {pid: [] for pid in range(len(self._groups))}
         self._sessions_fp = {}
         self._session_fp = {}
-        self._known_messages = {}
+        self._index_revision = None
 
         # Before reconcile, so its registry gate compares against what this just read and
         # finds nothing to do.
         self._track_registry_state()
         self._reindex_roots()
 
-        with log_info("Rebuild", "scanning sessions"):
+        with log_info("Rebuild", "reading the session index"):
             self.reconcile()
-
-    def _record_known_messages(
-        self,
-        logs_dirs: list[Path],
-        session_id: str,
-        known_messages: dict[Path, tuple[int, int]],
-    ) -> None:
-        for logs_dir in logs_dirs:
-            if not logs_dir.is_dir():
-                continue
-            for provider_dir in logs_dir.iterdir():
-                if not provider_dir.is_dir():
-                    continue
-                mf = provider_dir / session_id / MESSAGES_FILENAME
-                try:
-                    st = mf.stat()
-                    known_messages[mf] = (st.st_mtime_ns, st.st_size)
-                except OSError:
-                    pass
 
     def _track_registry_state(self) -> None:
         """
@@ -512,111 +447,6 @@ class LogsCache:
             raw for raw in self._read_project_paths() if project_logs_dir(Path(raw)).is_dir()
         }
         self._update_registry_tracking()
-
-    # ------------------------------------------------------------------
-    # Incremental updates
-    # ------------------------------------------------------------------
-
-    def _apply_incremental_updates(
-        self,
-        changed: list[tuple[int, str]],
-        deleted: list[tuple[int, str]],
-        new_manifest: dict[Path, tuple[int, int]],
-    ) -> None:
-        """Apply incremental session changes and refresh hot cache if needed."""
-        hot_refresh_needed = False
-
-        hot_refresh_needed |= self._apply_deletions(deleted)
-        hot_refresh_needed |= self._apply_changes(changed)
-
-        # Recompute project-level aggregates from cache. The projects fingerprint comes
-        # after the _sessions_fp loop because it sums it: computed first, it publishes a
-        # marker one pass behind the cache it summarizes. The browser still notices every
-        # change either way -- consecutive recomputations always straddle one -- but a
-        # marker that disagrees with the state it describes is a trap for the next reader.
-        self._projects = self._recompute_projects_from_cache()
-        for pid in self._sessions:
-            self._sessions_fp[pid] = self._recompute_session_fp_for_project(pid)
-        self._projects_fp = self._recompute_projects_fp_from_cache()
-
-        self._known_messages = new_manifest
-
-        if hot_refresh_needed:
-            self._refresh_hot_cache()
-
-    def _apply_deletions(self, deleted: list[tuple[int, str]]) -> bool:
-        """Remove deleted sessions from cache.  Return True if hot cache needs refresh."""
-        hot_needed = False
-        for pid, sid in deleted:
-            sessions = self._sessions.get(pid, [])
-            self._sessions[pid] = [s for s in sessions if s["session_id"] != sid]
-            self._session_fp.pop((pid, sid), None)
-            if self._hot_session_key == (pid, sid):
-                hot_needed = True
-        return hot_needed
-
-    def _apply_changes(self, changed: list[tuple[int, str]]) -> bool:
-        """Re-scan changed sessions.  Return True if hot cache needs refresh."""
-        hot_needed = False
-        for pid, sid in changed:
-            logs_dirs = self._groups[pid]["logs_dirs"]
-            combined = self._scan_session_across_providers(logs_dirs, sid)
-            self._upsert_session(pid, sid, combined)
-            self._session_fp[(pid, sid)] = session_fingerprint(logs_dirs, sid)
-
-            if self._hot_session_key == (pid, sid):
-                hot_needed = True
-        return hot_needed
-
-    def _scan_session_across_providers(
-        self, logs_dirs: list[Path], session_id: str
-    ) -> CombinedSessionMeta | None:
-        """Scan metadata for *session_id* across all provider dirs under *logs_dirs*."""
-        combined: CombinedSessionMeta | None = None
-        for logs_dir in logs_dirs:
-            if not logs_dir.is_dir():
-                continue
-            for provider_dir in logs_dir.iterdir():
-                if not provider_dir.is_dir():
-                    continue
-                session_dir = provider_dir / session_id
-                if not session_dir.is_dir():
-                    continue
-                meta = scan_session_meta(session_dir, provider_dir.name)
-                if meta is None:
-                    continue
-                if combined is None:
-                    combined = {
-                        "session_id": meta["session_id"],
-                        "alias": meta["alias"],
-                        "title": meta["title"],
-                        "count": meta["count"],
-                        "last_ts": meta["last_ts"],
-                        "models": meta["models"],
-                        "providers": [meta["provider"]],
-                    }
-                else:
-                    self._merge_combined(combined, meta)
-        return combined
-
-    def _upsert_session(
-        self, pid: int, session_id: str, combined: CombinedSessionMeta | None
-    ) -> None:
-        """Insert or update *combined* in ``self._sessions[pid]``, keeping newest-first sort."""
-        sessions = self._sessions.get(pid, [])
-        replaced = False
-        for i, s in enumerate(sessions):
-            if s["session_id"] == session_id:
-                if combined is not None:
-                    sessions[i] = combined
-                else:
-                    sessions.pop(i)
-                replaced = True
-                break
-        if not replaced and combined is not None:
-            sessions.append(combined)
-        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
-        self._sessions[pid] = sessions
 
     # ------------------------------------------------------------------
     # registry change handling
@@ -664,16 +494,24 @@ class LogsCache:
 
     def _merge_added_paths(self, added: set[str]) -> set[str]:
         """
-        Incrementally merge newly added project paths into the cache.
+        Incrementally merge newly added project paths into the group list.
 
         Processes *only* the added paths — does not iterate over all existing
         projects, so a transient project with thousands of sub-projects is not
         touched unless one of its paths appears in *added*.
 
+        Only ``_groups`` is updated here. Everything keyed by project id is re-derived
+        by :meth:`_refresh_from_index` immediately afterwards, which is why the gate it
+        runs behind is re-opened rather than the dicts being patched: a new group changes
+        which hashes belong to which pid without changing the index at all, so the
+        revision it compares against would otherwise say there is nothing to do.
+
         Returns the subset of *added* whose logs dir does not exist yet, which the caller
         keeps out of the known set so a later pass retries it.
         """
-        old_root_to_pid: dict[Path, int] = {g["root"]: pid for pid, g in enumerate(self._groups)}
+        old_root_to_pid: dict[Path, int] = {
+            group["root"]: pid for pid, group in enumerate(self._groups)
+        }
 
         pending_groups, merged_pids, unresolved = self._classify_added_paths(added, old_root_to_pid)
         if not pending_groups and not merged_pids:
@@ -682,38 +520,8 @@ class LogsCache:
         new_entries = sorted(pending_groups.values(), key=operator.itemgetter("root"))
         self._insert_new_groups(new_entries)
 
-        # Re-index pid-keyed dicts BEFORE scanning new groups (so old data is
-        # safely shifted before new data fills the vacated slots).
-        new_root_to_pid: dict[Path, int] = {g["root"]: pid for pid, g in enumerate(self._groups)}
-        pid_remap: dict[int, int] = {}
-        for root, old_pid in old_root_to_pid.items():
-            new_pid = new_root_to_pid.get(root)
-            if new_pid is not None and new_pid != old_pid:
-                pid_remap[old_pid] = new_pid
-        if pid_remap:
-            self._apply_pid_remap(pid_remap)
-
-        # Scan sessions for new groups (now at their final pids).
-        for entry in new_entries:
-            pid = new_root_to_pid[entry["root"]]
-            sessions = list_sessions(entry["logs_dirs"])
-            self._sessions[pid] = sessions
-            self._sessions_fp[pid] = sessions_fingerprint(entry["logs_dirs"])
-            for sm in sessions:
-                key = (pid, sm["session_id"])
-                self._session_fp[key] = session_fingerprint(entry["logs_dirs"], sm["session_id"])
-                self._record_known_messages(
-                    entry["logs_dirs"], sm["session_id"], self._known_messages
-                )
-
-        # Refresh fingerprints for groups that had sessions merged in.
-        for pid in merged_pids:
-            group = self._groups[pid]
-            self._sessions_fp[pid] = sessions_fingerprint(group["logs_dirs"])
-
-        self._projects = self._recompute_projects_from_cache()
-        self._projects_fp = self._recompute_projects_fp_from_cache()
         self._reindex_roots()
+        self._index_revision = None
 
         return unresolved
 
@@ -725,7 +533,7 @@ class LogsCache:
 
         Returns ``(pending_groups, merged_pids, unresolved)`` where *pending_groups* maps
         group-root → GroupInfo for brand-new groups, *merged_pids* is the set of existing
-        group pids that had sessions merged in, and *unresolved* holds the paths whose
+        group pids that gained a member path, and *unresolved* holds the paths whose
         logs dir does not exist yet, for the caller to retry later.
 
         A path that cannot even be constructed is *not* deferred — it will never become
@@ -755,7 +563,6 @@ class LogsCache:
                     group["paths"].append(path)
                 if logs_d not in group["logs_dirs"]:
                     group["logs_dirs"].append(logs_d)
-                self._merge_sessions_from_logs_dir(existing_pid, logs_d)
                 merged_pids.add(existing_pid)
             elif group_root in pending_groups:
                 pg = pending_groups[group_root]
@@ -796,78 +603,6 @@ class LogsCache:
         if orphaned_group is not None:
             self._groups.append(orphaned_group)
 
-    def _apply_pid_remap(self, pid_remap: dict[int, int]) -> None:
-        """Re-key all pid-indexed caches according to *pid_remap*."""
-        self._sessions = {
-            pid_remap.get(old_pid, old_pid): sessions
-            for old_pid, sessions in self._sessions.items()
-        }
-        self._sessions_fp = {
-            pid_remap.get(old_pid, old_pid): fp for old_pid, fp in self._sessions_fp.items()
-        }
-        self._session_fp = {
-            (pid_remap.get(old_pid, old_pid), sid): fp
-            for (old_pid, sid), fp in self._session_fp.items()
-        }
-        with self._hot_lock:
-            if self._hot_session_key is not None:
-                hot_pid, hot_sid = self._hot_session_key
-                self._hot_session_key = (
-                    pid_remap.get(hot_pid, hot_pid),
-                    hot_sid,
-                )
-
-    def _merge_sessions_from_logs_dir(self, pid: int, logs_dir: Path) -> None:
-        """Scan sessions from *logs_dir* and merge into ``_sessions[pid]``."""
-        if not logs_dir.is_dir():
-            return
-
-        sessions = self._sessions.get(pid, [])
-        session_index: dict[str, int] = {s["session_id"]: i for i, s in enumerate(sessions)}
-        group_logs_dirs = self._groups[pid]["logs_dirs"]
-
-        for provider_dir in logs_dir.iterdir():
-            if not provider_dir.is_dir():
-                continue
-            provider = provider_dir.name
-            for session_dir in provider_dir.iterdir():
-                if not session_dir.is_dir():
-                    continue
-                meta = scan_session_meta(session_dir, provider)
-                if meta is None:
-                    continue
-                sid = meta["session_id"]
-                if sid in session_index:
-                    self._merge_combined(sessions[session_index[sid]], meta)
-                else:
-                    combined: CombinedSessionMeta = cast(
-                        "CombinedSessionMeta",
-                        {
-                            "session_id": meta["session_id"],
-                            "alias": meta["alias"],
-                            "title": meta["title"],
-                            "count": meta["count"],
-                            "last_ts": meta["last_ts"],
-                            "models": meta["models"],
-                            "providers": [meta["provider"]],
-                        },
-                    )
-                    sessions.append(combined)
-                    session_index[sid] = len(sessions) - 1
-
-                # Update session fingerprint and record known messages.
-                self._session_fp[(pid, sid)] = session_fingerprint(group_logs_dirs, sid)
-                mf = session_dir / MESSAGES_FILENAME
-                try:
-                    st = mf.stat()
-                    self._known_messages[mf] = (st.st_mtime_ns, st.st_size)
-                except OSError:
-                    pass
-
-        # Re-sort by last_ts descending.
-        sessions.sort(key=lambda s: s["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
-        self._sessions[pid] = sessions
-
     @staticmethod
     def _resolve_path_safe(raw: str | Path) -> Path:
         try:
@@ -876,7 +611,14 @@ class LogsCache:
             return Path(raw)
 
     def _prune_removed_paths(self, removed: set[str]) -> None:
-        """Remove projects from cache whose paths are in *removed*."""
+        """
+        Drop unregistered projects from the group list.
+
+        Groups only, like :meth:`_merge_added_paths`: every structure keyed by project id
+        is rebuilt from the index by the refresh that follows, so the shifting those used
+        to need is gone. Nothing else has to be carried across a group's removal —
+        including the open session, whose content is read per request rather than held.
+        """
         removed_resolved = {self._resolve_path_safe(rp) for rp in removed}
 
         groups_to_drop: list[int] = []
@@ -888,45 +630,15 @@ class LogsCache:
                 group["paths"] = surviving
                 group["logs_dirs"] = [project_logs_dir(p) for p in surviving]
 
-        # Drop empty groups and re-index sessions.
         for pid in sorted(groups_to_drop, reverse=True):
             del self._groups[pid]
-            self._sessions.pop(pid, None)
-            self._sessions_fp.pop(pid, None)
 
-        new_sessions: dict[int, list[CombinedSessionMeta]] = {}
-        new_sessions_fp: dict[int, Fingerprint] = {}
-        for old_pid in sorted(self._sessions):
-            shift = sum(1 for g in groups_to_drop if g < old_pid)
-            new_sessions[old_pid - shift] = self._sessions[old_pid]
-            new_sessions_fp[old_pid - shift] = self._sessions_fp[old_pid]
-        self._sessions = new_sessions
-        self._sessions_fp = new_sessions_fp
-
-        self._projects = self._recompute_projects_from_cache()
-        self._projects_fp = self._recompute_projects_fp_from_cache()
         self._reindex_roots()
+        self._index_revision = None
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _merge_combined(self, existing: CombinedSessionMeta, meta: Any) -> None:
-        """Merge a ProviderSessionMeta-like dict into a CombinedSessionMeta in-place."""
-        provider = meta.get("provider", "")
-        if provider not in existing["providers"]:
-            existing["providers"].append(provider)
-            existing["providers"].sort()
-        existing["count"] += meta.get("count", 0)
-        if meta.get("last_ts") and (
-            not existing["last_ts"] or meta["last_ts"] > existing["last_ts"]
-        ):
-            existing["last_ts"] = meta["last_ts"]
-        existing["models"] = sorted(set(existing["models"]) | set(meta.get("models", [])))
-        if existing.get("alias") is None and meta.get("alias") is not None:
-            existing["alias"] = meta["alias"]
-        if existing.get("title") is None and meta.get("title") is not None:
-            existing["title"] = meta["title"]
 
     def _recompute_projects_from_cache(self) -> list[ProjectInfo]:
         out: list[ProjectInfo] = []
@@ -951,54 +663,21 @@ class LogsCache:
         return out
 
     def _recompute_projects_fp_from_cache(self) -> Fingerprint:
-        best_mtime: int | None = self._registry_last_change
-        total_size: int = self._registry_count or 0
+        """
+        Combine the registry's revision with every group's into the projects marker.
+
+        The registry belongs in it because the projects list is a join of the two: a
+        project registered from a directory that already holds indexed sessions changes
+        what ``/api/projects`` returns without changing a single row of the index.
+
+        Both revisions are unix nanoseconds — ``projects.last_seen_at`` and
+        ``sessions.last_ingested_at`` — so the newer of the two is meaningful, and the
+        counts are summed because each moves for its own reason.
+        """
+        rev: int | None = self._registry_last_change
+        count: int = self._registry_count or 0
         for fp in self._sessions_fp.values():
-            if fp["mtime"] is not None:
-                if best_mtime is None or (fp["mtime"] or 0) > best_mtime:
-                    best_mtime = fp["mtime"]
-                total_size += fp["size"] or 0
-        return {"mtime": best_mtime, "size": total_size}
-
-    def _recompute_session_fp_for_project(self, pid: int) -> Fingerprint:
-        sessions = self._sessions.get(pid, [])
-        if not sessions:
-            return {"mtime": None, "size": None}
-        best_mtime: int | None = None
-        total_size: int = 0
-        for sm in sessions:
-            fp = self._session_fp.get((pid, sm["session_id"]))
-            if fp and fp["mtime"] is not None:
-                if best_mtime is None or (fp["mtime"] or 0) > best_mtime:
-                    best_mtime = fp["mtime"]
-                total_size += fp["size"] or 0
-        if best_mtime is None:
-            return {"mtime": None, "size": None}
-        return {"mtime": best_mtime, "size": total_size}
-
-    def _refresh_hot_cache(self) -> None:
-        """Re-read the currently hot session from disk and update hot cache."""
-        if self._pricing_service is None:
-            return
-        with self._hot_lock:
-            key = self._hot_session_key
-        if key is None:
-            return
-        pid, sid = key
-
-        logs_dirs = self.get_logs_dirs(pid)
-        if logs_dirs is None:
-            return
-
-        result = read_session(logs_dirs, sid, pricing=self._pricing_service)
-        strings = read_strings(logs_dirs, sid)
-
-        meta_line: dict[str, Any] = {"__type__": "session_meta"}
-        if result["session_meta"] is not None:
-            meta_line.update(result["session_meta"])
-        lines: list[dict[str, Any]] = cast("list[dict[str, Any]]", [meta_line, *result["reqs"]])
-
-        with self._hot_lock:
-            if self._hot_session_key == key:
-                self._hot_records = lines
-                self._hot_strings = strings
+            if fp["rev"] is not None and (rev is None or fp["rev"] > rev):
+                rev = fp["rev"]
+            count += fp["count"]
+        return {"rev": rev, "count": count}

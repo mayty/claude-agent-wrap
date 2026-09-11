@@ -114,6 +114,21 @@ PROJECT_REGISTRY_FILENAME = "projects.txt"
 # ``.claude/litellm-logs`` is a symlink into its own slice.
 LITELLM_LOGS_DIRNAME = "litellm-logs"
 
+# What the sidecar's StringHasher writes into a record in place of a long string; the
+# 64 hex characters after it are the SHA-256 of the original, and therefore already the
+# content address the blob store uses.
+#
+# At the package root because it is a fact about the log record format that three layers
+# need: the ingester turns a pointer into a blob address, the session stream sends the
+# originals a record quotes, and the blob store's own sweep follows pointers between
+# blobs to decide what is still reachable.
+HASH_POINTER_PREFIX = "hash:"
+
+# A whole pointer, for finding them in text rather than by walking parsed values. Both
+# readers hold a blob as the canonical JSON the index stores, so on that path a pointer
+# is only ever seen as 69 characters inside a string.
+HASH_POINTER_RE = re.compile(HASH_POINTER_PREFIX + "[0-9a-f]{64}")
+
 # How many successive ports a bind attempt probes before giving up. Shared by the
 # sidecar cold start and the logs viewer.
 PORT_SCAN_LIMIT = 50
@@ -182,12 +197,14 @@ DAY_START_HOURS = _parsed_day_start_hours()
 # Recognised usage-source tags stamped onto records by the callback.
 USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")
 
+# The one usage source with behaviour attached rather than just a breakdown row: a
+# successful request whose usage was never recorded. It contributes zero tokens and $0,
+# so `agent stats` footnotes the count instead of letting the cost read as complete.
+UNRECOVERABLE_SOURCE = "unrecoverable"
+
 # Display label for orphaned sessions — logs from deleted or unregistered projects
 # that no longer have an entry in the project registry.
 ORPHANED_LABEL = "<orphaned>"
-
-# Files below this count are scanned serially (fork overhead > benefit).
-SCAN_PARALLEL_MIN_FILES = 64
 
 # ── project agent assets ─────────────────────────────────────────────────────
 

@@ -25,12 +25,17 @@ DOCKER_UNREACHABLE = (
     "Is the daemon running, and is this user in the docker group?"
 )
 
-#: Threads the report's Docker probes fan out over. Peak in-flight is seven: the two
-#: container listings, the network check and the logs-size walk are all still running
-#: when the up-to-three version probes are submitted. Sizing this below the peak does
-#: not fail — it silently re-serialises the version probes behind the listings, which is
-#: the whole cost this pool exists to remove, so the number is stated with its reason.
-PROBE_WORKERS = 8
+#: Threads the report's Docker probes fan out over. Peak in-flight is ten: the two
+#: container listings, the network check, the logs-size walk, the index-lag walk and the
+#: two staleness probes are all still running when the up-to-three version probes are
+#: submitted. Sizing this below the peak does not fail — it silently re-serialises the
+#: version probes behind the listings, which is the whole cost this pool exists to
+#: remove, so the number is stated with its reason.
+PROBE_WORKERS = 10
+
+#: Divisor turning the index's stored nanoseconds into the epoch seconds every timestamp
+#: in the status models is expressed as.
+NANOSECONDS_PER_SECOND = 1_000_000_000
 
 #: Thread-name prefix for those probes, so a stuck one is identifiable in a stack dump.
 PROBE_THREAD_PREFIX = "inspect-probe"

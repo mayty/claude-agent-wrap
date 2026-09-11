@@ -27,14 +27,6 @@ class RequestTiming(TypedDict):
     end: float | None
 
 
-class MetaData(TypedDict):
-    count: int
-    last_ts: float | None
-    models: list[str]
-    alias: str | None
-    title: str | None
-
-
 class LogRecord(TypedDict):
     timing: RequestTiming
     status: str

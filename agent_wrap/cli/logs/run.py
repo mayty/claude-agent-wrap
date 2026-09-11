@@ -14,7 +14,7 @@ from agent_wrap.constants import (
     LOGS_MAX_PORT,
     LOGS_MIN_PORT,
 )
-from agent_wrap.containers import services
+from agent_wrap.containers import core, services
 
 
 @click.command("logs")
@@ -56,7 +56,14 @@ def logs_command(ctx: click.Context, *, port: int | None, stop: bool, foreground
     resolved_port = LOGS_DEFAULT_PORT if port is None else port
 
     if foreground:
-        ctx.exit(services.logs_service.serve_foreground(resolved_port))
+        # The one grant this verb takes, and only on the child that actually serves. The
+        # viewer is read-only about everything it *shows*, but it is the process that
+        # keeps the request index current -- every reconcile ingests whatever the
+        # sidecars have appended, and without the grant those writes are refused and
+        # every consumer's totals freeze at the last `agent reindex`. The registry stays
+        # ungranted: the daemon reads it on every tick and must not be able to alter it.
+        with core.logs_db.enable_writes():
+            ctx.exit(services.logs_service.serve_foreground(resolved_port))
 
     running = services.logs_service.running_server()
     if running is not None:

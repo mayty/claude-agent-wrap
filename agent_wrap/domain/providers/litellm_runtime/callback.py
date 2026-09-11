@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.models import LogRecord, MetaData
+    from agent_wrap.domain.providers.models import LogRecord
 
 # When mounted into the sidecar container, callback.py sits at /etc/litellm/
 # alongside helpers.py and string_hasher.py — not inside a Python package.
@@ -37,7 +37,6 @@ _current_dir = str(Path(__file__).parent.resolve())
 if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 from helpers import (  # noqa: E402  # pyrefly: ignore [missing-import]
-    get_response_content_str,
     get_session_hasher,
     json_safe,
 )
@@ -53,10 +52,6 @@ from string_hasher import StringHasher  # noqa: E402  # pyrefly: ignore [missing
 #   - <session_id> is Claude Code's own x-claude-code-session-id header.
 # A per-project symlink (cwd/.claude/litellm-logs -> the <project_hash> subtree)
 # lets the viewer read this layout unchanged.
-
-
-ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
-TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]+)"')
 
 # project_path_hash output is lowercase hex; validating against that alphabet
 # inherently rejects '/', '.', and '..', so no separate traversal check is needed.
@@ -199,9 +194,9 @@ def _usable_response(
 
     # The response didn't serialize to a dict (the raw-Response case): its usage is
     # gone. Recover from the SLO, preserving its response *content* and only filling
-    # in a usage block when the SLO response lacks one. Replacing the whole dict
-    # would drop choices/message content that alias/title extraction and the viewer
-    # still read (see get_response_content_str / extract_session_alias).
+    # in a usage block when the SLO response lacks one. Replacing the whole dict would
+    # drop the choices/message content the viewer renders and the ingester reads a
+    # session's alias and title out of.
     slo_response = logging_object.get("response")
     recovered = json_safe(slo_response, hasher) if isinstance(slo_response, dict) else None
     if not isinstance(recovered, dict):
@@ -319,90 +314,6 @@ def build_record(  # noqa: PLR0913, PLR0917
     return record
 
 
-def extract_session_alias(response: Any) -> str | None:
-    """
-    Return Claude Code's kebab-case session name if this is its naming call.
-
-    Claude Code's session-naming request flows through the proxy like any other
-    call; its response content is a JSON object ``{"name": "<kebab-slug>"}``.
-    The sibling title-generation call returns ``{"title": ...}`` and is ignored.
-    The slug is short, so it is never hashed — this operates on the JSON-safe
-    response dict directly. Returns None for anything that isn't a name payload.
-    """
-    content = get_response_content_str(response)
-    if not content:
-        return None
-    stripped = content.strip()
-    try:
-        obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        # Tolerate JSON-ish-but-not-strict content (e.g. trailing prose).
-        match = ALIAS_NAME_RE.search(stripped)
-        return match.group(1).strip() or None if match else None
-    if isinstance(obj, dict):
-        name = obj.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-    return None
-
-
-def extract_session_title(response: Any) -> str | None:
-    """
-    Return Claude Code's sentence-case session title if this is its title call.
-
-    Claude Code generates a session title via a small model call whose response
-    content is ``{"title": "…"}``.  This mirrors :func:`extract_session_alias`
-    but for the sibling title payload.  Returns None for anything else.
-    """
-    content = get_response_content_str(response)
-    if not content:
-        return None
-    stripped = content.strip()
-    try:
-        obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        match = TITLE_RE.search(stripped)
-        return match.group(1).strip() or None if match else None
-    if isinstance(obj, dict):
-        title = obj.get("title")
-        if isinstance(title, str) and title.strip():
-            return title.strip()
-    return None
-
-
-def _get_empty_meta() -> MetaData:
-    return {
-        "count": 0,
-        "last_ts": None,
-        "models": [],
-        "alias": None,
-        "title": None,
-    }
-
-
-def _read_meta(log_dir: Path) -> MetaData:
-    """Read existing ``meta.json``, returning ``{}`` if missing or corrupt."""
-    meta_file = log_dir / "meta.json"
-    if not meta_file.is_file():
-        return _get_empty_meta()
-    try:
-        return json.loads(meta_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return _get_empty_meta()
-
-
-def _write_meta(log_dir: Path, meta: MetaData) -> None:
-    """Write ``meta.json`` atomically.  Best-effort; never raises."""
-    meta_file = log_dir / "meta.json"
-    tmp_file = log_dir / "meta.json.tmp"
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        tmp_file.write_text(json.dumps(meta), encoding="utf-8")
-        tmp_file.replace(meta_file)
-    except OSError:
-        pass
-
-
 def _get_log_dir(kwargs: dict[str, Any]) -> Path:
     """Return the per-project/provider/session log directory for *kwargs*."""
     return (
@@ -505,34 +416,6 @@ async def _record_failure(
         await _write_record_async(record, kwargs)
     except Exception as e:  # noqa: BLE001 - logging is best-effort
         print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
-    try:
-        _write_metadata(record, kwargs)
-    except Exception as e:  # noqa: BLE001 - logging is best-effort
-        print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
-
-
-def _write_metadata(record: LogRecord, kwargs: dict[str, Any]) -> None:
-    """Update ``meta.json`` from *record*.  Never raises."""
-    log_dir = _get_log_dir(kwargs)
-
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    meta = _read_meta(log_dir)
-    meta["count"] += 1
-    end = (record.get("timing") or {}).get("end")
-    if end is not None:
-        meta["last_ts"] = end
-    model = record.get("model")
-    if model:
-        short = model.rsplit("/", 1)[-1]
-        meta["models"] = sorted(set(meta["models"]) | {short})
-    alias = extract_session_alias(record.get("response"))
-    if alias:
-        meta["alias"] = alias
-    title = extract_session_title(record.get("response"))
-    if title:
-        meta["title"] = title
-    _write_meta(log_dir, meta)
 
 
 def _resolve_thinking_reasoning_conflict(data: dict[str, Any]) -> dict[str, Any]:
@@ -627,7 +510,6 @@ try:
                 end_time=end_time,
             )
             await _write_record_async(record, kwargs)
-            _write_metadata(record, kwargs)
 
         async def async_log_stream_event(
             self,

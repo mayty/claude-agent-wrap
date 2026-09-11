@@ -11,11 +11,11 @@ MARKER_NAME = ".agent_stats_leaf"
 # are excluded from any bounded window.
 UNKNOWN_TIME_KEY = "?"
 
-# ``agent cleanup`` archives the usage of orphaned log dirs here before deleting
-# them, so their spend keeps showing up in ``agent stats``. Lives beside
-# ``projects.txt`` in ``AGENT_LAUNCHES_DIR`` — host-wide bookkeeping that must
-# outlive the log dirs it describes.
-ORPHANED_ARCHIVE_FILENAME = "orphaned-usage-archive.json"
-
 # Default span (in days) of the usage window when no explicit count is given.
 DEFAULT_DAYS = 28
+
+# The hour buckets the usage index is keyed by, and the number of them a day spans.
+# Both are here rather than inline because the same two figures convert a window in
+# either direction — a stats day to a bucket range, and a bucket back to an instant.
+SECONDS_PER_HOUR = 3600
+HOURS_PER_DAY = 24

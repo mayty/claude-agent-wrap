@@ -25,6 +25,7 @@ class Databases(StrEnum):
     """
 
     PROJECTS = "projects"
+    LOGS = "logs"
 
 
 # Extension of every database file, appended to the ``Databases`` member's value.
@@ -64,6 +65,36 @@ CONNECTION_PRAGMAS: Final[tuple[str, ...]] = (
     "PRAGMA foreign_keys = ON",
     "PRAGMA synchronous = NORMAL",
     f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
+)
+
+# The logs database is a blob store two orders of magnitude larger than the registry, so
+# it takes its own persistent PRAGMAs rather than the shared pair above.
+#
+# ORDER IS LOAD-BEARING, and getting it wrong fails silently. ``page_size`` and
+# ``auto_vacuum`` only take effect while the database has no pages, and
+# ``journal_mode = WAL`` writes the header -- so WAL must come LAST. Measured on a fresh
+# file: with WAL first, page_size stays 4096 and auto_vacuum stays 0, with no error
+# raised anywhere. For the same reason this is a fresh literal tuple and must never be
+# written as ``DATABASE_PRAGMAS + (...)``, which would put WAL in front.
+#
+# Re-applying the tuple to an already-built database is a verified no-op, which is what
+# makes it safe for ConnectionFactory to run it on every construction.
+LOGS_DATABASE_PRAGMAS: Final[tuple[str, ...]] = (
+    # 4 KB pages fragment multi-KB blobs across overflow chains; 8 KB keeps most of them
+    # on a single page.
+    "PRAGMA page_size = 8192",
+    # The only way a blob sweep returns pages to the filesystem without a full VACUUM,
+    # which would need to rewrite the whole file.
+    "PRAGMA auto_vacuum = INCREMENTAL",
+    "PRAGMA journal_mode = WAL",
+)
+
+# Per-connection PRAGMAs for the logs database: the shared set, plus room to work in.
+# A 265 MB blob store benefits from both in a way the ~100 KB registry does not.
+LOGS_CONNECTION_PRAGMAS: Final[tuple[str, ...]] = (
+    *CONNECTION_PRAGMAS,
+    "PRAGMA mmap_size = 268435456",  # 256 MB
+    "PRAGMA cache_size = -32768",  # 32 MB, negative = KiB rather than pages
 )
 
 # Timestamp format for backup filenames: compact UTC, sorts lexicographically.

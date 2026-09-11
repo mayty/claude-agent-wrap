@@ -15,6 +15,9 @@ from agent_wrap.domain.stats.service import StatsService
 if TYPE_CHECKING:
     import pytest_mock
 
+    from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+    from agent_wrap.infrastructure.logs.repositories.usage import UsageRepository
+
 _ORPHANED = [Path("/wrap/litellm-logs/hashA"), Path("/wrap/litellm-logs/hashB")]
 _STALE = [Path("/gone/project")]
 _REGISTERED = [Path("/p/one"), Path("/p/two")]
@@ -30,25 +33,28 @@ def config() -> Mock:
 
 
 @pytest.fixture
-def stats(mocker: pytest_mock.MockFixture, config: Mock) -> StatsService:
-    """Return a StatsService whose scan and delete collaborators are stubbed."""
-    svc = StatsService(Mock(spec=PricingService), config)
+def stats(
+    mocker: pytest_mock.MockFixture,
+    config: Mock,
+    usage_repository: UsageRepository,
+    log_ingest_repository: LogIngestRepository,
+) -> StatsService:
+    """Return a StatsService whose survey and delete collaborators are stubbed."""
+    svc = StatsService(
+        pricing_service=Mock(spec=PricingService),
+        config_service=config,
+        usage_repository=usage_repository,
+        log_ingest_repository=log_ingest_repository,
+    )
     mocker.patch.object(svc, "orphaned_log_dirs", autospec=True, return_value=list(_ORPHANED))
     mocker.patch.object(svc, "orphaned_disk_usage", autospec=True, return_value=3_145_728)
     mocker.patch.object(
-        svc, "archive_and_delete_orphaned", autospec=True, return_value=_result(finalized=True)
+        svc,
+        "delete_orphaned_logs",
+        autospec=True,
+        return_value=CleanupResult(removed=2, freed_bytes=2_097_152),
     )
     return svc
-
-
-def _result(*, finalized: bool) -> CleanupResult:
-    return CleanupResult(
-        removed=2,
-        freed_bytes=2_097_152,
-        archive_path=Path("/a.json"),
-        staging_path=Path("/a.new.json"),
-        finalized=finalized,
-    )
 
 
 def test_scope_reports_both_kinds_of_leftover(stats: StatsService):
@@ -83,21 +89,27 @@ def test_run_deletes_the_surveyed_dirs_and_prunes(stats: StatsService, config: M
     scope = stats.cleanup_scope()
     outcome = stats.run_cleanup(scope)
 
-    stats.archive_and_delete_orphaned.assert_called_once_with(_ORPHANED)  # pyrefly: ignore [missing-attribute]
+    stats.delete_orphaned_logs.assert_called_once_with(_ORPHANED)  # pyrefly: ignore [missing-attribute]
     config.prune_stale_projects.assert_called_once_with(_STALE)
     assert outcome.removed_paths == _STALE
-    assert outcome.result.finalized is True
+    assert outcome.result.removed == 2
 
 
-def test_unfinalized_archive_leaves_the_registry_alone(stats: StatsService, config: Mock):
-    """A half-committed archive must not also lose the registry entries."""
-    stats.archive_and_delete_orphaned.return_value = _result(finalized=False)  # pyrefly: ignore [missing-attribute]
+def test_the_registry_is_pruned_even_when_a_dir_survived(stats: StatsService, config: Mock):
+    """
+    A failed ``rmtree`` no longer holds the registry hostage.
+
+    It used to: the two-phase archive could leave spend committed only to a staging
+    file, and pruning the registry then would have destroyed the one clue about what
+    the dirs had been. With no archive there is no half-committed state to protect —
+    a dir that survives is simply still orphaned next time.
+    """
+    stats.delete_orphaned_logs.return_value = CleanupResult(removed=1, freed_bytes=8)  # pyrefly: ignore [missing-attribute]
 
     outcome = stats.run_cleanup(stats.cleanup_scope())
 
-    config.prune_stale_projects.assert_not_called()
-    assert outcome.removed_paths == []
-    assert outcome.result.finalized is False
+    config.prune_stale_projects.assert_called_once_with(_STALE)
+    assert outcome.removed_paths == _STALE
 
 
 def test_run_acts_on_the_scope_it_is_given(stats: StatsService, config: Mock):
@@ -107,5 +119,5 @@ def test_run_acts_on_the_scope_it_is_given(stats: StatsService, config: Mock):
     )
     stats.run_cleanup(explicit)
 
-    stats.archive_and_delete_orphaned.assert_called_once_with([Path("/only/this")])  # pyrefly: ignore [missing-attribute]
+    stats.delete_orphaned_logs.assert_called_once_with([Path("/only/this")])  # pyrefly: ignore [missing-attribute]
     config.prune_stale_projects.assert_called_once_with([Path("/only/stale")])

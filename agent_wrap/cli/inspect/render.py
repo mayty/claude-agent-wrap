@@ -29,6 +29,7 @@ is not drawn empty. A lite report closes with one line naming what it skipped, i
 marking each row the omission touched.
 """
 
+import time
 from typing import TYPE_CHECKING
 
 from agent_wrap.cli.inspect.constants import (
@@ -365,11 +366,42 @@ class Details:
         if storage.projects_stale:
             text += f", {storage.projects_stale} with no logs directory"
         autostart_text, autostart_style = Details.logs_autostart(autostart)
+        index_text, index_style = Details.logs_index(storage, display)
         return [
             viewer_row,
             Cells.row("logs viewer autostart", autostart_text, autostart_style),
             Cells.row("logs storage", text),
+            Cells.row("request index", index_text, index_style),
         ]
+
+    @staticmethod
+    def logs_index(storage: StorageRow, display: DisplayService) -> tuple[str, Ansi]:
+        """
+        Report the index's size, what it holds, and how far behind the log files it is.
+
+        The size sits beside `logs storage` above it because the pair is the whole
+        point of the index: one is the append-only tree every consumer used to re-parse,
+        the other is what they read now.
+
+        Freshness is stated as an age rather than a date -- the question a reader has is
+        whether ingest is keeping up, not when it last ran. A shortfall is styled as a
+        warning and names `agent reindex`, because it is the one thing here the reader
+        can act on. It is deliberately silent about lag in `--lite` mode rather than
+        reporting zero: not measured is not the same as up to date.
+        """
+        parts = [
+            display.format_bytes(storage.index_bytes),
+            f"{storage.index_sessions} session(s), {storage.index_requests} request(s)",
+        ]
+        if storage.index_last_ingested is None:
+            parts.append("never ingested")
+        else:
+            age = time.time() - storage.index_last_ingested
+            parts.append(f"last ingest {display.format_duration(age)} ago")
+        if storage.index_behind:
+            parts.append(f"{storage.index_behind} behind — run `agent reindex`")
+            return " · ".join(parts), Ansi.BOLD_YELLOW
+        return " · ".join(parts), Ansi.NONE
 
     @staticmethod
     def logs_autostart(autostart: AutostartRow) -> tuple[str, Ansi]:

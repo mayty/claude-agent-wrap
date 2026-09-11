@@ -14,7 +14,7 @@ from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME, SKIP_SAFET
 from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage, StaleProjectImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
-from agent_wrap.domain.logs.models import ViewerState
+from agent_wrap.domain.logs.models import IndexLag, ViewerState
 from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
@@ -24,6 +24,8 @@ from agent_wrap.domain.status.models import StaleImageRow
 from agent_wrap.domain.status.service import InspectService
 from agent_wrap.domain.updates.models import WrapperRevision
 from agent_wrap.domain.updates.service import UpdateService
+from agent_wrap.infrastructure.logs.models import IndexFootprint
+from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -151,6 +153,7 @@ def logs_mock(mocker: pytest_mock.MockFixture) -> Mock:
         log_mtime=1_700_000_000.0,
     )
     mock.connect_line.return_value = "LiteLLM log viewer running at http://127.0.0.1:8765"
+    mock.index_lag.return_value = IndexLag(behind=0, total=613)
     return mock
 
 
@@ -183,6 +186,15 @@ def build_mock(mocker: pytest_mock.MockFixture) -> Mock:
 
 
 @pytest.fixture
+def log_sessions_mock(mocker: pytest_mock.MockFixture) -> Mock:
+    mock = mocker.create_autospec(SessionRepository, instance=True)
+    mock.footprint.return_value = IndexFootprint(
+        database_bytes=301_989_888, sessions=613, requests=47_458, last_ingested_ns=1_700_000_000
+    )
+    return mock
+
+
+@pytest.fixture
 def service(  # noqa: PLR0913
     sidecar_mock: Mock,
     provider_mock: Mock,
@@ -191,6 +203,7 @@ def service(  # noqa: PLR0913
     updates_mock: Mock,
     config_mock: Mock,
     build_mock: Mock,
+    log_sessions_mock: Mock,
     docker_probes: dict[str, Mock],
 ) -> InspectService:
     del docker_probes  # patches must be active for every test using this service
@@ -202,6 +215,7 @@ def service(  # noqa: PLR0913
         updates_service=updates_mock,
         config_service=config_mock,
         build_service=build_mock,
+        log_session_repository=log_sessions_mock,
     )
 
 

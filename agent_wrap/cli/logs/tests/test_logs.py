@@ -158,11 +158,30 @@ def test_the_viewer_daemon_takes_no_registry_write_grant(
     """
     ``--foreground`` *is* the viewer daemon, re-exec'd as its own process.
 
-    It reads the registry on every reconcile, so a grant here would let a filesystem
-    event migrate host state. This is the invocation the whole gate exists for.
+    It reads the registry on every reconcile, so a registry grant here would let a
+    filesystem event migrate host state. This is the invocation the whole gate exists
+    for, and it is now asserted per database rather than in the aggregate: the daemon
+    does hold one grant, on the index it fills.
     """
     services.logs_service.serve_foreground.return_value = 0  # pyrefly: ignore [missing-attribute]
 
     runner.invoke(cli_root, ["logs", "--foreground"])
 
-    assert write_grants == []
+    assert "projects" not in write_grants
+
+
+def test_the_viewer_daemon_takes_a_logs_write_grant(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    The daemon is what keeps the request index current, so it must be able to write it.
+
+    Nothing else on a normal host ingests. Without this grant every ingest pass is
+    refused and every consumer's totals -- `agent stats`, the statusline, the viewer --
+    freeze at whatever the last `agent reindex` saw, with no error anywhere to say so.
+    """
+    services.logs_service.serve_foreground.return_value = 0  # pyrefly: ignore [missing-attribute]
+
+    runner.invoke(cli_root, ["logs", "--foreground"])
+
+    assert write_grants == ["logs"]

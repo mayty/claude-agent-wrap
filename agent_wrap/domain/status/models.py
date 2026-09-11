@@ -184,13 +184,26 @@ class EnvironmentRow:
 
 @dataclass(frozen=True)
 class StorageRow:
-    """On-disk footprint and project-registry counts."""
+    """On-disk footprint, request-index footprint, and project-registry counts."""
 
     #: Total size of the shared logs tree, or None when it was not measured -- lite mode
     #: skips the recursive walk. None is not zero, and the renderer says so.
     logs_bytes: int | None
     projects_registered: int
     projects_stale: int
+    #: Logical size of the request index, its two row counts, and when it was last
+    #: written to. Always measured: one B-tree probe over ~600 rows, no walk.
+    index_bytes: int
+    index_sessions: int
+    index_requests: int
+    #: Epoch seconds of the newest ingest, or None on a host that has never ingested
+    #: anything -- which reads very differently from an index that is merely idle. A
+    #: float like every other timestamp here; the index stores nanoseconds, and
+    #: converting is the storage detail this row exists to hide.
+    index_last_ingested: float | None
+    #: Indexed sessions whose log file has moved on, plus directories never indexed at
+    #: all. None when it was not measured -- lite mode skips that walk too.
+    index_behind: int | None
 
 
 @dataclass(frozen=True)
