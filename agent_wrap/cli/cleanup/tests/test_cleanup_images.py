@@ -90,8 +90,6 @@ def display_mock_service(non_tty_display: DisplayService) -> Mock:
 
 @pytest.fixture
 def shown(non_tty_display: DisplayService) -> Callable[[RenderableType], list[str]]:
-    """Return the lines `show` puts on stdout for a renderable."""
-
     def _shown(renderable: RenderableType) -> list[str]:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):

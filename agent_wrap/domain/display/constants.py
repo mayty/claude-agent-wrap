@@ -1,5 +1,4 @@
 # This file has been edited with the assistance of an AI tool.
-"""Styles and layout constants for the display service."""
 
 from enum import StrEnum
 from typing import TYPE_CHECKING

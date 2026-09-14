@@ -143,8 +143,6 @@ class Sidecar(ABC):
         runner reaching ``release()``.
         """
 
-    # -- output, named --
-
     def _warn(self, message: str) -> None:
         self._display.warning(f"{self._label}: {message}")
 
@@ -159,8 +157,6 @@ class Sidecar(ABC):
         """
         self._display.error(f"{self._label}: {message}")
         return SystemExit(1)
-
-    # -- container mechanics --
 
     def _is_running(self) -> bool:
         stdout, rc = docker_run(
@@ -182,7 +178,6 @@ class Sidecar(ABC):
         return rc == 0 and network in stdout.splitlines()
 
     def _sidecar_ip_on_network(self, network: str) -> str:
-        """Return this container's address on *network*, or "" when it holds none there."""
         fmt = (
             f'{{{{with index .NetworkSettings.Networks "{network}"}}}}{{{{.IPAddress}}}}{{{{end}}}}'
         )
@@ -190,7 +185,6 @@ class Sidecar(ABC):
         return stdout.strip() if rc == 0 else ""
 
     def _ensure_network(self) -> None:
-        """Create this sidecar's own network if it is not there yet."""
         if network_exists(self.network_name):
             return
         _, rc = docker_run("network", "create", self.network_name)
@@ -217,7 +211,6 @@ class Sidecar(ABC):
             raise self._fatal(msg)
 
     def _ensure_image(self) -> None:
-        """Pull the sidecar image if it isn't present locally (streams progress)."""
         if image_exists(self.image):
             return
         self._warn(f"pulling {self.image} (first run, may take a few minutes)…")

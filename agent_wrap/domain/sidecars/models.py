@@ -28,7 +28,6 @@ class SidecarConfig:
     cold_start_time: float
     short_circuit_time: float
 
-    #: Ceiling on the image pull. Sized to the image: a cold LiteLLM pull is minutes.
     pull_timeout_sec: int
 
     log_dir: Path

@@ -18,12 +18,10 @@ def sanitize_name(name: str) -> str:
 
 
 def generate_uuid() -> str:
-    """Generate a lowercase-hex UUID with dashes."""
     return str(uuid.uuid4())
 
 
 def is_truthy_env(value: str) -> bool:
-    """Check if an env var value is truthy (not empty/0/false/no)."""
     return value.lower() not in ("", "0", "false", "no")
 
 

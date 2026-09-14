@@ -81,8 +81,6 @@ def _table(elide: tuple[int, ...] = ()) -> TableSpec:
 def rendered(
     non_tty_display: DisplayService, shown: Callable[[RenderableType], list[str]]
 ) -> Callable[..., list[str]]:
-    """Return the lines the two-column test table renders to."""
-
     def _rendered(body: list[RowItemOrDivider], elide: tuple[int, ...] = ()) -> list[str]:
         # COUNT's width is stated rather than measured, so these assertions stay pinned to
         # the header floor they were written against.

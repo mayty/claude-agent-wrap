@@ -36,7 +36,6 @@ class _DeepSeekPricing:
 
     @staticmethod
     def clean_model_name(cell_text: str) -> str:
-        """Strip the trailing footnote marker from a model-name cell's text."""
         return FOOTNOTE_SUFFIX_RE.sub("", cell_text.strip()).strip()
 
     @staticmethod
@@ -152,7 +151,6 @@ class _DeepSeekPricing:
 
     @staticmethod
     def load_prices(cache_path: Path, *, refresh_pricing_data: bool = False) -> PriceTable:
-        """Return cached or freshly-scraped DeepSeek pricing (peak rates)."""
         return PricingCache.load(
             cache_path, refresh=refresh_pricing_data, scrape=_DeepSeekPricing.scrape
         )

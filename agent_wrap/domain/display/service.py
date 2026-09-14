@@ -187,7 +187,6 @@ class DisplayService:
         self._write(self._console_out, message, Style.NONE, end=end, flush=flush)
 
     def error(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stderr, tagged ``[ERROR]``, with red styling (TTY only)."""
         self._write(
             self._console_err,
             _TextStyler.prefixed(message, ERROR_PREFIX),
@@ -197,7 +196,6 @@ class DisplayService:
         )
 
     def warning(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stderr, tagged ``[WARNING]``, with yellow styling (TTY only)."""
         self._write(
             self._console_err,
             _TextStyler.prefixed(message, WARNING_PREFIX),
@@ -224,7 +222,6 @@ class DisplayService:
         )
 
     def success(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        """Print *message* to stdout with green styling (TTY only)."""
         self._write(self._console_out, message, Style.BOLD_GREEN, end=end, flush=flush)
 
     def banner(self, text: str) -> None:
@@ -290,19 +287,16 @@ class DisplayService:
         return f"{days}d {rem // SECONDS_PER_HOUR}h"
 
     def format_timestamp(self, dt: datetime | None) -> str:
-        """Format a datetime as ``YYYY-MM-DD``, or ``"—"`` when *dt* is None."""
         if dt is None:
             return "—"
         return dt.astimezone().strftime("%Y-%m-%d")
 
     def format_cost(self, c: float | None) -> str:
-        """Format a cost value as ``$X.XX``, or ``"?"`` when unknown (None)."""
         if c is None:
             return "?"
         return f"${c:.2f}"
 
     def format_cost_with_unknown(self, c: float | None, *, unknown: bool) -> str:
-        """Format cost with an unknown flag, collapsing ``$0.00+?`` to just ``"?"``."""
         if c is None or (c == 0.0 and unknown):
             return "?"
         if unknown:

@@ -1,5 +1,4 @@
 # This file has been created with the assistance of an AI tool.
-"""Constants for `agent cleanup`."""
 
 from agent_wrap.domain.display.models import TableSpec
 

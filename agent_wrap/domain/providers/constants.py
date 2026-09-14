@@ -27,7 +27,6 @@ PRICING_CACHE_TTL_SECONDS = 7 * 24 * 3600
 # hold up `agent stats`, which falls back to the cached table.
 PRICING_FETCH_TIMEOUT = 15
 
-# Filename of a provider's cached pricing table, under its own state directory.
 PRICING_CACHE_FILENAME = "pricing.json"
 
 # The BeautifulSoup backend every pricing scraper parses with. Named rather than left to

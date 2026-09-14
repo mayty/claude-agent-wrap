@@ -80,7 +80,7 @@ Violation = tuple[Path, int, str, str]
 
 
 def git(*args: str) -> tuple[str, int]:
-    """Run git in the repo root, returning (stdout, returncode). Never raises."""
+    """Run git in the repo root. An OSError or a git failure comes back as ``("", 1)``."""
     try:
         result = subprocess.run(
             ["git", *args],
@@ -203,7 +203,6 @@ def parse_repo_url(target: str) -> tuple[str, str, str, str | None] | None:
 
 
 def release_version(md_file: Path) -> str | None:
-    """Give the version a releases/<v>.md file documents, or None for any other file."""
     relative = md_file.relative_to(ROOT)
     if relative.parent.as_posix() == "releases" and RELEASE_VERSION.match(relative.stem):
         return relative.stem
@@ -327,7 +326,7 @@ def check_repo_url(
 def check_local_link(
     source_file: Path, line: int, target: str
 ) -> tuple[list[Violation], list[str]]:
-    """Validate a link that resolves against the filesystem. Returns (violations, warnings)."""
+    """Validate a link that resolves against the filesystem, rather than against a ref."""
     resolved = resolve_target(source_file, target)
 
     if resolved is None:
@@ -351,7 +350,7 @@ def check_local_link(
 def validate_link(
     source_file: Path, line: int, target: str, tags: frozenset[str]
 ) -> tuple[list[Violation], list[str], str | None]:
-    """Validate one link target. Returns (violations, warnings, uncut ref)."""
+    """Validate one link target. The trailing element is the uncut ref, when it pinned one."""
     if target.startswith(EXTERNAL_PREFIXES):
         violations, uncut = check_repo_url(source_file, line, target, tags)
         return violations, [], uncut

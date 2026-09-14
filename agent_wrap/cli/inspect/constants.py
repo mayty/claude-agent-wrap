@@ -1,5 +1,4 @@
 # This file has been edited with the assistance of an AI tool.
-"""Constants for the inspect CLI command."""
 
 from agent_wrap.domain.display.models import TableSpec
 

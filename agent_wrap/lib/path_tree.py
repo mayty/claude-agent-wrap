@@ -242,7 +242,6 @@ def expand_widest_chain[T](root: PathTreeNode[T]) -> bool:
 
 
 def _max_label_width[T](node: PathTreeNode[T], depth: int) -> int:
-    """Length of the longest label a walk of this subtree would yield."""
     widest = 0
     for child in node.children.values():
         width = depth + cell_len(child.name) + (1 if child.children else 0)

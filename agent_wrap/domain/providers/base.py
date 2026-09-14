@@ -182,7 +182,6 @@ class Provider(ABC):
         return self._state_dir() / "config.yaml"
 
     def _pricing_cache_path(self) -> Path:
-        """Where a provider that scrapes its prices keeps the table it last resolved."""
         return self._state_dir() / PRICING_CACHE_FILENAME
 
     def _state_dir(self) -> Path:
