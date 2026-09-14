@@ -225,7 +225,7 @@ def rate_limit_segment(data: dict[str, Any]) -> str:
     try:
         used = float(five_hour["used_percentage"])
         resets_at = float(five_hour["resets_at"])
-    except (KeyError, TypeError, ValueError):
+    except KeyError, TypeError, ValueError:
         return f"{DIM}send a message to see limits{RESET}"
 
     reset_local = _reset_time_str(resets_at)

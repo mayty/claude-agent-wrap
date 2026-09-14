@@ -9,7 +9,7 @@ Every agent starts from `claude-agent`, built from [ops/Dockerfile](../ops/Docke
 
 | Component | Why |
 | --- | --- |
-| Ubuntu 24.04 | Clean, predictable base |
+| Ubuntu 26.04 | Clean, predictable base |
 | Node.js 24.x | Required by Claude Code CLI |
 | Claude Code CLI | Installed globally (`npm install -g @anthropic-ai/claude-code`) |
 | `hadolint` + `crane` | Used by the project Dockerfile validator |

@@ -302,13 +302,13 @@ the plain bootstrap. The one consequence upward is that `agent inspect` cannot j
 a venv against the constraints file, so it reports nothing rather than guessing
 (`_deps_current` in `domain/status/service.py`).
 
-**Two regions do not run on the pinned interpreter** and must stay inside a lower floor.
+**Two regions do not run on the pinned interpreter** and must stay inside their own floor.
 They also have no access to the venv above, so they stay **stdlib-only permanently** —
 neither has a mechanism by which a third-party package could be installed for it:
 
 | Region | Runs on | Floor |
 | --- | --- | --- |
-| `ops/statusline.py` | the agent container's `python3` | 3.12 |
+| `ops/statusline.py` | the agent container's `python3` | 3.14 |
 | `agent_wrap/domain/providers/litellm_runtime/` | the pinned LiteLLM image's Python | 3.13 |
 
 Both floors are the versions actually running, read off the images rather than
@@ -321,9 +321,11 @@ than the one hosting the code, which is exactly the case in the LiteLLM image
 something: `ruff check` for version-gated syntax, `pyrefly` for stdlib APIs that do not
 exist yet on the floor (`datetime.UTC`), and `ruff format` — because at `py314` the
 *formatter* strips the parentheses from `except (A, B):`, which is a `SyntaxError` on
-older interpreters. Those files are excluded from the default format pass for that reason
-and are formatted at their own target instead. Each region is checked at its own floor,
-so the two never have to share the more conservative number.
+anything older. Those files are excluded from the default format pass for that reason and
+are formatted at their own target instead. Each region is checked at its own floor, so the
+two never have to share the more conservative number. A floor may equal the project's
+`target-version` — the statusline's does — and the region keeps its own leg regardless,
+because the next base image bump moves that floor again.
 
 ## Key conventions
 

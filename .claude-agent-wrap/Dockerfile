@@ -46,7 +46,8 @@ RUN mkdir -p /workspace/.python && chown ubuntu:ubuntu /workspace/.python
 # runtime, so read+execute for everyone is enough. It runs last, after the install.
 #
 # `venv-current` is what puts the pinned interpreter on PATH below, so that a bare
-# `python`/`python3` is it and not the base image's apt python3.12. The venv's own
+# `python`/`python3` is it and not the base image's apt python3.14 -- which matches the pin
+# on the minor and differs only in the patch, so the two are easy to confuse. The venv's own
 # directory name embeds the pin and the python-build-standalone target triple, and ENV
 # cannot be computed from a RUN -- so the name is resolved once here, out of the pointer
 # file that is the tree's own answer to "which venv".

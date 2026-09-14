@@ -25,14 +25,16 @@ export UV_PROJECT_ENVIRONMENT := .python/$(PY_VENV)
 # either image is bumped, from the RUNNING process rather than `python3 -V`, since PATH
 # can resolve elsewhere (the LiteLLM image fronts python3.13 with a venv shim, and only
 # /proc/1/exe says so):
-#   docker run --rm claude-agent python3 -V                     -> 3.12.3
+#   docker run --rm claude-agent python3 -V                     -> 3.14.4
 #   docker exec agent-wrap-litellm-<provider> \
 #     sh -c 'readlink -f /proc/1/exe; /proc/1/exe -V'            -> 3.13.15
-# 3.12 stays the statusline's floor even though this project's own dev container fronts
-# that python3 with the pinned interpreter: every other project's container has only the
-# base image's apt python3.
+# The first command names the base image on purpose: the statusline's floor is the apt
+# python3, which is all every other project's container has, and running it from inside
+# THIS project's dev container would answer for the pinned interpreter instead. The two
+# now agree on the minor and differ only in the patch, so that mistake no longer looks
+# like one.
 CARVEOUT_STATUSLINE_PATHS   := ops/statusline.py
-CARVEOUT_STATUSLINE_VERSION := 3.12
+CARVEOUT_STATUSLINE_VERSION := 3.14
 CARVEOUT_RUNTIME_PATHS      := agent_wrap/domain/providers/litellm_runtime/*.py
 CARVEOUT_RUNTIME_VERSION    := 3.13
 

@@ -38,7 +38,7 @@ if [ "$list_types" = 1 ]; then
 fi
 
 if [ "$want_png" = 1 ] && [ "$has_png" = 0 ] && [ "$has_bmp" = 1 ]; then
-    "$REAL" --type image/bmp | convert bmp:- png:-
+    "$REAL" --type image/bmp | magick bmp:- png:-
     exit "${PIPESTATUS[0]}"
 fi
 

@@ -101,7 +101,7 @@ BASE_IMAGE_NAME = "claude-agent"
 # a bump *reaches* the cached `scaffold` stage of ops/Dockerfile. Because the base builds
 # with docker's layer cache on, a bump is the only thing that forces its apt, NodeSource,
 # hadolint and crane layers to be fetched again.
-DOCKER_BUILD_ITERATION = 2
+DOCKER_BUILD_ITERATION = 3
 
 # Filename of the project registry that `agent run` appends to on every launch, and
 # that `agent stats` / the logs viewer read. Lives in AGENT_LAUNCHES_DIR.

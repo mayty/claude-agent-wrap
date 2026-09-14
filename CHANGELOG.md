@@ -13,7 +13,8 @@ Tab completion answers from the parser, so re-source `agent-wrap.bashrc`. The `a
 logs` viewer updates on filesystem events instead of polling, so agent-wrap must be
 installed on a local filesystem. Its project table's session count now agrees with the
 sessions it lists. The project registry moved from `projects.txt` to a SQLite database,
-imported automatically on the next run.
+imported automatically on the next run. The base image is now Ubuntu 26.04, so the next
+`agent run` rebuilds every image once.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 
