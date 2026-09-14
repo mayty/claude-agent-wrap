@@ -70,15 +70,6 @@ TABLE_BOX = box.SQUARE
 TABLE_CELL_PADDING = (0, 1)
 TABLE_CELL_OVERHEAD = 2
 
-#: Slack added to the capture console so it never second-guesses columns that were
-#: already sized to fit. Widths are computed here, not negotiated with rich.
-TABLE_CONSOLE_SLACK = 16
-
-#: The capture console's height. Nothing rendered into a string is ever paged or
-#: truncated vertically, so the value is arbitrary -- but it has to be *set*, or rich
-#: ignores the width beside it. Large enough that no table can reach it.
-CAPTURE_HEIGHT = 10_000
-
 #: ``TableSpec.aligns`` states each column in ``str.format``'s spelling, which is what a
 #: caller reads as "left" and "right"; rich wants the words.
 ALIGN_TO_JUSTIFY: dict[str, JustifyMethod] = {"<": "left", ">": "right", "^": "center"}

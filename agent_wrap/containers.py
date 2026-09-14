@@ -5,12 +5,15 @@ Singleton containers with lazy-initialized, dependency-injected members.
 Three tiers, each built on the one below it:
 
 ``Core``
-    Connection factories -- one per database. Constructing a factory is what migrates
-    its database, so the laziness is load-bearing: ``agent --help`` opens nothing.
+    The process-level objects everything above is composed from: a connection factory
+    per database, and the rich consoles the display layer writes through. Constructing
+    a factory is what migrates its database, so the laziness is load-bearing:
+    ``agent --help`` opens nothing.
 ``Repositories``
     Repository instances, each over a factory from ``Core``.
 ``Services``
-    Domain services, wired to each other and to the repositories they need.
+    Domain services, wired to each other, to ``Core``'s consoles, and to the
+    repositories they need.
 
 This is the composition root, and the only place permitted to import from
 ``agent_wrap.infrastructure`` at runtime -- everything above reaches a repository
@@ -20,7 +23,7 @@ through constructor injection.
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from agent_wrap.constants import AGENT_LAUNCHES_DIR
+from agent_wrap.constants import AGENT_LAUNCHES_DIR, RENDER_CONSOLE_SIZE
 from agent_wrap.infrastructure.constants import (
     BACKUPS_DIRNAME,
     DB_DIRNAME,
@@ -34,6 +37,8 @@ from agent_wrap.infrastructure.constants import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from rich.console import Console
 
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
@@ -59,19 +64,85 @@ if TYPE_CHECKING:
 
 class Core:
     """
-    Lazy-initialized container for the storage layer's connection factories.
+    Lazy-initialized container for the connection factories and the rich consoles.
 
-    Takes its directories as constructor arguments rather than reading them from a
-    module-level constant: that is the seam a test overrides, by building its own
-    ``Core`` against ``tmp_path`` instead of monkeypatching a path into place.
+    Takes its directories and its terminal verdict as constructor arguments rather than
+    reading them from a module-level constant or probing a stream: that is the seam a
+    test overrides, by building its own ``Core`` against ``tmp_path`` instead of
+    monkeypatching a path into place.
 
     Each factory runs its database's migrations when it is first constructed, so a
     command that never touches a database never migrates one.
+
+    The consoles are equally load-bearing in their laziness. ``Console`` resolves
+    ``color_system="auto"`` in its constructor and keeps that verdict for the object's
+    life, so one built at import -- while ``sys.stdout`` is still a test's capture
+    buffer, or a pipe -- would print unstyled to a terminal ever after. Built on first
+    output instead, the real streams are already in place. ``force_terminal`` is how a
+    test states the answer outright rather than racing that.
+
+    None is handed a ``file``: rich falls back to ``sys.stdout`` / ``sys.stderr`` at
+    write time, so replacing either stream is enough to redirect the output, and rich
+    drops colour under ``NO_COLOR`` and on a dumb terminal without anything here asking.
+
+    ``markup``, ``highlight`` and ``emoji`` are all off: every string printed through
+    these is somebody's message or a path, and rich must not read ``[ERROR]`` as a style
+    tag, recolour a number inside one, or rewrite ``:sunny:`` into a picture.
     """
 
-    def __init__(self, db_dir: Path, backups_dir: Path) -> None:
+    def __init__(
+        self, db_dir: Path, backups_dir: Path, *, force_terminal: bool | None = None
+    ) -> None:
         self._db_dir = db_dir
         self._backups_dir = backups_dir
+        self._force_terminal = force_terminal
+
+    @cached_property
+    def console_out(self) -> Console:
+        from rich.console import Console
+
+        return Console(
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            force_terminal=self._force_terminal,
+        )
+
+    @cached_property
+    def console_err(self) -> Console:
+        from rich.console import Console
+
+        return Console(
+            stderr=True,
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            force_terminal=self._force_terminal,
+        )
+
+    @cached_property
+    def console_render(self) -> Console:
+        """
+        The stdout console a composed renderable is printed through, sized here.
+
+        Its size is stated rather than probed, which is why it is a console of its own:
+        a table's columns were negotiated against the terminal before it ever reached
+        rich, and a console left to size itself would collapse them again to fit.
+        """
+        from rich.console import Console
+
+        width, height = RENDER_CONSOLE_SIZE
+        return Console(
+            width=width,
+            height=height,
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            force_terminal=self._force_terminal,
+        )
 
     @cached_property
     def projects_db(self) -> ConnectionFactory:
@@ -153,16 +224,25 @@ class Services:
 
     Each service is a ``@cached_property`` that creates its dependencies via
     constructor injection. Services that are never accessed are never created.
+
+    Takes ``Core`` alongside ``Repositories`` because the consoles live there: the
+    display service is the one service composed from something below the repository
+    tier rather than from another service.
     """
 
-    def __init__(self, repositories: Repositories) -> None:
+    def __init__(self, repositories: Repositories, core: Core) -> None:
         self._repositories = repositories
+        self._core = core
 
     @cached_property
     def display_service(self) -> DisplayService:
         from agent_wrap.domain.display.service import DisplayService
 
-        return DisplayService()
+        return DisplayService(
+            console_out=self._core.console_out,
+            console_err=self._core.console_err,
+            console_render=self._core.console_render,
+        )
 
     @cached_property
     def provider_service(self) -> ProviderService:
@@ -300,4 +380,4 @@ core = Core(
     backups_dir=AGENT_LAUNCHES_DIR / DB_DIRNAME / BACKUPS_DIRNAME,
 )
 repositories = Repositories(core=core)
-services = Services(repositories=repositories)
+services = Services(repositories=repositories, core=core)

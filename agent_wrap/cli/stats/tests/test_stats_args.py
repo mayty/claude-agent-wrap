@@ -89,7 +89,7 @@ def one_project(mocker: MockerFixture) -> None:
     """Seed one project and stub rendering, so the command reaches build_report."""
     services.config_service.read_project_paths.return_value = ["/proj"]  # pyrefly: ignore [missing-attribute]
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
-    mocker.patch("agent_wrap.cli.stats.run.render_source_breakdown", return_value="")
+    mocker.patch("agent_wrap.cli.stats.run.render_source_breakdown", return_value=None)
 
 
 @pytest.mark.usefixtures("one_project")

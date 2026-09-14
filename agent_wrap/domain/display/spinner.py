@@ -12,7 +12,6 @@ from rich.spinner import Spinner as RichSpinner
 from rich.text import Text
 
 from agent_wrap.constants import PollResult
-from agent_wrap.domain.display.console import err
 from agent_wrap.domain.display.constants import (
     DEFAULT_RICH_SPINNER,
     MESSAGE_UPDATE_INTERVAL_SEC,
@@ -25,10 +24,13 @@ from agent_wrap.domain.display.constants import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from rich.console import Console
+
 
 class Spinner:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, *, console: Console) -> None:
         self._label = label
+        self._console = console
 
     def _final(self, message: str) -> str:
         return f"{self._label}: {message}"
@@ -71,7 +73,10 @@ class Spinner:
         """
         msg_fn = (lambda: message) if isinstance(message, str) else message
 
-        if not sys.stderr.isatty():
+        # The console's verdict rather than a `sys.stderr.isatty()` of its own: the
+        # branch taken here and the console `Live` is then handed must agree, or the
+        # animation is driven against a console that refuses to draw it.
+        if not self._console.is_terminal:
             print(f"{self._label}: {msg_fn()}", file=sys.stderr)
             return work()
 
@@ -85,7 +90,10 @@ class Spinner:
         # lets the final line, or a traceback, start on a clean one.
         with (
             Live(
-                spinner, console=err(), refresh_per_second=SPINNER_REFRESH_PER_SEC, transient=True
+                spinner,
+                console=self._console,
+                refresh_per_second=SPINNER_REFRESH_PER_SEC,
+                transient=True,
             ),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
@@ -116,7 +124,7 @@ class Spinner:
         poll_interval: float = 0.5,
     ) -> bool:
         deadline = time.monotonic() + timeout
-        if not sys.stderr.isatty():
+        if not self._console.is_terminal:
             return self._poll_quiet(poll, deadline, poll_interval)
 
         # *status* stays a closure variable because *message* reads it while the spinner

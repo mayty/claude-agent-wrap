@@ -143,7 +143,7 @@ def stats_command(  # noqa: PLR0913
         _warn_if_stale(lag, dsp)
         ctx.exit(0)
 
-    dsp.info(
+    dsp.show(
         render(
             report.rows,
             report.totals_by_day_by_model,
@@ -158,9 +158,9 @@ def stats_command(  # noqa: PLR0913
         breakdown = render_source_breakdown(
             report.totals_by_source, parsed.from_iso, parsed.until_iso, display=dsp
         )
-        if breakdown:
+        if breakdown is not None:
             dsp.newline()
-            dsp.info(breakdown)
+            dsp.show(breakdown)
 
     # Footnote any successful requests whose usage was never recorded.
     if report.unrecorded:

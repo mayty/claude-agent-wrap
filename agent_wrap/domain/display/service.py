@@ -1,23 +1,19 @@
 # This file has been edited with the assistance of an AI tool.
 """Centralized display output — domain service."""
 
-import io
 import os
 import shutil
-import sys
 from getpass import getpass
 from typing import TYPE_CHECKING
 
 from humanize import naturalsize
 from rich.cells import cell_len
-from rich.console import Console
+from rich.console import Group
 from rich.table import Table
 from rich.text import Text
 
-from agent_wrap.domain.display.console import err, out
 from agent_wrap.domain.display.constants import (
     ALIGN_TO_JUSTIFY,
-    CAPTURE_HEIGHT,
     COUNT_UNITS,
     DEFAULT_TERM_WIDTH,
     ERROR_PREFIX,
@@ -27,7 +23,6 @@ from agent_wrap.domain.display.constants import (
     TABLE_BOX,
     TABLE_CELL_OVERHEAD,
     TABLE_CELL_PADDING,
-    TABLE_CONSOLE_SLACK,
     TERM_WIDTH_ENV,
     THOUSAND,
     WARNING_PREFIX,
@@ -38,6 +33,8 @@ from agent_wrap.domain.display.spinner import Spinner
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import datetime
+
+    from rich.console import Console, RenderableType
 
     from agent_wrap.constants import PollResult
     from agent_wrap.domain.display.models import RowItem, RowItemOrDivider, TableSpec
@@ -106,43 +103,6 @@ class _TableRenderer:
         return leading_widths + shared_widths
 
     @staticmethod
-    def capture(width: int | None) -> Console:
-        """
-        Build a console that renders into a string instead of onto the terminal.
-
-        It takes its colour posture from the live stdout console, so a captured line
-        carries exactly the styling the same line would have been printed with -- and
-        none at all when stdout is piped or ``NO_COLOR`` is set. The colour *system* is
-        left on "auto": rich resolves that from COLORTERM and TERM, which say the same
-        thing here as they did there, so stating it would only repeat the detection.
-        """
-        stdout = out()
-        return Console(
-            file=io.StringIO(),
-            width=width,
-            # A height as well, because rich only honours an explicit width when a height
-            # is set too: without one it falls through to its own size probe, which
-            # answers 80x25 for a dumb terminal and would crop the table to fit.
-            height=CAPTURE_HEIGHT,
-            force_terminal=stdout.is_terminal,
-            no_color=stdout.no_color,
-            legacy_windows=False,
-        )
-
-    @staticmethod
-    def styled(text: str, style: Style) -> str:
-        """
-        *text* with *style* baked in, for a caller collecting rendered lines.
-
-        `render_table` hands back strings rather than printing, so the table's own title
-        has to carry its escape codes the way the rows rich drew already do -- and drop
-        them under exactly the same conditions.
-        """
-        console = _TableRenderer.capture(None)
-        console.print(text, style=style or None, end="", overflow="ignore", crop=False)
-        return console.file.getvalue()  # pyrefly: ignore
-
-    @staticmethod
     def cell_text(item: RowItem, index: int) -> Text:
         """
         One cell as rich text, carrying whatever styling the row asked for.
@@ -157,13 +117,13 @@ class _TableRenderer:
         return text
 
     @staticmethod
-    def draw(spec: TableSpec, body: list[RowItemOrDivider], widths: list[int]) -> list[str]:
+    def draw(spec: TableSpec, body: list[RowItemOrDivider], widths: list[int]) -> Table:
         """
-        Render the table at exactly *widths*, and return its lines.
+        Build the table at exactly *widths*.
 
         The widths are settled before rich is handed anything -- `squeeze` and `fit_table`
         have already negotiated them against the terminal and against the other tables in
-        the group -- so the capture console is given room to spare and never re-negotiates.
+        the group -- so every column is pinned and nothing is re-negotiated at print time.
         """
         table = Table(
             box=TABLE_BOX,
@@ -189,12 +149,17 @@ class _TableRenderer:
                 continue
             table.add_row(*(_TableRenderer.cell_text(item, i) for i in range(len(item.cells))))
 
-        console = _TableRenderer.capture(_TableRenderer.table_width(widths) + TABLE_CONSOLE_SLACK)
-        console.print(table)
-        return console.file.getvalue().splitlines()  # pyrefly: ignore
+        return table
 
 
 class DisplayService:
+    def __init__(
+        self, *, console_out: Console, console_err: Console, console_render: Console
+    ) -> None:
+        self._console_out = console_out
+        self._console_err = console_err
+        self._console_render = console_render
+
     @staticmethod
     def _write(console: Console, message: str, style: Style, *, end: str, flush: bool) -> None:
         """
@@ -203,23 +168,38 @@ class DisplayService:
         ``end`` reaches rich as its own argument rather than being appended to the text,
         so a caller asking for no newline gets none and the style still closes.
         """
-        console.print(message, style=style or None, end=end, overflow="ignore", crop=False)
+        console.print(message, style=style, end=end)
         if flush:
             console.file.flush()
 
+    def show(self, renderable: RenderableType) -> None:
+        """
+        Print a composed renderable -- one table, or a whole report -- to stdout.
+
+        Its own console, sized at the composition root rather than left to probe one:
+        every table that reaches here has had its columns negotiated against the terminal
+        already, and rich would otherwise collapse them again to fit. Plain strings in the
+        renderable are unaffected by the width, because the console sets ``soft_wrap``.
+        """
+        self._console_render.print(renderable)
+
     def info(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        self._write(out(), message, Style.NONE, end=end, flush=flush)
+        self._write(self._console_out, message, Style.NONE, end=end, flush=flush)
 
     def error(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stderr, tagged ``[ERROR]``, with red styling (TTY only)."""
         self._write(
-            err(), _TextStyler.prefixed(message, ERROR_PREFIX), Style.BOLD_RED, end=end, flush=flush
+            self._console_err,
+            _TextStyler.prefixed(message, ERROR_PREFIX),
+            Style.BOLD_RED,
+            end=end,
+            flush=flush,
         )
 
     def warning(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stderr, tagged ``[WARNING]``, with yellow styling (TTY only)."""
         self._write(
-            err(),
+            self._console_err,
             _TextStyler.prefixed(message, WARNING_PREFIX),
             Style.BOLD_YELLOW,
             end=end,
@@ -236,7 +216,7 @@ class DisplayService:
         yes to, so nothing has failed yet — and `warning`'s yellow is too quiet for it.
         """
         self._write(
-            err(),
+            self._console_err,
             _TextStyler.prefixed(message, WARNING_PREFIX),
             Style.BOLD_RED,
             end=end,
@@ -245,7 +225,7 @@ class DisplayService:
 
     def success(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stdout with green styling (TTY only)."""
-        self._write(out(), message, Style.BOLD_GREEN, end=end, flush=flush)
+        self._write(self._console_out, message, Style.BOLD_GREEN, end=end, flush=flush)
 
     def banner(self, text: str) -> None:
         """
@@ -254,7 +234,7 @@ class DisplayService:
         The marker sits inside the colour span but is plain text, so a redirect or a pipe
         keeps it once colour is stripped — the same division of labour as `error`'s tag.
         """
-        self._write(out(), f"> {text}", Style.MAGENTA, end="\n", flush=False)
+        self._write(self._console_out, f"> {text}", Style.MAGENTA, end="\n", flush=False)
 
     def newline(self) -> None:
         self.info("")
@@ -335,9 +315,9 @@ class DisplayService:
         spec: TableSpec,
         body: list[RowItemOrDivider],
         shared_widths: list[int] | None = None,
-    ) -> list[str]:
+    ) -> Group:
         """
-        Render a complete table with Unicode box-drawing borders. Returns lines.
+        Compose a titled table with Unicode box-drawing borders, for `show` to print.
 
         *shared_widths* is for a caller stacking two tables whose figures must line up:
         omitted, the shared columns are measured from this body alone, which is what a
@@ -354,9 +334,9 @@ class DisplayService:
         limit = self.terminal_width()
         if spec.elide and limit is not None:
             widths = _TableRenderer.squeeze(widths, spec.elide, spec.headers, limit)
-        out = [_TableRenderer.styled(title, Style.DIM)]
-        out.extend(_TableRenderer.draw(spec, body, widths))
-        return out
+        # The title is a `Text` rather than the table's own `title=`, which rich wraps to
+        # the table's width: a title is routinely wider than the table it heads.
+        return Group(Text(title, style=Style.DIM), _TableRenderer.draw(spec, body, widths))
 
     def terminal_width(self) -> int | None:
         """
@@ -365,12 +345,17 @@ class DisplayService:
         `TERM_WIDTH_ENV` wins outright, which is the one lever a script or a test has to
         state a width nothing can be asked for. Failing that, a non-TTY stdout has no width
         at all: piped and captured output must not depend on whichever terminal happened to
-        launch it, the same reasoning `_TextStyler.color` uses to drop styling there.
+        launch it, the same reasoning the console uses to drop styling there.
+
+        The verdict is the console's rather than a `sys.stdout.isatty()` of its own, so
+        the object that decides whether to colour and the width it is sized against
+        cannot disagree. `is_terminal` reads the live stream at call time, so a redirect
+        is still seen.
         """
         override = os.environ.get(TERM_WIDTH_ENV, "").strip()
         if override.isdigit():
             return int(override) or None
-        if not sys.stdout.isatty():
+        if not self._console_out.is_terminal:
             return None
         return shutil.get_terminal_size(fallback=(DEFAULT_TERM_WIDTH, 24)).columns
 
@@ -473,7 +458,9 @@ class DisplayService:
         done_message: str | Callable[[T], str | None] | None = None,
     ) -> T:
         """Animate a spinner while running *work* on a background thread, returning its result."""
-        return Spinner(label).spin_while(message=message, done_message=done_message, work=work)
+        return Spinner(label, console=self._console_err).spin_while(
+            message=message, done_message=done_message, work=work
+        )
 
     def poll_until(  # noqa: PLR0913
         self,
@@ -486,7 +473,7 @@ class DisplayService:
         poll_interval: float = 0.5,
     ) -> bool:
         """Animate a spinner, polling *poll* until success, failure, or *timeout*."""
-        return Spinner(label).poll_until(
+        return Spinner(label, console=self._console_err).poll_until(
             poll=poll,
             message=message,
             done_message=done_message,

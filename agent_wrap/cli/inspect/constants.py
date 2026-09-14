@@ -51,8 +51,8 @@ STALE_IMAGES_TABLE = TableSpec(
     elide=(1, 2),
 )
 
-#: Replaces the stale-images table when the sweep found nothing. Printed in green through
-#: `DisplayService.success`, being the one section whose empty state is good news.
+#: Replaces the stale-images table when the sweep found nothing. Green, being the one
+#: section whose empty state is good news.
 NO_STALE_IMAGES = "No stale images: every registered project's image is up to date."
 
 #: Stands in for the logs footprint in lite mode. Says "not measured" rather than showing

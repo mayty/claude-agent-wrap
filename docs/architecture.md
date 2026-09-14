@@ -37,7 +37,8 @@ agent_wrap/
 ├── lib/             # Reusable general-purpose utilities — "could be extracted to a standalone library"
 ├── constants.py     # Module-level constants shared by multiple modules
 ├── exceptions.py    # ALL custom exceptions
-└── containers.py    # DI containers — the singleton Core / Repositories / Services instances
+└── containers.py    # DI containers — the singleton Core / Repositories / Services instances,
+                     #   and the only place a rich Console or a ConnectionFactory is constructed
 ```
 
 ## Layered architecture
@@ -51,7 +52,8 @@ graph TD
     Container -->|"constructor DI"| SvcB["Domain Service B"]
     SvcA -->|"constructor DI"| SvcC["Domain Service C"]
     Repos["Repositories Container"] -->|"constructor DI"| SvcA
-    Core["Core Container<br/>connection factories"] -->|"constructor DI"| Repos
+    Core["Core Container<br/>connection factories + rich consoles"] -->|"constructor DI"| Repos
+    Core -->|"constructor DI"| SvcB
 ```
 
 **From outside `agent_wrap/domain/`** (including the CLI), access domain logic ONLY through `services.xxx_service.method()`. Never import from `agent_wrap.domain.xxx.xxx` directly.
@@ -62,11 +64,13 @@ graph TD
 
 | Container | Holds | Built from |
 | --- | --- | --- |
-| `Core` | one `ConnectionFactory` per database | its `db_dir` / `backups_dir` arguments |
+| `Core` | one `ConnectionFactory` per database, and the three rich consoles (`console_out`, `console_err`, `console_render`) | its `db_dir` / `backups_dir` / `force_terminal` arguments |
 | `Repositories` | repository instances | `Core` |
-| `Services` | domain services | `Repositories`, and each other |
+| `Services` | domain services | `Repositories`, `Core`, and each other |
 
 `Core` takes its directories as constructor arguments rather than reading a module-level constant. That is the seam tests override — a test builds its own `Core` against `tmp_path` instead of monkeypatching a path into place. Constructing a factory is what runs its database's migrations, so the laziness is load-bearing: `agent --help` opens no database.
+
+`force_terminal` is the same kind of seam for the consoles. rich resolves a console's colour system in its constructor and keeps that verdict for the object's life, so the laziness matters here too: built on first output, a console sees the real streams. A test states the answer outright instead, through the `non_tty_display` / `tty_display` fixtures in `agent_wrap/conftest.py`, each of which builds a throwaway `Core` to do it. `Services` takes `Core` alongside `Repositories` because that is where the display service's consoles come from.
 
 ```python
 # The singleton instance — the ONLY way external code reaches domain logic:

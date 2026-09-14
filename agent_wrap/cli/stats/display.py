@@ -13,6 +13,8 @@ from agent_wrap.domain.display.models import RowItem
 from agent_wrap.domain.pricing.models import Bucket
 
 if TYPE_CHECKING:
+    from rich.console import Group
+
     from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
@@ -80,7 +82,7 @@ def render(  # noqa: PLR0913
     *,
     orphaned: OrphanedResult | None = None,
     display: DisplayService,
-) -> str:
+) -> Group:
     # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
     # `cost_unknown` flag (set when a billable request had no known price) is the
     # authoritative "?" signal — a 0.0 cost without that flag is a known zero.
@@ -102,7 +104,7 @@ def render_source_breakdown(
     until_iso: str | None,
     *,
     display: DisplayService,
-) -> str:
+) -> Group | None:
     """
     Render the verbose "usage source breakdown" table for the selected window.
 
@@ -118,7 +120,7 @@ def render_source_breakdown(
     within each source to get per-source totals. Cost reads ``Bucket.cost`` /
     ``cost_unknown`` directly, valid here because ``price_buckets`` has already
     priced the model-keyed buckets (same basis as :func:`render`).
-    Returns "" when no source has activity in the window.
+    Returns None when no source has activity in the window.
     """
     merged = {
         source: Bucket.merged(by_model.values()) for source, by_model in totals_by_source.items()
@@ -145,10 +147,10 @@ def render_source_breakdown(
     total = Bucket.merged(b for _s, b in active)
 
     if not body:
-        return ""
+        return None
 
     body.append(DIVIDER)
     body.append(_row("TOTAL", total, Style.BOLD_YELLOW))
 
     title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
-    return "\n".join(display.render_table(title, SOURCE_TABLE, body))
+    return display.render_table(title, SOURCE_TABLE, body)

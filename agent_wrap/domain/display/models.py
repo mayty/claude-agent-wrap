@@ -31,7 +31,9 @@ class TableSpec(NamedTuple):
     """
 
     headers: tuple[str, ...]
-    aligns: tuple[str, ...]
+    #: Each column's alignment in ``str.format``'s spelling; `ALIGN_TO_JUSTIFY` has the
+    #: rich words. A ``Literal`` so a typo is a typecheck failure, not a render-time KeyError.
+    aligns: tuple[Literal["<", ">", "^"], ...]
     #: Columns measured per-table. The rest are sized across every table in a group, so
     #: their figures line up vertically when two tables are stacked.
     leading: int

@@ -25,6 +25,8 @@ Two things are injected by the caller:
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from rich.console import Group
+
 from agent_wrap.cli.stats.constants import PROJECTS_TABLE, RECENT_TABLE
 from agent_wrap.cli.stats.models import AggregatedDayRows, BuildModelSection, CostFn
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
@@ -256,7 +258,7 @@ def render_core(  # noqa: PLR0913
     build_model_section: BuildModelSection,
     orphaned: OrphanedResult | None = None,
     display: DisplayService,
-) -> str:
+) -> Group:
     # Two stacked tables over the same window: "Projects" (per-project tree) and
     # "By day" (per-model + per-day). Each table has internal sections separated
     # by a `├─┼─┤` divider; the trailing numeric columns are width-aligned across
@@ -280,13 +282,13 @@ def render_core(  # noqa: PLR0913
         others=[(RECENT_TABLE, recent_body)],
     )
 
-    lines: list[str] = list(
-        display.render_table(f"Projects ({label}):", PROJECTS_TABLE, total_body, shared_widths)
+    projects = display.render_table(
+        f"Projects ({label}):", PROJECTS_TABLE, total_body, shared_widths
     )
-    if recent_body:
-        lines.append("")
-        lines.extend(
-            display.render_table(f"By day ({label}):", RECENT_TABLE, recent_body, shared_widths)
-        )
-
-    return "\n".join(lines)
+    if not recent_body:
+        return Group(projects)
+    return Group(
+        projects,
+        "",
+        display.render_table(f"By day ({label}):", RECENT_TABLE, recent_body, shared_widths),
+    )

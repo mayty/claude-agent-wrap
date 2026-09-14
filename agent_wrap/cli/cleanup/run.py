@@ -29,6 +29,8 @@ from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem
 
 if TYPE_CHECKING:
+    from rich.console import Group
+
     from agent_wrap.domain.build.models import ImageCleanupOutcome, ImageCleanupScope
     from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
@@ -40,7 +42,7 @@ class _CleanupReport:
     """What `agent cleanup` prints, before the prompt and after the work."""
 
     @staticmethod
-    def image_table(scope: ImageCleanupScope, dsp: DisplayService) -> list[str]:
+    def image_table(scope: ImageCleanupScope, dsp: DisplayService) -> Group:
         """
         Render the outdated images as one table, grouped by why each is going.
 
@@ -111,8 +113,7 @@ class _CleanupReport:
                     f"{len(scope.stale_paths)} stale project registry entr(y/ies) will be removed."
                 )
         if not image_scope.is_empty:
-            for line in _CleanupReport.image_table(image_scope, dsp):
-                dsp.info(line)
+            dsp.show(_CleanupReport.image_table(image_scope, dsp))
             if any(image.reason is ImageCleanupReason.STALE for image in image_scope.images):
                 dsp.info(STALE_REBUILD_NOTE)
         if image_scope.unattributable:

@@ -7,13 +7,10 @@ registered projects whose own image is already stale. ``Details`` — the third 
 rather than a block of ``Label: value`` lines so the whole report reads as one kind of
 output, and its three concerns (logs, secrets, wrapper/host) are separated by dividers
 rather than left to run together. The fourth closes the report because its empty state is
-a green line ``run.py`` prints in its place, and only a trailing section can be replaced
-that way.
+a green line standing in its place, and only a trailing section can be replaced that way.
 
-Each renderer returns lines rather than printing, so ``run.py`` owns all output and the
-whole report can be assembled before anything reaches the terminal. That is also why the
-one green line in the report is not built here: an unstyled line list has nowhere to carry
-it, and ``DisplayService.success`` prints rather than returning.
+Each renderer returns a renderable rather than printing, so ``run.py`` owns all output and
+the whole report is assembled before anything reaches the terminal.
 
 Colour carries one meaning throughout: green confirms something is ready, yellow flags
 something the user may want to act on (a container not running, a stale image, a missing
@@ -34,6 +31,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from humanize import naturaltime
+from rich.console import Group
+from rich.text import Text
 
 from agent_wrap.cli.inspect.constants import (
     AGENT_TABLE,
@@ -41,6 +40,7 @@ from agent_wrap.cli.inspect.constants import (
     DETAILS_TITLE,
     LEGACY_DOCKERFILE_NOTE,
     LITE_NOTE,
+    NO_STALE_IMAGES,
     NONE_CELL,
     NOT_MEASURED,
     PROJECT_IMAGE_LABEL,
@@ -60,6 +60,8 @@ from agent_wrap.domain.display.models import RowItem
 from agent_wrap.lib.path_tree import build_path_tree, expand_widest_chain, walk_path_tree
 
 if TYPE_CHECKING:
+    from rich.console import RenderableType
+
     from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.status.models import (
@@ -137,7 +139,9 @@ class Tables:
     """The two container tables, and the fleet-wide stale-image table under them."""
 
     @staticmethod
-    def sidecars(rows: list[SidecarRow], queued: list[str], display: DisplayService) -> list[str]:
+    def sidecars(
+        rows: list[SidecarRow], queued: list[str], display: DisplayService
+    ) -> list[RenderableType]:
         """
         Render the sidecar table, plus the footnotes about the shared sidecar lock.
 
@@ -145,8 +149,7 @@ class Tables:
         one of this table's containers.
         """
         if not rows:
-            lines = ["No sidecars are running."]
-            return lines + Tables.lock_footnotes([], queued)
+            return ["No sidecars are running.", *Tables.lock_footnotes([], queued)]
 
         body: list[RowItemOrDivider] = [
             RowItem(
@@ -165,11 +168,13 @@ class Tables:
             )
             for row in rows
         ]
-        lines = display.render_table(f"Sidecars ({len(rows)}):", SIDECAR_TABLE, body)
         idle = [
             row.name for row in rows if row.status == RUNNING_STATUS and not row.attached_agents
         ]
-        return lines + Tables.lock_footnotes(idle, queued)
+        return [
+            display.render_table(f"Sidecars ({len(rows)}):", SIDECAR_TABLE, body),
+            *Tables.lock_footnotes(idle, queued),
+        ]
 
     @staticmethod
     def lock_footnotes(idle: list[str], queued: list[str]) -> list[str]:
@@ -187,7 +192,7 @@ class Tables:
         return lines
 
     @staticmethod
-    def agents(rows: list[AgentRow], display: DisplayService) -> list[str]:
+    def agents(rows: list[AgentRow], display: DisplayService) -> list[RenderableType]:
         """Render the agent table, or a one-line note when there are none."""
         if not rows:
             return ["No agents are running."]
@@ -206,15 +211,20 @@ class Tables:
             )
             for row in rows
         ]
-        return display.render_table(f"Agents ({len(rows)}):", AGENT_TABLE, body)
+        return [display.render_table(f"Agents ({len(rows)}):", AGENT_TABLE, body)]
 
     @staticmethod
-    def stale_images(rows: list[StaleImageRow] | None, display: DisplayService) -> list[str]:
+    def stale_images(
+        rows: list[StaleImageRow] | None, display: DisplayService
+    ) -> list[RenderableType]:
         """
         Render one row per registered project whose own image is already stale.
 
-        Both empty cases render nothing and are reported elsewhere: None means the sweep
-        did not run, and an empty list is the good news ``run.py`` prints in green.
+        The two empty cases are not interchangeable: None means the sweep never ran, while
+        an empty list is the measured verdict that nothing is stale -- the one section
+        whose empty state is good news, and so the one green line in the report. It stands
+        in for the table and not for the gap above it, which is why the blank line belongs
+        to the table rather than to the caller.
 
         ``PROJECT`` is chopped a segment at a time until the table fits, before ``IMAGE``
         and ``REASON`` give up characters -- chopping costs height, not information, and a
@@ -223,8 +233,10 @@ class Tables:
         The title counts projects, not lines, so it agrees with ``--json`` however the
         tree comes out.
         """
-        if not rows:
+        if rows is None:
             return []
+        if not rows:
+            return [Text(NO_STALE_IMAGES, style=Style.BOLD_GREEN)]
 
         placed = [row for row in rows if row.project]
         unplaceable = [row for row in rows if not row.project]
@@ -237,9 +249,10 @@ class Tables:
             lambda: Tables.stale_body(root, unplaceable),
             shrink=lambda: root is not None and expand_widest_chain(root),
         )
-        return display.render_table(
-            f"Stale images ({len(rows)}):", STALE_IMAGES_TABLE, body, shared
-        )
+        return [
+            "",
+            display.render_table(f"Stale images ({len(rows)}):", STALE_IMAGES_TABLE, body, shared),
+        ]
 
     @staticmethod
     def stale_body(
@@ -560,7 +573,7 @@ class Details:
         return day
 
     @staticmethod
-    def table(report: InspectReport, display: DisplayService) -> list[str]:
+    def table(report: InspectReport, display: DisplayService) -> Group:
         groups = [
             Details.logs_rows(report.viewer, report.logs_autostart, report.storage, display),
             Details.secrets_rows(report.providers),
@@ -577,29 +590,24 @@ class Details:
         return display.render_table(DETAILS_TITLE, DETAILS_TABLE, body)
 
 
-def render(report: InspectReport, display: DisplayService) -> list[str]:
-    lines: list[str] = []
+def render(report: InspectReport, display: DisplayService) -> Group:
+    parts: list[RenderableType] = []
     if not report.docker.available:
-        lines.append(report.docker.error)
-        lines.append("")
+        parts.append(report.docker.error)
+        parts.append("")
     else:
-        lines.extend(Tables.sidecars(report.sidecars, report.queued_launches, display))
-        lines.append("")
-        lines.extend(Tables.agents(report.agents, display))
-        lines.append("")
+        parts.extend(Tables.sidecars(report.sidecars, report.queued_launches, display))
+        parts.append("")
+        parts.extend(Tables.agents(report.agents, display))
+        parts.append("")
 
-    lines.extend(Details.table(report, display))
+    parts.append(Details.table(report, display))
     if report.lite:
         # One closing line rather than a marker on each affected row: the skipped steps are
         # a property of the run, and naming them once keeps the tables reading the same in
         # both modes.
-        lines.append(LITE_NOTE)
+        parts.append(LITE_NOTE)
 
-    # Last, and never in lite mode, so it can never collide with the note above. The
-    # position is also what lets `run.py` print the green "nothing is stale" line in its
-    # place: colour outside a table cell has no route through a line list.
-    stale = Tables.stale_images(report.stale_images, display)
-    if stale:
-        lines.append("")
-        lines.extend(stale)
-    return lines
+    # Last, and never in lite mode, so it can never collide with the note above.
+    parts.extend(Tables.stale_images(report.stale_images, display))
+    return Group(*parts)

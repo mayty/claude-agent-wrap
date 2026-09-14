@@ -1,7 +1,8 @@
 # This file has been created with the assistance of an AI tool.
 """CLI-layer tests for the image half of `agent cleanup` — preview, prompt, and reporting."""
 
-import re
+import contextlib
+import io
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,20 +24,16 @@ from agent_wrap.domain.build.models import (
     RemovableImage,
 )
 from agent_wrap.domain.display.constants import TERM_WIDTH_ENV
-from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.stats.models import CleanupOutcome, CleanupResult, CleanupScope
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from unittest.mock import Mock
 
     from click.testing import CliRunner
+    from rich.console import RenderableType
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _strip_ansi(text: str) -> str:
-    """Return *text* without the colour escapes, so a rendered width can be measured."""
-    return _ANSI_RE.sub("", text)
+    from agent_wrap.domain.display.service import DisplayService
 
 
 def _image(
@@ -82,32 +79,49 @@ def build_mock() -> Mock:
 
 
 @pytest.fixture
-def display_mock_service() -> Mock:
+def display_mock_service(non_tty_display: DisplayService) -> Mock:
     """Return the mocked DisplayService, with formatters producing marked strings."""
     dsp = services.display_service
     dsp.format_bytes.side_effect = lambda n: f"<{n}B>"  # pyrefly: ignore [missing-attribute]
     dsp.spin_while.side_effect = lambda **kw: kw["work"]()  # pyrefly: ignore [missing-attribute]
-    dsp.terminal_width.return_value = None  # pyrefly: ignore [missing-attribute]
-    # Rendered as plain "cell | cell" lines: the borders and widths are DisplayService's own
-    # tested concern, and what these tests assert is which rows and headings reach the table.
-    dsp.render_table.side_effect = (  # pyrefly: ignore [missing-attribute]
-        lambda title, _spec, body, _shared=None: [
-            title,
-            *[" | ".join(item.cells) if not isinstance(item, str) else "---" for item in body],
-        ]
-    )
+    dsp.render_table.side_effect = non_tty_display.render_table  # pyrefly: ignore
     return dsp
 
 
-def _stdout(dsp: Mock) -> str:
-    """Join every info/success/error/warning message the command emitted."""
-    calls = [
-        *dsp.info.call_args_list,
-        *dsp.success.call_args_list,
-        *dsp.error.call_args_list,
-        *dsp.warning.call_args_list,
-    ]
-    return "\n".join(str(c[0][0]) for c in calls if c[0])
+@pytest.fixture
+def shown(non_tty_display: DisplayService) -> Callable[[RenderableType], list[str]]:
+    """Return the lines `show` puts on stdout for a renderable."""
+
+    def _shown(renderable: RenderableType) -> list[str]:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            non_tty_display.show(renderable)
+        return buffer.getvalue().splitlines()
+
+    return _shown
+
+
+@pytest.fixture
+def stdout(
+    display_mock_service: Mock, shown: Callable[[RenderableType], list[str]]
+) -> Callable[[], str]:
+    """
+    Return everything the command put on the terminal, with its tables drawn.
+
+    `mock_calls` rather than the per-method lists, so a table keeps its place among the
+    prose lines either side of it.
+    """
+
+    def _stdout() -> str:
+        out: list[str] = []
+        for name, args, _kwargs in display_mock_service.mock_calls:
+            if name == "show":
+                out.extend(shown(args[0]))
+            elif name in {"info", "success", "error", "warning"} and args:
+                out.append(str(args[0]))
+        return "\n".join(out)
+
+    return _stdout
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock", "display_mock_service")
@@ -124,30 +138,30 @@ def test_image_scope_is_surveyed_against_the_registry(runner: CliRunner) -> None
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_images_alone_are_enough_to_run(runner: CliRunner, display_mock_service: Mock) -> None:
+def test_images_alone_are_enough_to_run(runner: CliRunner, stdout: Callable[[], str]) -> None:
     """Nothing on the logs side must not read as nothing to do."""
     assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
-    out = _stdout(display_mock_service)
+    out = stdout()
     assert "Outdated images (1):" in out
     assert "project log(s) will be deleted" not in out
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_empty_on_both_sides_reports_nothing_to_do(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner, stdout: Callable[[], str]
 ) -> None:
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(images=[], unattributable=0)
     )
 
     assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
-    assert "Nothing to clean up" in _stdout(display_mock_service)
+    assert "Nothing to clean up" in stdout()
     services.build_service.remove_images.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_unattributable_images_are_reported_but_never_removed(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner, stdout: Callable[[], str]
 ) -> None:
     """A pre-label leftover cannot be attributed, so the note points at `docker image prune`."""
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
@@ -155,7 +169,7 @@ def test_unattributable_images_are_reported_but_never_removed(
     )
 
     assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
-    out = _stdout(display_mock_service)
+    out = stdout()
     assert "Nothing to clean up" in out
     assert UNATTRIBUTABLE_NOTE.format(count=4) in out
 
@@ -163,14 +177,14 @@ def test_unattributable_images_are_reported_but_never_removed(
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_unattributable_note_also_rides_along_with_a_real_scope(
     runner: CliRunner,
-    display_mock_service: Mock,
+    stdout: Callable[[], str],
 ) -> None:
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(images=[_image("w01")], unattributable=2)
     )
 
     assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
-    assert UNATTRIBUTABLE_NOTE.format(count=2) in _stdout(display_mock_service)
+    assert UNATTRIBUTABLE_NOTE.format(count=2) in stdout()
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
@@ -238,7 +252,7 @@ def test_remove_images_acts_on_the_surveyed_scope(
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_success_message_counts_the_removed_images(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner, display_mock_service: Mock, stdout: Callable[[], str]
 ) -> None:
     display_mock_service.prompt_confirm.return_value = True
     services.build_service.remove_images.return_value = (  # pyrefly: ignore [missing-attribute]
@@ -246,12 +260,12 @@ def test_success_message_counts_the_removed_images(
     )
 
     assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
-    assert "2 image(s) removed" in _stdout(display_mock_service)
+    assert "2 image(s) removed" in stdout()
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_a_refused_removal_warns_without_failing(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner, display_mock_service: Mock, stdout: Callable[[], str]
 ) -> None:
     """`remove_images` never forces, so docker's refusal is reported, not fatal."""
     display_mock_service.prompt_confirm.return_value = True
@@ -260,7 +274,7 @@ def test_a_refused_removal_warns_without_failing(
     )
 
     assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
-    out = _stdout(display_mock_service)
+    out = stdout()
     assert f"claude-agent-api:latest: {SKIPPED_IMAGE_NOTE}" in out
     assert "0 image(s) removed" in out
 
@@ -269,6 +283,7 @@ def test_a_refused_removal_warns_without_failing(
 def test_a_log_dir_that_survived_still_reports_the_images_it_removed(
     runner: CliRunner,
     display_mock_service: Mock,
+    stdout: Callable[[], str],
 ) -> None:
     """
     Images go first, so a log dir that could not be deleted must not hide their removal.
@@ -287,14 +302,14 @@ def test_a_log_dir_that_survived_still_reports_the_images_it_removed(
     )
 
     assert runner.invoke(cli_root, ["cleanup"]).exit_code == 0
-    out = _stdout(display_mock_service)
+    out = stdout()
     assert SKIPPED_IMAGE_NOTE in out
     assert "0 project log(s) deleted" in out
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_preview_groups_rows_by_reason_with_a_heading_each(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner, stdout: Callable[[], str]
 ) -> None:
     """
     The four reasons cost the reader different things, and the stale heading is where the
@@ -312,7 +327,7 @@ def test_preview_groups_rows_by_reason_with_a_heading_each(
     )
 
     assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
-    out = _stdout(display_mock_service)
+    out = stdout()
     assert "Outdated images (3):" in out
     assert "1 superseded build(s)" in out
     assert "1 orphaned project image(s)" in out
@@ -322,7 +337,7 @@ def test_preview_groups_rows_by_reason_with_a_heading_each(
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_preview_shows_each_size_and_never_a_total(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner, stdout: Callable[[], str]
 ) -> None:
     """Images share layers, so a summed figure would overstate the reclaim badly."""
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
@@ -332,7 +347,7 @@ def test_preview_shows_each_size_and_never_a_total(
     )
 
     assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
-    out = _stdout(display_mock_service)
+    out = stdout()
     assert "1.2GB" in out
     assert "2.4GB" in out
     assert "3.6GB" not in out
@@ -340,14 +355,18 @@ def test_preview_shows_each_size_and_never_a_total(
 
 @pytest.mark.parametrize("columns", [200, 60], ids=["wide", "narrow"])
 def test_image_table_renders_through_the_real_display_service(
-    monkeypatch: pytest.MonkeyPatch, columns: int
+    monkeypatch: pytest.MonkeyPatch,
+    columns: int,
+    non_tty_display: DisplayService,
+    shown: Callable[[RenderableType], list[str]],
 ) -> None:
     """
     Render with the real DisplayService, at a wide and a narrow console.
 
-    The other tests here stub `render_table` to assert which rows reach it, which cannot
-    catch a width contract broken on the way in — `leading` plus the shared column count
-    has to add up to every header, or the renderer indexes off the end of its widths.
+    The other tests here read the rendered text for the rows and headings they expect,
+    which cannot catch a width contract broken on the way in — `leading` plus the shared
+    column count has to add up to every header, or the renderer indexes off the end of
+    its widths.
     """
     monkeypatch.setenv(TERM_WIDTH_ENV, str(columns))
     scope = ImageCleanupScope(
@@ -363,17 +382,17 @@ def test_image_table_renders_through_the_real_display_service(
         unattributable=0,
     )
 
-    lines = _CleanupReport.image_table(scope, DisplayService())
+    lines = shown(_CleanupReport.image_table(scope, non_tty_display))
 
     assert lines[0] == "Outdated images (3):"
     # Every rendered row is one box-drawn line of the same width, headings included.
-    widths = {len(_strip_ansi(line)) for line in lines[1:]}
+    widths = {len(line) for line in lines[1:]}
     assert len(widths) == 1
     assert widths.pop() <= columns
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
-def test_stale_rows_carry_the_rebuild_note(runner: CliRunner, display_mock_service: Mock) -> None:
+def test_stale_rows_carry_the_rebuild_note(runner: CliRunner, stdout: Callable[[], str]) -> None:
     """The one line in the preview that says what confirming costs, rather than reclaims."""
     services.build_service.image_cleanup_scope.return_value = (  # pyrefly: ignore [missing-attribute]
         ImageCleanupScope(
@@ -383,16 +402,17 @@ def test_stale_rows_carry_the_rebuild_note(runner: CliRunner, display_mock_servi
     )
 
     assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
-    assert STALE_REBUILD_NOTE in _stdout(display_mock_service)
+    assert STALE_REBUILD_NOTE in stdout()
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")
 def test_rebuild_note_is_absent_without_a_stale_row(
-    runner: CliRunner, display_mock_service: Mock
+    runner: CliRunner,
+    stdout: Callable[[], str],
 ) -> None:
     """A superseded build costs nothing, so nothing should warn about a rebuild."""
     assert runner.invoke(cli_root, ["cleanup", "--dry-run"]).exit_code == 0
-    assert STALE_REBUILD_NOTE not in _stdout(display_mock_service)
+    assert STALE_REBUILD_NOTE not in stdout()
 
 
 @pytest.mark.usefixtures("stats_mock", "build_mock")

@@ -1,6 +1,8 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI-layer tests for the `stats` subcommand — rendering and arg parsing."""
 
+import contextlib
+import io
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,14 +20,36 @@ from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.domain.stats.models import ProjectRow, StatsReport
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from click.testing import CliRunner
     from pytest_mock import MockerFixture
+    from rich.console import RenderableType
 
 
 @pytest.fixture
-def display_service() -> Mock:
+def display_service(non_tty_display: DisplayService) -> Mock:
     """Mock DisplayService that delegates formatting to the real implementation."""
-    return Mock(spec=DisplayService, wraps=DisplayService())
+    return Mock(spec=DisplayService, wraps=non_tty_display)
+
+
+@pytest.fixture
+def shown(non_tty_display: DisplayService) -> Callable[..., str]:
+    """
+    Return the text `show` puts on stdout for a renderable -- what a terminal receives.
+
+    None is rejected here rather than at each caller: a renderer that returns it has
+    reported "nothing to show", which no test asking for its text meant to ask for.
+    """
+
+    def _shown(renderable: RenderableType | None) -> str:
+        assert renderable is not None
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            non_tty_display.show(renderable)
+        return buffer.getvalue()
+
+    return _shown
 
 
 def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
@@ -44,7 +68,7 @@ def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
     return b
 
 
-def test_render_includes_orphaned_row(display_service: Mock) -> None:
+def test_render_includes_orphaned_row(display_service: Mock, shown: Callable[..., str]) -> None:
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     b = Bucket()
     b.add(
@@ -69,24 +93,28 @@ def test_render_includes_orphaned_row(display_service: Mock) -> None:
     )
     last_ts = datetime(2026, 6, 29, tzinfo=UTC)
     orphaned = {"sessions": 1, "last_ts": last_ts, "total": b}
-    out = render([], {}, None, None, orphaned=orphaned, display=display_service)
+    out = shown(render([], {}, None, None, orphaned=orphaned, display=display_service))
     assert ORPHANED_LABEL in out
     assert f"{ORPHANED_LABEL} *" not in out
 
 
-def test_render_without_orphaned_has_no_row(display_service: Mock) -> None:
+def test_render_without_orphaned_has_no_row(
+    display_service: Mock, shown: Callable[..., str]
+) -> None:
     """When orphaned is None, no <orphaned> row appears."""
-    out = render([], {}, None, None, orphaned=None, display=display_service)
+    out = shown(render([], {}, None, None, orphaned=None, display=display_service))
     assert ORPHANED_LABEL not in out
 
 
-def test_render_source_breakdown_lists_active_sources(display_service: Mock) -> None:
+def test_render_source_breakdown_lists_active_sources(
+    display_service: Mock, shown: Callable[..., str]
+) -> None:
     by_source = {
         "native": {"bedrock/claude-opus-4-8": _source_bucket(3, in_=1000)},
         "standard_logging_object": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=500)},
         "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
     }
-    out = render_source_breakdown(by_source, None, None, display=display_service)
+    out = shown(render_source_breakdown(by_source, None, None, display=display_service))
     assert "Usage source breakdown (all time):" in out
     assert "native" in out
     assert "standard_logging_object" in out
@@ -94,23 +122,29 @@ def test_render_source_breakdown_lists_active_sources(display_service: Mock) -> 
     assert "TOTAL" in out
 
 
-def test_render_source_breakdown_omits_zero_msg_sources(display_service: Mock) -> None:
+def test_render_source_breakdown_omits_zero_msg_sources(
+    display_service: Mock, shown: Callable[..., str]
+) -> None:
     by_source = {"native": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=100)}}
-    out = render_source_breakdown(by_source, None, None, display=display_service)
+    out = shown(render_source_breakdown(by_source, None, None, display=display_service))
     assert "native" in out
     assert "standard_logging_object" not in out
 
 
 def test_render_source_breakdown_empty_when_no_activity(display_service: Mock) -> None:
-    assert render_source_breakdown({}, None, None, display=display_service) == ""
+    assert render_source_breakdown({}, None, None, display=display_service) is None
 
 
-def test_render_source_breakdown_merges_across_models(display_service: Mock) -> None:
+def test_render_source_breakdown_merges_across_models(
+    display_service: Mock, shown: Callable[..., str]
+) -> None:
     by_source = {
         "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
         "native": {"bedrock/claude-haiku-4-5": _source_bucket(1, in_=1)},
     }
-    out = render_source_breakdown(by_source, "2026-06-01", "2026-06-29", display=display_service)
+    out = shown(
+        render_source_breakdown(by_source, "2026-06-01", "2026-06-29", display=display_service)
+    )
     assert "Usage source breakdown (2026-06-01 … 2026-06-29):" in out
     assert "unrecoverable" in out
     assert "native" in out
@@ -286,21 +320,23 @@ def _project_labels(out: str) -> list[str]:
 
 
 def test_render_leaves_the_project_tree_folded_on_a_wide_console(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """Nothing overflows, so the shared prefix stays stated once."""
     monkeypatch.setenv("COLUMNS", "200")
-    out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    out = shown(
+        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    )
     assert "└home/me/work/" in _project_labels(out)
 
 
 def test_render_chops_the_project_tree_to_fit_a_narrow_console(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """The fold that made one node wide is given back a segment at a time."""
     monkeypatch.setenv("COLUMNS", "100")
     labels = _project_labels(
-        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        shown(render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service))
     )
     assert "└home/me/work/" in labels
     assert " ├personal/" in labels
@@ -308,7 +344,7 @@ def test_render_chops_the_project_tree_to_fit_a_narrow_console(
 
 
 def test_render_overflows_rather_than_truncate_a_figure(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """
     Below the width its numeric columns need, the Projects table runs past the edge.
@@ -318,20 +354,24 @@ def test_render_overflows_rather_than_truncate_a_figure(
     one, so nothing here is nominated as safe to cut and the line is simply long.
     """
     monkeypatch.setenv("COLUMNS", "85")
-    out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    out = shown(
+        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    )
     drawn = [line for line in out.split("\n") if line.startswith(("│", "┌", "├", "└"))]
     assert max(len(line) for line in drawn) > 85
     assert not any("…" in line for line in drawn)
 
 
 def test_render_reports_the_same_totals_however_far_the_tree_was_chopped(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """Chopping rearranges the label column and nothing else."""
 
     def root_figures(columns: str) -> list[str]:
         monkeypatch.setenv("COLUMNS", columns)
-        out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        out = shown(
+            render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        )
         root = [line for line in out.split("\n") if line.startswith("│")][1]
         return [cell.strip() for cell in root.split("│")[-9:-1]]
 

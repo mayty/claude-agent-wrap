@@ -130,6 +130,38 @@ def _isolate_databases(db_core: Core, db_dir: Path, mocker: MockerFixture) -> No
     mocker.patch.object(repositories, "_core", db_core)
 
 
+def _display_over(db_dir: Path, *, tty: bool) -> DisplayService:
+    """
+    Build a real ``DisplayService`` whose consoles state outright whether they are a terminal.
+
+    A console resolves its colour system in its constructor and keeps that verdict, so
+    ``force_terminal`` is the seam a test has: patching ``sys.stderr.isatty`` inside the
+    test body would come too late for a console the fixture already built.
+
+    Built through a throwaway ``Core`` so the rich flags are stated in exactly one place,
+    the same override seam the repository fixtures use. No database is opened: the
+    connection factories are never touched.
+    """
+    core = Core(db_dir=db_dir, backups_dir=db_dir / BACKUPS_DIRNAME, force_terminal=tty)
+    return DisplayService(
+        console_out=core.console_out,
+        console_err=core.console_err,
+        console_render=core.console_render,
+    )
+
+
+@pytest.fixture
+def non_tty_display(db_dir: Path) -> DisplayService:
+    """Return a real DisplayService writing to a pipe: no colour, and no width to respect."""
+    return _display_over(db_dir, tty=False)
+
+
+@pytest.fixture
+def tty_display(db_dir: Path) -> DisplayService:
+    """Return a real DisplayService writing to a terminal, for asserting on colour."""
+    return _display_over(db_dir, tty=True)
+
+
 @pytest.fixture
 def read_only_core(db_dir: Path) -> Core:
     """

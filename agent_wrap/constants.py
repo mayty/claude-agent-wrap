@@ -397,3 +397,11 @@ SIDECAR_PORT_ENV = "AGENT_WRAP_SIDECAR_PORT"
 # container's lifetime (one container per provider), so the callback reads it from the
 # container env rather than per-request.
 SIDECAR_PROVIDER_ENV = "AGENT_WRAP_PROVIDER"
+
+# The size `Core.console_render` is built at. Stated rather than probed: a table's
+# columns were negotiated against the terminal before it reached rich, and a console
+# left to size itself would collapse them again to fit. Both halves are needed -- rich
+# only honours a width when a height accompanies it, and answers 80x25 for a dumb
+# terminal otherwise. Large enough that no report can reach either. Here rather than in
+# the display subpackage because the composition root is what builds that console.
+RENDER_CONSOLE_SIZE = (10_000, 10_000)

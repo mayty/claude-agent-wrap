@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.constants import PollResult
-from agent_wrap.domain.display.service import DisplayService
 
 # The sequence Live writes to take the spinner back off the terminal: erase the line the
 # cursor was returned to. Spelled out rather than imported, so the test answers for what a
@@ -16,18 +15,14 @@ ERASE_LINE = "\033[2K"
 if TYPE_CHECKING:
     import pytest_mock
 
-
-@pytest.fixture
-def ds() -> DisplayService:
-    """Return a real DisplayService for spinner/poll tests."""
-    return DisplayService()
+    from agent_wrap.domain.display.service import DisplayService
 
 
 def test_spin_while_returns_work_result_non_tty(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    capsys: pytest.CaptureFixture[str],
+    non_tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=False)
-    result = ds.spin_while(
+    result = non_tty_display.spin_while(
         label="my-op",
         message="doing…",
         done_message="done",
@@ -38,10 +33,10 @@ def test_spin_while_returns_work_result_non_tty(
 
 
 def test_spin_while_returns_work_result_tty(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=True)
-    result = ds.spin_while(
+    result = tty_display.spin_while(
         label="my-op",
         message="doing…",
         done_message="done",
@@ -52,10 +47,10 @@ def test_spin_while_returns_work_result_tty(
 
 
 def test_spin_while_dynamic_message_non_tty(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    capsys: pytest.CaptureFixture[str],
+    non_tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=False)
-    ds.spin_while(
+    non_tty_display.spin_while(
         label="my-op",
         message=lambda: "computed",
         done_message="done",
@@ -65,10 +60,10 @@ def test_spin_while_dynamic_message_non_tty(
 
 
 def test_spin_while_done_message_omitted(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=True)
-    ds.spin_while(label="my-op", message="doing…", work=lambda: None)
+    tty_display.spin_while(label="my-op", message="doing…", work=lambda: None)
     err = capsys.readouterr().err
     # Nothing settles on the line: the spinner is taken back off the terminal and the
     # cursor left where it started, so the next output is not preceded by a blank line.
@@ -77,29 +72,28 @@ def test_spin_while_done_message_omitted(
 
 
 def test_spin_while_done_message_receives_result(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=True)
-
     def done(port: int) -> str:
         return f"listening on {port}"
 
-    ds.spin_while(label="my-op", message="doing…", done_message=done, work=lambda: 8080)
+    tty_display.spin_while(label="my-op", message="doing…", done_message=done, work=lambda: 8080)
     assert "my-op: listening on 8080" in capsys.readouterr().err
 
 
 def test_spin_while_propagates_work_error_tty(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
     """The TTY path re-raises, matching the non-TTY path that always did."""
-    mocker.patch("sys.stderr.isatty", return_value=True)
 
     def work() -> None:
         msg = "boom"
         raise RuntimeError(msg)
 
     with pytest.raises(RuntimeError, match="boom"):
-        ds.spin_while(label="my-op", message="doing…", done_message="done", work=work)
+        tty_display.spin_while(label="my-op", message="doing…", done_message="done", work=work)
 
     err = capsys.readouterr().err
     # The spinner line is erased before the error surfaces, so a traceback starts on a
@@ -108,17 +102,13 @@ def test_spin_while_propagates_work_error_tty(
     assert "my-op: done" not in err
 
 
-def test_spin_while_propagates_work_error_non_tty(
-    mocker: pytest_mock.MockFixture, ds: DisplayService
-) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=False)
-
+def test_spin_while_propagates_work_error_non_tty(non_tty_display: DisplayService) -> None:
     def work() -> None:
         msg = "boom"
         raise RuntimeError(msg)
 
     with pytest.raises(RuntimeError, match="boom"):
-        ds.spin_while(label="my-op", message="doing…", done_message="done", work=work)
+        non_tty_display.spin_while(label="my-op", message="doing…", done_message="done", work=work)
 
 
 def _frozen_clock(mocker: pytest_mock.MockFixture) -> None:
@@ -128,11 +118,12 @@ def _frozen_clock(mocker: pytest_mock.MockFixture) -> None:
 
 
 def test_poll_until_success_tty(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    mocker: pytest_mock.MockFixture,
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=True)
     _frozen_clock(mocker)
-    result = ds.poll_until(
+    result = tty_display.poll_until(
         label="my-op",
         poll=lambda: (PollResult.SUCCESS, "healthy"),
         message="waiting",
@@ -146,11 +137,12 @@ def test_poll_until_success_tty(
 
 
 def test_poll_until_failure_tty(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    mocker: pytest_mock.MockFixture,
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=True)
     _frozen_clock(mocker)
-    result = ds.poll_until(
+    result = tty_display.poll_until(
         label="my-op",
         poll=lambda: (PollResult.FAILURE, "unhealthy"),
         message="waiting",
@@ -163,12 +155,13 @@ def test_poll_until_failure_tty(
 
 
 def test_poll_until_pending_then_success(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    mocker: pytest_mock.MockFixture,
+    capsys: pytest.CaptureFixture[str],
+    tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=True)
     _frozen_clock(mocker)
     verdicts = iter([(PollResult.PENDING, "starting"), (PollResult.SUCCESS, "healthy")])
-    result = ds.poll_until(
+    result = tty_display.poll_until(
         label="my-op",
         poll=lambda: next(verdicts),
         message="waiting",
@@ -180,9 +173,10 @@ def test_poll_until_pending_then_success(
 
 
 def test_poll_until_non_tty_prints_status_changes(
-    mocker: pytest_mock.MockFixture, capsys: pytest.CaptureFixture[str], ds: DisplayService
+    mocker: pytest_mock.MockFixture,
+    capsys: pytest.CaptureFixture[str],
+    non_tty_display: DisplayService,
 ) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=False)
     _frozen_clock(mocker)
     verdicts = iter(
         [
@@ -191,7 +185,7 @@ def test_poll_until_non_tty_prints_status_changes(
             (PollResult.SUCCESS, "healthy"),
         ]
     )
-    result = ds.poll_until(
+    result = non_tty_display.poll_until(
         label="my-op",
         poll=lambda: next(verdicts),
         message="waiting",
@@ -204,10 +198,12 @@ def test_poll_until_non_tty_prints_status_changes(
     assert "my-op: healthy" in err
 
 
-def test_poll_until_timeout(mocker: pytest_mock.MockFixture, ds: DisplayService) -> None:
-    mocker.patch("sys.stderr.isatty", return_value=False)
+def test_poll_until_timeout(
+    mocker: pytest_mock.MockFixture,
+    non_tty_display: DisplayService,
+) -> None:
     mocker.patch("time.monotonic", side_effect=[0.0, 100.0])
-    result = ds.poll_until(
+    result = non_tty_display.poll_until(
         label="my-op",
         poll=lambda: (PollResult.PENDING, "starting"),
         message="waiting",
