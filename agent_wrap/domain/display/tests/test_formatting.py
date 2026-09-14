@@ -15,15 +15,16 @@ def display() -> DisplayService:
 @pytest.mark.parametrize(
     ("n", "expected"),
     [
-        (0, "0B"),
-        (1, "1B"),
-        (1023, "1023B"),
-        (1024, "1.0KB"),
-        (1536, "1.5KB"),
-        (1024 * 1024, "1.0MB"),
-        (5 * 1024 * 1024 + 512 * 1024, "5.5MB"),
-        (1024**3, "1.0GB"),
-        (3 * 1024**4, "3072.0GB"),
+        (0, "0 Bytes"),
+        (1, "1 Byte"),
+        (1023, "1023 Bytes"),
+        (1024, "1.0 KiB"),
+        (1536, "1.5 KiB"),
+        (1024 * 1024, "1.0 MiB"),
+        (5 * 1024 * 1024 + 512 * 1024, "5.5 MiB"),
+        (1024**3, "1.0 GiB"),
+        (3 * 1024**4, "3.0 TiB"),
+        (2 * 1024**5, "2.0 PiB"),
     ],
 )
 def test_format_bytes(display: DisplayService, n: int, expected: str) -> None:
@@ -38,6 +39,7 @@ def test_format_bytes(display: DisplayService, n: int, expected: str) -> None:
         (1000, "1.0K"),
         (1_500_000, "1.5M"),
         (2_000_000_000, "2.0G"),
+        (5 * 10**15, "5.0P"),
     ],
 )
 def test_format_count(display: DisplayService, n: int, expected: str) -> None:

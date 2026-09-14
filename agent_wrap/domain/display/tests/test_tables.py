@@ -11,8 +11,9 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.cells import cell_len
 
-from agent_wrap.domain.display.constants import DEFAULT_TERM_WIDTH, Ansi
+from agent_wrap.domain.display.constants import DEFAULT_TERM_WIDTH, Style
 from agent_wrap.domain.display.models import RowItem, TableSpec
 from agent_wrap.domain.display.service import DisplayService
 
@@ -36,13 +37,13 @@ def _no_inherited_width(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _row(label: str, prefix_len: int) -> RowItem:
-    return RowItem(cells=[label, "1"], style=Ansi.NONE, prefix_len=prefix_len)
+    return RowItem(cells=[label, "1"], style=Style.NONE, prefix_len=prefix_len)
 
 
 def _tree_body() -> list[RowItemOrDivider]:
     """Return a body shaped like a project tree, with one wide folded node in the middle."""
     return [
-        RowItem(cells=["/", "4"], style=Ansi.NONE, prefix_len=0),
+        RowItem(cells=["/", "4"], style=Style.NONE, prefix_len=0),
         _row("├home/me/work/wargaming/", 1),
         _row(" ├wotp", 2),
         _row(" └wotp-be", 2),
@@ -148,7 +149,7 @@ def test_table_overflow_discounts_what_an_elidable_column_could_give_up(
     body: list[RowItemOrDivider] = [
         RowItem(
             cells=["├home/me/work/wargaming/", "a fairly long reason string"],
-            style=Ansi.NONE,
+            style=Style.NONE,
             prefix_len=1,
         )
     ]
@@ -207,7 +208,7 @@ def test_render_table_spreads_the_cut_across_several_elidable_columns(
     body: list[RowItemOrDivider] = [
         RowItem(
             cells=["a-fairly-long-project", "an-even-longer-image-name"],
-            style=Ansi.NONE,
+            style=Style.NONE,
             prefix_len=0,
         )
     ]
@@ -264,7 +265,9 @@ def test_compute_shared_widths_sizes_a_column_across_every_table_in_the_group(
     """Stacked tables share one width so their figures line up vertically."""
     wide = TableSpec(headers=("MODEL", "COUNT"), aligns=("<", ">"), leading=1)
     narrow: list[RowItemOrDivider] = [_row("/srv", 0)]
-    broad: list[RowItemOrDivider] = [RowItem(cells=["m", "1234567"], style=Ansi.NONE, prefix_len=0)]
+    broad: list[RowItemOrDivider] = [
+        RowItem(cells=["m", "1234567"], style=Style.NONE, prefix_len=0)
+    ]
     assert display.compute_shared_widths([(_table(), narrow), (wide, broad)]) == [7]
 
 
@@ -320,8 +323,51 @@ def test_fit_table_counts_a_companion_table_in_the_shared_widths(
 ) -> None:
     """*others* do not shrink, but their content still sets the widths the group shares."""
     wide = TableSpec(headers=("MODEL", "COUNT"), aligns=("<", ">"), leading=1)
-    broad: list[RowItemOrDivider] = [RowItem(cells=["m", "1234567"], style=Ansi.NONE, prefix_len=0)]
+    broad: list[RowItemOrDivider] = [
+        RowItem(cells=["m", "1234567"], style=Style.NONE, prefix_len=0)
+    ]
     _body, shared = display.fit_table(
         _table(), _tree_body, shrink=lambda: False, others=[(wide, broad)]
     )
     assert shared == [7]
+
+
+@pytest.mark.parametrize(
+    ("label", "display_width"),
+    [
+        ("日本語のプロジェクト", 20),
+        ("emoji🎉here", 11),
+        ("plain-ascii", 11),
+    ],
+)
+def test_render_table_measures_a_cell_by_display_width(
+    display: DisplayService, label: str, display_width: int
+) -> None:
+    """
+    Columns are sized in terminal cells, not codepoints.
+
+    A CJK segment or an emoji occupies two cells per codepoint, so measuring with ``len``
+    under-sizes the column and every border below it slides left.
+    """
+    lines = display.render_table("T:", _table(), [_row(label, 0)])
+    borders_and_rows = lines[1:]
+    assert len({cell_len(line) for line in borders_and_rows}) == 1
+    assert cell_len(borders_and_rows[0]) == display_width + len("COUNT") + 7
+
+
+def test_render_table_is_not_cropped_by_a_dumb_terminal(
+    display: DisplayService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A table is sized here, and the capture console must not re-negotiate it.
+
+    rich answers 80x25 for a dumb terminal unless an explicit height accompanies the
+    width, which silently cropped every column past that.
+    """
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    wide = _row("x" * 100, 0)
+
+    lines = display.render_table("T:", _table(), [wide])
+
+    assert "x" * 100 in lines[-2]

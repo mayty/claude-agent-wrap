@@ -10,6 +10,8 @@ from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
+from packaging.version import InvalidVersion, Version
+
 from agent_wrap.lib.utils import is_truthy_env
 
 # What docker reports for a timestamp that never happened (e.g. StartedAt on a
@@ -335,19 +337,17 @@ def is_newer_version(installed: str | None, latest: str | None) -> bool:
     """
     Whether *latest* is a newer version than *installed*.
 
-    Compared as integer tuples, so "2.0.10" sorts after "2.0.9". False when either side
-    is None or unparseable -- an unknown latest version must never look like an update.
+    Ordered by :class:`packaging.version.Version`, which normalizes the npm spellings
+    these strings actually arrive in -- ``2.1.0-beta.1`` sorts before ``2.1.0``, and
+    ``2.0.10`` after ``2.0.9``. False when either side is None or unparseable: an unknown
+    latest version must never look like an update.
     """
     if not installed or not latest:
         return False
     try:
-        installed_parts = tuple(int(part) for part in installed.split("."))
-        latest_parts = tuple(int(part) for part in latest.split("."))
-    except ValueError:
+        return Version(latest) > Version(installed)
+    except InvalidVersion:
         return False
-    if not installed_parts or not latest_parts:
-        return False
-    return latest_parts > installed_parts
 
 
 def network_exists(network: str) -> bool:

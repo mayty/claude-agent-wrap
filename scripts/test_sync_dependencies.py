@@ -17,9 +17,8 @@ sys.modules["sync_dependencies"] = _module
 _spec.loader.exec_module(_module)  # pyrefly: ignore [missing-attribute]
 
 # Convenience aliases
-canonical = _module.canonical
 parse_tree = _module.parse_tree
-rewrite_body = _module.rewrite_body
+rewrite = _module.rewrite
 update_dependencies = _module.update_dependencies
 main = _module.main
 
@@ -73,11 +72,6 @@ def pyproject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def test_canonical_normalizes_separators_and_case() -> None:
-    assert canonical("Pytest_Cov") == "pytest-cov"
-    assert canonical("zope.interface") == "zope-interface"
-
-
 def test_parse_tree_keeps_only_direct_dependencies() -> None:
     assert parse_tree(PROD_TREE) == {"httpx2": "2.12.3"}
 
@@ -102,34 +96,40 @@ def test_parse_tree_ignores_lines_without_a_version() -> None:
     assert parse_tree("└── httpx2\n") == {}
 
 
-def test_rewrite_body_reports_the_versions_that_moved() -> None:
-    body, changes = rewrite_body('    "pytest>=9.1.1,<10",', {"pytest": "9.2.0"})
-    assert body == '    "pytest>=9.2.0",'
-    assert changes == [("pytest", "9.1.1", "9.2.0")]
+def test_rewrite_reports_the_versions_that_moved() -> None:
+    entry, change = rewrite("pytest>=9.1.1,<10", {"pytest": "9.2.0"})
+    assert entry == "pytest>=9.2.0"
+    assert change == ("pytest", "9.1.1", "9.2.0")
 
 
-def test_rewrite_body_normalizes_the_operator() -> None:
-    body, changes = rewrite_body('    "pytest-cov==7.1.0",', {"pytest-cov": "7.1.0"})
-    assert body == '    "pytest-cov>=7.1.0",'
-    assert changes == []
+def test_rewrite_normalizes_the_operator() -> None:
+    entry, change = rewrite("pytest-cov==7.1.0", {"pytest-cov": "7.1.0"})
+    assert entry == "pytest-cov>=7.1.0"
+    assert change is None
 
 
-def test_rewrite_body_gives_an_unconstrained_requirement_a_floor() -> None:
-    body, changes = rewrite_body('    "ruff",', {"ruff": "0.16.4"})
-    assert body == '    "ruff>=0.16.4",'
-    assert changes == [("ruff", "", "0.16.4")]
+def test_rewrite_gives_an_unconstrained_requirement_a_floor() -> None:
+    entry, change = rewrite("ruff", {"ruff": "0.16.4"})
+    assert entry == "ruff>=0.16.4"
+    assert change == ("ruff", "", "0.16.4")
 
 
-def test_rewrite_body_preserves_extras() -> None:
-    body, _ = rewrite_body('    "uvicorn[standard]>=0.29",', {"uvicorn": "0.30.0"})
-    assert body == '    "uvicorn[standard]>=0.30.0",'
+def test_rewrite_preserves_extras() -> None:
+    entry, _ = rewrite("uvicorn[standard]>=0.29", {"uvicorn": "0.30.0"})
+    assert entry == "uvicorn[standard]>=0.30.0"
 
 
-def test_rewrite_body_leaves_unknown_and_non_requirement_lines_alone() -> None:
-    original = '    # tooling\n\n    "hand-rolled>=1.0",'
-    body, changes = rewrite_body(original, {"pytest": "9.2.0"})
-    assert body == original
-    assert changes == []
+def test_rewrite_leaves_a_requirement_the_tree_does_not_name_alone() -> None:
+    entry, change = rewrite("hand-rolled>=1.0", {"pytest": "9.2.0"})
+    assert entry == "hand-rolled>=1.0"
+    assert change is None
+
+
+def test_rewrite_leaves_an_unparseable_requirement_alone() -> None:
+    """Reporting a malformed declaration is uv's job; this script only moves floors."""
+    entry, change = rewrite("not a requirement!!", {"pytest": "9.2.0"})
+    assert entry == "not a requirement!!"
+    assert change is None
 
 
 def test_update_dependencies_rewrites_the_prod_array(pyproject: Path) -> None:
@@ -212,4 +212,27 @@ def test_main_rejects_an_unknown_section(pyproject: Path) -> None:
 
 def test_main_rejects_a_missing_argument(pyproject: Path) -> None:
     assert main([]) == 1
+    assert pyproject.read_text(encoding="utf-8") == PYPROJECT_TEXT
+
+
+def test_rewriting_one_floor_touches_only_that_line(pyproject: Path) -> None:
+    """
+    The whole reason this reads the file as TOML instead of splicing it by hand.
+
+    Comments, blank lines, array formatting and every untouched entry must come back
+    byte-identical, so `make upgrade-deps` produces a diff of exactly the floors that
+    moved and nothing else.
+    """
+    assert update_dependencies("prod", PROD_TREE) == 0
+
+    before = PYPROJECT_TEXT.splitlines(keepends=True)
+    after = pyproject.read_text(encoding="utf-8").splitlines(keepends=True)
+    changed = [(old, new) for old, new in zip(before, after, strict=True) if old != new]
+    assert len(before) == len(after)
+    assert changed == [('    "httpx2>=2.12",\n', '    "httpx2>=2.12.3",\n')]
+
+
+def test_an_unchanged_array_is_not_rewritten_at_all(pyproject: Path) -> None:
+    """Nothing resolved differently, so the file is left exactly as it was found."""
+    assert update_dependencies("prod", "└── httpx2 v2.12\n") == 0
     assert pyproject.read_text(encoding="utf-8") == PYPROJECT_TEXT

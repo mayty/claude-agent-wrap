@@ -14,7 +14,8 @@ logs` viewer updates on filesystem events instead of polling, so agent-wrap must
 installed on a local filesystem. Its project table's session count now agrees with the
 sessions it lists. The project registry moved from `projects.txt` to a SQLite database,
 imported automatically on the next run. The base image is now Ubuntu 26.04, so the next
-`agent run` rebuilds every image once.
+`agent run` rebuilds every image once. Byte sizes are reported in IEC units (`2.5 GiB`),
+and `NO_COLOR` turns the colour off.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 

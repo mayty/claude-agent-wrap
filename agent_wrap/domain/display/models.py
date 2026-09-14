@@ -4,14 +4,14 @@
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.display.constants import Ansi
+    from agent_wrap.domain.display.constants import Style
 
 
 class RowItem(NamedTuple):
     """A table content row: cells, optional style, and tree-prefix length."""
 
     cells: list[str]
-    style: Ansi
+    style: Style
     prefix_len: int
 
 

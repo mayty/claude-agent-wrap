@@ -4,7 +4,10 @@
 import re
 import stat
 import uuid
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def sanitize_name(name: str) -> str:
@@ -15,17 +18,7 @@ def sanitize_name(name: str) -> str:
 
 
 def generate_uuid() -> str:
-    """
-    Generate a lowercase-hex UUID with dashes.
-
-    Uses /proc/sys/kernel/random/uuid where available, falling back to uuid4.
-    """
-    proc_uuid = Path("/proc/sys/kernel/random/uuid")
-    if proc_uuid.is_file():
-        try:
-            return proc_uuid.read_text().strip()
-        except OSError:
-            pass
+    """Generate a lowercase-hex UUID with dashes."""
     return str(uuid.uuid4())
 
 

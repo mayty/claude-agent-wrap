@@ -1,23 +1,37 @@
 # This file has been edited with the assistance of an AI tool.
 """Centralized display output — domain service."""
 
+import io
 import os
 import shutil
 import sys
 from getpass import getpass
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING
 
+from humanize import naturalsize
+from rich.cells import cell_len
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+from agent_wrap.domain.display.console import err, out
 from agent_wrap.domain.display.constants import (
+    ALIGN_TO_JUSTIFY,
+    CAPTURE_HEIGHT,
+    COUNT_UNITS,
     DEFAULT_TERM_WIDTH,
     ERROR_PREFIX,
-    KIBIBYTE,
     SECONDS_PER_DAY,
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
+    TABLE_BOX,
+    TABLE_CELL_OVERHEAD,
+    TABLE_CELL_PADDING,
+    TABLE_CONSOLE_SLACK,
     TERM_WIDTH_ENV,
     THOUSAND,
     WARNING_PREFIX,
-    Ansi,
+    Style,
 )
 from agent_wrap.domain.display.spinner import Spinner
 
@@ -26,17 +40,10 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from agent_wrap.constants import PollResult
-    from agent_wrap.domain.display.models import RowItemOrDivider, TableSpec
+    from agent_wrap.domain.display.models import RowItem, RowItemOrDivider, TableSpec
 
 
 class _TextStyler:
-    @staticmethod
-    def color(s: str, code: Ansi, *, stream: TextIO = sys.stdout) -> str:
-        """Wrap *s* in *code* / RESET when *stream* is a TTY, else return unchanged."""
-        if not stream.isatty():
-            return s
-        return f"{code}{s}{Ansi.RESET}"
-
     @staticmethod
     def prefixed(message: str, prefix: str) -> str:
         """
@@ -57,21 +64,7 @@ class _TableRenderer:
     @staticmethod
     def table_width(widths: list[int]) -> int:
         """Return a table's rendered width: each cell padded a space either side, plus borders."""
-        return sum(w + 2 for w in widths) + len(widths) + 1
-
-    @staticmethod
-    def elide_cell(text: str, width: int) -> str:
-        """
-        Cut *text* to *width*, marking that it was cut.
-
-        The last resort, reached only once chopping the tree has run out: losing the tail of
-        a sentence beats a row that runs past the border, and beats a row broken over three
-        lines. Nothing numeric is ever passed here -- `render_table` elides only the columns
-        its caller nominates, and half a figure is worse than no table.
-        """
-        if len(text) <= width:
-            return text
-        return text[: width - 1].rstrip() + "…"
+        return sum(w + TABLE_CELL_OVERHEAD for w in widths) + len(widths) + 1
 
     @staticmethod
     def squeeze(
@@ -89,7 +82,7 @@ class _TableRenderer:
         out = list(widths)
         overflow = _TableRenderer.table_width(out) - limit
         while overflow > 0:
-            shrinkable = [col for col in elide if out[col] > len(headers[col])]
+            shrinkable = [col for col in elide if out[col] > cell_len(headers[col])]
             if not shrinkable:
                 break
             # Keyed on the list itself: `shrinkable` holds indices, not widths.
@@ -103,67 +96,134 @@ class _TableRenderer:
         body: list[RowItemOrDivider],
         shared_widths: list[int],
     ) -> list[int]:
-        leading_widths = [len(spec.headers[j]) for j in range(spec.leading)]
+        leading_widths = [cell_len(spec.headers[j]) for j in range(spec.leading)]
         for item in body:
             if isinstance(item, str):  # divider sentinel
                 continue
             cells = item.cells
             for j in range(spec.leading):
-                leading_widths[j] = max(leading_widths[j], len(cells[j]))
+                leading_widths[j] = max(leading_widths[j], cell_len(cells[j]))
         return leading_widths + shared_widths
 
     @staticmethod
-    def render_row(
-        cells: Sequence[str],
-        aligns: Sequence[str],
-        widths: list[int],
-        style: Ansi = Ansi.NONE,
-        prefix_len: int = 0,
-    ) -> str:
-        parts = [f" {cell:{aligns[i]}{widths[i]}} " for i, cell in enumerate(cells)]
-        sep = _TextStyler.color("│", Ansi.DIM)
-        if style:
-            if prefix_len:
-                # Keep tree glyphs at the default colour; style only content after prefix.
-                first = parts[0]
-                head = first[: 1 + prefix_len]
-                tail = first[1 + prefix_len :]
-                parts[0] = head + _TextStyler.color(tail, style)
-                parts[1:] = [_TextStyler.color(p, style) for p in parts[1:]]
-            else:
-                parts = [_TextStyler.color(p, style) for p in parts]
-        return sep + sep.join(parts) + sep
+    def capture(width: int | None) -> Console:
+        """
+        Build a console that renders into a string instead of onto the terminal.
+
+        It takes its colour posture from the live stdout console, so a captured line
+        carries exactly the styling the same line would have been printed with -- and
+        none at all when stdout is piped or ``NO_COLOR`` is set. The colour *system* is
+        left on "auto": rich resolves that from COLORTERM and TERM, which say the same
+        thing here as they did there, so stating it would only repeat the detection.
+        """
+        stdout = out()
+        return Console(
+            file=io.StringIO(),
+            width=width,
+            # A height as well, because rich only honours an explicit width when a height
+            # is set too: without one it falls through to its own size probe, which
+            # answers 80x25 for a dumb terminal and would crop the table to fit.
+            height=CAPTURE_HEIGHT,
+            force_terminal=stdout.is_terminal,
+            no_color=stdout.no_color,
+            legacy_windows=False,
+        )
 
     @staticmethod
-    def make_border(widths: list[int], left: str, mid: str, right: str) -> str:
-        parts = ["─" * (w + 2) for w in widths]
-        return _TextStyler.color(left + mid.join(parts) + right, Ansi.DIM)
+    def styled(text: str, style: Style) -> str:
+        """
+        *text* with *style* baked in, for a caller collecting rendered lines.
+
+        `render_table` hands back strings rather than printing, so the table's own title
+        has to carry its escape codes the way the rows rich drew already do -- and drop
+        them under exactly the same conditions.
+        """
+        console = _TableRenderer.capture(None)
+        console.print(text, style=style or None, end="", overflow="ignore", crop=False)
+        return console.file.getvalue()  # pyrefly: ignore
+
+    @staticmethod
+    def cell_text(item: RowItem, index: int) -> Text:
+        """
+        One cell as rich text, carrying whatever styling the row asked for.
+
+        A row with a ``prefix_len`` keeps its tree glyphs at the default colour and styles
+        only what follows them, so the ladder a path tree draws stays one shape down the
+        column rather than changing colour row by row.
+        """
+        text = Text(item.cells[index])
+        if item.style:
+            text.stylize(item.style, item.prefix_len if index == 0 else 0)
+        return text
+
+    @staticmethod
+    def draw(spec: TableSpec, body: list[RowItemOrDivider], widths: list[int]) -> list[str]:
+        """
+        Render the table at exactly *widths*, and return its lines.
+
+        The widths are settled before rich is handed anything -- `squeeze` and `fit_table`
+        have already negotiated them against the terminal and against the other tables in
+        the group -- so the capture console is given room to spare and never re-negotiates.
+        """
+        table = Table(
+            box=TABLE_BOX,
+            padding=TABLE_CELL_PADDING,
+            header_style=Style.DIM,
+            border_style=Style.DIM,
+        )
+        for index, header in enumerate(spec.headers):
+            table.add_column(
+                header,
+                justify=ALIGN_TO_JUSTIFY[spec.aligns[index]],
+                width=widths[index],
+                no_wrap=True,
+                # Only a nominated column is ever narrower than its content, so only those
+                # can be cut -- and losing the tail of a sentence beats a row that runs
+                # past the border. Nothing numeric is nominated: half a figure reads as a
+                # wrong figure.
+                overflow="ellipsis" if index in spec.elide else "fold",
+            )
+        for item in body:
+            if isinstance(item, str):  # divider sentinel
+                table.add_section()
+                continue
+            table.add_row(*(_TableRenderer.cell_text(item, i) for i in range(len(item.cells))))
+
+        console = _TableRenderer.capture(_TableRenderer.table_width(widths) + TABLE_CONSOLE_SLACK)
+        console.print(table)
+        return console.file.getvalue().splitlines()  # pyrefly: ignore
 
 
 class DisplayService:
+    @staticmethod
+    def _write(console: Console, message: str, style: Style, *, end: str, flush: bool) -> None:
+        """
+        Print one already-composed line through *console*, styled whole.
+
+        ``end`` reaches rich as its own argument rather than being appended to the text,
+        so a caller asking for no newline gets none and the style still closes.
+        """
+        console.print(message, style=style or None, end=end, overflow="ignore", crop=False)
+        if flush:
+            console.file.flush()
+
     def info(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
-        print(message, end=end, flush=flush)
+        self._write(out(), message, Style.NONE, end=end, flush=flush)
 
     def error(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stderr, tagged ``[ERROR]``, with red styling (TTY only)."""
-        print(
-            _TextStyler.color(
-                _TextStyler.prefixed(message, ERROR_PREFIX), Ansi.BOLD_RED, stream=sys.stderr
-            ),
-            end=end,
-            flush=flush,
-            file=sys.stderr,
+        self._write(
+            err(), _TextStyler.prefixed(message, ERROR_PREFIX), Style.BOLD_RED, end=end, flush=flush
         )
 
     def warning(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stderr, tagged ``[WARNING]``, with yellow styling (TTY only)."""
-        print(
-            _TextStyler.color(
-                _TextStyler.prefixed(message, WARNING_PREFIX), Ansi.BOLD_YELLOW, stream=sys.stderr
-            ),
+        self._write(
+            err(),
+            _TextStyler.prefixed(message, WARNING_PREFIX),
+            Style.BOLD_YELLOW,
             end=end,
             flush=flush,
-            file=sys.stderr,
         )
 
     def alert(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
@@ -175,18 +235,17 @@ class DisplayService:
         `error` would be wrong for one — it precedes a prompt the reader may well answer
         yes to, so nothing has failed yet — and `warning`'s yellow is too quiet for it.
         """
-        print(
-            _TextStyler.color(
-                _TextStyler.prefixed(message, WARNING_PREFIX), Ansi.BOLD_RED, stream=sys.stderr
-            ),
+        self._write(
+            err(),
+            _TextStyler.prefixed(message, WARNING_PREFIX),
+            Style.BOLD_RED,
             end=end,
             flush=flush,
-            file=sys.stderr,
         )
 
     def success(self, message: str, *, end: str = "\n", flush: bool = False) -> None:
         """Print *message* to stdout with green styling (TTY only)."""
-        print(_TextStyler.color(message, Ansi.BOLD_GREEN), end=end, flush=flush)
+        self._write(out(), message, Style.BOLD_GREEN, end=end, flush=flush)
 
     def banner(self, text: str) -> None:
         """
@@ -195,46 +254,38 @@ class DisplayService:
         The marker sits inside the colour span but is plain text, so a redirect or a pipe
         keeps it once colour is stripped — the same division of labour as `error`'s tag.
         """
-        self.info(_TextStyler.color(f"> {text}", Ansi.MAGENTA, stream=sys.stdout))
+        self._write(out(), f"> {text}", Style.MAGENTA, end="\n", flush=False)
 
     def newline(self) -> None:
         self.info("")
 
     def format_count(self, n: int) -> str:
-        """Abbreviate large integers: ``1000`` → ``"1.0K"``, ``1_500_000`` → ``"1.50M"``."""
-        units = "K", "M", "G"
+        """
+        Abbreviate large integers: ``1000`` → ``"1.0K"``, ``1_500_000`` → ``"1.5M"``.
 
+        Deliberately not ``humanize``: these are the five numeric columns of the stats
+        table, and ``humanize.metric`` spells the same figure ``1.50 k`` -- a space and a
+        lowercase unit wider, in columns a fit loop is already negotiating for space.
+        """
         if n < THOUSAND:
             return str(n)
 
         value = float(n)
-        for unit in units:
+        for unit in COUNT_UNITS:
             value /= THOUSAND
             if value < THOUSAND:
                 return f"{value:.1f}{unit}"
 
-        return f"{value:.1f}{units[-1]}"
+        return f"{value:.1f}{COUNT_UNITS[-1]}"
 
     def format_bytes(self, n: int) -> str:
         """
-        Abbreviate a byte count with binary units: ``2048`` → ``"2.0KB"``.
+        Abbreviate a byte count with binary units: ``2048`` → ``"2.0 KiB"``.
 
-        The binary-stepped sibling of :meth:`format_count`. Sub-kilobyte values
-        render exactly (``0`` → ``"0B"``), which is a legitimate result when the
-        directories being measured are empty rather than an error.
+        Sub-kilobyte values render exactly (``0`` → ``"0 Bytes"``), which is a legitimate
+        result when the directories being measured are empty rather than an error.
         """
-        units = "KB", "MB", "GB"
-
-        if n < KIBIBYTE:
-            return f"{n}B"
-
-        value = float(n)
-        for unit in units:
-            value /= KIBIBYTE
-            if value < KIBIBYTE:
-                return f"{value:.1f}{unit}"
-
-        return f"{value:.1f}{units[-1]}"
+        return naturalsize(n, binary=True)
 
     def format_duration(self, seconds: float | None) -> str:
         """
@@ -303,27 +354,8 @@ class DisplayService:
         limit = self.terminal_width()
         if spec.elide and limit is not None:
             widths = _TableRenderer.squeeze(widths, spec.elide, spec.headers, limit)
-        out: list[str] = [_TextStyler.color(title, Ansi.DIM)]
-        out.append(_TableRenderer.make_border(widths, "┌", "┬", "┐"))
-        out.append(_TableRenderer.render_row(spec.headers, spec.aligns, widths, Ansi.DIM))
-        out.append(_TableRenderer.make_border(widths, "├", "┼", "┤"))
-        for item in body:
-            if isinstance(item, str):  # divider sentinel
-                out.append(_TableRenderer.make_border(widths, "├", "┼", "┤"))
-            else:
-                # Only a nominated column is ever narrower than its content, so only those
-                # can need cutting -- and `render_row`'s padding does not truncate, so the
-                # cut has to happen before it.
-                cells = [
-                    _TableRenderer.elide_cell(cell, widths[i]) if i in spec.elide else cell
-                    for i, cell in enumerate(item.cells)
-                ]
-                out.append(
-                    _TableRenderer.render_row(
-                        cells, spec.aligns, widths, item.style, item.prefix_len
-                    )
-                )
-        out.append(_TableRenderer.make_border(widths, "└", "┴", "┘"))
+        out = [_TableRenderer.styled(title, Style.DIM)]
+        out.extend(_TableRenderer.draw(spec, body, widths))
         return out
 
     def terminal_width(self) -> int | None:
@@ -370,7 +402,9 @@ class DisplayService:
         if limit is None:
             return 0
         widths = _TableRenderer.widths_for(spec, body, shared_widths)
-        floored = [len(spec.headers[i]) if i in spec.elide else w for i, w in enumerate(widths)]
+        floored = [
+            cell_len(spec.headers[i]) if i in spec.elide else w for i, w in enumerate(widths)
+        ]
         return max(0, _TableRenderer.table_width(floored) - limit)
 
     def compute_shared_widths(
@@ -390,12 +424,12 @@ class DisplayService:
         for spec, body in tables:
             leading = spec.leading
             for j in range(n_shared):
-                shared_widths[j] = max(shared_widths[j], len(spec.headers[leading + j]))
+                shared_widths[j] = max(shared_widths[j], cell_len(spec.headers[leading + j]))
             for item in body:
                 if isinstance(item, str):
                     continue
                 for j in range(n_shared):
-                    shared_widths[j] = max(shared_widths[j], len(item.cells[leading + j]))
+                    shared_widths[j] = max(shared_widths[j], cell_len(item.cells[leading + j]))
         return shared_widths
 
     def fit_table(

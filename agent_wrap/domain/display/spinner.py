@@ -7,8 +7,20 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING
 
+from rich.live import Live
+from rich.spinner import Spinner as RichSpinner
+from rich.text import Text
+
 from agent_wrap.constants import PollResult
-from agent_wrap.domain.display.constants import SPINNERS, Ansi
+from agent_wrap.domain.display.console import err
+from agent_wrap.domain.display.constants import (
+    DEFAULT_RICH_SPINNER,
+    MESSAGE_UPDATE_INTERVAL_SEC,
+    MILLISECONDS_PER_SECOND,
+    SPINNER_CYCLE_SEC,
+    SPINNER_REFRESH_PER_SEC,
+    SPINNERS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -18,18 +30,22 @@ class Spinner:
     def __init__(self, label: str) -> None:
         self._label = label
 
-    def _frame(self, frames: tuple[str, ...], n: int, message: str) -> str:
-        glyph = frames[n % len(frames)]
-        return f"{Ansi.CR}{Ansi.ERASE_LINE}{self._label}: {glyph} {message}"
-
     def _final(self, message: str) -> str:
-        return f"{Ansi.CR}{Ansi.ERASE_LINE}{self._label}: {message}"
+        return f"{self._label}: {message}"
 
-    def _choose_spinner(self) -> tuple[tuple[str, ...], float]:
+    def _choose_spinner(self, text: str) -> RichSpinner:
+        """
+        Pick one of the project's frame sets, as a rich spinner showing *text*.
+
+        rich ships a catalogue of its own but not these sets, so the frames and their
+        cadence are assigned over whichever entry was used to construct it. A set that
+        declares no duration gets the default one.
+        """
         frames, duration = random.choice(list(SPINNERS.values()))  # noqa: S311
-        duration = duration or 1.0
-        sleep_time = duration / len(frames)
-        return frames, sleep_time
+        spinner = RichSpinner(DEFAULT_RICH_SPINNER, Text(text))
+        spinner.frames = list(frames)
+        spinner.interval = (duration or SPINNER_CYCLE_SEC) / len(frames) * MILLISECONDS_PER_SECOND
+        return spinner
 
     def _done_line[T](
         self, done_message: str | Callable[[T], str | None] | None, result: T
@@ -59,36 +75,34 @@ class Spinner:
             print(f"{self._label}: {msg_fn()}", file=sys.stderr)
             return work()
 
-        frames, render_interval = self._choose_spinner()
-
         start = time.monotonic()
+        spinner = self._choose_spinner(f"{self._label}: {msg_fn()} (0s)")
+
         # The future is the typed carrier for the result and for anything *work* raises,
-        # neither of which a bare thread can hand back.
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        # neither of which a bare thread can hand back. Live drives the frames on its own
+        # refresh thread, so this loop only restates the message -- and `transient` takes
+        # the whole spinner line back off the terminal when the block ends, which is what
+        # lets the final line, or a traceback, start on a clean one.
+        with (
+            Live(
+                spinner, console=err(), refresh_per_second=SPINNER_REFRESH_PER_SEC, transient=True
+            ),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
             future = pool.submit(work)
-            n = 0
             while not future.done():
                 elapsed = int(time.monotonic() - start)
-                print(
-                    self._frame(frames, n, f"{msg_fn()} ({elapsed}s)"),
-                    end="",
-                    file=sys.stderr,
-                )
-                n += 1
-                wait([future], timeout=render_interval)
+                spinner.update(text=Text(f"{self._label}: {msg_fn()} ({elapsed}s)"))
+                wait([future], timeout=MESSAGE_UPDATE_INTERVAL_SEC)
 
         error = future.exception()
         if error is not None:
-            # Close the spinner line first: the traceback must not land mid-frame.
-            print(file=sys.stderr)
             raise error
 
         result = future.result()
         elapsed = int(time.monotonic() - start)
         final = self._done_line(done_message, result)
-        if final is None:
-            print(file=sys.stderr)
-        else:
+        if final is not None:
             print(self._final(f"{final} ({elapsed}s)"), file=sys.stderr)
         return result
 

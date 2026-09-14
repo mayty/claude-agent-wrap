@@ -25,7 +25,7 @@ from agent_wrap.domain.build.constants import (
     IMAGE_CLEANUP_REASON_TEXT,
     ImageCleanupReason,
 )
-from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem
 
 if TYPE_CHECKING:
@@ -64,7 +64,7 @@ class _CleanupReport:
             body.append(
                 RowItem(
                     cells=[IMAGE_CLEANUP_GROUP_TEXT[reason].format(count=len(rows)), "", ""],
-                    style=Ansi.DIM,
+                    style=Style.DIM,
                     prefix_len=0,
                 )
             )
@@ -75,7 +75,7 @@ class _CleanupReport:
                         image.size,
                         IMAGE_CLEANUP_REASON_TEXT[reason].format(detail=image.detail),
                     ],
-                    style=Ansi.BOLD_YELLOW,
+                    style=Style.BOLD_YELLOW,
                     prefix_len=0,
                 )
                 for image in rows

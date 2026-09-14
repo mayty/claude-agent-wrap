@@ -569,7 +569,7 @@ def test_human_output_reports_the_index_footprint_beside_the_tree(
     inspect_mock.build_report.return_value = _report()
     runner.invoke(cli_root, ["inspect"])
     out = _stdout(display_mock_service)
-    assert "288.0MB · 613 session(s), 47458 request(s)" in out
+    assert "288.0 MiB · 613 session(s), 47458 request(s)" in out
     assert "last ingest" in out
 
 

@@ -89,6 +89,8 @@ def _row(name: str, keys: list[str]) -> str:
     return f"<tr><td>{name}</td>{cells}</tr>"
 
 
+_FIVE_COLUMN_KEYS = ("IN", "OUT", "CW5", "CW1", "CR")
+
 # A minimal page with the 5-column schema (in, out, cw_5m, cw_1h, cr): an
 # existing family plus the new Fable family that the old fixed opus|sonnet|haiku
 # regex would have skipped.
@@ -104,6 +106,51 @@ def test_scrape_model_keys_includes_fable():
     keys = _BedrockPricing.scrape_model_keys(_PAGE_HTML)
     assert "claude-opus-4-8" in keys
     assert "claude-fable-5" in keys
+
+
+def _sectioned_page(first: str, second: str) -> str:
+    """Return a page pricing the same model under two ``<h2>`` tiers, in the order given."""
+    heading = {
+        "geo": "Geo and In-region Cross-region Inference",
+        "global": "Global Cross-region Inference",
+    }
+    return "".join(
+        f"<h2>{heading[tier]}</h2><table>"
+        + _row("Claude Opus 4.8", [f"{tier[0].upper()}_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+        for tier in (first, second)
+    )
+
+
+@pytest.mark.parametrize(("first", "second"), [("global", "geo"), ("geo", "global")])
+def test_scrape_model_keys_prefers_the_geo_section(first: str, second: str) -> None:
+    """A model listed under both tiers is priced from geo, whichever heading came first."""
+    keys = _BedrockPricing.scrape_model_keys(_sectioned_page(first, second))
+    _, price_keys = keys["claude-opus-4-8"]
+    assert price_keys[0].startswith("G_")
+
+
+def test_scrape_model_keys_defaults_to_global_without_a_heading() -> None:
+    keys = _BedrockPricing.scrape_model_keys(_PAGE_HTML)
+    assert keys["claude-opus-4-8"][1] == ["O_IN", "O_OUT", "O_CW5", "O_CW1", "O_CR"]
+
+
+def test_scrape_model_keys_ignores_an_unrelated_heading() -> None:
+    """Only the two named headings switch tier; any other <h2> leaves it alone."""
+    page = (
+        "<h2>Geo and In-region Cross-region Inference</h2>"
+        "<h2>Provisioned Throughput</h2>"
+        "<table>" + _row("Claude Opus 4.8", [f"E_{k}" for k in _FIVE_COLUMN_KEYS]) + "</table>"
+    )
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-opus-4-8"]
+    assert price_keys == ["E_IN", "E_OUT", "E_CW5", "E_CW1", "E_CR"]
+
+
+def test_scrape_model_keys_reads_markup_the_page_embedded_as_json() -> None:
+    """The page carries part of itself JSON-escaped; the tags must be real before parsing."""
+    page = "<table>" + _row("Claude Fable 5", [f"F_{k}" for k in _FIVE_COLUMN_KEYS]) + "</table>"
+    escaped = page.replace("<", "\\u003c").replace(">", "\\u003e")
+    assert _BedrockPricing.scrape_model_keys(escaped) == _BedrockPricing.scrape_model_keys(page)
 
 
 def test_build_pricing_table_resolves_fable_row():

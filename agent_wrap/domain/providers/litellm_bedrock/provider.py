@@ -5,16 +5,22 @@ import html
 import json
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
+from bs4 import BeautifulSoup
+
 from agent_wrap.domain.providers.base import Provider
+from agent_wrap.domain.providers.constants import HTML_PARSER
 from agent_wrap.domain.providers.litellm_bedrock.constants import (
     DEFAULT_REGION_LABEL,
+    GEO_SECTION,
+    GLOBAL_SECTION,
+    JSON_ESCAPED_MARKUP,
     MODEL_KEY_RE,
     MODEL_NAME_RE,
     PRICING_DATA_URL,
     PRICING_PAGE_URL,
     PRICING_SCHEMAS,
-    ROW_RE,
-    SECTION_RE,
+    SECTION_HEADING_RE,
+    SECTION_RANK,
 )
 from agent_wrap.domain.providers.pricing import PricingCache
 
@@ -29,36 +35,33 @@ class _BedrockPricing:
 
     @staticmethod
     def scrape_model_keys(page_html: str) -> dict[str, tuple[tuple[str, ...], list[str]]]:
-        src = html.unescape(page_html).replace("\\u003c", "<").replace("\\u003e", ">")
-        src = src.replace('\\"', '"')
+        """
+        Map each Claude model on the pricing page to its column schema and price keys.
 
-        section_starts: list[tuple[int, str]] = [
-            (m.start(), "geo" if m.group(1).lower().startswith("geo") else "global")
-            for m in SECTION_RE.finditer(src)
-        ]
+        Headings and rows are walked in document order, so the ``<h2>`` a row sits under
+        is simply whichever one came before it -- the tier a price belongs to, which no
+        amount of looking at the row alone can tell.
+        """
+        src = html.unescape(page_html)
+        for escaped, literal in JSON_ESCAPED_MARKUP:
+            src = src.replace(escaped, literal)
 
-        def section_at(pos: int) -> str:
-            cur = "global"
-            for start, name in section_starts:
-                if start <= pos:
-                    cur = name
-                else:
-                    break
-            return cur
-
-        rank = {"geo": 1, "global": 0}
+        section = GLOBAL_SECTION
         out: dict[str, tuple[int, tuple[str, ...], list[str]]] = {}
-        for m in ROW_RE.finditer(src):
-            row = m.group("row")
-            nm = MODEL_NAME_RE.search(row)
+        for node in BeautifulSoup(src, HTML_PARSER).find_all(["h2", "tr"]):
+            text = node.get_text(" ", strip=True)
+            if node.name == "h2":
+                if SECTION_HEADING_RE.match(text):
+                    section = GEO_SECTION if text.lower().startswith("geo") else GLOBAL_SECTION
+                continue
+            nm = MODEL_NAME_RE.search(text)
             if not nm:
                 continue
-            keys = MODEL_KEY_RE.findall(row)
+            keys = MODEL_KEY_RE.findall(text)
             schema = PRICING_SCHEMAS.get(len(keys))
             if schema is None:
                 continue
-            tier_name = section_at(m.start())
-            tier_rank = rank[tier_name]
+            tier_rank = SECTION_RANK[section]
             canonical = f"claude-{nm.group(1).lower()}-{nm.group(2).replace('.', '-')}"
             prev = out.get(canonical)
             if prev is None or tier_rank > prev[0]:

@@ -30,7 +30,10 @@ marking each row the omission touched.
 """
 
 import time
+from datetime import timedelta
 from typing import TYPE_CHECKING
+
+from humanize import naturaltime
 
 from agent_wrap.cli.inspect.constants import (
     AGENT_TABLE,
@@ -52,7 +55,7 @@ from agent_wrap.constants import (
     RUNNING_STATUS,
     SKIP_SAFETY_CHECK_ENV,
 )
-from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem
 from agent_wrap.lib.path_tree import build_path_tree, expand_widest_chain, walk_path_tree
 
@@ -113,20 +116,20 @@ class Cells:
         """
         row = line.node.row
         if row is None:
-            return RowItem(cells=[line.label, "", ""], style=Ansi.DIM, prefix_len=line.prefix_len)
+            return RowItem(cells=[line.label, "", ""], style=Style.DIM, prefix_len=line.prefix_len)
         return RowItem(
             cells=[line.label, row.image, row.reason],
-            style=Ansi.BOLD_YELLOW,
+            style=Style.BOLD_YELLOW,
             prefix_len=line.prefix_len,
         )
 
     @staticmethod
-    def row_style(status: str) -> Ansi:
+    def row_style(status: str) -> Style:
         """Flag anything not running; leave a healthy row unstyled."""
-        return Ansi.NONE if status == RUNNING_STATUS else Ansi.BOLD_YELLOW
+        return Style.NONE if status == RUNNING_STATUS else Style.BOLD_YELLOW
 
     @staticmethod
-    def row(label: str, value: str, style: Ansi = Ansi.NONE) -> RowItem:
+    def row(label: str, value: str, style: Style = Style.NONE) -> RowItem:
         return RowItem(cells=[label, value], style=style, prefix_len=0)
 
 
@@ -250,12 +253,12 @@ class Tables:
         """
         body: list[RowItemOrDivider] = []
         if root is not None:
-            body.append(RowItem(cells=[root.name, "", ""], style=Ansi.DIM, prefix_len=0))
+            body.append(RowItem(cells=[root.name, "", ""], style=Style.DIM, prefix_len=0))
             body.extend(Cells.stale_row(line) for line in walk_path_tree(root))
         body.extend(
             RowItem(
                 cells=[UNKNOWN, row.image, row.reason],
-                style=Ansi.BOLD_YELLOW,
+                style=Style.BOLD_YELLOW,
                 prefix_len=0,
             )
             for row in unplaceable
@@ -315,7 +318,7 @@ class Details:
         ]
 
     @staticmethod
-    def logs_index(storage: StorageRow, display: DisplayService) -> tuple[str, Ansi]:
+    def logs_index(storage: StorageRow, display: DisplayService) -> tuple[str, Style]:
         """
         Report the index's size, what it holds, and how far behind the log files it is.
 
@@ -331,14 +334,14 @@ class Details:
             parts.append("never ingested")
         else:
             age = time.time() - storage.index_last_ingested
-            parts.append(f"last ingest {display.format_duration(age)} ago")
+            parts.append(f"last ingest {naturaltime(timedelta(seconds=age))}")
         if storage.index_behind:
             parts.append(f"{storage.index_behind} behind — run `agent reindex`")
-            return " · ".join(parts), Ansi.BOLD_YELLOW
-        return " · ".join(parts), Ansi.NONE
+            return " · ".join(parts), Style.BOLD_YELLOW
+        return " · ".join(parts), Style.NONE
 
     @staticmethod
-    def logs_autostart(autostart: AutostartRow) -> tuple[str, Ansi]:
+    def logs_autostart(autostart: AutostartRow) -> tuple[str, Style]:
         """
         Whether the next `agent run` would start the viewer, and what decides it.
 
@@ -347,13 +350,13 @@ class Details:
         and does nothing otherwise reads as the setting not working.
         """
         if autostart.effective:
-            return "on", Ansi.NONE
+            return "on", Style.NONE
         if autostart.requested is False:
-            return f"OFF ({AUTOSTART_LOGS_ENV})", Ansi.NONE
+            return f"OFF ({AUTOSTART_LOGS_ENV})", Style.NONE
         reason = f"{autostart.declining_provider} does not use it"
         if autostart.requested:
-            return f"requested but IGNORED ({reason})", Ansi.BOLD_YELLOW
-        return f"OFF ({reason})", Ansi.NONE
+            return f"requested but IGNORED ({reason})", Style.BOLD_YELLOW
+        return f"OFF ({reason})", Style.NONE
 
     @staticmethod
     def secrets_rows(rows: list[ProviderRow]) -> list[RowItem]:
@@ -369,9 +372,9 @@ class Details:
         for row in rows:
             label = f"{row.name} (default)" if row.is_default else row.name
             if row.secrets_ok:
-                out.append(Cells.row(label, "Secrets OK", Ansi.BOLD_GREEN))
+                out.append(Cells.row(label, "Secrets OK", Style.BOLD_GREEN))
             else:
-                out.append(Cells.row(label, "Secrets NOT SET", Ansi.DIM))
+                out.append(Cells.row(label, "Secrets NOT SET", Style.DIM))
         return out
 
     @staticmethod
@@ -431,18 +434,18 @@ class Details:
         running = wrapper.python_version
         pinned = wrapper.python_pinned
         if running is None:
-            return Cells.row("interpreter", "not provisioned", Ansi.BOLD_YELLOW)
+            return Cells.row("interpreter", "not provisioned", Style.BOLD_YELLOW)
         if pinned and pinned != running:
             return Cells.row(
                 "interpreter",
                 f"{running} (pinned {pinned}) -- run bin/agent-bootstrap",
-                Ansi.BOLD_YELLOW,
+                Style.BOLD_YELLOW,
             )
         if wrapper.deps_current is False:
             return Cells.row(
                 "interpreter",
                 f"{running} (dependencies stale) -- run bin/agent-bootstrap",
-                Ansi.BOLD_YELLOW,
+                Style.BOLD_YELLOW,
             )
         return Cells.row("interpreter", running)
 
@@ -461,7 +464,7 @@ class Details:
             return Cells.row(
                 "base image",
                 f"{environment.base_image} MISSING (built on the next `agent run`)",
-                Ansi.BOLD_YELLOW,
+                Style.BOLD_YELLOW,
             )
         state = f"{environment.base_image} present"
         if environment.base_image_version:
@@ -470,10 +473,10 @@ class Details:
             state += (
                 f" -- STALE, rebuilt on the next `agent run`: {environment.base_image_stale_reason}"
             )
-            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
+            return Cells.row("base image", state, Style.BOLD_YELLOW)
         if environment.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
-            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
+            return Cells.row("base image", state, Style.BOLD_YELLOW)
         return Cells.row("base image", state)
 
     @staticmethod
@@ -497,22 +500,22 @@ class Details:
                 Cells.row(
                     PROJECT_IMAGE_LABEL,
                     f"{project.image} MISSING (built on the next `agent run`)",
-                    Ansi.BOLD_YELLOW,
+                    Style.BOLD_YELLOW,
                 )
             ]
         state = f"{project.image} present"
         if project.claude_version:
             state += f" (Claude Code v{project.claude_version})"
-        style = Ansi.NONE
+        style = Style.NONE
         if project.stale_reason:
             state += f" -- STALE, rebuilt on the next `agent run`: {project.stale_reason}"
-            style = Ansi.BOLD_YELLOW
+            style = Style.BOLD_YELLOW
         if project.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
-            style = Ansi.BOLD_YELLOW
+            style = Style.BOLD_YELLOW
         if project.is_legacy:
             state += LEGACY_DOCKERFILE_NOTE
-            style = Ansi.BOLD_YELLOW
+            style = Style.BOLD_YELLOW
         return [Cells.row(PROJECT_IMAGE_LABEL, state, style)]
 
     @staticmethod
@@ -527,7 +530,7 @@ class Details:
         return Cells.row("network", f"{environment.network_name} absent (created on next launch)")
 
     @staticmethod
-    def host_network(environment: EnvironmentRow) -> tuple[str, Ansi]:
+    def host_network(environment: EnvironmentRow) -> tuple[str, Style]:
         """
         Whether AGENT_USE_HOST_NETWORK is set and whether it will actually apply.
 
@@ -535,10 +538,10 @@ class Details:
         otherwise reads as the setting simply not working.
         """
         if not environment.host_network_requested:
-            return "off", Ansi.NONE
+            return "off", Style.NONE
         if environment.host_network_effective:
-            return "ON", Ansi.NONE
-        return "requested but IGNORED (only honored on WSL)", Ansi.BOLD_YELLOW
+            return "ON", Style.NONE
+        return "requested but IGNORED (only honored on WSL)", Style.BOLD_YELLOW
 
     @staticmethod
     def day_boundary(environment: EnvironmentRow) -> str:

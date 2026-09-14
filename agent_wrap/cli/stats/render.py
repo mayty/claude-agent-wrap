@@ -29,7 +29,7 @@ from agent_wrap.cli.stats.constants import PROJECTS_TABLE, RECENT_TABLE
 from agent_wrap.cli.stats.models import AggregatedDayRows, BuildModelSection, CostFn
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
 from agent_wrap.constants import DIVIDER, ORPHANED_LABEL
-from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
 from agent_wrap.lib.path_tree import expand_widest_chain
@@ -95,17 +95,17 @@ def _build_total_body(
                     display=display,
                 ),
             ],
-            style=Ansi.DIM,
+            style=Style.DIM,
             prefix_len=0,
         )
     )
     for dr in display_rows:
         if dr.transient:
-            style = Ansi.CYAN
+            style = Style.CYAN
         elif dr.is_structural:
-            style = Ansi.DIM
+            style = Style.DIM
         else:
-            style = Ansi.NONE
+            style = Style.NONE
         body.append(
             RowItem(
                 cells=[
@@ -136,7 +136,7 @@ def _build_total_body(
                         display=display,
                     ),
                 ],
-                style=Ansi.CYAN,
+                style=Style.CYAN,
                 prefix_len=0,
             )
         )
@@ -203,7 +203,7 @@ def _build_recent_body(
             body.append(
                 RowItem(
                     cells=[d, *usage_cells(b, cost=cost_str, display=display)],
-                    style=Ansi.NONE,
+                    style=Style.NONE,
                     prefix_len=0,
                 )
             )
@@ -219,7 +219,7 @@ def _build_recent_body(
                         display=display,
                     ),
                 ],
-                style=Ansi.BOLD_YELLOW,
+                style=Style.BOLD_YELLOW,
                 prefix_len=0,
             )
         )
@@ -238,7 +238,7 @@ def _build_recent_body(
                         scale=n_days,
                     ),
                 ],
-                style=Ansi.BOLD_YELLOW,
+                style=Style.BOLD_YELLOW,
                 prefix_len=0,
             )
         )

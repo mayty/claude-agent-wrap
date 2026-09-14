@@ -29,3 +29,9 @@ PRICING_FETCH_TIMEOUT = 15
 
 # Filename of a provider's cached pricing table, under its own state directory.
 PRICING_CACHE_FILENAME = "pricing.json"
+
+# The BeautifulSoup backend every pricing scraper parses with. Named rather than left to
+# BeautifulSoup's own pick, which is whichever of lxml/html5lib happens to be importable:
+# this is the stdlib one, so a page parses the same way on every host and no compiled
+# parser can slip into the dependency set by being installed for something else.
+HTML_PARSER = "html.parser"

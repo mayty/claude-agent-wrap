@@ -8,6 +8,11 @@ import pytest
 from agent_wrap.constants import PollResult
 from agent_wrap.domain.display.service import DisplayService
 
+# The sequence Live writes to take the spinner back off the terminal: erase the line the
+# cursor was returned to. Spelled out rather than imported, so the test answers for what a
+# terminal receives rather than for whatever the code happens to send.
+ERASE_LINE = "\033[2K"
+
 if TYPE_CHECKING:
     import pytest_mock
 
@@ -65,7 +70,9 @@ def test_spin_while_done_message_omitted(
     mocker.patch("sys.stderr.isatty", return_value=True)
     ds.spin_while(label="my-op", message="doing…", work=lambda: None)
     err = capsys.readouterr().err
-    assert err.endswith("\n")
+    # Nothing settles on the line: the spinner is taken back off the terminal and the
+    # cursor left where it started, so the next output is not preceded by a blank line.
+    assert err.endswith(ERASE_LINE)
     assert "done" not in err
 
 
@@ -95,8 +102,9 @@ def test_spin_while_propagates_work_error_tty(
         ds.spin_while(label="my-op", message="doing…", done_message="done", work=work)
 
     err = capsys.readouterr().err
-    # The spinner line is closed before the error surfaces, and never claims success.
-    assert err.endswith("\n")
+    # The spinner line is erased before the error surfaces, so a traceback starts on a
+    # clean line -- and it never claims success.
+    assert err.endswith(ERASE_LINE)
     assert "my-op: done" not in err
 
 
@@ -134,7 +142,7 @@ def test_poll_until_success_tty(
     assert result is True
     err = capsys.readouterr().err
     assert "my-op: ready" in err
-    assert "\033[2K" in err
+    assert ERASE_LINE in err
 
 
 def test_poll_until_failure_tty(
@@ -150,7 +158,8 @@ def test_poll_until_failure_tty(
         timeout=10,
     )
     assert result is False
-    assert capsys.readouterr().err.endswith("\n")
+    # A failed poll has no done_message, so the spinner is simply erased.
+    assert capsys.readouterr().err.endswith(ERASE_LINE)
 
 
 def test_poll_until_pending_then_success(

@@ -270,6 +270,22 @@ def test_is_newer_version_false_on_invalid_versions() -> None:
     assert is_newer_version("", "2.0.51") is False
 
 
+def test_is_newer_version_sees_a_prerelease_latest() -> None:
+    """An npm prerelease tag used to hit the numeric parse and read as 'no update'."""
+    assert is_newer_version("2.0.51", "2.1.0-beta.1") is True
+    assert is_newer_version("2.0.51", "2.1.0rc1") is True
+
+
+def test_is_newer_version_orders_a_prerelease_below_its_release() -> None:
+    assert is_newer_version("2.1.0-beta.1", "2.1.0") is True
+    assert is_newer_version("2.1.0", "2.1.0-beta.1") is False
+
+
+def test_is_newer_version_false_on_an_unparseable_prerelease_label() -> None:
+    """PEP 440 rejects an arbitrary label, and an unknown latest must not look newer."""
+    assert is_newer_version("2.0.51", "0.0.0-nightly.20260101") is False
+
+
 def test_user_args_root_when_rootless(mocker: pytest_mock.MockFixture) -> None:
     # Rootless maps container-root to the host user, so pin to 0:0: this writes
     # bind mounts as the host user AND overrides any non-root USER baked into an

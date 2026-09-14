@@ -1,10 +1,13 @@
 # This file has been edited with the assistance of an AI tool.
+import io
 import json
 import os
-import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from dockerfile_parse import DockerfileParser
 
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
@@ -24,6 +27,11 @@ from agent_wrap.constants import (
     UpdateCheck,
 )
 from agent_wrap.domain.build.constants import (
+    AGENT_ENABLE_STARTUP_RE,
+    AGENT_NAME_RE,
+    AGENT_NAME_VALUE_RE,
+    AGENT_RUN_ARGS_RE,
+    AGENT_USER_RE,
     BASE_BUILD_CACHE_NOTE,
     BASE_FROM_RE,
     BUILD_ITERATION_BUILD_ARG,
@@ -32,7 +40,6 @@ from agent_wrap.domain.build.constants import (
     CLAUDE_CACHE_BUST_BUILD_ARG,
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     DOCKER_NONE,
-    FROM_RE,
     PINNED_SIDECAR_IMAGES,
     PROJECT_BUILD_CACHE_NOTE,
     SHORT_IMAGE_ID_LEN,
@@ -74,8 +81,21 @@ from agent_wrap.lib.flock import file_lock, try_file_lock
 from agent_wrap.lib.utils import generate_uuid
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.updates.service import UpdateService
+
+
+def read_dockerfile(path: Path) -> DockerfileParser:
+    """
+    Parse the Dockerfile at *path*, whatever it is called.
+
+    Read through ``fileobj`` rather than ``path``: ``DockerfileParser``'s ``path`` decides
+    it was handed a directory unless the name ends in exactly ``Dockerfile``, so the
+    deprecated ``Dockerfile.agent`` would send it looking for ``Dockerfile.agent/Dockerfile``.
+    """
+    return DockerfileParser(fileobj=io.StringIO(path.read_text(encoding="utf-8")))
 
 
 class BuildService:
@@ -180,32 +200,39 @@ class BuildService:
         """
         info = DockerfileAgentInfo()
 
-        with open(dockerfile_path) as f:
-            for raw_line in f:
-                line = raw_line.strip()
+        # The instruction stream rather than the raw lines: the two things a hand-rolled
+        # line sweep gets wrong -- a "\"-continued EXPOSE and a lowercase "from" -- are
+        # exactly what the parser normalizes. A "# agent-*" directive arrives as a
+        # COMMENT entry whose value has the "#" and the space after it already removed.
+        for entry in read_dockerfile(dockerfile_path).structure:
+            instruction = entry["instruction"]
+            value = entry["value"]
 
-                if match := re.match(r"^#\s*agent-user:\s*(\S+)", line):
-                    info.agent_user = match.group(1)
+            if instruction == "EXPOSE":
+                info.expose_ports.extend(token.split("/")[0] for token in value.split())
+                continue
+            if instruction != "COMMENT":
+                continue
 
-                elif match := re.match(r"^#\s*agent-run-args:\s*(.+)", line):
-                    info.extra_run_args.extend(match.group(1).split())
+            if match := AGENT_USER_RE.match(value):
+                info.agent_user = match.group(1)
 
-                # New location only: a project still on the deprecated path is told to
-                # migrate rather than having its startup script silently ignored.
-                elif match := re.match(r"^#\s*agent-enable-startup:\s*(\S+)", line):
-                    if legacy:
-                        msg = (
-                            f"'# agent-enable-startup:' is only supported in "
-                            f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'. Move "
-                            f"'{LEGACY_AGENT_DOCKERFILE_NAME}' there to use a startup script."
-                        )
-                        raise DockerfileDirectiveError(msg)
-                    info.startup_timeout = self.parse_startup_value(match.group(1))
+            elif match := AGENT_RUN_ARGS_RE.match(value):
+                # shlex, not str.split: a bind mount whose host path contains a space is
+                # written quoted, and splitting on whitespace would tear it in two.
+                info.extra_run_args.extend(shlex.split(match.group(1)))
 
-                elif match := re.match(r"^[Ee][Xx][Pp][Oo][Ss][Ee]\s+(.+)", line):
-                    for token in match.group(1).split():
-                        port = token.split("/")[0]
-                        info.expose_ports.append(port)
+            # New location only: a project still on the deprecated path is told to
+            # migrate rather than having its startup script silently ignored.
+            elif match := AGENT_ENABLE_STARTUP_RE.match(value):
+                if legacy:
+                    msg = (
+                        f"'# agent-enable-startup:' is only supported in "
+                        f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'. Move "
+                        f"'{LEGACY_AGENT_DOCKERFILE_NAME}' there to use a startup script."
+                    )
+                    raise DockerfileDirectiveError(msg)
+                info.startup_timeout = self.parse_startup_value(match.group(1))
 
         return info
 
@@ -267,19 +294,20 @@ class BuildService:
         )
 
         if location.path is not None:
-            with open(location.path) as f:
-                lines = f.readlines()
+            parser = read_dockerfile(location.path)
 
-            for line in lines:
-                if match := re.match(r"^#\s*agent-name:\s*(\S+)", line.strip()):
+            for entry in parser.structure:
+                if entry["instruction"] != "COMMENT":
+                    continue
+                if match := AGENT_NAME_RE.match(entry["value"]):
                     name = match.group(1)
-                    if not re.match(r"^[a-z0-9_.\-]+$", name):
+                    if not AGENT_NAME_VALUE_RE.match(name):
                         msg = (
                             f"agent-name '{name}' must match [a-z0-9_.-]+ "
                             f"(Docker image names are lowercase)"
                         )
                         raise SystemExit(msg)
-                    self._check_inherits_base(location.path, lines)
+                    self._check_inherits_base(location.path, parser.parent_images)
                     # Context stays the project root, not the Dockerfile's own
                     # directory, so `COPY <project-relative-path>` keeps working.
                     return ResolvedImage(
@@ -299,7 +327,7 @@ class BuildService:
             context=TOOL_DIR,
         )
 
-    def _check_inherits_base(self, dockerfile: Path, lines: list[str]) -> None:
+    def _check_inherits_base(self, dockerfile: Path, parent_images: Sequence[str]) -> None:
         """
         Require the *final* ``FROM`` of a project Dockerfile to be the base image.
 
@@ -310,11 +338,11 @@ class BuildService:
         Inheriting from the base is what makes a project image's staleness answerable:
         the base image's id is stamped onto it at build time, and a project image built
         on something else could never be told apart from a current one.
+
+        *parent_images* comes from ``dockerfile-parse``, so it is one entry per stage with
+        any ``AS <name>`` already removed, and the last is the final stage's.
         """
-        from_image = ""
-        for line in lines:
-            if match := FROM_RE.match(line.strip()):
-                from_image = match.group(1)
+        from_image = parent_images[-1] if parent_images else ""
 
         if not from_image:
             msg = f"{dockerfile} must contain a 'FROM {BASE_IMAGE_NAME}' line"

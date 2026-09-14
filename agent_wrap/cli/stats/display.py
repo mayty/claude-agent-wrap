@@ -8,7 +8,7 @@ from agent_wrap.cli.stats.constants import SOURCE_TABLE
 from agent_wrap.cli.stats.render import range_label, render_core, usage_cells
 from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
 from agent_wrap.constants import DIVIDER, USAGE_SOURCES
-from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem
 from agent_wrap.domain.pricing.models import Bucket
 
@@ -57,7 +57,7 @@ def _build_model_section(
     blanks = [""] * leading_blanks
     body: list[RowItemOrDivider] = []
     for dr in _model_display_rows(totals_by_model, display):
-        style = Ansi.DIM if dr.is_structural else Ansi.NONE
+        style = Style.DIM if dr.is_structural else Style.NONE
         body.append(
             RowItem(
                 cells=[
@@ -124,7 +124,7 @@ def render_source_breakdown(
         source: Bucket.merged(by_model.values()) for source, by_model in totals_by_source.items()
     }
 
-    def _row(label: str, b: Bucket, style: Ansi) -> RowItem:
+    def _row(label: str, b: Bucket, style: Style) -> RowItem:
         return RowItem(
             cells=[
                 label,
@@ -141,14 +141,14 @@ def render_source_breakdown(
     # Unrecoverable rows carry msgs but zero tokens; the msgs guard keeps them
     # (intentionally surfaced) while dropping sources with no activity at all.
     active = [(s, merged[s]) for s in USAGE_SOURCES if s in merged and merged[s].msgs > 0]
-    body: list[RowItemOrDivider] = [_row(s, b, Ansi.NONE) for s, b in active]
+    body: list[RowItemOrDivider] = [_row(s, b, Style.NONE) for s, b in active]
     total = Bucket.merged(b for _s, b in active)
 
     if not body:
         return ""
 
     body.append(DIVIDER)
-    body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
+    body.append(_row("TOTAL", total, Style.BOLD_YELLOW))
 
     title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
     return "\n".join(display.render_table(title, SOURCE_TABLE, body))

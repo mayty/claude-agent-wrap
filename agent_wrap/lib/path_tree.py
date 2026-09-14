@@ -40,6 +40,8 @@ import operator
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from rich.cells import cell_len
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -243,7 +245,7 @@ def _max_label_width[T](node: PathTreeNode[T], depth: int) -> int:
     """Length of the longest label a walk of this subtree would yield."""
     widest = 0
     for child in node.children.values():
-        width = depth + len(child.name) + (1 if child.children else 0)
+        width = depth + cell_len(child.name) + (1 if child.children else 0)
         widest = max(widest, width, _max_label_width(child, depth + 1))
     return widest
 
@@ -261,7 +263,7 @@ def _widest_folded[T](
     """
     for child in node.children.values():
         if "/" in child.name:
-            width = depth + len(child.name) + (1 if child.children else 0)
+            width = depth + cell_len(child.name) + (1 if child.children else 0)
             if best is None or width > best[0]:
                 best = (width, node, child)
         best = _widest_folded(child, depth + 1, best)

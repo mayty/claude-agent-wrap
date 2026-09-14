@@ -5,11 +5,19 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from agent_wrap.domain.display.constants import ERROR_PREFIX, WARNING_PREFIX, Ansi
+from agent_wrap.domain.display.constants import ERROR_PREFIX, WARNING_PREFIX
 from agent_wrap.domain.display.service import DisplayService
 
 if TYPE_CHECKING:
     import pytest_mock
+
+# The SGR sequences the console emits for the palette, spelled out rather than derived
+# from `Style`: these are what a terminal actually receives, and a test that recomputed
+# them from the same names the code uses could not tell a renamed style from a wrong one.
+RED = "\033[1;31m"
+YELLOW = "\033[1;33m"
+PURPLE = "\033[35m"
+RESET = "\033[0m"
 
 MESSAGE = "Error: '.claude-agent-wrap/startup.sh' exceeded its 10s timeout; aborting launch."
 BANNER_TEXT = "Agent instance: 3f9a1c"
@@ -27,7 +35,7 @@ def test_error_is_tagged_and_red_on_a_tty(
     mocker.patch("sys.stderr.isatty", return_value=True)
     ds.error(MESSAGE)
     # The tag sits inside the colour span, so it is red too.
-    assert capsys.readouterr().err == f"{Ansi.BOLD_RED}{ERROR_PREFIX}{MESSAGE}{Ansi.RESET}\n"
+    assert capsys.readouterr().err == f"{RED}{ERROR_PREFIX}{MESSAGE}{RESET}\n"
 
 
 def test_error_keeps_its_tag_off_a_tty(
@@ -46,7 +54,7 @@ def test_warning_is_tagged_and_yellow_on_a_tty(
 ) -> None:
     mocker.patch("sys.stderr.isatty", return_value=True)
     ds.warning(MESSAGE)
-    assert capsys.readouterr().err == f"{Ansi.BOLD_YELLOW}{WARNING_PREFIX}{MESSAGE}{Ansi.RESET}\n"
+    assert capsys.readouterr().err == f"{YELLOW}{WARNING_PREFIX}{MESSAGE}{RESET}\n"
 
 
 def test_alert_carries_the_warning_tag_in_red_on_a_tty(
@@ -55,7 +63,7 @@ def test_alert_carries_the_warning_tag_in_red_on_a_tty(
     """The loud warning: `warning`'s tag, `error`'s colour."""
     mocker.patch("sys.stderr.isatty", return_value=True)
     ds.alert(MESSAGE)
-    assert capsys.readouterr().err == f"{Ansi.BOLD_RED}{WARNING_PREFIX}{MESSAGE}{Ansi.RESET}\n"
+    assert capsys.readouterr().err == f"{RED}{WARNING_PREFIX}{MESSAGE}{RESET}\n"
 
 
 def test_alert_keeps_its_tag_off_a_tty(
@@ -73,7 +81,7 @@ def test_banner_is_marked_and_purple_on_a_tty(
 ) -> None:
     mocker.patch("sys.stdout.isatty", return_value=True)
     ds.banner(BANNER_TEXT)
-    assert capsys.readouterr().out == f"{Ansi.MAGENTA}> {BANNER_TEXT}{Ansi.RESET}\n"
+    assert capsys.readouterr().out == f"{PURPLE}> {BANNER_TEXT}{RESET}\n"
 
 
 def test_banner_keeps_its_marker_off_a_tty(

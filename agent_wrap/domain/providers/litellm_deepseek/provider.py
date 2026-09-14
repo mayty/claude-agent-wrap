@@ -5,12 +5,18 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
+from bs4 import BeautifulSoup, Tag
+
 from agent_wrap.domain.providers.base import Provider
+from agent_wrap.domain.providers.constants import HTML_PARSER
 from agent_wrap.domain.providers.key_approval import MasterKeyApprovalMixin
 from agent_wrap.domain.providers.litellm_deepseek.constants import (
+    FOOTNOTE_SUFFIX_RE,
     MIN_MODEL_COUNT,
+    PEAK_HOURS_RE,
     PEAK_WEEKDAYS,
     PRICING_PAGE_URL,
+    TIME_RANGE_RE,
 )
 from agent_wrap.domain.providers.pricing import PricingCache
 
@@ -29,34 +35,33 @@ class _DeepSeekPricing:
         return [float(m) for m in re.findall(r"\$([0-9]+(?:\.[0-9]+)?)", text)]
 
     @staticmethod
-    def clean_model_name(cell_html: str) -> str:
-        """Strip HTML tags and footnote markers from a model-name <td>."""
-        name = re.sub(r"<[^>]+>", "", cell_html).strip()
-        return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+    def clean_model_name(cell_text: str) -> str:
+        """Strip the trailing footnote marker from a model-name cell's text."""
+        return FOOTNOTE_SUFFIX_RE.sub("", cell_text.strip()).strip()
 
     @staticmethod
-    def parse_model_names(header_row: str) -> list[str]:
-        cells = re.findall(r"<td[^>]*>(.*?)</td>", header_row, re.DOTALL)
+    def parse_model_names(header_row: Tag) -> list[str]:
+        cells = header_row.find_all("td")
         models: list[str] = []
         for cell in cells[1:]:  # skip the "MODEL" label cell
-            name = _DeepSeekPricing.clean_model_name(cell)
+            name = _DeepSeekPricing.clean_model_name(cell.get_text())
             if name:
                 models.append(name)
         return models
 
     @staticmethod
-    def _metric_field(row_html: str) -> str | None:
+    def _metric_field(row_text: str) -> str | None:
         """Map a pricing-row metric label to its flat-table field, or None."""
-        if "CACHE HIT" in row_html:
+        if "CACHE HIT" in row_text:
             return "cr"
-        if "CACHE MISS" in row_html:
+        if "CACHE MISS" in row_text:
             return "in"
-        if "OUTPUT" in row_html:
+        if "OUTPUT" in row_text:
             return "out"
         return None
 
     @staticmethod
-    def _extract_peak_prices(models: list[str], rows: list[str]) -> dict[str, dict[str, float]]:
+    def _extract_peak_prices(models: list[str], rows: list[Tag]) -> dict[str, dict[str, float]]:
         prices: dict[str, dict[str, float]] = {
             m: {"in": 0.0, "out": 0.0, "cw_5m": 0.0, "cw_1h": 0.0, "cr": 0.0} for m in models
         }
@@ -64,10 +69,11 @@ class _DeepSeekPricing:
         # "PEAK" is a substring of "OFF-PEAK", so check off-peak first.
         current_field: str | None = None
         for row in rows:
-            if "OFF-PEAK" in row:
-                current_field = _DeepSeekPricing._metric_field(row)
-            elif current_field is not None and "PEAK" in row:
-                amounts = _DeepSeekPricing.extract_dollar_amounts(row)
+            text = row.get_text(" ")
+            if "OFF-PEAK" in text:
+                current_field = _DeepSeekPricing._metric_field(text)
+            elif current_field is not None and "PEAK" in text:
+                amounts = _DeepSeekPricing.extract_dollar_amounts(text)
                 for i, model in enumerate(models):
                     if i < len(amounts):
                         prices[model][current_field] = amounts[i]
@@ -85,10 +91,10 @@ class _DeepSeekPricing:
         amounts are captured — off-peak is exactly half of peak, which the provider
         derives at cost time.
         """
-        table_m = re.search(r"<table[^>]*>(.*?)</table>", page_html, re.DOTALL)
-        if not table_m:
+        table = BeautifulSoup(page_html, HTML_PARSER).find("table")
+        if not isinstance(table, Tag):
             return {}
-        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table_m.group(1), re.DOTALL)
+        rows = table.find_all("tr")
         if len(rows) < MIN_MODEL_COUNT:
             return {}
 
@@ -114,11 +120,15 @@ class _DeepSeekPricing:
         and ``[6, 10)`` — the hours ``{1, 2, 3, 6, 7, 8, 9}``. Returns None when
         the footnote or any time range is absent, so callers can fall back to
         charging peak rates.
+
+        Read from the page's *text*: the sentence is prose, and a tag boundary
+        anywhere inside it would hide it from a match against the markup.
         """
-        m = re.search(r"Peak hours are\s+([^.]*?)\s*UTC", page_html)
+        text = BeautifulSoup(page_html, HTML_PARSER).get_text(" ")
+        m = PEAK_HOURS_RE.search(text)
         if not m:
             return None
-        ranges = re.findall(r"(\d{1,2}):\d{2}\s*-\s*(\d{1,2}):\d{2}", m.group(1))
+        ranges = TIME_RANGE_RE.findall(m.group(1))
         if not ranges:
             return None
         hours: set[int] = set()

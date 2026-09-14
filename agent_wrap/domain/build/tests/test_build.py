@@ -726,12 +726,38 @@ def test_expose_ports(write_dockerfile: Callable[[str], Path], build_svc: BuildS
     assert info.expose_ports == ["8080", "3000"]
 
 
+def test_expose_ports_across_a_line_continuation(
+    write_dockerfile: Callable[[str], Path], build_svc: BuildService
+) -> None:
+    r"""A "\\"-continued EXPOSE is one instruction; a per-line sweep saw only its head."""
+    p = write_dockerfile("FROM claude-agent\nEXPOSE 8080 \\\n    3000/tcp\n")
+    info = build_svc.parse_dockerfile_agent(p)
+    assert info.expose_ports == ["8080", "3000"]
+
+
+def test_expose_ports_lowercase_instruction(
+    write_dockerfile: Callable[[str], Path], build_svc: BuildService
+) -> None:
+    p = write_dockerfile("from claude-agent\nexpose 8080\n")
+    info = build_svc.parse_dockerfile_agent(p)
+    assert info.expose_ports == ["8080"]
+
+
 def test_agent_run_args(write_dockerfile: Callable[[str], Path], build_svc: BuildService) -> None:
     p = write_dockerfile(
         "FROM claude-agent\n# agent-run-args: --device /dev/fuse --cap-add SYS_ADMIN\n"
     )
     info = build_svc.parse_dockerfile_agent(p)
     assert info.extra_run_args == ["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN"]
+
+
+def test_agent_run_args_keeps_a_quoted_path_containing_a_space(
+    write_dockerfile: Callable[[str], Path], build_svc: BuildService
+) -> None:
+    """Splitting on whitespace tore a quoted bind mount in two; shlex keeps it whole."""
+    p = write_dockerfile('FROM claude-agent\n# agent-run-args: -v "/host/my dir:/data:ro"\n')
+    info = build_svc.parse_dockerfile_agent(p)
+    assert info.extra_run_args == ["-v", "/host/my dir:/data:ro"]
 
 
 def test_multiple_run_args_lines(
