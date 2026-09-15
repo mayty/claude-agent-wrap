@@ -70,13 +70,11 @@ def fold_cells(
     The hash is the outermost key because it is the only project identity the index
     holds; resolving it to a path is a question about the registry *now*.
 
-    Each cell contributes to both breakdowns in one pass, so the verbose and default
-    tables cannot disagree. ``day_in_range`` is applied per cell even though the query is
-    bounded: that bound is an hour bucket, and re-stating the day rule here keeps the
-    ``"?"`` bucket's all-time-only behaviour in one place.
+    ``day_in_range`` is applied per cell even though the query is bounded: that bound is
+    an hour bucket, and re-stating the day rule here keeps the ``"?"`` bucket's
+    all-time-only behaviour in one place.
     """
     by_hash_day: dict[str, HourBuckets] = defaultdict(dict)
-    by_hash_source: dict[str, HourBuckets] = defaultdict(dict)
     sessions: dict[str, set[int]] = defaultdict(set)
     last_us: dict[str, int] = {}
 
@@ -94,12 +92,6 @@ def fold_cells(
             unrecorded=cell.requests if cell.usage_source == UNRECOVERABLE_SOURCE else 0,
         )
         _accumulate(by_hash_day[cell.project_hash], (day_key, hour_key, model), bucket, pricing)
-        _accumulate(
-            by_hash_source[cell.project_hash],
-            (cell.usage_source, hour_key, model),
-            bucket,
-            pricing,
-        )
 
         sessions[cell.project_hash].add(cell.session_id)
         if cell.last_started_at_us is not None:
@@ -113,9 +105,6 @@ def fold_cells(
             last_ts=_micros_to_dt(last_us.get(project_hash)),
             by_day=price_buckets(
                 by_hash_day[project_hash], pricing, refresh_pricing_data=refresh_pricing_data
-            ),
-            by_source=price_buckets(
-                by_hash_source[project_hash], pricing, refresh_pricing_data=refresh_pricing_data
             ),
         )
         for project_hash in by_hash_day

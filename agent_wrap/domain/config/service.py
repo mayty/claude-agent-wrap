@@ -2,7 +2,6 @@
 """Configuration file manipulation for agent-wrap."""
 
 import contextlib
-import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,22 +24,12 @@ from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.exceptions import HostMountError, StorageError, WritesNotEnabledError
 from agent_wrap.lib.atomic import atomic_write_json
 from agent_wrap.lib.docker_utils import parse_mount_specs
+from agent_wrap.lib.jsonio import read_json_object
 from agent_wrap.lib.path_hash import project_path_hash
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
-
-
-def _load_json(path: Path) -> dict[str, Any] | None:
-    """Load JSON from a file, returning None if malformed."""
-    try:
-        text = path.read_text()
-        if not text.strip():
-            return {}
-        return json.loads(text)
-    except json.JSONDecodeError, OSError:
-        return None
 
 
 class ConfigService:
@@ -50,19 +39,24 @@ class ConfigService:
         self._display = display_service
         self._projects = projects_repository
 
-    def _ensure_statusline(self, settings_path: Path) -> None:
+    @staticmethod
+    def _open_settings(settings_path: Path) -> dict[str, Any] | None:
         """
-        Idempotently inject statusLine key into settings.json.
+        Read settings.json for an idempotent edit, creating an empty one first if needed.
 
-        Malformed JSON is left alone rather than clobbered.
+        ``None`` means the file holds something this process will not overwrite, and is
+        every caller's cue to return having changed nothing.
         """
         if not settings_path.exists() or settings_path.stat().st_size == 0:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
             settings_path.write_text("{}\n")
+        return read_json_object(settings_path)
 
-        data = _load_json(settings_path)
+    def _ensure_statusline(self, settings_path: Path) -> None:
+        """Idempotently inject the statusLine key into settings.json."""
+        data = self._open_settings(settings_path)
         if data is None:
-            return  # malformed JSON — don't clobber
+            return
 
         if "statusLine" in data:
             return
@@ -84,15 +78,11 @@ class ConfigService:
         An existing block wins, except that an explicitly set ``AGENT_SPELLCHECK`` /
         ``AGENT_SPELLCHECK_LANG`` overrides its key on every launch: otherwise the env
         vars would be inert the moment a previous launch had written the block. Keys the
-        user added by hand are preserved, and malformed JSON is left alone.
+        user added by hand are preserved.
         """
-        if not settings_path.exists() or settings_path.stat().st_size == 0:
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-            settings_path.write_text("{}\n")
-
-        data = _load_json(settings_path)
+        data = self._open_settings(settings_path)
         if data is None:
-            return  # malformed JSON -- don't clobber
+            return
 
         block = data.get("spellcheck")
         if block is None:
@@ -119,16 +109,8 @@ class ConfigService:
         atomic_write_json(settings_path, data)
 
     def _ensure_telegram_hooks(self, settings_path: Path) -> None:
-        """
-        Idempotently inject PermissionRequest/Stop/StopFailure/SessionEnd hooks.
-
-        Malformed JSON is left alone rather than clobbered.
-        """
-        if not settings_path.exists() or settings_path.stat().st_size == 0:
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-            settings_path.write_text("{}\n")
-
-        data = _load_json(settings_path)
+        """Idempotently inject the PermissionRequest/Stop/StopFailure/SessionEnd hooks."""
+        data = self._open_settings(settings_path)
         if data is None:
             return
 

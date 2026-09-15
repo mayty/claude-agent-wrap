@@ -18,7 +18,6 @@ Mix into a ``Provider`` subclass and call ``_approve_master_key`` from
 ``on_started`` and ``_unapprove_master_key`` from ``on_stopping``.
 """
 
-import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
 
 from agent_wrap.constants import GLOBAL_CONFIG_DIR
 from agent_wrap.lib.atomic import atomic_write_json
+from agent_wrap.lib.jsonio import read_json_object
 
 
 def _api_key_approval_id(key: str) -> str:
@@ -43,13 +43,7 @@ class MasterKeyApprovalMixin:
         path = _claude_json_path()
         if not path.exists():
             return {}
-        try:
-            text = path.read_text()
-            if not text.strip():
-                return {}
-            return json.loads(text)
-        except json.JSONDecodeError, OSError:
-            return None
+        return read_json_object(path)
 
     def _save_claude_json(self, data: dict[str, Any]) -> None:
         atomic_write_json(_claude_json_path(), data)

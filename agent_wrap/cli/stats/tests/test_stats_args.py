@@ -89,19 +89,6 @@ def one_project(mocker: MockerFixture) -> None:
     """Seed one project and stub rendering, so the command reaches build_report."""
     services.config_service.read_project_paths.return_value = ["/proj"]  # pyrefly: ignore [missing-attribute]
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
-    mocker.patch("agent_wrap.cli.stats.run.render_source_breakdown", return_value=None)
-
-
-@pytest.mark.usefixtures("one_project")
-@pytest.mark.parametrize(
-    ("flags", "expected"), [([], False), (["-v"], True), (["--verbose"], True)]
-)
-def test_verbose_flag_reaches_the_report(
-    runner: CliRunner, flags: list[str], *, expected: bool
-) -> None:
-    runner.invoke(cli_root, ["stats", *flags])
-    _projects, args = services.stats_service.build_report.call_args.args  # pyrefly: ignore [missing-attribute]
-    assert args.verbose is expected
 
 
 @pytest.mark.usefixtures("one_project")

@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING
 
 from rich.console import Group
 
-from agent_wrap.cli.stats.constants import PROJECTS_TABLE, RECENT_TABLE, SOURCE_TABLE
+from agent_wrap.cli.stats.constants import PROJECTS_TABLE, RECENT_TABLE
 from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
-from agent_wrap.constants import DIVIDER, ORPHANED_LABEL, USAGE_SOURCES
+from agent_wrap.constants import DIVIDER, ORPHANED_LABEL
 from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
@@ -326,61 +326,3 @@ def render(  # noqa: PLR0913
         "",
         display.render_table(f"By day ({label}):", RECENT_TABLE, recent_body, shared_widths),
     )
-
-
-def render_source_breakdown(
-    totals_by_source: dict[str, dict[str, Bucket]],
-    from_iso: str | None,
-    until_iso: str | None,
-    *,
-    display: DisplayService,
-) -> Group | None:
-    """
-    Render the verbose "usage source breakdown" table for the selected window.
-
-    One row per usage source (native / standard_logging_object / unrecoverable,
-    see :func:`usage_source`) showing how much of the reported totals came
-    straight from responses vs. were recovered from LiteLLM's standard logging
-    object fallback vs. were lost — so a reader can judge how far the headline
-    cost depends on the recovery path. The source dict is already restricted to
-    the window at scan time; rendered standalone (its own column widths) since
-    it prints after the main tables.
-
-    *totals_by_source* is ``{source: {model: Bucket}}``. Model buckets are merged
-    within each source to get per-source totals. Cost reads ``Bucket.cost`` /
-    ``cost_unknown`` directly, valid here because ``price_buckets`` has already
-    priced the model-keyed buckets (same basis as :func:`render`).
-    Returns None when no source has activity in the window.
-    """
-    merged = {
-        source: Bucket.merged(by_model.values()) for source, by_model in totals_by_source.items()
-    }
-
-    def _row(label: str, b: Bucket, style: Style) -> RowItem:
-        return RowItem(
-            cells=[
-                label,
-                *usage_cells(
-                    b,
-                    cost=display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
-                    display=display,
-                ),
-            ],
-            style=style,
-            prefix_len=0,
-        )
-
-    # Unrecoverable rows carry msgs but zero tokens; the msgs guard keeps them
-    # (intentionally surfaced) while dropping sources with no activity at all.
-    active = [(s, merged[s]) for s in USAGE_SOURCES if s in merged and merged[s].msgs > 0]
-    body: list[RowItemOrDivider] = [_row(s, b, Style.NONE) for s, b in active]
-    total = Bucket.merged(b for _s, b in active)
-
-    if not body:
-        return None
-
-    body.append(DIVIDER)
-    body.append(_row("TOTAL", total, Style.BOLD_YELLOW))
-
-    title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
-    return display.render_table(title, SOURCE_TABLE, body)

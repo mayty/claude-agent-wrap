@@ -28,11 +28,3 @@ RECENT_TABLE = TableSpec(
     aligns=("<", *USAGE_ALIGNS),
     leading=1,
 )
-
-#: The verbose usage-source breakdown, rendered standalone after the two stacked tables
-#: and so sized on its own content.
-SOURCE_TABLE = TableSpec(
-    headers=("SOURCE", *USAGE_HEADERS),
-    aligns=("<", *USAGE_ALIGNS),
-    leading=1,
-)

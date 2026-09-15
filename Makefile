@@ -33,6 +33,9 @@ export UV_PROJECT_ENVIRONMENT := .python/$(PY_VENV)
 # THIS project's dev container would answer for the pinned interpreter instead. The two
 # now agree on the minor and differ only in the patch, so that mistake no longer looks
 # like one.
+#
+# These feed the pyrefly leg of carveout-check only. Ruff reads the same two floors from
+# [tool.ruff.per-file-target-version] in pyproject.toml -- a bump has to move both.
 CARVEOUT_STATUSLINE_PATHS   := ops/statusline.py
 CARVEOUT_STATUSLINE_VERSION := 3.14
 CARVEOUT_RUNTIME_PATHS      := agent_wrap/domain/providers/litellm_runtime/*.py
@@ -63,8 +66,6 @@ lintcheck:
 
 format:
 	$(PYTHON) -m ruff format .
-	$(PYTHON) -m ruff format --target-version py$(subst .,,$(CARVEOUT_STATUSLINE_VERSION)) $(CARVEOUT_STATUSLINE_PATHS)
-	$(PYTHON) -m ruff format --target-version py$(subst .,,$(CARVEOUT_RUNTIME_VERSION)) $(CARVEOUT_RUNTIME_PATHS)
 
 format-check:
 	$(PYTHON) -m ruff format --check --diff .
@@ -134,14 +135,12 @@ python-check:
 		exit 1; \
 	fi
 
-# Three legs, all needed: ruff check catches version-gated syntax, pyrefly catches stdlib
-# APIs that do not exist yet on that floor (datetime.UTC), and ruff format catches the
-# formatter itself -- at py314 it strips the parentheses from `except (A, B):`, which is a
-# SyntaxError on the interpreters these files actually run on.
+# Only the pyrefly leg lives here. Both ruff legs are carried by `pyproject.toml`'s
+# [tool.ruff.per-file-target-version], which lintcheck and format-check already honour
+# file by file. pyrefly has no per-file equivalent, so the floors above are still needed
+# to catch stdlib APIs that do not exist yet on them (datetime.UTC).
 # $(1) = paths, $(2) = floor (e.g. 3.12)
 define carveout_legs
-	$(PYTHON) -m ruff check --target-version py$(subst .,,$(2)) $(1)
-	$(PYTHON) -m ruff format --check --diff --target-version py$(subst .,,$(2)) $(1)
 	$(PYTHON) -m pyrefly check --python-interpreter-path $(PYTHON) \
 		--python-version $(2) $(1)
 endef

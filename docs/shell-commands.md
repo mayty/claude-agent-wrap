@@ -93,8 +93,6 @@ Selection range — at most two of the three flags may be combined:
 - **`-u`/`--until D`** — inclusive upper bound; same format as `--from`.
 - **`-d`/`--days N`** — span in days; `N=0` means unlimited (no day bound).
 
-The **`-v`/`--verbose`** flag is independent of the range: it adds a usage-source breakdown table over the same window, splitting the totals by how each request's usage was obtained (read straight from the response, recovered from the request log, or uncountable).
-
 The **`-r`/`--refresh`** flag re-fetches pricing from the providers' pricing pages instead of using the cached tables, which are otherwise reused for up to 7 days (Bedrock and DeepSeek scrape their pricing pages; DashScope's table is hardcoded and unaffected). Refreshing happens once per provider per run — the re-fetched prices are cached in memory for the rest of the scan.
 
 The **`-p`/`--pattern P`** flag filters projects by a regex matched against each project's recorded registry path, independent of the range.

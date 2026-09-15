@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.__main__ import cli_root
-from agent_wrap.cli.stats.display import render, render_source_breakdown
+from agent_wrap.cli.stats.display import render
 from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
@@ -106,50 +106,6 @@ def test_render_without_orphaned_has_no_row(
     assert ORPHANED_LABEL not in out
 
 
-def test_render_source_breakdown_lists_active_sources(
-    display_service: Mock, shown: Callable[..., str]
-) -> None:
-    by_source = {
-        "native": {"bedrock/claude-opus-4-8": _source_bucket(3, in_=1000)},
-        "standard_logging_object": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=500)},
-        "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
-    }
-    out = shown(render_source_breakdown(by_source, None, None, display=display_service))
-    assert "Usage source breakdown (all time):" in out
-    assert "native" in out
-    assert "standard_logging_object" in out
-    assert "unrecoverable" in out
-    assert "TOTAL" in out
-
-
-def test_render_source_breakdown_omits_zero_msg_sources(
-    display_service: Mock, shown: Callable[..., str]
-) -> None:
-    by_source = {"native": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=100)}}
-    out = shown(render_source_breakdown(by_source, None, None, display=display_service))
-    assert "native" in out
-    assert "standard_logging_object" not in out
-
-
-def test_render_source_breakdown_empty_when_no_activity(display_service: Mock) -> None:
-    assert render_source_breakdown({}, None, None, display=display_service) is None
-
-
-def test_render_source_breakdown_merges_across_models(
-    display_service: Mock, shown: Callable[..., str]
-) -> None:
-    by_source = {
-        "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
-        "native": {"bedrock/claude-haiku-4-5": _source_bucket(1, in_=1)},
-    }
-    out = shown(
-        render_source_breakdown(by_source, "2026-06-01", "2026-06-29", display=display_service)
-    )
-    assert "Usage source breakdown (2026-06-01 … 2026-06-29):" in out
-    assert "unrecoverable" in out
-    assert "native" in out
-
-
 @pytest.fixture
 def wired_services(tmp_path: Path) -> None:
     """Seed the mocked services so `run()` reaches the render call."""
@@ -168,7 +124,6 @@ def _report(
         rows=rows or [],
         totals_by_model={},
         totals_by_day_by_model={},
-        totals_by_source={},
         orphaned=orphaned,  # pyrefly: ignore [bad-argument-type]
         unrecorded=unrecorded,
     )

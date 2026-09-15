@@ -72,6 +72,18 @@ line-length = 100
 src = ["."]
 extend-exclude = [".python"]
 
+# The two regions that do not run on the pinned interpreter, at the version each
+# actually runs on. Both the linter and the formatter honour these, so a plain
+# `ruff check .` / `ruff format .` is correct for the whole tree: at py314 the
+# formatter strips the parentheses from `except (A, B):` -- legal since PEP 758, and
+# a SyntaxError on anything older, which litellm_runtime/ still has to be.
+# statusline.py is listed even though its target currently equals the global one: a
+# base image bump moves it, and it must follow that interpreter rather than this file.
+# See the Makefile for the floors and how to re-read them.
+[tool.ruff.per-file-target-version]
+"ops/statusline.py" = "py314"
+"agent_wrap/domain/providers/litellm_runtime/**" = "py313"
+
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
@@ -181,17 +193,6 @@ known-first-party = ["agent_wrap"]
 ban-relative-imports = "all"
 
 [tool.ruff.format]
-# The carve-out regions are formatted separately, at the target version of the
-# interpreter each actually runs on (see the carveout-check and format targets
-# in the Makefile). At target-version py314 the formatter strips the parentheses
-# from `except (A, B):` -- legal since PEP 758, and a SyntaxError on anything
-# older, which litellm_runtime/ still has to be. The exclusion stays even for a
-# region whose target currently matches the one above: a base image bump moves
-# it, and the formatter must follow that interpreter rather than this setting.
-exclude = [
-    "ops/statusline.py",
-    "agent_wrap/domain/providers/litellm_runtime/**",
-]
 quote-style = "double"
 indent-style = "space"
 

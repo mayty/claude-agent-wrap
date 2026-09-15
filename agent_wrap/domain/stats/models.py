@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 class UsageArgs:
     from_iso: str | None = None
     until_iso: str | None = None
-    verbose: bool = False
     pattern: re.Pattern[str] | None = None
     refresh: bool = False
 
@@ -54,7 +53,6 @@ class HashUsage(NamedTuple):
     sessions: int
     last_ts: datetime | None
     by_day: dict[str, dict[str, Bucket]]
-    by_source: dict[str, dict[str, Bucket]]
 
 
 # The folded usage of every project hash the index holds, so one aggregate serves the
@@ -101,8 +99,8 @@ class HourKey(NamedTuple):
 
 
 # Buckets keyed outer → hour → model, produced before pricing collapses the hour
-# axis. The outer key is a stats day (by_day) or a usage source (by_source); the
-# inner key is an :class:`HourKey` so both weekday and UTC hour survive to pricing.
+# axis. The outer key is a stats day; the inner key is an :class:`HourKey`, so both
+# weekday and UTC hour survive to pricing.
 HourBuckets = dict[str, dict[HourKey, dict[str, "Bucket"]]]
 
 
@@ -115,12 +113,11 @@ class CleanupResult(NamedTuple):
     freed_bytes: int
 
 
-# Return type for aggregate_projects: the four render inputs rolled up across all projects.
+# Return type for aggregate_projects: the render inputs rolled up across all projects.
 class AggregateResult(NamedTuple):
     rows: list[ProjectRow]
     totals_by_model: dict[str, Bucket]
     totals_by_day_by_model: dict[str, dict[str, Bucket]]
-    totals_by_source: dict[str, dict[str, Bucket]]
 
 
 # Return type for resolve_group: a project path resolved to its transient group.
@@ -170,7 +167,6 @@ class StatsReport(NamedTuple):
     rows: list[ProjectRow]
     totals_by_model: dict[str, Bucket]
     totals_by_day_by_model: dict[str, dict[str, Bucket]]
-    totals_by_source: dict[str, dict[str, Bucket]]
     orphaned: OrphanedResult | None
     unrecorded: int
 

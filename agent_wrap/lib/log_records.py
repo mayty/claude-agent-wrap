@@ -15,9 +15,11 @@ if TYPE_CHECKING:
 
 def usage_source(rec: Mapping[str, Any]) -> str:
     """
-    Classify how a success record's usage was obtained, for the verbose breakdown.
+    Classify how a success record's usage was obtained.
 
-    Mirrors the three outcomes the callback's ``_usable_response`` stamps onto a
+    Stored per request so ``"unrecoverable"`` can be counted: those requests contribute
+    $0 to the totals, and the stats footnote says so rather than letting them read as
+    free. Mirrors the three outcomes the callback's ``_usable_response`` stamps onto a
     record's ``response`` (see ``providers/litellm_runtime/callback.py``):
       * ``"native"`` — a parsed response dict with no ``_usage_source`` key (usage
         came straight from the response);

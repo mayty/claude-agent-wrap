@@ -1,6 +1,5 @@
 # This file has been edited with the assistance of an AI tool.
 import io
-import json
 import os
 import shlex
 import subprocess
@@ -78,6 +77,7 @@ from agent_wrap.lib.docker_utils import (
     remove_image,
 )
 from agent_wrap.lib.flock import file_lock, try_file_lock
+from agent_wrap.lib.jsonio import json_object
 from agent_wrap.lib.utils import generate_uuid
 
 if TYPE_CHECKING:
@@ -705,13 +705,7 @@ class BuildService:
 
         Unparseable JSON reads as "no label": either way there is no name to attribute by.
         """
-        try:
-            parsed = json.loads(raw_labels)
-        except json.JSONDecodeError:
-            return ""
-        if not isinstance(parsed, dict):
-            return ""
-        return str(parsed.get(IMAGE_NAME_LABEL, ""))
+        return str(json_object(raw_labels).get(IMAGE_NAME_LABEL, ""))
 
     def _orphaned_and_stale_images(self, project_dirs: list[Path]) -> list[RemovableImage]:
         """

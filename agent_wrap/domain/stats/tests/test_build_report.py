@@ -44,7 +44,7 @@ def stats(
     mocker.patch.object(svc, "project_owners", autospec=True, return_value={})
     mocker.patch.object(svc, "usage_cache", autospec=True, return_value={})
     mocker.patch.object(
-        svc, "aggregate_projects", autospec=True, return_value=AggregateResult([], {}, {}, {})
+        svc, "aggregate_projects", autospec=True, return_value=AggregateResult([], {}, {})
     )
     mocker.patch.object(svc, "aggregate_orphaned", autospec=True, return_value=None)
     return svc
@@ -87,7 +87,7 @@ def _orphaned(sessions: int = 1) -> dict[str, object]:
 def test_rows_without_sessions_are_dropped(stats: StatsService) -> None:
     """A registered project that logged nothing in the window is not a row."""
     stats.aggregate_projects.return_value = AggregateResult(  # pyrefly: ignore [missing-attribute]
-        [_row("live", 2), _row("silent", 0)], {}, {}, {}
+        [_row("live", 2), _row("silent", 0)], {}, {}
     )
     report = stats.build_report([], UsageArgs())
     assert [r["name"] for r in report.rows] == ["live"]
@@ -168,7 +168,7 @@ def test_one_read_of_the_index_serves_every_consumer(stats: StatsService) -> Non
     This is the whole reason the tables agree: a second read could see a request the
     first did not, and the projects table and the by-day totals would disagree by one.
     """
-    cache = {"hashA": HashUsage(1, None, {}, {})}
+    cache = {"hashA": HashUsage(1, None, {})}
     stats.usage_cache.return_value = cache  # pyrefly: ignore [missing-attribute]
 
     stats.build_report([], UsageArgs())
@@ -197,7 +197,7 @@ def test_the_refresh_flag_reaches_the_index_read(stats: StatsService, *, refresh
 
 def test_unrecorded_is_summed_across_models(stats: StatsService) -> None:
     stats.aggregate_projects.return_value = AggregateResult(  # pyrefly: ignore [missing-attribute]
-        [], {"a/m1": _bucket(unrecorded=2), "a/m2": _bucket(unrecorded=3)}, {}, {}
+        [], {"a/m1": _bucket(unrecorded=2), "a/m2": _bucket(unrecorded=3)}, {}
     )
     assert stats.build_report([], UsageArgs()).unrecorded == 5
 

@@ -104,7 +104,7 @@ class StatsService:
         owners: dict[Path, str],
     ) -> AggregateResult:
         """
-        Roll each project's folded usage up into the four render inputs.
+        Roll each project's folded usage up into the render inputs.
 
         A project absent from *owners* has no log directory, and a hash absent from
         *cache* contributed nothing in the window; either way it gets an empty
@@ -118,15 +118,10 @@ class StatsService:
         totals_by_day_by_model: dict[str, dict[str, Bucket]] = defaultdict(
             lambda: defaultdict(self._pricing.new_bucket)
         )
-        totals_by_source: dict[str, dict[str, Bucket]] = defaultdict(
-            lambda: defaultdict(self._pricing.new_bucket)
-        )
 
         for path in projects:
             exists = path in owners
-            sessions, last_ts, by_day, by_source = cache.get(
-                owners.get(path, ""), HashUsage(0, None, {}, {})
-            )
+            sessions, last_ts, by_day = cache.get(owners.get(path, ""), HashUsage(0, None, {}))
 
             root, name, transient = self.resolve_group(path)
             group = groups.get(root)
@@ -145,10 +140,6 @@ class StatsService:
                     group.total.merge(b)
                     totals_by_model[model].merge(b)
                     totals_by_day_by_model[day][model].merge(b)
-
-            for source, by_model in by_source.items():
-                for model, b in by_model.items():
-                    totals_by_source[source][model].merge(b)
 
         rows: list[ProjectRow] = []
         for group in groups.values():
@@ -172,7 +163,6 @@ class StatsService:
             rows,
             dict(totals_by_model),
             {d: dict(m) for d, m in totals_by_day_by_model.items()},
-            {s: dict(m) for s, m in totals_by_source.items()},
         )
 
     def resolve_window(
@@ -287,7 +277,7 @@ class StatsService:
             refresh_pricing_data=args.refresh,
         )
 
-        rows, totals_by_model, totals_by_day_by_model, totals_by_source = self.aggregate_projects(
+        rows, totals_by_model, totals_by_day_by_model = self.aggregate_projects(
             selected, cache, owners
         )
 
@@ -298,14 +288,12 @@ class StatsService:
                 set(owners.values()),
                 totals_by_model,
                 totals_by_day_by_model,
-                totals_by_source,
             )
 
         return StatsReport(
             rows=[row for row in rows if row["sessions"] > 0],
             totals_by_model=totals_by_model,
             totals_by_day_by_model=totals_by_day_by_model,
-            totals_by_source=totals_by_source,
             orphaned=orphaned,
             unrecorded=sum(b.unrecorded for b in totals_by_model.values()),
         )
@@ -429,7 +417,6 @@ class StatsService:
         owned: set[str],
         totals_by_model: dict[str, Bucket],
         totals_by_day_by_model: dict[str, dict[str, Bucket]],
-        totals_by_source: dict[str, dict[str, Bucket]] | None = None,
     ) -> OrphanedResult | None:
         """
         Aggregate the indexed usage of every hash no registered project owns.
@@ -462,12 +449,6 @@ class StatsService:
                     totals_by_day_by_model.setdefault(day, {}).setdefault(
                         model, self._pricing.new_bucket()
                     ).merge(b)
-            if totals_by_source is not None:
-                for source, by_model in usage.by_source.items():
-                    for model, b in by_model.items():
-                        totals_by_source.setdefault(source, {}).setdefault(
-                            model, self._pricing.new_bucket()
-                        ).merge(b)
 
         if sessions == 0:
             return None

@@ -21,7 +21,6 @@ one cell (``None`` / ``""``) instead of raising, because a diagnostic command mu
 still print the rest of the report.
 """
 
-import json
 from datetime import UTC, datetime
 
 from agent_wrap.constants import (
@@ -46,31 +45,10 @@ from agent_wrap.domain.sidecars.constants import (
 )
 from agent_wrap.domain.sidecars.models import AgentContainer, SidecarContainer
 from agent_wrap.lib.docker_utils import parse_docker_timestamp
+from agent_wrap.lib.jsonio import json_array, json_object
 
 
 class ContainerParsing:
-    @staticmethod
-    def json_object(raw: str) -> dict[str, object]:
-        """Parse a ``{{json}}`` field expected to be an object; {} on anything else."""
-        try:
-            parsed: object = json.loads(raw)
-        except json.JSONDecodeError, ValueError:
-            return {}
-        if not isinstance(parsed, dict):
-            return {}
-        return {str(key): value for key, value in parsed.items()}
-
-    @staticmethod
-    def json_array(raw: str) -> list[object]:
-        """Parse a ``{{json}}`` field expected to be an array; [] on anything else."""
-        try:
-            parsed: object = json.loads(raw)
-        except json.JSONDecodeError, ValueError:
-            return []
-        if not isinstance(parsed, list):
-            return []
-        return list(parsed)
-
     @staticmethod
     def container_name(raw: str) -> str:
         """Strip the leading slash docker puts on ``.Name``."""
@@ -113,7 +91,7 @@ class ContainerParsing:
         caller gets.
         """
         result: dict[str, str] = {}
-        for entry in ContainerParsing.json_array(raw):
+        for entry in json_array(raw):
             if not isinstance(entry, str) or "=" not in entry:
                 continue
             key, value = entry.split("=", 1)
@@ -132,7 +110,7 @@ class ContainerParsing:
         ``"6837/tcp"``; the container-side number is the listening port.
         """
         ports: list[int] = []
-        for key in ContainerParsing.json_object(raw):
+        for key in json_object(raw):
             candidate = key.split("/", 1)[0]
             if candidate.isdigit():
                 ports.append(int(candidate))
@@ -141,7 +119,7 @@ class ContainerParsing:
     @staticmethod
     def network_names(raw: str) -> list[str]:
         """Network names from ``{{json .NetworkSettings.Networks}}`` — never the IPs."""
-        return sorted(ContainerParsing.json_object(raw))
+        return sorted(json_object(raw))
 
     @staticmethod
     def workspace_source(raw: str) -> str:
@@ -152,7 +130,7 @@ class ContainerParsing:
         state files, the ops directory); only the project directory is wanted, and the
         rest must not survive this call.
         """
-        for entry in ContainerParsing.json_array(raw):
+        for entry in json_array(raw):
             if not isinstance(entry, dict):
                 continue
             if entry.get("Destination") != WORKSPACE_MOUNT_DEST:
@@ -257,7 +235,7 @@ class ContainerRows:
             return None
         raw_name, status, started_at, image, labels_raw, mounts_raw = fields[:AGENT_FIELD_COUNT]
 
-        labels = ContainerParsing.json_object(labels_raw)
+        labels = json_object(labels_raw)
         raw_instance = labels.get(INSTANCE_ID_LABEL)
         instance_id = raw_instance if isinstance(raw_instance, str) else ""
         sidecars = sidecars_by_instance.get(instance_id, [])

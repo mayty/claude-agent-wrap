@@ -190,9 +190,6 @@ def _parsed_day_start_hours() -> int:
 # AGENT_TIMEZONE's midnight if set; override either with AGENT_DAY_START_UTC.
 DAY_START_HOURS = _parsed_day_start_hours()
 
-# Recognised usage-source tags stamped onto records by the callback.
-USAGE_SOURCES = ("native", "standard_logging_object", "unrecoverable")
-
 # The one usage source with behaviour attached rather than just a breakdown row: a
 # successful request whose usage was never recorded. It contributes zero tokens and $0,
 # so `agent stats` footnotes the count instead of letting the cost read as complete.

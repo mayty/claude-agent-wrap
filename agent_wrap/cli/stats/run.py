@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import click
 
 from agent_wrap.cli.params import DateSpec, Regex
-from agent_wrap.cli.stats.display import render, render_source_breakdown
+from agent_wrap.cli.stats.display import render
 from agent_wrap.containers import services
 from agent_wrap.domain.stats.models import UsageArgs, WindowError
 
@@ -19,16 +19,6 @@ if TYPE_CHECKING:
 
 
 @click.command("stats")
-@click.option(
-    "-v",
-    "--verbose",
-    is_flag=True,
-    help=(
-        "Add a usage-source breakdown table over the same window, splitting totals by how "
-        "each record's usage was obtained (native response vs. standard_logging_object "
-        "recovery vs. unrecoverable)."
-    ),
-)
 @click.option(
     "-r",
     "--refresh",
@@ -75,7 +65,6 @@ if TYPE_CHECKING:
 def stats_command(  # noqa: PLR0913
     ctx: click.Context,
     *,
-    verbose: bool,
     refresh: bool,
     from_date: date | None,
     until_date: date | None,
@@ -120,7 +109,6 @@ def stats_command(  # noqa: PLR0913
     parsed = UsageArgs(
         from_iso=from_iso,
         until_iso=until_iso,
-        verbose=verbose,
         pattern=pattern,
         refresh=refresh,
     )
@@ -153,14 +141,6 @@ def stats_command(  # noqa: PLR0913
             display=dsp,
         )
     )
-
-    if parsed.verbose:
-        breakdown = render_source_breakdown(
-            report.totals_by_source, parsed.from_iso, parsed.until_iso, display=dsp
-        )
-        if breakdown is not None:
-            dsp.newline()
-            dsp.show(breakdown)
 
     # Footnote any successful requests whose usage was never recorded.
     if report.unrecorded:

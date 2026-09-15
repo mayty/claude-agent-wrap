@@ -19,6 +19,7 @@ from agent_wrap.domain.providers.constants import (
     PRICING_CACHE_TTL_SECONDS,
     PRICING_FETCH_TIMEOUT,
 )
+from agent_wrap.lib.jsonio import read_json_object
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -162,12 +163,7 @@ class PricingCache:
 
         An empty scrape counts as a failure, not as "this provider costs nothing".
         """
-        cached: dict[str, Any] | None = None
-        if cache_path.is_file():
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except OSError, json.JSONDecodeError:
-                cached = None
+        cached = read_json_object(cache_path) if cache_path.is_file() else None
 
         def stale() -> PriceTable:
             return (cached or {}).get("prices") or {}

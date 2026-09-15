@@ -7,7 +7,6 @@ owning project ends up. Each writes a log tree, indexes it, and asks ``StatsServ
 see this package's ``conftest.py`` for the three fixtures that do the writing.
 """
 
-from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -99,7 +98,7 @@ def test_a_marked_group_becomes_one_row(
     index_logs()
 
     cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
-    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects(
+    rows, _totals, _by_day = stats_svc.aggregate_projects(
         [a, b], cache, stats_svc.project_owners([a, b])
     )
 
@@ -131,7 +130,7 @@ def test_an_empty_marker_still_marks_the_group_transient(  # noqa: PLR0913 -- th
     index_logs()
 
     cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
-    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects(
+    rows, _totals, _by_day = stats_svc.aggregate_projects(
         [a, b], cache, stats_svc.project_owners([a, b])
     )
 
@@ -158,7 +157,7 @@ def test_unmarked_projects_stay_separate_rows(
     index_logs()
 
     cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
-    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects(
+    rows, _totals, _by_day = stats_svc.aggregate_projects(
         [a, b], cache, stats_svc.project_owners([a, b])
     )
 
@@ -188,7 +187,7 @@ def test_a_window_narrows_sessions_and_totals_together(
     index_logs()
 
     cache = stats_svc.usage_cache(from_iso="2026-06-01", until_iso="2026-06-30")
-    rows, _totals, by_day, _by_source = stats_svc.aggregate_projects(
+    rows, _totals, by_day = stats_svc.aggregate_projects(
         [project], cache, _owned(project, stats_svc)
     )
 
@@ -198,14 +197,14 @@ def test_a_window_narrows_sessions_and_totals_together(
     assert set(by_day) == {"2026-06-15"}
 
 
-def test_the_totals_split_by_usage_source(
+def test_only_unrecoverable_usage_counts_as_unrecorded(
     tmp_path: Path,
     stats_svc: StatsService,
     write_session: Callable[..., Path],
     link_project: Callable[[Path], None],
     index_logs: Callable[[], None],
 ) -> None:
-    """All three outcomes end up in their own bucket, and only one counts as unrecorded."""
+    """All three outcomes are counted, but only the unrecoverable one is unrecorded."""
     project = tmp_path / "proj"
     project.mkdir()
     write_session(
@@ -221,19 +220,15 @@ def test_the_totals_split_by_usage_source(
     index_logs()
 
     cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
-    _rows, _totals, _by_day, by_source = stats_svc.aggregate_projects(
+    _rows, totals, _by_day = stats_svc.aggregate_projects(
         [project], cache, _owned(project, stats_svc)
     )
 
-    # by_source is {source: {model: Bucket}} -- merge model buckets within each source.
-    merged: dict[str, Bucket] = defaultdict(Bucket)
-    for source, by_model in by_source.items():
-        for bucket in by_model.values():
-            merged[source].merge(bucket)
-    assert merged["native"].msgs == 1
-    assert merged["standard_logging_object"].msgs == 1
-    assert merged["unrecoverable"].msgs == 1
-    assert merged["unrecoverable"].unrecorded == 1
+    total = Bucket()
+    for bucket in totals.values():
+        total.merge(bucket)
+    assert total.msgs == 3
+    assert total.unrecorded == 1
 
 
 def test_a_hash_no_project_claims_folds_into_the_orphan_row(
@@ -280,7 +275,7 @@ def test_no_orphan_row_when_every_hash_is_claimed(
     cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
     owned = set(_owned(project, stats_svc).values())
 
-    assert stats_svc.aggregate_orphaned(cache, owned, {}, {}, {}) is None
+    assert stats_svc.aggregate_orphaned(cache, owned, {}, {}) is None
 
 
 def test_a_project_row_carries_the_exact_instant_not_the_hour(
@@ -306,7 +301,7 @@ def test_a_project_row_carries_the_exact_instant_not_the_hour(
     index_logs()
 
     cache = stats_svc.usage_cache(from_iso=None, until_iso=None)
-    rows, _totals, _by_day, _by_source = stats_svc.aggregate_projects(
+    rows, _totals, _by_day = stats_svc.aggregate_projects(
         [project], cache, _owned(project, stats_svc)
     )
 

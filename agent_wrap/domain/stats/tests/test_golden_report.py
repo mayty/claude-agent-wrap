@@ -32,11 +32,10 @@ day buckets, two providers under one project, and an orphaned directory with no 
 It is written to disk and ingested, so what these tests read back travelled the whole
 route a real request does — parser, blob store, schema, aggregate.
 
-``totals_by_source`` is what ``agent stats -v`` renders and ``totals_by_day_by_model``
-is what the default table renders, so both are pinned here. The 28-day default window
-is deliberately *not* pinned: it is ``resolve_window``'s date arithmetic, which this
-change does not touch and which has its own tests, and pinning it would only make the
-golden expire.
+``totals_by_day_by_model`` is what the default table renders, so it is pinned here.
+The 28-day default window is deliberately *not* pinned: it is ``resolve_window``'s date
+arithmetic, which this change does not touch and which has its own tests, and pinning it
+would only make the golden expire.
 """
 
 import re
@@ -81,10 +80,6 @@ day 2025-03-04 litellm-bedrock/claude-opus-4-8 msgs=7 in=9300 out=1130 cw_5m=440
 day 2025-03-04 litellm-deepseek/claude-opus-4-8 msgs=1 in=500 out=100 cw_5m=0 cw_1h=0 cr=0 cost=0.003000
 day 2025-03-05 litellm-bedrock/claude-opus-4-8 msgs=3 in=3900 out=700 cw_5m=2400 cw_1h=0 cr=0 cost=0.024000
 day ? litellm-bedrock/claude-opus-4-8 msgs=1 in=100 out=50 cw_5m=0 cw_1h=0 cr=0 cost=0.001050
-source native litellm-bedrock/claude-opus-4-8 msgs=8 in=13300 out=1880 cw_5m=6800 cw_1h=0 cr=1500 cost=0.069150
-source native litellm-deepseek/claude-opus-4-8 msgs=1 in=500 out=100 cw_5m=0 cw_1h=0 cr=0 cost=0.003000
-source standard_logging_object litellm-bedrock/claude-opus-4-8 msgs=1 in=0 out=0 cw_5m=0 cw_1h=0 cr=0 cost=0.000000
-source unrecoverable litellm-bedrock/claude-opus-4-8 msgs=2 in=0 out=0 cw_5m=0 cw_1h=0 cr=0 cost=0.000000
 """
 
 
@@ -204,11 +199,6 @@ def _serialize(report: StatsReport) -> str:
     lines += [
         f"day {day} {model} {cells(bucket)}"
         for day, by_model in sorted(report.totals_by_day_by_model.items())
-        for model, bucket in sorted(by_model.items())
-    ]
-    lines += [
-        f"source {source} {model} {cells(bucket)}"
-        for source, by_model in sorted(report.totals_by_source.items())
         for model, bucket in sorted(by_model.items())
     ]
     return "\n".join(lines) + "\n"
