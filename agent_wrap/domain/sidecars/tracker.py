@@ -37,13 +37,15 @@ The lock itself is taken by the runner directly via ``agent_wrap.lib.flock`` (on
 for the whole ensure-all / release-all phase).
 """
 
-from typing import TYPE_CHECKING, ClassVar, TextIO
+from typing import TYPE_CHECKING, ClassVar
 
 from agent_wrap.constants import AGENT_LAUNCHES_DIR
 from agent_wrap.lib.flock import any_live_locks, clear_lock_handle, lock_and_hold
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from filelock import BaseFileLock
 
 
 class SidecarTracker:
@@ -82,16 +84,18 @@ class SidecarTracker:
         """
         return self.running_dir / container_name
 
-    def register_running(self, container_name: str, instance_id: str) -> TextIO | None:
+    def register_running(self, container_name: str, instance_id: str) -> BaseFileLock | None:
         """
         Create + lock this run's registration on *container_name*.
 
-        The caller must hold the returned handle for the lock's life: the registration is
-        live only while it is open.
+        The caller must keep the returned lock referenced for its life: the registration
+        is live only while it is held.
         """
         return lock_and_hold(self.running_dir_for(container_name) / instance_id)
 
-    def clear_running(self, handle: TextIO | None, container_name: str, instance_id: str) -> None:
+    def clear_running(
+        self, handle: BaseFileLock | None, container_name: str, instance_id: str
+    ) -> None:
         clear_lock_handle(handle, self.running_dir_for(container_name) / instance_id)
 
     def has_live_runners(self, container_name: str, *, exclude_id: str) -> bool:

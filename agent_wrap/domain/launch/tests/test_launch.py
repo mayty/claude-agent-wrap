@@ -1,7 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.launch.launch.LaunchService."""
 
-import io
 import os
 import time
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import call as mocker_call
 
 import pytest
+from filelock import BaseFileLock
 
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
@@ -50,7 +50,6 @@ from agent_wrap.exceptions import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import TextIO
     from unittest.mock import Mock
 
     import pytest_mock
@@ -943,8 +942,8 @@ def test_release_clears_every_registration_before_taking_the_stop_lock(
     lazily, per container, would let it be counted as its own live runner.
     """
     tracker.has_live_runners.return_value = False
-    handles: dict[str, TextIO | None] = {
-        sc.container_name: mocker.Mock(spec=io.TextIOWrapper) for sc in two_sidecars
+    handles: dict[str, BaseFileLock | None] = {
+        sc.container_name: mocker.Mock(spec=BaseFileLock) for sc in two_sidecars
     }
 
     launch_svc._release_sidecars(two_sidecars, tracker, "inst-1", handles)

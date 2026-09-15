@@ -64,7 +64,7 @@ from agent_wrap.lib.utils import (
 )
 
 if TYPE_CHECKING:
-    from typing import TextIO
+    from filelock import BaseFileLock
 
     from agent_wrap.domain.build.models import ResolvedImage
     from agent_wrap.domain.build.service import BuildService
@@ -188,7 +188,7 @@ class LaunchService:
 
         self._display.banner(f"Agent instance: {instance_id}")
 
-        running_handles: dict[str, TextIO | None] = {}
+        running_handles: dict[str, BaseFileLock | None] = {}
         try:
             provider_run_args, running_handles = self._prepare_for_launch(
                 sidecars,
@@ -614,7 +614,7 @@ class LaunchService:
         sidecars: list[Sidecar],
         tracker: SidecarTracker,
         instance_id: str,
-        running_handles: dict[str, TextIO | None],
+        running_handles: dict[str, BaseFileLock | None],
     ) -> None:
         """
         Per-container last-light-out teardown.
@@ -746,7 +746,7 @@ class LaunchService:
             sidecar.prepare()
 
         run_args: list[str] = []
-        running_handles: dict[str, TextIO | None] = {}
+        running_handles: dict[str, BaseFileLock | None] = {}
         timeout = self._sidecar_lock_timeout(sidecars, self._expected_queue_depth())
         with priority_lock(
             Priority.HI,

@@ -37,7 +37,6 @@ class SecretsService:
         Raises :class:`SecretNotFoundError` when the key is absent and
         *prompt_on_missing* is ``False``.
         """
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         data = EncryptedFileStore.read_all(display=self._display)
         value = data.get(key)
         if value is not None:
@@ -52,7 +51,6 @@ class SecretsService:
         return entered
 
     def _write(self, key: str, description: str) -> None:
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         entered = self._display.prompt_secret(description)
         data = EncryptedFileStore.read_all(display=self._display)
         data[key] = entered
@@ -60,14 +58,12 @@ class SecretsService:
 
     def _delete(self, key: str) -> None:
         """Remove *key* from the encrypted store.  No-op when absent."""
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         data = EncryptedFileStore.read_all(display=self._display)
         if key in data:
             del data[key]
             EncryptedFileStore.write_all(data, display=self._display)
 
     def _list_keys(self) -> list[str]:
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         return sorted(EncryptedFileStore.read_all(display=self._display).keys())
 
     def known_sidecars(self) -> list[str]:
@@ -129,10 +125,9 @@ class SecretsService:
         Report, per known sidecar, which required secrets are absent — changing nothing.
 
         The read-only counterpart to :meth:`check_secrets`, which cannot be used for
-        reporting on two counts: it goes through :meth:`read`, which runs the legacy
-        ``~/claude_keys.json`` migration (rewriting the store and deleting that file),
-        and through :meth:`get_required_secrets`, which writes to stderr and raises
-        ``SystemExit`` on an unknown sidecar — so one stale name would abort a report.
+        reporting: it goes through :meth:`get_required_secrets`, which writes to stderr
+        and raises ``SystemExit`` on an unknown sidecar, so one stale name in the
+        registry would abort the whole report.
 
         Every known sidecar appears in the result; an empty list means fully configured.
         Covers all sidecars in one call because the store is decrypted once for the whole

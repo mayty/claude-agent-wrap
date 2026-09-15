@@ -303,7 +303,7 @@ def test_a_held_lock_makes_the_whole_reclaim_a_no_op(
     try:
         assert logs_svc.reclaim_index(scope) is None
     finally:
-        handle.close()
+        handle.release()
 
     assert session_dir.is_dir()
     assert _count(db_core, "sessions") == 1

@@ -73,7 +73,7 @@ A complete skeleton looks like this:
   The trailing `**Full Changelog**` compare link is the traceability anchor.
 - Use code spans for env vars (`AGENT_PROVIDER`), commands (`agent run`),
   function and container/image names, image tags, and paths that are **not**
-  files in this repo — e.g. the runtime secrets path `~/claude_keys.json`,
+  files in this repo — e.g. a runtime path like `~/.claude/settings.json`,
   in-container mount paths, consumer-project files like `Dockerfile.agent`, and
   placeholder paths containing `<...>`.
 - Reference any file or directory that exists **in this repo at the release's

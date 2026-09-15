@@ -105,7 +105,7 @@ def test_probe_reaps_stale_file_when_owner_gone(tracker: SidecarTracker) -> None
     assert handle is not None
     # Simulate the owner exiting: close the handle, which drops the flock but (unlike
     # the run's clear_running) leaves the file behind, as a crash would.
-    handle.close()
+    handle.release()
     assert (tracker.running_dir_for(_BEDROCK) / "dead-inst").is_file()
     assert tracker.has_live_runners(_BEDROCK, exclude_id="other") is False
     # The stale file was reaped as a side effect of the probe.
@@ -116,7 +116,7 @@ def test_probe_reaps_stale_keeps_live(tracker: SidecarTracker) -> None:
     """In one pass, a stale sibling is reaped while a live registration is reported."""
     dead = tracker.register_running(_BEDROCK, "dead-inst")
     assert dead is not None
-    dead.close()  # owner gone, file lingers
+    dead.release()  # owner gone, file lingers
     live = tracker.register_running(_BEDROCK, "live-inst")
     assert tracker.has_live_runners(_BEDROCK, exclude_id="other") is True
     assert not (tracker.running_dir_for(_BEDROCK) / "dead-inst").exists()

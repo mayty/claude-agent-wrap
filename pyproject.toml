@@ -10,9 +10,11 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "click>=8.5.0",
     "dockerfile-parse>=2.0.1",
+    "filelock>=3.32.5",
     "httpx2>=2.12.0",
     "humanize>=4.16.0",
     "packaging>=26.3",
+    "psutil>=7.2.2",
     "rich>=15.0.0",
     "watchdog>=6.0.0",
 ]
@@ -42,8 +44,9 @@ dev = [
     "ruff>=0.16.5",
     "pyrefly>=1.2.0",
     "tomlkit>=0.15.1",
-    # dockerfile-parse ships no py.typed; every other runtime dependency does.
+    # dockerfile-parse and psutil ship no py.typed; every other runtime dependency does.
     "types-dockerfile-parse>=2.0.0.20260508",
+    "types-psutil>=7.2.2.20260906",
 ]
 
 # ---------------------------------------------------------------------------

@@ -35,7 +35,7 @@ See [docs/container-environment.md](docs/container-environment.md) for always-in
 
 ### Authentication
 
-Provider credentials are resolved via an encrypted secrets store. The primary flow is the interactive prompt on the first `agent run` — provider secrets are required, so a TTY triggers a prompt when one is missing. `agent secrets set/check/clear/cleanup <sidecar>` manages secrets explicitly (e.g. for headless/scripted setup). Telegram secrets are optional and never trigger an interactive prompt — they must be set manually via `agent secrets set telegram`. `~/claude_keys.json` is only a legacy path: any keys found there are migrated into the encrypted store once, then the file is deleted.
+Provider credentials are resolved via an encrypted secrets store. The primary flow is the interactive prompt on the first `agent run` — provider secrets are required, so a TTY triggers a prompt when one is missing. `agent secrets set/check/clear/cleanup <sidecar>` manages secrets explicitly (e.g. for headless/scripted setup). Telegram secrets are optional and never trigger an interactive prompt — they must be set manually via `agent secrets set telegram`.
 
 ### Agent lifecycle
 

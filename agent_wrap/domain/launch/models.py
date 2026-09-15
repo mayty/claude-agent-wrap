@@ -4,7 +4,7 @@
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from typing import TextIO
+    from filelock import BaseFileLock
 
     from agent_wrap.domain.sidecars.base import Sidecar
 
@@ -37,4 +37,4 @@ class LaunchPreparation(NamedTuple):
     #: Held ``running/`` registration handles, keyed by **sidecar container name** (the
     #: refcount identity). Empty when a sidecar failed to ensure, since registration is
     #: all-or-nothing — the last action under the lock.
-    running_handles: dict[str, TextIO | None]
+    running_handles: dict[str, BaseFileLock | None]

@@ -292,7 +292,7 @@ def test_a_held_lock_makes_the_pass_a_no_op(
     try:
         assert ingest_svc.ingest_tree() is None
     finally:
-        handle.close()
+        handle.release()
 
     assert _count(db_core, "requests") == 0
 
@@ -406,6 +406,6 @@ def test_a_held_lock_makes_the_sweep_a_no_op(
     try:
         assert _sweep(ingest_svc) is None
     finally:
-        handle.close()
+        handle.release()
 
     assert _count(db_core, "blobs") == before
