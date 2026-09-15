@@ -23,6 +23,7 @@ from agent_wrap.infrastructure.logs.models import (
     SessionSummary,
     SessionWatermark,
 )
+from agent_wrap.infrastructure.rows import row_to
 
 if TYPE_CHECKING:
     import sqlite3
@@ -109,16 +110,10 @@ class LogIngestRepository:
             ).fetchone()
         if row is None:
             return None
-        return SessionState(
-            messages_offset=row["messages_offset"],
-            strings_offset=row["strings_offset"],
-            summary=SessionSummary(
-                record_count=row["record_count"],
-                last_event_at_us=row["last_event_at_us"],
-                models=tuple(json.loads(row["models"])),
-                alias=row["alias"],
-                title=row["title"],
-            ),
+        return row_to(
+            SessionState,
+            row,
+            summary=row_to(SessionSummary, row, models=tuple(json.loads(row["models"]))),
         )
 
     def watermarks(self) -> list[SessionWatermark]:
@@ -133,17 +128,7 @@ class LogIngestRepository:
             rows = connection.execute(
                 "SELECT project_hash, provider, claude_session_id, messages_offset  FROM sessions"
             ).fetchall()
-        return [
-            SessionWatermark(
-                key=SessionKey(
-                    project_hash=row["project_hash"],
-                    provider=row["provider"],
-                    claude_session_id=row["claude_session_id"],
-                ),
-                messages_offset=row["messages_offset"],
-            )
-            for row in rows
-        ]
+        return [row_to(SessionWatermark, row, key=row_to(SessionKey, row)) for row in rows]
 
     def reset_session(self, key: SessionKey) -> None:
         """
@@ -207,17 +192,7 @@ class LogIngestRepository:
                 " WHERE last_event_at_us IS NOT NULL AND last_event_at_us < ?",
                 (cutoff_us,),
             ).fetchall()
-        return [
-            SessionWatermark(
-                key=SessionKey(
-                    project_hash=row["project_hash"],
-                    provider=row["provider"],
-                    claude_session_id=row["claude_session_id"],
-                ),
-                messages_offset=row["messages_offset"],
-            )
-            for row in rows
-        ]
+        return [row_to(SessionWatermark, row, key=row_to(SessionKey, row)) for row in rows]
 
     def delete_sessions(self, keys: Sequence[SessionKey]) -> None:
         """

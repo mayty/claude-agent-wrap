@@ -10,6 +10,7 @@ from agent_wrap.infrastructure.logs.models import (
     SessionKey,
     SessionRow,
 )
+from agent_wrap.infrastructure.rows import row_to
 
 if TYPE_CHECKING:
     from agent_wrap.infrastructure.connection import ConnectionFactory
@@ -100,18 +101,12 @@ class SessionRepository:
                 "  FROM sessions"
             ).fetchall()
         return [
-            SessionRow(
-                key=SessionKey(
-                    project_hash=row["project_hash"],
-                    provider=row["provider"],
-                    claude_session_id=row["claude_session_id"],
-                ),
+            row_to(
+                SessionRow,
+                row,
+                key=row_to(SessionKey, row),
                 last_ingested_ns=row["last_ingested_at"],
-                record_count=row["record_count"],
-                last_event_at_us=row["last_event_at_us"],
                 models=tuple(json.loads(row["models"])),
-                alias=row["alias"],
-                title=row["title"],
             )
             for row in rows
         ]

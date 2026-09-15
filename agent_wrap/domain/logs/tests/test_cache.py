@@ -20,7 +20,6 @@ import pytest
 
 import agent_wrap.domain.logs.usage_tracker as usage_tracker_mod
 import agent_wrap.domain.stats.service as stats_mod
-from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.cache import LogsCache
@@ -67,9 +66,8 @@ def inert_watcher(mocker: MockerFixture) -> None:
     thread exists, and every other call is the consumer's own. These tests drive both
     from the main thread while a real watcher runs, which breaks that contract -- a
     filesystem write inside a test queues an event, and the consumer can handle the same
-    registry delta concurrently with the test's explicit ``reconcile``. Both then
-    pass the ``current_paths != _known_project_paths`` gate and insert the same group, so
-    ``_group_count`` intermittently read 2 where the test asserted 1.
+    registry change concurrently with the test's explicit ``reconcile``, so the lists a
+    test reads back are whichever pass happened to land last.
 
     Event delivery is covered by ``test_watcher.py``; nothing here depends on it.
     """
@@ -251,8 +249,8 @@ def test_the_daemon_cannot_import_the_legacy_registry(
     """
     launches = tmp_path / ".agent-launches"
     launches.mkdir(parents=True, exist_ok=True)
-    compressed = ProjectRegistry.compress([str(tmp_path / "a"), str(tmp_path / "b")])
-    (launches / "projects.txt").write_text("\n".join(compressed) + "\n", encoding="utf-8")
+    legacy = [str(tmp_path / "a"), str(tmp_path / "b")]
+    (launches / "projects.txt").write_text("\n".join(legacy) + "\n", encoding="utf-8")
 
     cache = make_cache(real_stats, read_only_config_svc)
     cache.start()
@@ -1282,7 +1280,7 @@ def test_a_same_content_registry_rewrite_does_not_reprocess(  # noqa: PLR0913 --
     register_projects: Callable[..., None],
     make_cache: Callable[..., LogsCache],
 ) -> None:
-    """``record_project`` re-records on every launch; contents decide, not the revision."""
+    """``record_project`` re-records on every launch; the groups it derives decide."""
     project = tmp_path / "proj"
     write_session(project, "litellm-bedrock", "sess-1", [valid_record])
     register_projects(project)
@@ -1290,7 +1288,9 @@ def test_a_same_content_registry_rewrite_does_not_reprocess(  # noqa: PLR0913 --
     cache = make_cache(real_stats, config_svc)
     cache.start()
     try:
-        spy = mocker.spy(cache, "_merge_added_paths")
+        # The id-keyed structures are rebuilt from scratch whenever the group list moves,
+        # so a reindex is what a re-registration must *not* cost.
+        spy = mocker.spy(cache, "_reindex_roots")
         register_projects(project)  # a re-launch from the same directory
         cache.reconcile()
 
@@ -1336,7 +1336,7 @@ def test_added_group_inserted_mid_list(  # noqa: PLR0913 -- a tree, a registry a
         cache.stop()
 
 
-def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913 -- a tree, a registry and three services
+def test_mixed_add_and_remove_handled_in_one_pass(  # noqa: PLR0913 -- a tree, a registry and three services
     tmp_path: Path,
     config_svc: ConfigService,
     valid_record: dict[str, Any],
@@ -1345,7 +1345,13 @@ def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913 -- a tree,
     mocker: MockerFixture,
     make_cache: Callable[..., LogsCache],
 ) -> None:
-    """Both additions and removals in the same registry change are handled."""
+    """
+    Both additions and removals in the same registry change land in one pass.
+
+    The unregistered project's central log dir is still on disk, so it becomes the
+    ``<orphaned>`` group -- the same answer a viewer restarted at this moment would give,
+    because both paths derive the list the one way.
+    """
     proj_a = tmp_path / "proj-a"
     proj_b = tmp_path / "proj-b"
     proj_c = tmp_path / "proj-c"
@@ -1363,9 +1369,11 @@ def test_mixed_add_and_remove_handled_incrementally(  # noqa: PLR0913 -- a tree,
         mocker.patch.object(cache._config, "read_project_paths", return_value=[proj_b, proj_c])
         cache.reconcile()
 
-        assert _group_count(cache) == 2
+        assert _group_count(cache) == 3
         assert [s["session_id"] for s in cache.get_sessions(0) or []] == ["sess-b"]
         assert [s["session_id"] for s in cache.get_sessions(1) or []] == ["sess-c"]
+        assert [s["session_id"] for s in cache.get_sessions(2) or []] == ["sess-a"]
+        assert [p["name"] for p in cache.get_projects() if p["id"] == 2] == ["<orphaned>"]
     finally:
         cache.stop()
 
@@ -1380,7 +1388,7 @@ def test_a_registry_addition_does_not_force_a_full_rebuild(  # noqa: PLR0913 -- 
     register_projects: Callable[..., None],
     make_cache: Callable[..., LogsCache],
 ) -> None:
-    """A path added since the last pass is merged into the group list, not rebuilt from it."""
+    """A path added since the last pass costs a regroup, not a rebuild of every cache."""
     proj_a = tmp_path / "proj-a"
     proj_b = tmp_path / "proj-b"
     write_session(proj_a, "litellm-bedrock", "sess-a", [valid_record])
@@ -1451,7 +1459,9 @@ def test_an_unregistered_project_hands_its_id_to_the_survivor(  # noqa: PLR0913 
     A group that is gone renumbers the ones after it, hashes and sessions together.
 
     The other direction of the same hazard: what sat at pid 1 is now pid 0, and every
-    structure keyed by the id has to agree about that in the same pass.
+    structure keyed by the id has to agree about that in the same pass. The unregistered
+    project keeps its central log dir, so its spend moves to ``<orphaned>`` rather than
+    vanishing -- which is what a restarted viewer has always shown.
     """
     proj_a = tmp_path / "aaa-proj"
     proj_c = tmp_path / "ccc-proj"
@@ -1469,6 +1479,8 @@ def test_an_unregistered_project_hands_its_id_to_the_survivor(  # noqa: PLR0913 
 
         assert cache.get_project_hashes(0) == [project_path_hash(proj_c)]
         assert [s["session_id"] for s in cache.get_sessions(0) or []] == ["sess-c"]
-        assert cache.get_project_hashes(1) is None
+        assert cache.get_project_hashes(1) == [project_path_hash(proj_a)]
+        assert [p["name"] for p in cache.get_projects() if p["id"] == 1] == ["<orphaned>"]
+        assert cache.get_project_hashes(2) is None
     finally:
         cache.stop()

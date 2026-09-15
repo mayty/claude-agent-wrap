@@ -4,6 +4,7 @@
 from typing import TYPE_CHECKING
 
 from agent_wrap.infrastructure.logs.models import UsageCell
+from agent_wrap.infrastructure.rows import row_to
 
 if TYPE_CHECKING:
     import sqlite3
@@ -83,25 +84,15 @@ class UsageRepository:
             rows = connection.execute(USAGE_CELLS, {"lo": from_hour, "hi": until_hour}).fetchall()
             owners = self._session_owners(connection)
         return [
-            UsageCell(
-                hour_bucket=row["hour_bucket"],
+            row_to(
+                UsageCell,
+                row,
                 # A cell whose session row vanished between the two statements cannot
                 # happen inside one read transaction, so the fallback is unreachable
                 # rather than a real case -- but it is empty strings, not a crash,
                 # because a missing hash would only mean the spend renders as orphaned.
                 project_hash=owners.get(row["session_id"], ("", ""))[0],
                 provider=owners.get(row["session_id"], ("", ""))[1],
-                session_id=row["session_id"],
-                model=row["model"],
-                usage_source=row["usage_source"],
-                requests=row["requests"],
-                last_started_at_us=row["last_started_at_us"],
-                input_tokens=row["input_tokens"],
-                output_tokens=row["output_tokens"],
-                cache_write_tokens=row["cache_write_tokens"],
-                cache_write_5m=row["cache_write_5m"],
-                cache_write_1h=row["cache_write_1h"],
-                cache_read=row["cache_read"],
             )
             for row in rows
         ]

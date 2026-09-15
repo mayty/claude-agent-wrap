@@ -1,15 +1,7 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the config domain."""
 
-from dataclasses import dataclass
 from typing import NamedTuple
-
-
-@dataclass
-class Entry:
-    compressed: str
-    first_original: str
-    last_original: str
 
 
 class RegistryFingerprint(NamedTuple):

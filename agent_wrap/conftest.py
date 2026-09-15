@@ -6,12 +6,16 @@ Placed at the package root so pytest discovers it for every test file
 under ``agent_wrap/**/tests/``.
 """
 
+import importlib
+import pkgutil
+import sys
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, ClassVar, override
 from unittest.mock import Mock
 
 import pytest
 
+import agent_wrap
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
     AGENT_DOCKERFILE_NAME,
@@ -40,43 +44,42 @@ if TYPE_CHECKING:
     from agent_wrap.domain.providers.models import Tier
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _import_every_module() -> None:
+    """
+    Import the whole package once, so ``_patch_path_constants`` can sweep it.
+
+    Several modules are reached only through a ``containers.py`` ``@cached_property``,
+    which imports them inside a test body -- after the autouse fixtures for that test
+    have already run. Forcing every import at session start is what puts them in
+    ``sys.modules`` in time to be patched.
+    """
+    for info in pkgutil.walk_packages(agent_wrap.__path__, f"{agent_wrap.__name__}."):
+        importlib.import_module(info.name)
+
+
 @pytest.fixture(autouse=True)
 def _patch_path_constants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Redirect path constants to tmp_path for test isolation."""
-    for mod in (
-        "agent_wrap.constants",
-        "agent_wrap.lib.utils",
-        "agent_wrap.domain.stats.service",
-        "agent_wrap.domain.secrets.service",
-        "agent_wrap.domain.config.service",
-        "agent_wrap.domain.updates.service",
-        "agent_wrap.domain.pricing.service",
-        "agent_wrap.domain.logs.io",
-        "agent_wrap.domain.logs.cache",
-        "agent_wrap.domain.logs.daemon",
-        "agent_wrap.domain.logs.service",
-        "agent_wrap.domain.logs.server",
-        "agent_wrap.domain.logs.normalize",
-        "agent_wrap.domain.logs.usage_tracker",
-        "agent_wrap.domain.stats.fold",
-        "agent_wrap.domain.status.service",
-        "agent_wrap.domain.launch.service",
-        "agent_wrap.domain.build.service",
-        "agent_wrap.cli.logs.run",
-        "agent_wrap.cli.update.run",
-        "agent_wrap.cli.rebuild.run",
-        "agent_wrap.cli.stats.run",
-        "agent_wrap.cli.inspect.run",
-        "agent_wrap.cli.run.run",
-        "agent_wrap.domain.providers.key_approval",
-        "agent_wrap.domain.providers.base",
-    ):
-        monkeypatch.setattr(f"{mod}.TOOL_DIR", tmp_path, raising=False)
-        monkeypatch.setattr(f"{mod}.GLOBAL_CONFIG_DIR", tmp_path, raising=False)
-        monkeypatch.setattr(f"{mod}.OPS_DIR", tmp_path / "ops", raising=False)
-        monkeypatch.setattr(
-            f"{mod}.AGENT_LAUNCHES_DIR", tmp_path / ".agent-launches", raising=False
-        )
+    """
+    Redirect the four path constants to ``tmp_path``, wherever one was imported.
+
+    Swept out of ``sys.modules`` rather than named in a list: each of these is imported
+    by value, so every module that names one holds its own binding, and a hand-kept list
+    of them stops covering a module the moment one is added -- silently, since the test
+    that needed it simply starts writing to the real home directory.
+    """
+    replacements = {
+        "TOOL_DIR": tmp_path,
+        "GLOBAL_CONFIG_DIR": tmp_path,
+        "OPS_DIR": tmp_path / "ops",
+        "AGENT_LAUNCHES_DIR": tmp_path / ".agent-launches",
+    }
+    for name, module in list(sys.modules.items()):
+        if not name.startswith(f"{agent_wrap.__name__}."):
+            continue
+        for attribute, value in replacements.items():
+            if hasattr(module, attribute):
+                monkeypatch.setattr(module, attribute, value)
 
 
 @pytest.fixture

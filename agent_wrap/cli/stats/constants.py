@@ -8,7 +8,7 @@ from agent_wrap.domain.display.models import TableSpec
 RELATIVE_DATE_RE = re.compile(r"^-(\d+)d$")
 
 #: The trailing numeric columns every usage table ends with, in the order
-#: :func:`agent_wrap.cli.stats.render.usage_cells` emits them. Shared by all three tables
+#: :func:`agent_wrap.cli.stats.display.usage_cells` emits them. Shared by all three tables
 #: so their figures line up vertically when two are stacked.
 USAGE_HEADERS = ("MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST")
 USAGE_ALIGNS = (">", ">", ">", ">", ">", ">")

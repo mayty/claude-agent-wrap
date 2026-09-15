@@ -3,8 +3,8 @@
 
 import gzip
 import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, override
 from urllib.parse import parse_qs, urlparse
 
@@ -17,42 +17,26 @@ from agent_wrap.domain.logs.constants import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agent_wrap.domain.logs.cache import LogsCache
     from agent_wrap.domain.logs.stream import SessionStream
 
 
-def resolve_static(path: str, *, root: Path | None = None) -> Path | None:
-    """
-    Map a URL path to a file inside the ``logs_page/`` directory.
-
-    The *root* parameter is only exposed for tests; production callers rely on
-    the module-level ``LOGS_PAGE_DIR`` default.
-    """
-    if root is None:
-        root = LOGS_PAGE_DIR
-    path = path.lstrip("/")
-    # Root path serves index.html
-    if path in ("", "/"):
-        path = "index.html"
-    url_path = Path(path)
-    # Prevent directory traversal
-    if ".." in url_path.parts or url_path.is_absolute():
-        return None
-    # Only serve known extensions
-    if url_path.suffix not in LOGS_CONTENT_TYPES:
-        return None
-    candidate = (root / path).resolve()
-    # Confirm the resolved path stays within the logs_page/ directory
-    try:
-        candidate.relative_to(root.resolve())
-    except ValueError:
-        return None
-    return candidate
-
-
 def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequestHandler]:  # noqa: C901
-    class _Handler(BaseHTTPRequestHandler):
+    class _Handler(SimpleHTTPRequestHandler):
         """Single-threaded HTTP handler for the logs viewer."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            # Exact control over the four types the page is made of, rather than whatever
+            # `mimetypes` has been taught locally: the base class consults this map before
+            # falling back to the system tables, and `.js` in particular comes back from
+            # some of them without a charset. Assigned here rather than as a class
+            # attribute because typeshed declares it an instance variable, and it has to
+            # land before `super().__init__`, which serves the request rather than
+            # returning from it.
+            self.extensions_map = dict(LOGS_CONTENT_TYPES)
+            super().__init__(*args, directory=str(LOGS_PAGE_DIR), **kwargs)
 
         # Silence per-request log lines to stderr
         @override
@@ -108,26 +92,24 @@ def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequest
                 bounds[name] = value
             return bounds["from"] or 0, bounds["limit"]
 
-        _API_DISPATCH: ClassVar[dict[str, str]] = {
-            "/api/projects": "_handle_projects",
-            "/api/sessions": "_handle_sessions",
-            "/api/session": "_handle_session",
-            "/api/session-stat": "_handle_session_stat",
-            "/api/sessions-stat": "_handle_sessions_stat",
-            "/api/projects-stat": "_handle_projects_stat",
-        }
-
+        @override
         def do_GET(self) -> None:
-            # Set by bind_port before the server starts — guaranteed non-None at runtime.
             parsed = urlparse(self.path)
             path = parsed.path
-            qs = parse_qs(parsed.query)
 
-            method_name = self._API_DISPATCH.get(path)
-            if method_name is not None:
-                getattr(self, method_name)(qs)
-            else:
-                self._serve_static(path)
+            api = self._API_DISPATCH.get(path)
+            if api is not None:
+                api(self, parse_qs(parsed.query))
+                return
+
+            # The allow-list the base class does not have: it would otherwise serve any
+            # file in the directory, and render a listing for the directory itself.
+            # `translate_path` handles the traversal and containment questions.
+            suffix = PurePosixPath("/index.html" if path == "/" else path).suffix
+            if suffix not in self.extensions_map:
+                self.send_error(404)
+                return
+            super().do_GET()
 
         # Cache-served list endpoints — no I/O of any kind on the request path
         #
@@ -243,20 +225,16 @@ def get_handler(stream: SessionStream, cache: LogsCache) -> type[BaseHTTPRequest
             self.end_headers()
             self.wfile.write(body)
 
-        def _serve_static(self, path: str) -> None:
-            sf = resolve_static(path)
-            if sf is None:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b"Not Found")
-                return
-            content_type = LOGS_CONTENT_TYPES.get(sf.suffix, "application/octet-stream")
-            body = sf.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        # Declared after the methods it names, so these are the function objects rather
+        # than strings resolved by getattr at request time — a typo is a type error now.
+        _API_DISPATCH: ClassVar[dict[str, Callable[..., None]]] = {
+            "/api/projects": _handle_projects,
+            "/api/sessions": _handle_sessions,
+            "/api/session": _handle_session,
+            "/api/session-stat": _handle_session_stat,
+            "/api/sessions-stat": _handle_sessions_stat,
+            "/api/projects-stat": _handle_projects_stat,
+        }
 
     return _Handler
 

@@ -1,23 +1,17 @@
 # This file has been created with the assistance of an AI tool.
 """In-memory cache and background FS watcher for the logs viewer."""
 
-import bisect
-import operator
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agent_wrap.constants import (
     LITELLM_LOGS_DIRNAME,
-    ORPHANED_LABEL,
     TOOL_DIR,
 )
 from agent_wrap.domain.logs.daemon import log_debug, log_info
 from agent_wrap.domain.logs.ingest import LogFiles
 from agent_wrap.domain.logs.io import list_groups
-from agent_wrap.domain.logs.io import (
-    logs_dir as project_logs_dir,
-)
 from agent_wrap.domain.logs.listing import fingerprint, merge_sessions, rows_by_hash
 from agent_wrap.domain.logs.usage_tracker import UsageTracker
 from agent_wrap.domain.logs.watcher import CacheWatcher
@@ -79,7 +73,6 @@ class LogsCache:
         self._logs_tree_path = TOOL_DIR / LITELLM_LOGS_DIRNAME
         self._registry_last_change: int | None = None
         self._registry_count: int | None = None
-        self._known_project_paths: set[str] = set()
         # Logs dir -> project id, so a path from a filesystem event maps to a group
         # without a scan. Registered under both spellings a logs dir can be reached by,
         # alongside the project hashes each group owns -- see _reindex_roots.
@@ -240,14 +233,9 @@ class LogsCache:
         # serve totals frozen at the last `agent reindex`.
         self._ingest_now()
 
-        # Gated on the registry's *contents*, not its revision: a path whose logs dir
-        # does not exist yet is left out of _known_project_paths, and comparing contents
-        # is what retries it. A revision gate cannot -- by then it has stopped moving.
         self._update_registry_tracking()
-        current_paths = self._read_project_paths()
-        if current_paths != self._known_project_paths:
-            with log_debug("Update", "handling registry change", threshold=timedelta(seconds=2)):
-                self._handle_registry_change(current_paths)
+        with log_debug("Update", "regrouping projects", threshold=timedelta(seconds=2)):
+            self._regroup()
 
         with log_debug("Update", "refreshing session lists", threshold=timedelta(seconds=1)):
             self._refresh_from_index()
@@ -312,79 +300,26 @@ class LogsCache:
         Full rebuild — the synchronous startup pass.
 
         Delegates to :meth:`reconcile` rather than running a startup scan of its own: two
-        implementations would each count a project's sessions their own way.
-
-        ``_sessions`` is pre-seeded with an empty list per group, so a group whose
-        sessions are not in the index yet answers ``/api/sessions`` with an empty list
-        rather than a 400.
+        implementations would each count a project's sessions their own way. All this
+        adds is the reset, which is what makes it a *re*build: every cached structure
+        goes back to empty, and clearing ``_index_revision`` is what re-opens the gate
+        that would otherwise let a pass against an unchanged index leave them there.
 
         The usage tracker is seeded here rather than at the first update because
         ``usage.json``'s mtime is the liveness signal the statusline reads: updates are
         event-driven, so on a quiet host the first is a heartbeat up to a minute away.
         """
-        with log_info("Rebuild", "listing groups"):
-            self._groups = list_groups(self._stats_service, self._config.read_project_paths())
-
-        # Reset explicitly rather than relying on reconcile to overwrite: its refresh is
-        # gated on the index revision having moved, which on a rebuild against an
-        # unchanged index would leave whatever a previous call had put here. Clearing
-        # `_index_revision` is what re-opens that gate.
+        self._groups = []
+        self._reindex_roots()
         self._projects = []
         self._projects_fp = {"rev": None, "count": 0}
-        self._sessions = {pid: [] for pid in range(len(self._groups))}
+        self._sessions = {}
         self._sessions_fp = {}
         self._session_fp = {}
         self._index_revision = None
 
-        # Before reconcile, so its registry gate compares against what this just read and
-        # finds nothing to do.
-        self._track_registry_state()
-        self._reindex_roots()
-
         with log_info("Rebuild", "reading the session index"):
             self.reconcile()
-
-    def _track_registry_state(self) -> None:
-        """
-        Seed both the registry's contents and its fingerprint inputs.
-
-        ``_known_project_paths`` means "registry paths already reflected in ``_groups``",
-        so it is seeded with the predicate ``list_groups`` filters on: a path whose
-        ``.claude/litellm-logs`` does not exist is left out, which makes the first
-        reconcile treat it as an addition and retry it. Seeding the whole registry
-        instead would strand exactly the paths this gate exists to recover.
-
-        Set unconditionally, including when the registry cannot be read: it is the
-        left-hand side of reconcile's content gate.
-        """
-        self._known_project_paths = {
-            raw for raw in self._read_project_paths() if project_logs_dir(Path(raw)).is_dir()
-        }
-        self._update_registry_tracking()
-
-    def _read_project_paths(self) -> set[str]:
-        return {str(p) for p in self._config.read_project_paths()}
-
-    def _handle_registry_change(self, new_paths: set[str]) -> None:
-        """
-        Handle added/removed paths in the project registry.
-
-        A path whose ``.claude/litellm-logs`` does not exist yet is deliberately *not*
-        recorded as known, which keeps the content gate hot and retries it next pass.
-        Without that, a project registered before its logs dir was linked would stay
-        invisible until the viewer restarts.
-        """
-        old_paths = self._known_project_paths
-        added = new_paths - old_paths
-        removed = old_paths - new_paths
-
-        # Process removals first (already incremental), then additions.
-        if removed:
-            self._prune_removed_paths(removed)
-
-        unresolved = self._merge_added_paths(added) if added else set()
-
-        self._known_project_paths = new_paths - unresolved
 
     def _update_registry_tracking(self) -> None:
         """
@@ -398,107 +333,28 @@ class LogsCache:
         self._registry_last_change = fingerprint.last_change
         self._registry_count = fingerprint.count
 
-    def _merge_added_paths(self, added: set[str]) -> set[str]:
+    def _regroup(self) -> None:
         """
-        Incrementally merge newly added project paths into the group list.
+        Re-derive the group list from the registry, re-opening the refresh gate if it moved.
 
-        Only ``_groups`` is updated; everything keyed by project id is re-derived by
-        :meth:`_refresh_from_index` straight after. That gate is re-opened rather than
-        the dicts patched, because a new group changes which hashes belong to which pid
-        without changing the index -- so the revision alone would say there is nothing
-        to do.
+        Recomputed wholesale on every pass rather than diffed against the registry's
+        previous contents: :func:`list_groups` is one ``is_dir()`` per registered project
+        plus an already-``@cache``d ``resolve_group``, against a pass that runs on a
+        60 s heartbeat or an unmappable filesystem path -- never per request. Deriving it
+        is also what retries a project whose ``.claude/litellm-logs`` did not exist yet,
+        since there is no "pending" state to carry: the next pass simply asks again.
 
-        Returns the subset of *added* whose logs dir does not exist yet, which the caller
-        keeps out of the known set so a later pass retries it.
+        When it moved, the id-keyed dicts are not patched but the index-revision gate is
+        re-opened instead, because a new group changes which hashes belong to which
+        project id without changing the index -- so the revision alone would say there is
+        nothing to do.
         """
-        old_root_to_pid: dict[Path, int] = {
-            group["root"]: pid for pid, group in enumerate(self._groups)
-        }
-
-        pending_groups, merged_pids, unresolved = self._classify_added_paths(added, old_root_to_pid)
-        if not pending_groups and not merged_pids:
-            return unresolved
-
-        new_entries = sorted(pending_groups.values(), key=operator.itemgetter("root"))
-        self._insert_new_groups(new_entries)
-
+        groups = list_groups(self._stats_service, self._config.read_project_paths())
+        if groups == self._groups:
+            return
+        self._groups = groups
         self._reindex_roots()
         self._index_revision = None
-
-        return unresolved
-
-    def _classify_added_paths(
-        self, added: set[str], old_root_to_pid: dict[Path, int]
-    ) -> tuple[dict[Path, GroupInfo], set[int], set[str]]:
-        """
-        Classify each added path: merge into an existing group, stage as new, or defer.
-
-        A path that cannot even be constructed is *not* deferred -- it will never become
-        valid, so retrying it forever would keep the registry gate hot for nothing.
-        """
-        pending_groups: dict[Path, GroupInfo] = {}
-        merged_pids: set[int] = set()
-        unresolved: set[str] = set()
-
-        for raw_path_str in added:
-            try:
-                path = Path(raw_path_str)
-            except TypeError, ValueError:
-                continue
-
-            logs_d = project_logs_dir(path)
-            if not logs_d.is_dir():
-                unresolved.add(raw_path_str)
-                continue
-
-            group_root, display_name, _is_transient = self._stats_service.resolve_group(path)
-            existing_pid = old_root_to_pid.get(group_root)
-
-            if existing_pid is not None:
-                group = self._groups[existing_pid]
-                if path not in group["paths"]:
-                    group["paths"].append(path)
-                if logs_d not in group["logs_dirs"]:
-                    group["logs_dirs"].append(logs_d)
-                merged_pids.add(existing_pid)
-            elif group_root in pending_groups:
-                pg = pending_groups[group_root]
-                if path not in pg["paths"]:
-                    pg["paths"].append(path)
-                if logs_d not in pg["logs_dirs"]:
-                    pg["logs_dirs"].append(logs_d)
-            else:
-                pending_groups[group_root] = cast(
-                    "GroupInfo",
-                    {
-                        "root": group_root,
-                        "name": display_name,
-                        "paths": [path],
-                        "logs_dirs": [logs_d],
-                    },
-                )
-
-        return pending_groups, merged_pids, unresolved
-
-    def _insert_new_groups(self, new_entries: list[GroupInfo]) -> None:
-        """
-        Insert *new_entries* into ``_groups`` at their sorted positions.
-
-        Saves and re-appends the ``<orphaned>`` group (if present) so it stays
-        at the end regardless of insertion position.
-        """
-        orphaned_group: GroupInfo | None = None
-        if self._groups and self._groups[-1]["name"] == ORPHANED_LABEL:
-            orphaned_group = self._groups.pop()
-
-        roots = [g["root"] for g in self._groups]
-        for entry in new_entries:
-            idx = bisect.bisect_left(roots, entry["root"])
-            self._groups.insert(idx, entry)
-            roots.insert(idx, entry["root"])
-
-        if orphaned_group is not None:
-            self._groups.append(orphaned_group)
 
     @staticmethod
     def _resolve_path_safe(raw: str | Path) -> Path:
@@ -506,30 +362,6 @@ class LogsCache:
             return Path(raw).resolve()
         except OSError:
             return Path(raw)
-
-    def _prune_removed_paths(self, removed: set[str]) -> None:
-        """
-        Drop unregistered projects from the group list.
-
-        Groups only, like :meth:`_merge_added_paths`: everything keyed by project id is
-        rebuilt from the index by the refresh that follows.
-        """
-        removed_resolved = {self._resolve_path_safe(rp) for rp in removed}
-
-        groups_to_drop: list[int] = []
-        for pid, group in enumerate(self._groups):
-            surviving = [p for p in group["paths"] if Path(p).resolve() not in removed_resolved]
-            if not surviving and group["name"] != ORPHANED_LABEL:
-                groups_to_drop.append(pid)
-            else:
-                group["paths"] = surviving
-                group["logs_dirs"] = [project_logs_dir(p) for p in surviving]
-
-        for pid in sorted(groups_to_drop, reverse=True):
-            del self._groups[pid]
-
-        self._reindex_roots()
-        self._index_revision = None
 
     def _recompute_projects_from_cache(self) -> list[ProjectInfo]:
         out: list[ProjectInfo] = []

@@ -22,7 +22,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.logs.cache import LogsCache
-from agent_wrap.domain.logs.server import bind_port, get_handler, resolve_static
+from agent_wrap.domain.logs.server import bind_port, get_handler
 from agent_wrap.domain.logs.stream import SessionStream
 
 if TYPE_CHECKING:
@@ -30,23 +30,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 SESSION_ID = "abc12345-6789-abcd-ef01-234567890abc"
-
-
-def test_resolve_static_maps_root_to_index(tmp_path: Path):
-    assert resolve_static("/", root=tmp_path) == (tmp_path / "index.html").resolve()
-
-
-def test_resolve_static_maps_named_asset(tmp_path: Path):
-    assert resolve_static("/app.js", root=tmp_path) == (tmp_path / "app.js").resolve()
-    assert resolve_static("/styles.css", root=tmp_path) == (tmp_path / "styles.css").resolve()
-
-
-def test_resolve_static_rejects_traversal(tmp_path: Path):
-    page = tmp_path / "logs_page"
-    page.mkdir()
-    # Escaping the page dir must be refused, not resolved to a sibling file.
-    assert resolve_static("/../logs.py", root=page) is None
-    assert resolve_static("/../../etc/passwd", root=page) is None
 
 
 def _find_free_port() -> int:
@@ -148,6 +131,98 @@ def api_server() -> tuple[int, Mock]:
     )
     _start_server(port, _cache_mock(), stream)
     return port, stream
+
+
+@pytest.fixture
+def static_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    """Start a server whose page directory is a tmp_path holding one asset of each kind."""
+    page = tmp_path / "logs_page"
+    page.mkdir()
+    (page / "index.html").write_text("<h1>index</h1>", encoding="utf-8")
+    (page / "app.js").write_text("// app", encoding="utf-8")
+    (page / "styles.css").write_text("body{}", encoding="utf-8")
+    # The kind of file the allow-list exists to keep unreachable, next to the assets.
+    (page / "secret.py").write_text("TOKEN = 'nope'", encoding="utf-8")
+    # Allow-listed suffixes deliberately, so a traversal test cannot pass merely because
+    # the suffix gate refused it — only containment can be what stops these.
+    (tmp_path / "sibling.js").write_text("OUTSIDE_THE_PAGE_DIR", encoding="utf-8")
+    (tmp_path / "sibling.html").write_text("OUTSIDE_THE_PAGE_DIR", encoding="utf-8")
+    monkeypatch.setattr("agent_wrap.domain.logs.server.LOGS_PAGE_DIR", page)
+
+    port = _find_free_port()
+    _start_server(port, _cache_mock())
+    return port
+
+
+def _get_static(port: int, path: str) -> tuple[int, str, str]:
+    """GET *path* and return (status, Content-Type, body), reading the body either way."""
+    req = urllib.request.Request(_url(port, path))  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            return resp.status, resp.headers.get("Content-Type", ""), resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace")
+
+
+def test_root_serves_index_html(static_server: int):
+    status, content_type, body = _get_static(static_server, "/")
+    assert status == 200
+    assert body == "<h1>index</h1>"
+    assert content_type == "text/html; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_body", "expected_type"),
+    [
+        ("/app.js", "// app", "text/javascript; charset=utf-8"),
+        ("/styles.css", "body{}", "text/css; charset=utf-8"),
+    ],
+)
+def test_named_asset_is_served_with_its_content_type(
+    static_server: int, path: str, expected_body: str, expected_type: str
+):
+    status, content_type, body = _get_static(static_server, path)
+    assert status == 200
+    assert body == expected_body
+    assert content_type == expected_type
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/../sibling.js",
+        "/../sibling.html",
+        "/%2e%2e/sibling.js",
+        "/..%2fsibling.js",
+        "/a/../../sibling.js",
+    ],
+)
+def test_traversal_out_of_the_page_dir_is_refused(static_server: int, path: str):
+    """
+    Escaping the page dir must not resolve to a sibling file.
+
+    Every target here carries an allow-listed suffix, so the suffix gate lets it through
+    and containment is the only thing that can refuse it. Asserted on the body as well
+    as the status: a 404 for the wrong reason would still be a 404.
+    """
+    status, _content_type, body = _get_static(static_server, path)
+    assert status == 404
+    assert "OUTSIDE_THE_PAGE_DIR" not in body
+
+
+def test_an_extension_off_the_allow_list_is_refused(static_server: int):
+    """A file sitting in the page dir is still unreachable unless its suffix is listed."""
+    status, _content_type, body = _get_static(static_server, "/secret.py")
+    assert status == 404
+    assert "TOKEN" not in body
+
+
+def test_the_page_directory_itself_is_not_listed(static_server: int):
+    """Without the allow-list the base class would render an index of the directory."""
+    status, _content_type, body = _get_static(static_server, "/?x=1")
+    assert status == 200
+    assert body == "<h1>index</h1>"
+    assert "app.js" not in body
 
 
 def test_sessions_returns_list(api_server: tuple[int, Mock]):

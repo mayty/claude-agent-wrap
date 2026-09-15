@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from agent_wrap.infrastructure.logs.constants import MAX_QUERY_PARAMETERS
 from agent_wrap.infrastructure.logs.models import IndexedRequest, IndexedSession, SessionKey
 from agent_wrap.infrastructure.logs.repositories.ingest import BlobCodec
+from agent_wrap.infrastructure.rows import row_to
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterator, Sequence
@@ -65,14 +66,11 @@ class RequestRepository:
                     (claude_session_id, *hashes),
                 ).fetchall()
                 found.extend(
-                    IndexedSession(
-                        key=SessionKey(
-                            project_hash=row["project_hash"],
-                            provider=row["provider"],
-                            claude_session_id=claude_session_id,
-                        ),
+                    row_to(
+                        IndexedSession,
+                        row,
+                        key=row_to(SessionKey, row, claude_session_id=claude_session_id),
                         session_id=row["id"],
-                        record_count=row["record_count"],
                     )
                     for row in rows
                 )
@@ -122,21 +120,10 @@ class RequestRepository:
                 ).fetchall()
                 found.update(
                     {
-                        row["ordinal"]: IndexedRequest(
-                            ordinal=row["ordinal"],
-                            status=row["status"],
-                            model=row["model"],
-                            started_at_us=row["started_at_us"],
-                            first_token_at_us=row["first_token_at_us"],
-                            ended_at_us=row["ended_at_us"],
-                            agent_id=row["agent_id"],
-                            finish_reason=row["finish_reason"],
-                            max_tokens=row["max_tokens"],
-                            error=row["error"],
+                        row["ordinal"]: row_to(
+                            IndexedRequest,
+                            row,
                             message_blobs=BlobCodec.unpack_ids(row["message_refs"]),
-                            system_blob=row["system_blob"],
-                            tools_blob=row["tools_blob"],
-                            response_blob=row["response_blob"],
                         )
                         for row in rows
                     }

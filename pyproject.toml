@@ -169,9 +169,6 @@ ignore = [
 "agent_wrap/domain/display/spinner.py" = [
     "T201",    # ditto: the spinner writes its own frames to stderr
 ]
-"agent_wrap/domain/logs/daemon.py" = [
-    "T201",    # separate process; stdout is dup2'd to the daemon's own logfile
-]
 
 [tool.ruff.lint.isort]
 known-first-party = ["agent_wrap"]

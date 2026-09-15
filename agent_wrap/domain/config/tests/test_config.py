@@ -13,7 +13,6 @@ import pytest
 
 import agent_wrap.domain.config.service as config_mod
 from agent_wrap.constants import STATE_FILES
-from agent_wrap.domain.config.project_registry import ProjectRegistry
 from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.launch.constants import EXTERNAL_STATE_MOUNTS, STATE_MOUNTS
@@ -503,14 +502,18 @@ def make_live_project(tmp_path: Path) -> Callable[[str], Path]:
 
 @pytest.fixture
 def write_legacy_registry(tmp_path: Path) -> Callable[..., Path]:
-    """Return a factory writing a pre-SQLite projects.txt in its compressed encoding."""
+    """
+    Return a factory writing a pre-SQLite projects.txt, one argument per line.
 
-    def _write(*projects: Path | str) -> Path:
+    Lines are written verbatim, so a caller passes plain paths when the encoding is
+    beside the point and the encoded form (``/a/{x,y}``, ``{2}/rest``) when it is not.
+    """
+
+    def _write(*lines: Path | str) -> Path:
         launches = tmp_path / ".agent-launches"
         launches.mkdir(parents=True, exist_ok=True)
         legacy = launches / "projects.txt"
-        compressed = ProjectRegistry.compress([str(p) for p in projects])
-        legacy.write_text("\n".join(compressed) + "\n", encoding="utf-8")
+        legacy.write_text("\n".join(str(line) for line in lines) + "\n", encoding="utf-8")
         return legacy
 
     return _write
@@ -870,13 +873,13 @@ def test_legacy_registry_import_expands_the_compressed_encoding(
     svc: ConfigService, write_legacy_registry: Callable[..., Path]
 ) -> None:
     """Sibling groups and prefix borrows have to survive the trip into the database."""
-    write_legacy_registry("/home/dev/x", "/home/dev/y", "/home/dev/z", "/mnt/c/other")
+    write_legacy_registry("/home/dev/{x,y,z}", "{1}/other/thing")
 
     assert [str(p) for p in svc.read_project_paths()] == [
         "/home/dev/x",
         "/home/dev/y",
         "/home/dev/z",
-        "/mnt/c/other",
+        "/home/other/thing",
     ]
 
 

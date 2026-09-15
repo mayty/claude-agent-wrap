@@ -14,7 +14,6 @@ import json
 import os
 import struct
 import subprocess
-import tempfile
 from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +26,7 @@ from agent_wrap.domain.secrets.constants import (
     SECRETS_ENCRYPTED_FILE_PATH,
     SECRETS_KEYFILE_PATH,
 )
+from agent_wrap.lib.atomic import atomic_write_bytes
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -280,21 +280,10 @@ class EncryptedFileStore:
     @staticmethod
     def write_all(data: dict[str, str], *, display: DisplayService) -> None:
         """Encrypt *data* and atomically write it to the secrets file."""
-        path = SECRETS_ENCRYPTED_FILE_PATH
-        path.parent.mkdir(parents=True, exist_ok=True)
         key = KeyDerivation.derive_key(display)
-
         plaintext = json.dumps(data, indent=2).encode()
-        ciphertext = EncryptionPrimitives.encrypt(plaintext, key)
-
-        # Atomic write: temp sibling → rename
-        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(ciphertext)
-            tmp.chmod(0o600)
-            tmp.replace(path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        atomic_write_bytes(
+            SECRETS_ENCRYPTED_FILE_PATH,
+            EncryptionPrimitives.encrypt(plaintext, key),
+            mode=0o600,
+        )
