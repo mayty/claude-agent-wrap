@@ -273,8 +273,16 @@ requirement itself stays an ordinary unconditional floor — marking it
 reduced mode to fall back to. Instead the bootstrap adds `--no-binary=watchdog` on Darwin
 and builds it from the sdist, whose hash `bin/requirements.txt` already carries, so
 `--require-hashes` still gates it and every other requirement stays wheels-only on every
-platform. A dependency needing this must be able to build from source on the platform it
-lands on; when that is not true, the honest answer is a different dependency.
+platform.
+
+That carve-out has a floor: the sdist must build with tooling it is reasonable to demand of
+the host. `cryptography` sits below it — its only Darwin wheel is `macosx_11_0_arm64` and
+its sdist builds through Rust, so on Intel macOS the choice was a Rust toolchain on every
+Mac or no Intel macOS. The bootstrap takes the second and rejects `x86_64-apple-darwin` at
+target resolution, next to the musl check and for the same reason: a host that cannot be
+provisioned should hear so before anything is downloaded, not from pip three steps later.
+Supported targets are therefore `x86_64`/`aarch64` Linux (glibc) and `aarch64` macOS, and
+`python-pin.env` carries one interpreter hash per each.
 
 **The venv the CLI runs on is content-addressed and never mutated.** Its directory name
 embeds the interpreter pin, the target triple, and the first 12 hex of the SHA-256 of the

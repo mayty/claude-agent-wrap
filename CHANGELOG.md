@@ -7,8 +7,9 @@ the [release notes style guide](releases/styleguide.md).
 
 ## [0.11.0](releases/0.11.0.md) — 2026-09-03
 
-**Breaking:** `agent` exits `2` on a usage error, not `1`, `agent secrets` is now a
-command group, and `~/claude_keys.json` is no longer imported into the secrets store.
+**Breaking:** Intel Macs are no longer a supported host. `agent` exits `2` on a usage
+error, not `1`, `agent secrets` is now a command group, and `~/claude_keys.json` is no
+longer imported into the secrets store.
 `agent` also runs on a venv that it provisions itself on the first run.
 Tab completion answers from the parser, so re-source `agent-wrap.bashrc`. The `agent
 logs` viewer updates on filesystem events instead of polling, so agent-wrap must be

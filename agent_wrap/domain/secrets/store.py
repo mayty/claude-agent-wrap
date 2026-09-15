@@ -2,10 +2,11 @@
 """
 Encrypted on-disk storage for agent-wrap secrets.
 
-Encryption is HMAC-SHA256 in CTR mode with encrypt-then-MAC authentication.
-The payload is ``nonce(16) || ciphertext || hmac(32)``.
+The payload is a Fernet token -- AES-128-CBC under an encrypt-then-MAC HMAC-SHA256 tag,
+keyed by an HKDF expansion of :meth:`KeyDerivation.derive_key`'s master key.
 """
 
+import base64
 import functools
 import hashlib
 import hmac
@@ -17,10 +18,16 @@ from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
 from agent_wrap.constants import TOOL_DIR
 from agent_wrap.domain.secrets.constants import (
-    AUTH_SUBKEY_LABEL,
-    ENCRYPTION_SUBKEY_LABEL,
+    FERNET_SUBKEY_LABEL,
+    LEGACY_AUTH_SUBKEY_LABEL,
+    LEGACY_ENCRYPTION_SUBKEY_LABEL,
+    LEGACY_MIN_PAYLOAD_LEN,
     SECRETS_ENCRYPTED_FILE_PATH,
     SECRETS_KEYFILE_PATH,
 )
@@ -82,73 +89,53 @@ class KeyDerivation:
         return h.digest()
 
 
-class EncryptionPrimitives:
-    """HMAC-SHA256-CTR + encrypt-then-MAC for the secrets store."""
+def _fernet(key: bytes) -> Fernet:
+    """
+    Build the cipher from *key*, the master :meth:`KeyDerivation.derive_key` returns.
 
-    MIN_PAYLOAD_LEN = 48  # 16 nonce + 0 data + 32 hmac minimum
+    The HKDF expansion gives the token key a domain of its own, so the master is never
+    itself cipher key material -- it is still the HMAC key of the superseded format
+    :func:`_decrypt_legacy` reads.
+    """
+    token_key = HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None, info=FERNET_SUBKEY_LABEL
+    ).derive(key)
+    return Fernet(base64.urlsafe_b64encode(token_key))
 
-    @staticmethod
-    def encrypt(plaintext: bytes, key: bytes) -> bytes:
-        """
-        Encrypt *plaintext* using HMAC-SHA256 in CTR mode.
 
-        ``nonce(16) || ciphertext || hmac(32)``. Separate sub-keys are derived for
-        encryption and authentication so one key is never used for both.
-        """
-        nonce = os.urandom(16)
+def _decrypt_legacy(payload: bytes, key: bytes) -> bytes | None:
+    """
+    Read the superseded ``nonce(16) || HMAC-SHA256-CTR ciphertext || mac(32)`` payload.
 
-        enc_key = hmac.new(key, ENCRYPTION_SUBKEY_LABEL, hashlib.sha256).digest()
-        auth_key = hmac.new(key, AUTH_SUBKEY_LABEL, hashlib.sha256).digest()
+    Here because that is the format of every ``secrets.enc`` written before 0.11.0.
+    :meth:`EncryptedFileStore.read_all` rewrites such a file as a Fernet token the first
+    time it reads one, so this goes one release after that upgrade has had a chance to
+    run everywhere. ``None`` on a wrong key, a bad tag, or a payload too short to hold
+    both the nonce and the tag.
+    """
+    if len(payload) < LEGACY_MIN_PAYLOAD_LEN:
+        return None
 
-        # CTR mode — one keystream block per chunk, chunked at the SHA-256 digest
-        # length so each HMAC output covers exactly one chunk. ``enumerate`` yields
-        # the block index the counter is packed from. ``batched`` gives tuples of
-        # ints rather than bytes, which the xor below is indifferent to.
-        ciphertext = bytearray()
-        # batched(strict=False): the trailing chunk is short whenever the payload is
-        # not a multiple of 32; yield it as-is rather than raise or pad.
-        for block_num, block in enumerate(batched(plaintext, 32, strict=False)):
-            counter = nonce + struct.pack(">Q", block_num)
-            keystream = hmac.new(enc_key, counter, hashlib.sha256).digest()
-            # zip(strict=False): that trailing chunk is shorter than the full 32-byte
-            # keystream block, and the surplus keystream must be dropped.
-            for a, b in zip(block, keystream, strict=False):
-                ciphertext.append(a ^ b)
+    nonce, ciphertext, mac = payload[:16], payload[16:-32], payload[-32:]
+    enc_key = hmac.new(key, LEGACY_ENCRYPTION_SUBKEY_LABEL, hashlib.sha256).digest()
+    auth_key = hmac.new(key, LEGACY_AUTH_SUBKEY_LABEL, hashlib.sha256).digest()
 
-        ciphertext_bytes = bytes(ciphertext)
-        mac = hmac.new(auth_key, nonce + ciphertext_bytes, hashlib.sha256).digest()
-        return nonce + ciphertext_bytes + mac
+    expected_mac = hmac.new(auth_key, nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac, expected_mac):
+        return None
 
-    @staticmethod
-    def decrypt(payload: bytes, key: bytes) -> bytes | None:
-        """
-        Decrypt *payload* and verify the authentication tag.
+    # CTR mode, chunked at the SHA-256 digest length so each HMAC output covers exactly
+    # one chunk; ``enumerate`` yields the block index the counter is packed from. Both
+    # ``strict=False`` flags are the short trailing chunk: ``batched`` must yield it
+    # rather than raise, and the surplus keystream over it must be dropped.
+    plaintext = bytearray()
+    for block_num, block in enumerate(batched(ciphertext, 32, strict=False)):
+        counter = nonce + struct.pack(">Q", block_num)
+        keystream = hmac.new(enc_key, counter, hashlib.sha256).digest()
+        for a, b in zip(block, keystream, strict=False):
+            plaintext.append(a ^ b)
 
-        ``None`` on HMAC mismatch or structural corruption.
-        """
-        if len(payload) < EncryptionPrimitives.MIN_PAYLOAD_LEN:
-            return None
-
-        nonce = payload[:16]
-        mac = payload[-32:]
-        ciphertext = payload[16:-32]
-
-        enc_key = hmac.new(key, ENCRYPTION_SUBKEY_LABEL, hashlib.sha256).digest()
-        auth_key = hmac.new(key, AUTH_SUBKEY_LABEL, hashlib.sha256).digest()
-
-        # Verify HMAC first (constant-time) — don't decrypt if the tag is wrong.
-        expected_mac = hmac.new(auth_key, nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(mac, expected_mac):
-            return None
-
-        plaintext = bytearray()
-        for block_num, block in enumerate(batched(ciphertext, 32, strict=False)):
-            counter = nonce + struct.pack(">Q", block_num)
-            keystream = hmac.new(enc_key, counter, hashlib.sha256).digest()
-            for a, b in zip(block, keystream, strict=False):
-                plaintext.append(a ^ b)
-
-        return bytes(plaintext)
+    return bytes(plaintext)
 
 
 class EncryptedFileStore:
@@ -166,12 +153,18 @@ class EncryptedFileStore:
             return {}
 
         try:
-            ciphertext = path.read_bytes()
+            payload = path.read_bytes()
         except OSError:
             return {}
 
         key = KeyDerivation.derive_key(display)
-        plaintext = EncryptionPrimitives.decrypt(ciphertext, key)
+        superseded = False
+        try:
+            plaintext = _fernet(key).decrypt(payload)
+        except InvalidToken:
+            plaintext = _decrypt_legacy(payload, key)
+            superseded = True
+
         if plaintext is None:
             display.warning(
                 "secrets file could not be decrypted — the encryption key may have"
@@ -193,15 +186,20 @@ class EncryptedFileStore:
 
         # Skip non-string values — secrets are always strings in practice,
         # and coercing None→"None" or int→str would mask data corruption.
-        return {str(k): v for k, v in data.items() if isinstance(v, str)}
+        secrets = {str(k): v for k, v in data.items() if isinstance(v, str)}
+
+        # Rewrite on read, not on the next write: nothing guarantees a `secrets set` ever
+        # follows, and the superseded reader above goes away a release from now.
+        if superseded:
+            EncryptedFileStore.write_all(secrets, display=display)
+        return secrets
 
     @staticmethod
     def write_all(data: dict[str, str], *, display: DisplayService) -> None:
         """Encrypt *data* and atomically write it to the secrets file."""
-        key = KeyDerivation.derive_key(display)
         plaintext = json.dumps(data, indent=2).encode()
         atomic_write_bytes(
             SECRETS_ENCRYPTED_FILE_PATH,
-            EncryptionPrimitives.encrypt(plaintext, key),
+            _fernet(KeyDerivation.derive_key(display)).encrypt(plaintext),
             mode=0o600,
         )
