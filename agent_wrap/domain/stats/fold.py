@@ -36,24 +36,23 @@ def hour_bucket_dt(hour_bucket: int) -> datetime:
     return datetime.fromtimestamp(hour_bucket * SECONDS_PER_HOUR, tz=UTC)
 
 
-def usage_from_cell(cell: UsageCell) -> TokenUsage:
+def usage_from_cell(cell: UsageCell, pricing: PricingService) -> TokenUsage:
     """
     Present one cell's token counts as the usage shape the pricing domain charges.
 
-    ``cache_creation`` is left empty on purpose, routing the whole ``cache_write_tokens``
-    total through ``Bucket.add``'s last-resort rule and charging it at the 5-minute rate.
-    The index *does* store the 5m/1h split and this deliberately does not spend it:
-    honouring it would change what users are told they spent. Correcting the tier is its
-    own change, which ``cache_write_5m`` / ``cache_write_1h`` make possible without a
-    re-ingest.
+    ``usage_from_counts`` leaves the 5m/1h breakdown empty on purpose, routing the whole
+    ``cache_write_tokens`` total through ``TokenUsage.cache_write_split``'s last-resort
+    rule and charging it at the 5-minute rate. The index *does* store the split and this
+    deliberately does not spend it: honouring it would change what users are told they
+    spent. Correcting the tier is its own change, which ``cache_write_5m`` /
+    ``cache_write_1h`` make possible without a re-ingest.
     """
-    return {
-        "input_tokens": cell.input_tokens,
-        "output_tokens": cell.output_tokens,
-        "cache_creation_input_tokens": cell.cache_write_tokens,
-        "cache_read_input_tokens": cell.cache_read,
-        "cache_creation": {},
-    }
+    return pricing.usage_from_counts(
+        input_tokens=cell.input_tokens,
+        output_tokens=cell.output_tokens,
+        cache_write_tokens=cell.cache_write_tokens,
+        cache_read_tokens=cell.cache_read,
+    )
 
 
 def fold_cells(
@@ -87,7 +86,7 @@ def fold_cells(
         hour_key = HourKey(dt.weekday(), dt.hour) if dt is not None else HourKey(None, None)
         model = _display_model(cell, pricing)
         bucket = pricing.bucket_from_usage(
-            usage_from_cell(cell),
+            usage_from_cell(cell, pricing),
             msgs=cell.requests,
             unrecorded=cell.requests if cell.usage_source == UNRECOVERABLE_SOURCE else 0,
         )
@@ -171,20 +170,10 @@ def price_buckets(
             weekday, hour = hour_key
             for display_model, bucket in by_model.items():
                 provider, _, model = display_model.partition("/")
-                usage: TokenUsage = {
-                    "input_tokens": bucket.in_,
-                    "output_tokens": bucket.out,
-                    "cache_creation_input_tokens": bucket.cw,
-                    "cache_creation": {
-                        "ephemeral_5m_input_tokens": bucket.cw_5m,
-                        "ephemeral_1h_input_tokens": bucket.cw_1h,
-                    },
-                    "cache_read_input_tokens": bucket.cr,
-                }
                 cost = pricing.compute_cost(
                     provider,
                     model,
-                    usage=usage,
+                    usage=pricing.usage_from_bucket(bucket),
                     hour=hour,
                     weekday=weekday,
                     refresh_pricing_data=refresh_pricing_data,

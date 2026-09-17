@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.pricing.models import TokenUsage
 from agent_wrap.domain.providers import litellm_deepseek as provider_module
 from agent_wrap.domain.providers.litellm_deepseek.provider import (
     DeepSeekProvider,
@@ -20,8 +21,6 @@ from agent_wrap.domain.sidecars.service import SidecarService
 
 if TYPE_CHECKING:
     import pytest_mock
-
-    from agent_wrap.domain.pricing.models import TokenUsage
 
 # A page matching the current two-column layout: each metric is a paired
 # OFF-PEAK / PEAK pair of rows (the OFF-PEAK row carries the metric label in a
@@ -157,16 +156,16 @@ def deepseek() -> DeepSeekProvider:
 
 
 def _usage() -> TokenUsage:
-    return {
-        "input_tokens": 1_000_000,
-        "output_tokens": 1_000_000,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {
+    return TokenUsage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        cache_creation={
             "ephemeral_5m_input_tokens": 0,
             "ephemeral_1h_input_tokens": 0,
         },
-    }
+    )
 
 
 def _mock_pricing(mocker: pytest_mock.MockFixture, *, peak_hours: frozenset[int] | None) -> None:

@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
+from agent_wrap.domain.pricing.models import TokenUsage
 from agent_wrap.domain.providers import litellm_anthropic_sub as provider_module
 from agent_wrap.domain.providers.litellm_anthropic_sub.provider import AnthropicSubProvider
 from agent_wrap.domain.providers.service import ProviderService
@@ -237,16 +238,16 @@ def test_anthropic_sub_config_declares_callbacks_but_not_success_callback():
 
 @pytest.mark.parametrize("model", ["claude-sonnet-4-5", "claude-opus-4-1", "some-unknown-model"])
 def test_anthropic_sub_compute_cost_is_always_zero(anthropic_sub: AnthropicSubProvider, model: str):
-    usage = {
-        "input_tokens": 1_000_000,
-        "output_tokens": 1_000_000,
-        "cache_creation_input_tokens": 1_000_000,
-        "cache_read_input_tokens": 1_000_000,
-        "cache_creation": {
+    usage = TokenUsage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_creation_input_tokens=1_000_000,
+        cache_read_input_tokens=1_000_000,
+        cache_creation={
             "ephemeral_5m_input_tokens": 500_000,
             "ephemeral_1h_input_tokens": 500_000,
         },
-    }
+    )
     cost = anthropic_sub.compute_cost(model, usage, hour=0)
     assert cost == 0.0
     assert cost is not None

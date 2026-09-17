@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent_wrap.domain.config.service import ConfigService
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.models import AggregateResult, HashUsage, ProjectRow, UsageArgs
 from agent_wrap.domain.stats.service import StatsService
@@ -54,13 +54,12 @@ def _bucket(*, unrecorded: int = 0) -> Bucket:
     b = Bucket()
     for _ in range(max(unrecorded, 1)):
         b.add(
-            {
-                "input_tokens": 10,
-                "output_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "cache_creation": {},
-            },
+            TokenUsage(
+                input_tokens=10,
+                output_tokens=0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+            ),
             0.0,
             unrecorded=bool(unrecorded),
         )

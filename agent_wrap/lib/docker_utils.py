@@ -29,12 +29,9 @@ def is_wsl() -> bool:
 
 def host_network_build_args() -> list[str]:
     """
-    Return ["--network", "host"] for `docker build` when the WSL host-network
-    workaround is active, else [].
-
-    Honored only on WSL (see docs/configuration.md): the parallel-distro
-    iptables-legacy FORWARD=DROP scenario that breaks `agent run` also breaks a
-    build's `RUN` steps, which execute on Docker's default bridge.
+    Honored only on WSL (see docs/configuration.md): the parallel-distro iptables-legacy
+    FORWARD=DROP scenario that breaks `agent run` also breaks a build's `RUN` steps, which
+    execute on Docker's default bridge.
     """
     if not is_wsl():
         return []
@@ -48,11 +45,7 @@ def docker_run(
     capture: bool = True,
     timeout: int = 30,
 ) -> tuple[str, int]:
-    """
-    Run a docker command and return (stdout, returncode).
-
-    On timeout, missing binary, or other subprocess errors, returns ("", 1).
-    """
+    """On timeout, missing binary, or other subprocess errors, returns ("", 1)."""
     try:
         result = subprocess.run(
             ["docker", *args],
@@ -69,7 +62,7 @@ def docker_run(
 @cache
 def is_rootless() -> bool:
     """
-    Check if Docker is running in rootless mode.
+    Report whether Docker runs rootless.
 
     Cached for the process lifetime, so a test patching ``docker_run`` must call
     ``is_rootless.cache_clear()`` or the value leaks between cases.
@@ -80,8 +73,6 @@ def is_rootless() -> bool:
 
 def daemon_reachable() -> bool:
     """
-    Report whether the Docker daemon answers at all.
-
     Tells "no containers match" apart from "docker is down", which look identical in a
     listing's empty output.
     """
@@ -91,11 +82,9 @@ def daemon_reachable() -> bool:
 
 def list_container_names(*filters: str) -> list[str]:
     """
-    List names of containers matching every ``docker ps --filter`` expression given.
-
     Includes stopped containers (``-a``). Returns [] both when nothing matches and when
-    docker is unavailable -- indistinguishable on purpose, so callers that care about
-    the difference use :func:`daemon_reachable`.
+    docker is unavailable -- indistinguishable on purpose, so callers that care use
+    :func:`daemon_reachable`.
     """
     args = ["ps", "-a", "--format", "{{.Names}}"]
     for expr in filters:
@@ -108,16 +97,14 @@ def list_container_names(*filters: str) -> list[str]:
 
 def inspect_containers(names: list[str], template: str) -> tuple[list[str], int]:
     """
-    Batch-inspect *names* with a Go *template*, returning its output lines and the rc.
+    ``container inspect`` — not plain ``inspect``, which falls back to matching an *image* of
+    that name. One docker call for the whole batch; *template* must render each container on
+    a single line (wrap every composite field in ``{{json .Field}}``, which escapes newlines
+    and tabs) or the line-to-container correspondence breaks.
 
-    ``container inspect`` — not plain ``inspect``, which falls back to matching an
-    *image* of that name. One docker call for the whole batch; *template* must render
-    each container on a single line (wrap every composite field in ``{{json .Field}}``,
-    which escapes newlines and tabs) or the line-to-container correspondence breaks.
-
-    The rc is returned rather than interpreted: a non-zero rc *with* output is routine,
-    since a container that vanished between listing and inspection makes docker report an
-    error for that name while still printing rows for the others.
+    The rc is returned rather than interpreted: a non-zero rc *with* output is routine, since
+    a container that vanished between listing and inspection makes docker report an error for
+    that name while still printing rows for the others.
     """
     if not names:
         return [], 0
@@ -129,17 +116,13 @@ def list_images(
     *filters: str, template: str, reference: str = "", digests: bool = False
 ) -> list[str]:
     """
-    List local images matching every ``docker image ls --filter`` expression given.
-
-    *template* must keep each image on a single line or the caller's field split breaks.
+    *template* must keep each image on a single line or the caller's field split breaks;
     *reference* narrows the listing to one repository.
 
-    *digests* passes ``--digests``, and a *template* naming ``{{.Digest}}`` must set it:
-    the flag is what populates that field, so without it docker renders ``<none>`` for
-    every row rather than failing on the template.
-
-    Returns [] both when nothing matches and when docker is unavailable, as
-    :func:`list_container_names` does.
+    *digests* passes ``--digests``, and a *template* naming ``{{.Digest}}`` must set it: the
+    flag is what populates that field, so without it docker renders ``<none>`` for every row
+    rather than failing on the template. Returns [] both when nothing matches and when docker
+    is unavailable, as :func:`list_container_names` does.
     """
     args = ["image", "ls", "--format", template]
     if digests:
@@ -156,14 +139,10 @@ def list_images(
 
 def inspect_images(names: list[str], template: str) -> list[str]:
     """
-    Batch-inspect image *names* with a Go *template*, returning its output lines.
-
     ``image inspect`` for the same reason :func:`inspect_containers` uses ``container
-    inspect``: plain ``inspect`` matches either kind. *template* must render each image
-    on a single line.
-
-    Unlike :func:`inspect_containers` the rc is dropped: an image that vanished between
-    the two calls is a row to leave alone rather than a failure to report.
+    inspect``: plain ``inspect`` matches either kind. *template* must render each image on a
+    single line. Unlike :func:`inspect_containers` the rc is dropped -- an image that vanished
+    between the two calls is a row to leave alone rather than a failure to report.
     """
     if not names:
         return []
@@ -173,11 +152,8 @@ def inspect_images(names: list[str], template: str) -> list[str]:
 
 def remove_image(ref: str) -> bool:
     """
-    Remove the image *ref* names, reporting whether docker did it.
-
     Deliberately without ``--force``: docker refuses to remove an image a container still
-    references, and that refusal is the safety net a caller wants reported rather than
-    overridden.
+    references, and that refusal is the safety net a caller wants reported, not overridden.
     """
     _, rc = docker_run("rmi", ref, timeout=60)
     return rc == 0
@@ -185,10 +161,9 @@ def remove_image(ref: str) -> bool:
 
 class ImageRef(NamedTuple):
     """
-    The three parts of an image reference, any of which may be absent ("").
-
-    ``repository`` keeps any registry host and namespace ("ghcr.io/berriai/litellm"), so
-    it compares directly against what ``docker image ls`` renders for ``{{.Repository}}``.
+    Any part may be absent (""). ``repository`` keeps any registry host and namespace
+    ("ghcr.io/berriai/litellm"), so it compares directly against what ``docker image ls``
+    renders for ``{{.Repository}}``.
     """
 
     repository: str
@@ -198,7 +173,7 @@ class ImageRef(NamedTuple):
 
 def parse_image_ref(ref: str) -> ImageRef:
     """
-    Split an image reference into repository, tag and digest.
+    Split *ref* into repository, tag and digest.
 
     The tag is separated on the *last* colon, and only when no ``/`` follows it, so a
     registry port ("localhost:5000/img") is not mistaken for a tag.
@@ -212,13 +187,9 @@ def parse_image_ref(ref: str) -> ImageRef:
 
 def parse_docker_timestamp(raw: str) -> datetime | None:
     """
-    Parse a docker RFC3339 timestamp into a UTC-aware datetime, or None if unusable.
-
-    ``fromisoformat`` handles every shape docker emits, so no normalizing is needed.
-
-    Docker's zero timestamp (meaning "never") returns None, and so does a bare date:
-    ``fromisoformat`` would read it as midnight, but docker never emits one, so it means
-    the caller was handed something else.
+    ``fromisoformat`` handles every shape docker emits, so no normalizing is needed. Docker's
+    zero timestamp (meaning "never") returns None, and so does a bare date -- docker never
+    emits one, so it means the caller was handed something else.
     """
     text = raw.strip()
     if "T" not in text and " " not in text:
@@ -241,12 +212,9 @@ def image_exists(image: str) -> bool:
 
 class ImageStamp(NamedTuple):
     """
-    Identity and labels of a local image, read in a single inspect.
-
-    ``labels`` carries what docker reports on ``Config.Labels``, which *includes* every
-    label inherited through ``FROM`` -- a derived image cannot be told apart from its
-    parent by a label the parent set. Callers that care must know which image class they
-    are reading a given label off.
+    ``labels`` carries what docker reports on ``Config.Labels``, which *includes* every label
+    inherited through ``FROM`` -- a derived image cannot be told apart from its parent by a
+    label the parent set, so callers must know which image class they are reading it off.
     """
 
     #: The image's content id, e.g. "sha256:...".

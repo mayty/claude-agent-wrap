@@ -61,6 +61,33 @@ class PricingService:
         bucket.unrecorded = unrecorded
         return bucket
 
+    def usage_from_counts(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_write_tokens: int,
+        cache_read_tokens: int,
+    ) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_write_tokens,
+            cache_read_input_tokens=cache_read_tokens,
+        )
+
+    def usage_from_bucket(self, bucket: Bucket) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=bucket.in_,
+            output_tokens=bucket.out,
+            cache_creation_input_tokens=bucket.cw,
+            cache_read_input_tokens=bucket.cr,
+            cache_creation={
+                "ephemeral_5m_input_tokens": bucket.cw_5m,
+                "ephemeral_1h_input_tokens": bucket.cw_1h,
+            },
+        )
+
     def __init__(self, provider_service: ProviderService, display_service: DisplayService) -> None:
         self._provider_service = provider_service
         self._display = display_service
@@ -193,13 +220,12 @@ class PricingService:
     def extract_usage(
         self, response: dict[str, Any] | None, request_ttl: str | None = None
     ) -> TokenUsage:
-        _zero: TokenUsage = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        }
+        _zero = TokenUsage(
+            input_tokens=0,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
         if not response or not isinstance(response, dict):
             return _zero
         usage = response.get("usage")
@@ -223,13 +249,13 @@ class PricingService:
             else:
                 cache_creation["ephemeral_5m_input_tokens"] = cw_tokens
 
-        return {
-            "input_tokens": in_tokens,
-            "output_tokens": out_tokens,
-            "cache_creation_input_tokens": cw_tokens,
-            "cache_read_input_tokens": cr_tokens,
-            "cache_creation": cache_creation,
-        }
+        return TokenUsage(
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            cache_creation_input_tokens=cw_tokens,
+            cache_read_input_tokens=cr_tokens,
+            cache_creation=cache_creation,
+        )
 
     def _warn_mixed_cache_ttl(self) -> None:
         """Emit a warning (once) when a request mixed 5m and 1h cache TTLs."""
@@ -240,5 +266,5 @@ class PricingService:
             "a request mixed 5m and 1h cache TTLs, but the response reports "
             "only a flat cache-write total. Those writes are priced at the 5m rate; "
             "reported cache-write cost may be slightly low. See "
-            "agent_wrap/lib/usage.py:request_cache_ttl."
+            "agent_wrap/domain/pricing/service.py:PricingService.request_cache_ttl."
         )

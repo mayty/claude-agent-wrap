@@ -16,7 +16,7 @@ from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.models import IndexLag
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.stats.models import ProjectRow, StatsReport
 
 if TYPE_CHECKING:
@@ -56,13 +56,12 @@ def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
     b = Bucket()
     for _ in range(msgs):
         b.add(
-            {
-                "input_tokens": in_,
-                "output_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "cache_creation": {},
-            },
+            TokenUsage(
+                input_tokens=in_,
+                output_tokens=0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+            ),
             0.0,
         )
     return b
@@ -72,23 +71,21 @@ def test_render_includes_orphaned_row(display_service: Mock, shown: Callable[...
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     b = Bucket()
     b.add(
-        {
-            "input_tokens": 1000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        },
+        TokenUsage(
+            input_tokens=1000,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
         0.0,
     )
     b.add(
-        {
-            "input_tokens": 1000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        },
+        TokenUsage(
+            input_tokens=1000,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
         0.0,
     )
     last_ts = datetime(2026, 6, 29, tzinfo=UTC)
@@ -235,13 +232,12 @@ def _tree_row(path: str) -> ProjectRow:
     """One project row, identical but for its path — the tree only reads the shape."""
     b = Bucket()
     b.add(
-        {
-            "input_tokens": 1000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        },
+        TokenUsage(
+            input_tokens=1000,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
         0.0,
     )
     return {

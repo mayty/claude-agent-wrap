@@ -60,10 +60,8 @@ _OWN_SLOTS = frozenset({"name", "children", "row"})
 
 class PathTreeNode[T]:
     """
-    One node in the trie: a path segment, its children, and an optional payload.
-
-    Structural (``row is None``) or a leaf carrying one caller row. Both can have
-    children, though ``build_path_tree`` splits a row-carrying node that does.
+    Structural (``row is None``) or a leaf carrying one caller row. Both can have children,
+    though ``build_path_tree`` splits a row-carrying node that does.
     """
 
     __slots__ = ("children", "name", "row", "subtree_row_count")
@@ -93,11 +91,8 @@ def build_path_tree[T](
     """
     Build the trie over ``(path, row)`` pairs and normalize it for display.
 
-    Every node, synthetic ones included, comes from *node_factory*, so a caller's
-    subclass is used throughout.
-
-    A path with no segments is skipped rather than attached to the root: making it the
-    root's own row would put an unnamed line at the top of the tree.
+    Every node, synthetic ones included, comes from *node_factory*. A path with no segments
+    is skipped rather than attached to the root, which would put an unnamed line at the top.
     """
     root = node_factory(ROOT_NAME)
     for path, row in rows:
@@ -205,23 +200,18 @@ def walk_path_tree[T](root: PathTreeNode[T]) -> list[PathTreeLine[T]]:
 
 def expand_widest_chain[T](root: PathTreeNode[T]) -> bool:
     """
-    Give one segment back on the widest folded line's whole sibling group.
+    Give one segment back on the widest folded line's whole sibling group -- the inverse of
+    `_compress`, driven in a render/measure/call-again loop until the output fits.
 
-    The inverse of `_compress`. Callers drive it in a loop -- render, measure, call again
-    -- until the output fits or it returns ``False``.
+    A whole sibling group is split at once: splitting turns a sibling into a subtree node
+    and `walk_path_tree` sorts those after the leaves, so chopping one line of a group would
+    reorder the group around it. A split is not always a win either -- everything under the
+    folded line drops a level and gains a glyph character, so it can *widen* the tree when a
+    deep leaf was already setting the width; the group is measured as a whole and a widening
+    split is undone and reported as nothing left to do.
 
-    A whole sibling group is split at once, because splitting turns a sibling into a
-    subtree node and `walk_path_tree` sorts those after the leaves: chopping one line of
-    a group would reorder the group around it.
-
-    A split is not always a win. Everything under the folded line drops a level and gains
-    a character of glyph, so a split can *widen* the tree when a deep leaf was already
-    setting the width. The group is therefore measured as a whole, and a widening split is
-    undone and reported as nothing left to do.
-
-    Ties are allowed through: two equally wide groups must be split one at a time, and
-    refusing the first would stall the pair. Termination holds because every ``True``
-    removes at least one ``/``.
+    Ties are allowed through, since two equally wide groups must be split one at a time.
+    Termination holds because every ``True`` removes at least one ``/``.
     """
     before = _max_label_width(root, 1)
     found = _widest_folded(root, 1, None)
@@ -255,10 +245,8 @@ def _widest_folded[T](
     best: tuple[int, PathTreeNode[T], PathTreeNode[T]] | None,
 ) -> tuple[int, PathTreeNode[T], PathTreeNode[T]] | None:
     """
-    Find the widest line carrying a folded name, as ``(width, parent, node)``.
-
-    Width is derived from *depth* rather than measured off a walk: a glyph prefix is
-    exactly one character per level.
+    Width is derived from *depth* rather than measured off a walk: a glyph prefix is exactly
+    one character per level.
     """
     for child in node.children.values():
         if "/" in child.name:
@@ -273,12 +261,9 @@ def _split_first_segment[T](parent: PathTreeNode[T], node: PathTreeNode[T]) -> P
     """
     Move *node*'s leading segment into a new structural parent, and return that parent.
 
-    *parent*'s dict is rebuilt rather than mutated: the key is the child's name, and the
-    new node has to take the old key's *position* so the insertion order
-    ``walk_path_tree`` reads is the one the tree was built with.
-
-    Built from ``type(node)``, so a caller's subclass cannot drift from the one
-    `build_path_tree` used.
+    *parent*'s dict is rebuilt rather than mutated: the new node has to take the old key's
+    *position*, so the insertion order ``walk_path_tree`` reads is the one the tree was built
+    with. Built from ``type(node)``, so a caller's subclass cannot drift.
     """
     old_key = node.name
     head, _, tail = old_key.partition("/")
@@ -295,10 +280,9 @@ def _split_first_segment[T](parent: PathTreeNode[T], node: PathTreeNode[T]) -> P
 
 def _unsplit[T](parent: PathTreeNode[T], stem: PathTreeNode[T], node: PathTreeNode[T]) -> None:
     """
-    Put back what `_split_first_segment` took apart, discarding *stem*.
-
-    The stem held nothing of its own -- no row, and only aggregates copied from *node* --
-    so dropping it restores the tree exactly, down to *node*'s place among its siblings.
+    Put back what `_split_first_segment` took apart. The stem held nothing of its own -- no
+    row, only aggregates copied from *node* -- so dropping it restores the tree exactly, down
+    to *node*'s place among its siblings.
     """
     node.name = f"{stem.name}/{node.name}"
     parent.children = {

@@ -42,9 +42,8 @@ class Provider(ABC):
     """
     Abstract base class for model-routing providers.
 
-    The launcher ensures the declared sidecar before docker run, splices the connectivity
-    flags it returns into the run command, and releases it after the last agent on this
-    provider exits.
+    The launcher ensures the declared sidecar before docker run, splices in the connectivity
+    flags it returns, and releases it after the last agent on this provider exits.
     """
 
     #: Provider name matching the AGENT_PROVIDER env var (e.g. "litellm-bedrock").
@@ -263,21 +262,15 @@ class Provider(ABC):
 
     def _cost_for_tiers(self, tiers: list[Tier], usage: TokenUsage) -> float:
         """
-        Calculate the cost of a single request given its applicable tier list.
-
-        *tiers* must be sorted by ``max_in`` ascending: the first whose
-        ``max_in >= input_tokens`` wins, and the last is the fallback.
+        Price one request via :meth:`CostComputer.cost_for_tiers`, warning once per provider
+        instance if that call reports token-convention drift.
         """
         cost, convention_warn = CostComputer.cost_for_tiers(tiers, usage)
         if convention_warn and not self._usage_convention_warned:
             self._usage_convention_warned = True
-            in_tokens: int = usage["input_tokens"]
-            cc = usage.get("cache_creation", {})
-            cw_5m: int = cc.get("ephemeral_5m_input_tokens", 0) or 0
-            cw_1h: int = cc.get("ephemeral_1h_input_tokens", 0) or 0
-            if not (cw_5m or cw_1h):
-                cw_5m = usage.get("cache_creation_input_tokens", 0)
-            cr_tokens: int = usage["cache_read_input_tokens"]
+            in_tokens = usage.input_tokens
+            cw_5m, cw_1h = usage.cache_write_split()
+            cr_tokens = usage.cache_read_input_tokens
             self._display.warning(
                 "token usage convention drift detected — "
                 f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "

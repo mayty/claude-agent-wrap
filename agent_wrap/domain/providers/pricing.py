@@ -68,15 +68,11 @@ class CostComputer:
         Returns ``(cost, convention_warning_needed)``. The caller is responsible
         for issuing the convention-drift warning at most once per provider instance.
         """
-        in_tokens: int = usage["input_tokens"]
-        out_tokens: int = usage["output_tokens"]
-        cr_tokens: int = usage["cache_read_input_tokens"]
+        in_tokens = usage.input_tokens
+        out_tokens = usage.output_tokens
+        cr_tokens = usage.cache_read_input_tokens
 
-        cc = usage.get("cache_creation", {})
-        cw_5m: int = cc.get("ephemeral_5m_input_tokens", 0) or 0
-        cw_1h: int = cc.get("ephemeral_1h_input_tokens", 0) or 0
-        if not (cw_5m or cw_1h):
-            cw_5m = usage.get("cache_creation_input_tokens", 0)
+        cw_5m, cw_1h = usage.cache_write_split()
 
         if not (in_tokens or out_tokens or cw_5m or cw_1h or cr_tokens):
             return 0.0, False

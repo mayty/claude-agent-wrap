@@ -12,6 +12,7 @@ import json
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock
@@ -26,7 +27,7 @@ from agent_wrap.domain.logs.cache import LogsCache
 from agent_wrap.domain.logs.constants import MESSAGES_FILENAME
 from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.logs.watcher import CacheWatcher
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
@@ -168,25 +169,29 @@ def _pricing_mock() -> PricingService:
 
     Not optional even for a test that ignores pricing: every reconcile ends in a
     ``usage.json`` flush, which sums buckets and serializes the result, and a Mock
-    bucket is not JSON-serializable. So the three factory methods have to be real
+    bucket is not JSON-serializable. So the factory methods have to be real
     wherever a cache is started at all.
     """
     mock = Mock(spec=PricingService)
     mock.new_bucket.side_effect = Bucket
     mock.merged_bucket.side_effect = Bucket.merged
     mock.bucket_from_usage.side_effect = _bucket_from_usage
+    # Pure factories -- they read no instance state, so the real implementations run.
+    mock.usage_from_counts.side_effect = partial(PricingService.usage_from_counts, mock)
+    mock.usage_from_bucket.side_effect = partial(PricingService.usage_from_bucket, mock)
     mock.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
     mock.request_cache_ttl.return_value = None
-    mock.extract_usage.return_value = {
-        "input_tokens": 100,
-        "output_tokens": 50,
-        "cache_read_input_tokens": 0,
-    }
+    mock.extract_usage.return_value = TokenUsage(
+        input_tokens=100,
+        output_tokens=50,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     mock.compute_cost.return_value = 0.001
     return mock
 
 
-def _bucket_from_usage(usage: Any, *, msgs: int, unrecorded: int = 0) -> Bucket:
+def _bucket_from_usage(usage: TokenUsage, *, msgs: int, unrecorded: int = 0) -> Bucket:
     """Stand in for ``PricingService.bucket_from_usage`` on a mocked pricing service."""
     bucket = Bucket()
     bucket.add(usage, 0.0)

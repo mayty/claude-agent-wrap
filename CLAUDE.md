@@ -158,7 +158,9 @@ A `Makefile` provides all QA targets. Follow these rules:
     present invariant instead. The exception is a sentence that explains why
     something *still exists* — keep that.
   - Docstrings are optional: `D100`–`D105` and `D107` are all ignored, so a function
-    whose name and signature answer the question should carry none. Four things
+    whose name and signature answer the question should carry none. A docstring that
+    is kept states its point and stops — if it is longer than the body it documents,
+    it is narrating rather than recording, and the surplus is the part to cut. Four things
     still must not be removed: the 14 click callback docstrings (they are
     `agent --help`), a public *nested* class docstring (`D106`), a `# noqa` /
     `# type: ignore` / `# pyrefly: ignore` directive, and `help=` on a click option.

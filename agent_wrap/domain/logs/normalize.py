@@ -18,6 +18,8 @@ from agent_wrap.domain.logs.models import ExtractedFields
 from agent_wrap.lib.daytime import epoch_to_dt
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from agent_wrap.domain.logs.models import NormalizedRecordBase
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.providers.models import LogRecord
@@ -69,6 +71,32 @@ def extract_record_fields(
     return ExtractedFields(data, agent_id, reply, usage, finish_reason)
 
 
+def usage_source(rec: Mapping[str, Any]) -> str:
+    """
+    Classify how a success record's usage was obtained.
+
+    Stored per request so ``"unrecoverable"`` can be counted: those requests contribute
+    $0 to the totals, and the stats footnote says so rather than letting them read as
+    free. Mirrors the three outcomes the callback's ``_usable_response`` stamps onto a
+    record's ``response`` (see ``providers/litellm_runtime/callback.py``):
+      * ``"native"`` — a parsed response dict with no ``_usage_source`` key (usage
+        came straight from the response);
+      * ``"standard_logging_object"`` — dict tagged with that source (usage was
+        recovered from LiteLLM's standard logging object fallback);
+      * ``"unrecoverable"`` — dict tagged ``"unrecoverable"``, or a bare legacy
+        ``"<Response ...>"`` string; no usable usage at all.
+    """
+    response = rec.get("response")
+    if isinstance(response, str):
+        return "unrecoverable"
+    if isinstance(response, dict):
+        src = response.get("_usage_source")
+        if src in ("standard_logging_object", "unrecoverable"):
+            return src
+        return "native"
+    return "unrecoverable"
+
+
 def enrich_with_costs(
     normalized: NormalizedRecordBase,
     raw_response: dict[str, Any] | None,
@@ -93,9 +121,9 @@ def enrich_with_costs(
     # Use the canonical token extraction so field-resolution logic lives in one
     # place (extract_usage handles prompt_tokens/input_tokens fallback, etc.).
     norm_usage = pricing.extract_usage(raw_response, request_ttl)
-    in_t = norm_usage["input_tokens"]
-    out_t = norm_usage["output_tokens"]
-    cr_t = norm_usage["cache_read_input_tokens"]
+    in_t = norm_usage.input_tokens
+    out_t = norm_usage.output_tokens
+    cr_t = norm_usage.cache_read_input_tokens
 
     # Only set cache_percent when there are actual cache reads, so the frontend
     # can skip displaying "(0% cached)".

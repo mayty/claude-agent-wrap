@@ -2,17 +2,18 @@
 """Domain-layer tests for pricing, cost, and usage classification."""
 
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.domain.logs.normalize import usage_source
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.stats.fold import fold_cells
 from agent_wrap.infrastructure.logs.models import UsageCell
-from agent_wrap.lib.log_records import usage_source
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -155,6 +156,25 @@ def _bucket_from_usage(usage: TokenUsage, *, msgs: int, unrecorded: int = 0) -> 
     return bucket
 
 
+def _fold_pricing_mock(*, cost: float) -> Mock:
+    """
+    Return a ``PricingService`` stand-in whose factory methods build real objects.
+
+    ``fold_cells`` feeds what the factories return straight into token arithmetic, so a
+    Mock return value fails on the first ``+=`` rather than on the assertion under test.
+    The two usage factories are pure -- they read no instance state -- so the real
+    implementations are bound to the mock rather than reimplemented here.
+    """
+    pricing = Mock(spec=PricingService)
+    pricing.new_bucket.side_effect = Bucket
+    pricing.bucket_from_usage.side_effect = _bucket_from_usage
+    pricing.usage_from_counts.side_effect = partial(PricingService.usage_from_counts, pricing)
+    pricing.usage_from_bucket.side_effect = partial(PricingService.usage_from_bucket, pricing)
+    pricing.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
+    pricing.compute_cost.return_value = cost
+    return pricing
+
+
 def test_date_stamped_request_resolves_to_base_tier(
     mocker: pytest_mock.MockerFixture,
     fake_provider: FakeProvider,
@@ -163,13 +183,12 @@ def test_date_stamped_request_resolves_to_base_tier(
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
     pricing = PricingService(provider_service=mockps, display_service=display_mock)
-    usage: TokenUsage = {
-        "input_tokens": 1000,
-        "output_tokens": 500,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=1000,
+        output_tokens=500,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     cost = pricing.compute_cost(
         "bedrock", "us.anthropic.claude-opus-4-8-20260514", usage=usage, hour=0
     )
@@ -186,23 +205,18 @@ def test_unknown_model_returns_none(
     mockps = mocker.Mock(spec=ProviderService)
     mockps.get_provider.return_value = fake_provider
     pricing = PricingService(provider_service=mockps, display_service=display_mock)
-    usage: TokenUsage = {
-        "input_tokens": 1000,
-        "output_tokens": 500,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=1000,
+        output_tokens=500,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     assert pricing.compute_cost("bedrock", "claude-opus-4-5", usage=usage, hour=0) is None
 
 
 def test_price_buckets_prices_per_hour_and_collapses() -> None:
     """Cells in different UTC hours are priced at their own hour, then collapsed."""
-    pricing = Mock(spec=PricingService)
-    pricing.new_bucket.side_effect = Bucket
-    pricing.bucket_from_usage.side_effect = _bucket_from_usage
-    pricing.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
-    pricing.compute_cost.return_value = 0.001
+    pricing = _fold_pricing_mock(cost=0.001)
 
     cells = [_cell(hour="2026-07-20T06"), _cell(hour="2026-07-20T10")]
     folded = fold_cells(cells, pricing)
@@ -225,11 +239,7 @@ def test_folding_a_cell_counts_all_its_requests_not_one() -> None:
     report a session of 40 requests as 1. The adapter merges a whole cell's worth
     instead, and this is the assertion that keeps it doing so.
     """
-    pricing = Mock(spec=PricingService)
-    pricing.new_bucket.side_effect = Bucket
-    pricing.bucket_from_usage.side_effect = _bucket_from_usage
-    pricing.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
-    pricing.compute_cost.return_value = 0.0
+    pricing = _fold_pricing_mock(cost=0.0)
 
     folded = fold_cells([_cell(requests=40)], pricing)
 
@@ -246,11 +256,7 @@ def test_a_cells_stored_cache_split_is_not_spent() -> None:
     write already falls through to 5m. Honouring the stored split here would change
     reported spend as a side effect of a storage change. See ``usage_from_cell``.
     """
-    pricing = Mock(spec=PricingService)
-    pricing.new_bucket.side_effect = Bucket
-    pricing.bucket_from_usage.side_effect = _bucket_from_usage
-    pricing.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
-    pricing.compute_cost.return_value = 0.0
+    pricing = _fold_pricing_mock(cost=0.0)
 
     cell = _cell(cache_write=3200, cache_write_5m=1200, cache_write_1h=2000)
     folded = fold_cells([cell], pricing)
@@ -266,11 +272,7 @@ def test_an_unrecoverable_cell_counts_every_request_as_unrecorded() -> None:
     That is what lets the footnote count requests without a per-record flag: the
     aggregate never mixes an unrecoverable request into a cell with recorded ones.
     """
-    pricing = Mock(spec=PricingService)
-    pricing.new_bucket.side_effect = Bucket
-    pricing.bucket_from_usage.side_effect = _bucket_from_usage
-    pricing.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
-    pricing.compute_cost.return_value = 0.0
+    pricing = _fold_pricing_mock(cost=0.0)
 
     folded = fold_cells([_cell(requests=3, usage_source="unrecoverable")], pricing)
 
@@ -322,13 +324,13 @@ def test_request_cache_ttl_none_without_markers(ps: PricingService) -> None:
 
 def test_extract_usage_attributes_flat_total_to_5m(ps: PricingService) -> None:
     usage = ps.extract_usage(_flat_cache_response(1000), "5m")
-    assert usage["cache_creation"] == {"ephemeral_5m_input_tokens": 1000}
+    assert usage.cache_creation == {"ephemeral_5m_input_tokens": 1000}
 
 
 def test_extract_usage_defaults_to_5m_without_request_ttl(ps: PricingService) -> None:
     usage = ps.extract_usage(_flat_cache_response(1000))
-    assert usage["cache_creation"] == {}
-    assert usage["cache_creation_input_tokens"] == 1000
+    assert usage.cache_creation == {}
+    assert usage.cache_creation_input_tokens == 1000
 
 
 def test_extract_usage_trusts_response_split_over_request_ttl(ps: PricingService) -> None:
@@ -342,7 +344,7 @@ def test_extract_usage_trusts_response_split_over_request_ttl(ps: PricingService
         }
     }
     usage = ps.extract_usage(response, "1h")
-    assert usage["cache_creation"] == {
+    assert usage.cache_creation == {
         "ephemeral_5m_input_tokens": 600,
         "ephemeral_1h_input_tokens": 400,
     }
@@ -362,7 +364,7 @@ def test_extract_usage_reads_nested_cache_creation_split(ps: PricingService) -> 
         }
     }
     usage = ps.extract_usage(response, "5m")
-    assert usage["cache_creation"] == {
+    assert usage.cache_creation == {
         "ephemeral_5m_input_tokens": 148,
         "ephemeral_1h_input_tokens": 100,
     }

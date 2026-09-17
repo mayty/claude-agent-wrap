@@ -27,7 +27,12 @@ from agent_wrap.domain.logs.constants import (
     MICROSECONDS_PER_SECOND,
     STRINGS_FILENAME,
 )
-from agent_wrap.domain.logs.normalize import extract_alias, extract_record_fields, extract_title
+from agent_wrap.domain.logs.normalize import (
+    extract_alias,
+    extract_record_fields,
+    extract_title,
+    usage_source,
+)
 from agent_wrap.infrastructure.logs.models import (
     ContentBlob,
     IngestChunk,
@@ -38,7 +43,6 @@ from agent_wrap.infrastructure.logs.models import (
 )
 from agent_wrap.infrastructure.logs.repositories.ingest import BlobCodec
 from agent_wrap.lib.canonical_json import canonical_bytes
-from agent_wrap.lib.log_records import usage_source
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

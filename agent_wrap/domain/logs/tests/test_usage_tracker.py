@@ -11,6 +11,7 @@ that reaches the statusline is the arithmetic under test.
 
 import json
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -21,7 +22,7 @@ from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.logs.constants import MESSAGES_FILENAME
 from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.logs.usage_tracker import UsageTracker
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.lib.daytime import get_day
@@ -45,16 +46,19 @@ def pricing() -> Mock:
     mock.new_bucket.side_effect = Bucket
     mock.merged_bucket.side_effect = Bucket.merged
     mock.bucket_from_usage.side_effect = _bucket_from_usage
+    # Pure factories -- they read no instance state, so the real implementations run.
+    mock.usage_from_counts.side_effect = partial(PricingService.usage_from_counts, mock)
+    mock.usage_from_bucket.side_effect = partial(PricingService.usage_from_bucket, mock)
     mock.normalize_model.side_effect = lambda m: m  # pyrefly: ignore [implicit-any-lambda]
     mock.compute_cost.return_value = 0.001
     mock.request_cache_ttl.return_value = None
     return mock
 
 
-def _bucket_from_usage(usage: dict[str, Any], *, msgs: int, unrecorded: int = 0) -> Bucket:
+def _bucket_from_usage(usage: TokenUsage, *, msgs: int, unrecorded: int = 0) -> Bucket:
     """Stand in for ``PricingService.bucket_from_usage`` on the mocked pricing service."""
     bucket = Bucket()
-    bucket.add(usage, 0.0)  # pyrefly: ignore [bad-argument-type]
+    bucket.add(usage, 0.0)
     bucket.msgs = msgs
     bucket.unrecorded = unrecorded
     return bucket
