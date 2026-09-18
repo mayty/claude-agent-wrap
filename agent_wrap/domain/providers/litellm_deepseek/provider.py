@@ -187,11 +187,15 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
         return {
             "ANTHROPIC_API_KEY": master_key,
             "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_MODEL": "deepseek-v4-flash-vision-exp[1m]",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash-vision-exp[1m]",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash-vision-exp[1m]",
-            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+            "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash[1m]",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash[1m]",
+            # Explore's built-in "inherit" guard caps it at Opus whenever the session model's name
+            # lacks a haiku/sonnet/opus token, true for every non-Anthropic ID. Disable it so
+            # Explore tracks the session's running model, not CLAUDE_CODE_SUBAGENT_MODEL.
+            "CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP": "1",
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
         }
 

@@ -9,11 +9,10 @@ the [release notes style guide](releases/styleguide.md).
 
 **Breaking:** Intel Macs are no longer supported, `agent` exits `2` on a usage error,
 `agent secrets` is now a command group, and `~/claude_keys.json` is no longer imported.
-The wrapper indexes the LiteLLM request logs and adds `agent reindex`, with optional
-age-based retention. `agent` runs on a venv it provisions itself. Re-source
-`agent-wrap.bashrc` for the new completion, and install agent-wrap on a local filesystem
-for the new `agent logs` viewer. The next `agent run` rebuilds every image on Ubuntu
-26.04.
+The wrapper indexes the request logs and adds `agent reindex`, with optional retention.
+`agent` runs on a venv it provisions itself. Re-source `agent-wrap.bashrc` for completion,
+and install on a local filesystem for `agent logs`. DeepSeek runs its flash model on every
+tier. The next `agent run` rebuilds every image on Ubuntu 26.04.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 

@@ -245,3 +245,16 @@ def test_deepseek_config_targets_the_anthropic_compatible_upstream():
     text = "\n".join(lines)
     assert 'model: "anthropic/*"' in text
     assert "api_base: https://api.deepseek.com/anthropic" in text
+
+
+def test_deepseek_get_agent_env(deepseek: DeepSeekProvider):
+    """Tiers are cheap; the Explore cap is disabled so Explore inherits the session model."""
+    env = deepseek.get_agent_env("sk-ds-abc123", "http://proxy:4000")
+    assert env["ANTHROPIC_API_KEY"] == "sk-ds-abc123"
+    assert env["ANTHROPIC_BASE_URL"] == "http://proxy:4000"
+    assert env["ANTHROPIC_MODEL"] == "deepseek-flash[1m]"
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "deepseek-flash[1m]"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "deepseek-flash[1m]"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-flash[1m]"
+    assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "deepseek-flash[1m]"
+    assert env["CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP"] == "1"
