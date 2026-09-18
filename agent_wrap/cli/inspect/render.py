@@ -440,9 +440,11 @@ class Details:
         A drifted interpreter still runs, so it is a warning rather than an error --
         but nothing else in the report would reveal it.
 
-        Stale dependencies are the same shape of drift and only show up after a manual
-        ``git pull``, since ``agent update`` re-runs the bootstrap itself. The pin is
-        reported first when both have moved: one bootstrap run fixes both.
+        Stale dependencies are the same shape of drift, but a rarer one: ``bin/agent``
+        compares the constraints hash on every launch and re-provisions on a mismatch,
+        so reaching this row means that re-provisioning *failed* -- it is deliberately
+        non-fatal, and leaves the previous venv running. The pin is reported first when
+        both have moved: one bootstrap run fixes both.
         """
         running = wrapper.python_version
         pinned = wrapper.python_pinned

@@ -185,8 +185,9 @@ eval "want_sha=\${$sha_var:-}"
 # tool probes
 # Above pin_satisfied, not below it: the fast path now hashes the constraints file,
 # so sha256_of has to exist before the first check. The extra cost is one fork on a
-# small text file. bin/agent never calls this script, so nothing on the TAB-completion
-# path pays for it.
+# small text file. bin/agent computes the same digest inline rather than sourcing this
+# one -- change either, change both -- and skips it under _AGENT_COMPLETE, so nothing on
+# the TAB-completion path pays for it.
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | cut -d' ' -f1

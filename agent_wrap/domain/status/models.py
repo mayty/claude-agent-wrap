@@ -126,8 +126,9 @@ class WrapperRow:
     python_pinned: str | None
     #: False when the published venv was built from a different bin/requirements.txt
     #: than the one now on disk, i.e. dependencies have moved and the bootstrap has not
-    #: been re-run. `agent update` re-runs it automatically, so this catches the manual
-    #: `git pull`. None when it cannot be determined (no venv pointer, unreadable file).
+    #: been re-run. `bin/agent` compares the same hash and re-provisions before it execs,
+    #: so this is what a re-provisioning run that failed leaves behind. None when it
+    #: cannot be determined (no venv pointer, unreadable file, a --dev venv).
     deps_current: bool | None
 
 

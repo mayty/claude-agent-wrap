@@ -226,7 +226,18 @@ same reasoning behind `UpdateService._reprovision_interpreter`, which runs it un
 after a HEAD-advancing update. Two deliberate carve-outs: the launcher calls the *plain*
 bootstrap, never `--dev` (`--dev` needs `uv`, and this is the end-user path), and it skips
 provisioning entirely under `AGENT_COMPLETE`, because `agent-wrap.bashrc` discards the
-completion subshell's stderr and exit code and would offer any stdout as a candidate. The
+completion subshell's stderr and exit code and would offer any stdout as a candidate.
+
+**A runnable venv is not automatically the right one.** The launcher also derives the
+constraints digest the section below describes and compares it against the pointer's
+suffix, so a plain `git pull` that moves `bin/requirements.txt` re-provisions on the next
+`agent` command instead of silently running new code against the old dependency set. Three
+things bound that check. It never fires on a `-dev` slug, which carries no digest to
+compare and would be republished away on every contributor's run. It is skipped under
+`AGENT_COMPLETE`, so a TAB press still costs one builtin `read` and no fork. And its
+failure is **non-fatal**, unlike a first run's: there is a working venv on disk, so the
+launcher warns and execs it rather than refusing to run because someone pulled while
+offline — which is the state `agent inspect` then reports on the `interpreter` row. The
 bootstrap's progress is redirected to stderr so a verb's stdout stays clean for whatever is
 parsing it — and that progress is deliberately loud: the bootstrap names the target and
 venv it resolved, says why it decided to do work (or that it had none), traces every
@@ -310,9 +321,11 @@ in place rather than republished. A hash would gate nothing there: `uv sync` rec
 the venv against `uv.lock` on every run, which is also what catches a dev-group bump that
 left `bin/requirements.txt` untouched. The atomic-swap guarantee is for the venvs `agent`
 itself execs, and nothing on that path passes `--dev` — `agent update` re-provisions with
-the plain bootstrap. The one consequence upward is that `agent inspect` cannot judge such
-a venv against the constraints file, so it reports nothing rather than guessing
-(`_deps_current` in `domain/status/service.py`).
+the plain bootstrap. The missing hash propagates upward to both readers of the slug, which
+must each special-case it: `agent inspect` cannot judge such a venv against the constraints
+file and so reports nothing rather than guessing (`_deps_current` in
+`domain/status/service.py`), and `bin/agent` leaves it alone rather than treating the
+unmatchable slug as drift and re-provisioning the plain venv over it on every command.
 
 **Two regions do not run on the pinned interpreter** and must stay inside their own floor.
 They also have no access to the venv above, so they stay **stdlib-only permanently** —

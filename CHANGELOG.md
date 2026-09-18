@@ -5,19 +5,15 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.11.0](releases/0.11.0.md) — 2026-09-03
+## [0.11.0](releases/0.11.0.md) — 2026-09-18
 
-**Breaking:** Intel Macs are no longer a supported host. `agent` exits `2` on a usage
-error, not `1`, `agent secrets` is now a command group, and `~/claude_keys.json` is no
-longer imported into the secrets store.
-`agent` also runs on a venv that it provisions itself on the first run.
-Tab completion answers from the parser, so re-source `agent-wrap.bashrc`. The `agent
-logs` viewer updates on filesystem events instead of polling, so agent-wrap must be
-installed on a local filesystem. Its project table's session count now agrees with the
-sessions it lists. The project registry moved from `projects.txt` to a SQLite database,
-imported automatically on the next run. The base image is now Ubuntu 26.04, so the next
-`agent run` rebuilds every image once. Byte sizes are reported in IEC units (`2.5 GiB`),
-and `NO_COLOR` turns the colour off.
+**Breaking:** Intel Macs are no longer supported, `agent` exits `2` on a usage error,
+`agent secrets` is now a command group, and `~/claude_keys.json` is no longer imported.
+The wrapper indexes the LiteLLM request logs and adds `agent reindex`, with optional
+age-based retention. `agent` runs on a venv it provisions itself. Re-source
+`agent-wrap.bashrc` for the new completion, and install agent-wrap on a local filesystem
+for the new `agent logs` viewer. The next `agent run` rebuilds every image on Ubuntu
+26.04.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 
