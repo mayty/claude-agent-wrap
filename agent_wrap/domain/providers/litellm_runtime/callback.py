@@ -2,16 +2,9 @@
 """
 LiteLLM custom callback that logs every LLM call to a JSONL file.
 
-Mounted into the shared sidecar next to the config (``/etc/litellm/callback.py``)
-and referenced from each provider's ``config.yaml`` as
-``callback.file_logger_instance``. LiteLLM resolves the callback module relative
-to the config file's directory, so the file must sit beside ``config.yaml``.
-
-The callback runs in-process inside the sidecar and appends one JSON object per
-call (request + response) to ``LOG_FILE``. There is no separate backend, HTTP
-hop, or database — this is a minimal "see what the agent sent upstream" log for
-proof-of-concept use. Logging failures are swallowed so they can never break the
-proxy.
+LiteLLM resolves the callback module relative to the config file's directory, so
+this file must sit beside ``config.yaml`` (both at ``/etc/litellm/`` in the
+sidecar). Logging failures are swallowed so they can never break the proxy.
 """
 
 from __future__ import annotations
@@ -28,40 +21,29 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.providers.models import LogRecord, MetaData
+    from agent_wrap.domain.providers.models import LogRecord
 
-# When mounted into the sidecar container, callback.py sits at /etc/litellm/
-# alongside helpers.py and string_hasher.py — not inside a Python package.
-# Add the current directory to sys.path so those imports resolve.
+# Mounted into the sidecar at /etc/litellm/ alongside helpers.py and
+# string_hasher.py, not as a package, so the plain imports below need this
+# directory on sys.path.
 _current_dir = str(Path(__file__).parent.resolve())
 if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 from helpers import (  # noqa: E402  # pyrefly: ignore [missing-import]
-    get_response_content_str,
     get_session_hasher,
     json_safe,
 )
 from string_hasher import StringHasher  # noqa: E402  # pyrefly: ignore [missing-import]
 
-# A single shared sidecar (first-launch-wins) serves every project on the host,
-# so its log directory (bind-mounted to /var/log/agent-wrap by
-# sidecars/litellm.py::_start) is project-independent. The callback routes
-# each record to /var/log/agent-wrap/<project_hash>/<provider>/<session_id>/ where:
-#   - <project_hash> varies per request and arrives in the x-agent-wrap-log-prefix
-#     header (injected by the wrapper via Claude Code's ANTHROPIC_CUSTOM_HEADERS);
-#   - <provider> is fixed per sidecar and arrives in the AGENT_WRAP_PROVIDER env var;
-#   - <session_id> is Claude Code's own x-claude-code-session-id header.
-# A per-project symlink (cwd/.claude/litellm-logs -> the <project_hash> subtree)
-# lets the viewer read this layout unchanged.
+# One shared sidecar serves every project on the host, so its log directory is
+# project-independent and each record is routed to
+# /var/log/agent-wrap/<project_hash>/<provider>/<session_id>/. Only <provider> is
+# fixed per sidecar (AGENT_WRAP_PROVIDER); the other two arrive per request, in
+# the x-agent-wrap-log-prefix and x-claude-code-session-id headers.
 
-
-ALIAS_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
-TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]+)"')
-
-# project_path_hash output is lowercase hex; validating against that alphabet
-# inherently rejects '/', '.', and '..', so no separate traversal check is needed.
+# Lowercase hex is what project_path_hash emits, and matching that alphabet
+# inherently rejects '/', '.' and '..' — so there is no separate traversal check.
 _HASH_RE = re.compile(r"^[0-9a-f]+$")
-# Provider names are lowercase Docker-style identifiers (e.g. "litellm-bedrock").
 _PROVIDER_RE = re.compile(r"^[a-z0-9-]+$")
 _DEFAULT_PROJECT_HASH = "unknown-project"
 _DEFAULT_PROVIDER = "unknown-provider"
@@ -121,7 +103,6 @@ def _get_request_headers(kwargs: dict[str, Any]) -> Mapping[str, Any]:
 
 
 def _get_session_id(kwargs: dict[str, Any]) -> str:
-    """Extract the Claude Code session ID from the incoming request headers."""
     return _get_request_headers(kwargs).get("x-claude-code-session-id", "unknown-session")
 
 
@@ -129,10 +110,8 @@ def _get_project_hash(kwargs: dict[str, Any]) -> str:
     """
     Extract the project hash from the x-agent-wrap-log-prefix request header.
 
-    The wrapper injects this via ANTHROPIC_CUSTOM_HEADERS. Anything that isn't
-    pure lowercase hex (missing header, '/'-bearing, absolute, traversal) falls
-    back to a fixed default so a malformed value can never escape the mount. That
-    check guards every candidate location in _HEADER_PATHS, not just the first.
+    Anything that is not pure lowercase hex falls back to a fixed default, so a
+    malformed value can never escape the mount.
     """
     raw = _get_request_headers(kwargs).get("x-agent-wrap-log-prefix", "")
     return raw if isinstance(raw, str) and _HASH_RE.match(raw) else _DEFAULT_PROJECT_HASH
@@ -142,8 +121,7 @@ def _get_provider() -> str:
     """
     Return the provider name from the AGENT_WRAP_PROVIDER sidecar env var.
 
-    Fixed for the shared sidecar's lifetime. Falls back to a default when unset
-    or containing characters outside the Docker-style identifier alphabet.
+    Fixed for the shared sidecar's lifetime.
     """
     name = os.environ.get("AGENT_WRAP_PROVIDER", "")
     return name if _PROVIDER_RE.match(name) else _DEFAULT_PROVIDER
@@ -153,8 +131,6 @@ def _usage_from_slo(logging_object: dict[str, Any]) -> dict[str, Any] | None:
     """
     Synthesize a usage dict from LiteLLM's standard_logging_object token fields.
 
-    The SLO exposes flat ``prompt_tokens``/``completion_tokens`` (and may carry a
-    cache split). Returns a ``{"usage": {...}}`` dict the cost path can read, or
     None when the SLO holds no usable token counts.
     """
     if not isinstance(logging_object, dict):
@@ -199,9 +175,9 @@ def _usable_response(
 
     # The response didn't serialize to a dict (the raw-Response case): its usage is
     # gone. Recover from the SLO, preserving its response *content* and only filling
-    # in a usage block when the SLO response lacks one. Replacing the whole dict
-    # would drop choices/message content that alias/title extraction and the viewer
-    # still read (see get_response_content_str / extract_session_alias).
+    # in a usage block when the SLO response lacks one. Replacing the whole dict would
+    # drop the choices/message content the viewer renders and the ingester reads a
+    # session's alias and title out of.
     slo_response = logging_object.get("response")
     recovered = json_safe(slo_response, hasher) if isinstance(slo_response, dict) else None
     if not isinstance(recovered, dict):
@@ -255,19 +231,8 @@ def build_record(  # noqa: PLR0913, PLR0917
     """
     Build a JSON-serializable log record from a LiteLLM callback's arguments.
 
-    Pure function (no I/O) so it can be unit-tested directly. All values are run
-    through ``json_safe`` so the result has no cycles and no non-serializable
-    leaves. String values meeting the length threshold are replaced with
-    "hash:<sha256_hex>" format to reduce space bloat. The self-referencing
-    ``body.proxy_server_request`` key is deleted before serialization to
-    break the only cycle in LiteLLM's data structure.
-
     The ``request`` field is the proxy server request itself; the real Anthropic
     request lives at ``request.body.data``.
-
-    ``start_time`` / ``end_time`` are the callback's own ``datetime`` bounds, used
-    as a fallback when the standard_logging_object lacks the corresponding epoch
-    timestamp (see :func:`_epoch`).
     """
     session_id = _get_session_id(kwargs)
     log_dir = _get_log_dir(kwargs)
@@ -276,17 +241,14 @@ def build_record(  # noqa: PLR0913, PLR0917
     litellm_params = kwargs.get("litellm_params") or {}
     psr = litellm_params.get("proxy_server_request")
 
-    # Break the self-cycle: LiteLLM's proxy_server_request.body contains a key
-    # ("proxy_server_request") that points back to the parent dict.  Deleting it
-    # makes the structure a DAG, which json.dumps handles without issue.
+    # The only cycle in LiteLLM's structure: body holds a "proxy_server_request"
+    # key pointing back at its parent. Dropping it leaves a DAG json.dumps accepts.
     if isinstance(psr, dict) and isinstance(psr.get("body"), dict):
         psr["body"].pop("proxy_server_request", None)
 
     logging_object = kwargs.get("standard_logging_object", {})
     model = kwargs.get("model")
-    # Successful calls must retain usage for cost accounting; recover it from the
-    # standard_logging_object when the raw response_obj doesn't serialize to a
-    # usable usage dict (see _usable_response). Failures carry no usage to lose.
+    # Failures carry no usage to lose; successes must retain it for cost accounting.
     if status == "success":
         response = _usable_response(response_obj, logging_object, hasher)
     else:
@@ -313,98 +275,12 @@ def build_record(  # noqa: PLR0913, PLR0917
     if exc is not None:
         record["error"] = hasher.hash_string(str(exc))
 
-    # Flush the hasher to persist string mappings after building the record
     hasher.flush(log_dir)
 
     return record
 
 
-def extract_session_alias(response: Any) -> str | None:
-    """
-    Return Claude Code's kebab-case session name if this is its naming call.
-
-    Claude Code's session-naming request flows through the proxy like any other
-    call; its response content is a JSON object ``{"name": "<kebab-slug>"}``.
-    The sibling title-generation call returns ``{"title": ...}`` and is ignored.
-    The slug is short, so it is never hashed — this operates on the JSON-safe
-    response dict directly. Returns None for anything that isn't a name payload.
-    """
-    content = get_response_content_str(response)
-    if not content:
-        return None
-    stripped = content.strip()
-    try:
-        obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        # Tolerate JSON-ish-but-not-strict content (e.g. trailing prose).
-        match = ALIAS_NAME_RE.search(stripped)
-        return match.group(1).strip() or None if match else None
-    if isinstance(obj, dict):
-        name = obj.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-    return None
-
-
-def extract_session_title(response: Any) -> str | None:
-    """
-    Return Claude Code's sentence-case session title if this is its title call.
-
-    Claude Code generates a session title via a small model call whose response
-    content is ``{"title": "…"}``.  This mirrors :func:`extract_session_alias`
-    but for the sibling title payload.  Returns None for anything else.
-    """
-    content = get_response_content_str(response)
-    if not content:
-        return None
-    stripped = content.strip()
-    try:
-        obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        match = TITLE_RE.search(stripped)
-        return match.group(1).strip() or None if match else None
-    if isinstance(obj, dict):
-        title = obj.get("title")
-        if isinstance(title, str) and title.strip():
-            return title.strip()
-    return None
-
-
-def _get_empty_meta() -> MetaData:
-    return {
-        "count": 0,
-        "last_ts": None,
-        "models": [],
-        "alias": None,
-        "title": None,
-    }
-
-
-def _read_meta(log_dir: Path) -> MetaData:
-    """Read existing ``meta.json``, returning ``{}`` if missing or corrupt."""
-    meta_file = log_dir / "meta.json"
-    if not meta_file.is_file():
-        return _get_empty_meta()
-    try:
-        return json.loads(meta_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return _get_empty_meta()
-
-
-def _write_meta(log_dir: Path, meta: MetaData) -> None:
-    """Write ``meta.json`` atomically.  Best-effort; never raises."""
-    meta_file = log_dir / "meta.json"
-    tmp_file = log_dir / "meta.json.tmp"
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        tmp_file.write_text(json.dumps(meta), encoding="utf-8")
-        tmp_file.replace(meta_file)
-    except OSError:
-        pass
-
-
 def _get_log_dir(kwargs: dict[str, Any]) -> Path:
-    """Return the per-project/provider/session log directory for *kwargs*."""
     return (
         Path("/var/log/agent-wrap")
         / _get_project_hash(kwargs)
@@ -418,7 +294,6 @@ async def _write_record_async(record: LogRecord, kwargs: dict[str, Any]) -> None
     session_id = _get_session_id(kwargs)
     log_dir = _get_log_dir(kwargs)
 
-    # Flush string mappings before appending the record.
     hasher = get_session_hasher(session_id, log_dir)
     await asyncio.to_thread(hasher.flush, log_dir)
 
@@ -447,13 +322,11 @@ def _claim_failure(call_id: Any) -> bool:
     ``FileLogger`` each time (see the registration note at the bottom of this
     file), so an instance attribute would not be shared between them.
 
-    A missing or non-string id records anyway. A duplicate row is a far better
-    failure mode than another silently dropped request, which is the bug this
-    whole path exists to fix.
+    A missing or non-string id records anyway: a duplicate row beats another
+    silently dropped request.
 
-    No lock: callbacks run on the proxy's event loop and there is no await
-    between the membership test and the insert, so the check-then-set is atomic
-    with respect to other coroutines.
+    No lock: callbacks run on the proxy's event loop and there is no await between
+    the membership test and the insert, so check-then-set is atomic here.
     """
     if not isinstance(call_id, str) or not call_id:
         return True
@@ -478,17 +351,12 @@ async def _record_failure(
     """
     Build and persist one failure record.  Never raises.
 
-    Shared by both failure hooks so they cannot drift in how a failure is shaped,
-    deduplicated, or filed.
-
-    Falls back to "now" for the timing bounds a caller did not supply.
-    ``async_post_call_failure_hook`` is handed no ``datetime`` bounds at all, and on
-    the ``/anthropic/*`` passthrough route the ``standard_logging_object`` carries no
-    timestamps either, so without this the record lands with an all-null ``timing``
-    — which drops it out of the viewer's chronological order and leaves ``meta.json``
-    without a ``last_ts``. The hook fires on the failure itself, so "now" is accurate
-    to within milliseconds; a real timestamp still wins, because ``_epoch`` only
-    consults these bounds when the logging object has none.
+    Falls back to "now" for timing bounds a caller did not supply.
+    ``async_post_call_failure_hook`` is handed no ``datetime`` bounds, and on the
+    ``/anthropic/*`` passthrough route the ``standard_logging_object`` carries no
+    timestamps either — so without this the record lands with an all-null
+    ``timing`` and drops out of the viewer's chronological order. A real timestamp
+    still wins: ``_epoch`` consults these bounds only when the SLO has none.
     """
     if not _claim_failure(kwargs.get("litellm_call_id")):
         return
@@ -505,48 +373,15 @@ async def _record_failure(
         await _write_record_async(record, kwargs)
     except Exception as e:  # noqa: BLE001 - logging is best-effort
         print(f"agent-wrap callback: failed to write log record: {e}", file=sys.stderr)
-    try:
-        _write_metadata(record, kwargs)
-    except Exception as e:  # noqa: BLE001 - logging is best-effort
-        print(f"agent-wrap callback: failed to write metadata: {e}", file=sys.stderr)
-
-
-def _write_metadata(record: LogRecord, kwargs: dict[str, Any]) -> None:
-    """Update ``meta.json`` from *record*.  Never raises."""
-    log_dir = _get_log_dir(kwargs)
-
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    meta = _read_meta(log_dir)
-    meta["count"] += 1
-    end = (record.get("timing") or {}).get("end")
-    if end is not None:
-        meta["last_ts"] = end
-    model = record.get("model")
-    if model:
-        short = model.rsplit("/", 1)[-1]
-        meta["models"] = sorted(set(meta["models"]) | {short})
-    alias = extract_session_alias(record.get("response"))
-    if alias:
-        meta["alias"] = alias
-    title = extract_session_title(record.get("response"))
-    if title:
-        meta["title"] = title
-    _write_meta(log_dir, meta)
 
 
 def _resolve_thinking_reasoning_conflict(data: dict[str, Any]) -> dict[str, Any]:
     """
     Resolve API conflict between ``thinking`` and ``reasoning_effort``.
 
-    Some providers (DeepSeek's Anthropic-compatible API) rejects requests where
-    ``thinking.type`` is ``"disabled"`` but reasoning_effort is also set.
-    Claude Code sends this combination for lightweight calls (title generation,
-    session naming) when ``CLAUDE_CODE_EFFORT_LEVEL`` is configured.
-
-    This hook strips ``reasoning_effort`` when thinking is explicitly disabled,
-    preserving Claude Code's intent that the call should proceed without
-    extended thinking.
+    DeepSeek's Anthropic-compatible API rejects a request carrying both
+    ``thinking.type == "disabled"`` and a reasoning effort — a combination Claude
+    Code sends for lightweight calls when ``CLAUDE_CODE_EFFORT_LEVEL`` is set.
     """
     if not isinstance(data.get("thinking"), dict) or data["thinking"].get("type") != "disabled":
         return data
@@ -601,14 +436,10 @@ try:
             absent from ``messages.jsonl`` entirely — silently, which is the worst
             way for a request log to be wrong.
 
-            This hook alone proved insufficient: measured against the on-disk logs
-            it reliably caught non-streaming failures while streaming ones — which
-            is all of Claude Code's conversation traffic — went unrecorded. Both
-            lists are registered now; ``_claim_failure`` keeps the overlap from
-            double-recording.
-
-            ``request_data`` carries the same ``litellm_params`` /
-            ``proxy_server_request`` shape ``build_record`` reads elsewhere.
+            Not sufficient alone: measured against the on-disk logs it catches
+            non-streaming failures only, and streaming is all of Claude Code's
+            conversation traffic. ``async_log_failure_event`` covers the rest;
+            ``_claim_failure`` keeps the overlap from double-recording.
             """
             await _record_failure(request_data, exc=original_exception)
 
@@ -627,7 +458,6 @@ try:
                 end_time=end_time,
             )
             await _write_record_async(record, kwargs)
-            _write_metadata(record, kwargs)
 
         async def async_log_stream_event(
             self,
@@ -646,8 +476,7 @@ try:
             branch would be dropped from the log without a trace.
 
             Both routes we use populate that key before dispatching, so this is a
-            safety net for a branch we do not expect to hit — not dead code, given
-            how quietly the alternative fails.
+            safety net rather than dead code — the alternative fails silently.
             """
             await self.async_log_success_event(kwargs, response_obj, start_time, end_time)
 
@@ -676,53 +505,28 @@ try:
 
     file_logger_instance = FileLogger()
 
-    # Register for SUCCESS logging here rather than from config.yaml, because no
-    # config key can do it:
+    # Registered here rather than from config.yaml because no config key reaches
+    # litellm._async_success_callback, which is the list async_success_handler
+    # dispatches from. `callbacks:` populates litellm.callbacks (failures only);
+    # `success_callback:` is gated on _is_async_callable, which a CustomLogger
+    # instance fails. On the router path function_setup() copies callbacks across,
+    # but the /anthropic/* passthrough route never calls it — so every success is
+    # dropped. add_litellm_async_success_callback appends with no such gate.
     #
-    #   - `litellm_settings: callbacks:` only populates litellm.callbacks. That is
-    #     the list post_call_failure_hook iterates, so config alone gets us failures
-    #     and nothing else.
-    #   - Successes are dispatched by Logging.async_success_handler, which reads
-    #     litellm._async_success_callback. On the router path function_setup() copies
-    #     litellm.callbacks into that list; the /anthropic/* passthrough route never
-    #     calls function_setup, so it stays empty and every success is dropped.
-    #   - `litellm_settings: success_callback:` does NOT reach that list either: it
-    #     goes through add_litellm_success_callback, which only routes to the async
-    #     list when _is_async_callable(cb) is true. That resolves cb.__call__, and a
-    #     CustomLogger *instance* has none — so it lands in the sync success_callback
-    #     list, which is then skipped for passthrough anyway (success_handler excludes
-    #     call_type == "pass_through_endpoint", and the sync gate filters out every
-    #     CustomLogger instance).
-    #
-    # add_litellm_async_success_callback appends directly with no such gate.
-    #
-    # Safe to run on every load even though LiteLLM's get_instance_fn re-execs this
-    # module (spec_from_file_location + exec_module, never registered in sys.modules)
-    # and so mints a *distinct* instance each time: _add_custom_logger_to_list dedups
-    # by class name plus public scalar attrs, and FileLogger is stateless, so repeat
-    # registrations of a different object are still skipped.
+    # Safe on every load: get_instance_fn re-execs this module and mints a distinct
+    # instance each time, but _add_custom_logger_to_list dedups by class name plus
+    # public scalar attrs, and FileLogger is stateless.
     litellm.logging_callback_manager.add_litellm_async_success_callback(file_logger_instance)
 
-    # Failures need the same treatment, for the same reason and one more.
-    #
-    # `litellm_settings: callbacks:` populates litellm.callbacks, which is the list
-    # post_call_failure_hook iterates — so config alone did give us *a* failure path.
-    # But a census of the on-disk logs showed it only ever fired for non-streaming
-    # requests: streaming calls had thousands of success records against a single
-    # failure record, while non-streaming calls recorded failures normally. Since
-    # every real conversation turn streams, upstream errors — 529 overloaded_error
-    # in particular — were missing from precisely the requests that matter.
-    #
-    # Failures dispatched by Logging.async_failure_handler read
-    # litellm._async_failure_callback, which the passthrough route leaves empty for
-    # the same reason as the success list: function_setup() never runs, so nothing
-    # copies litellm.callbacks into it. add_litellm_async_failure_callback appends
-    # there directly.
-    #
-    # Both hooks now feed _record_failure, which dedups on litellm_call_id so a
-    # failure seen twice is still logged once.
+    # Same treatment for failures, and for one more reason: a census of the on-disk
+    # logs showed the config-driven path (post_call_failure_hook over
+    # litellm.callbacks) firing only for non-streaming requests — thousands of
+    # streamed successes against a single streamed failure. Every real conversation
+    # turn streams, so 529 overloaded_error was missing from exactly the requests
+    # that matter. async_failure_handler reads litellm._async_failure_callback,
+    # which the passthrough route leaves empty for the same reason as the success
+    # list. Both hooks feed _record_failure, which dedups on litellm_call_id.
     litellm.logging_callback_manager.add_litellm_async_failure_callback(file_logger_instance)
 except ImportError:
-    # litellm isn't installed in this interpreter (e.g. running the repo's unit
-    # tests). build_record stays importable; the callback instance is absent.
+    # litellm is only installed inside the sidecar. build_record stays importable.
     file_logger_instance = None

@@ -210,17 +210,24 @@ def test_run_relays_a_keyboard_interrupt_to_the_process_group(
     assert killpg.call_count == 2
 
 
-def test_run_tolerates_an_already_dead_process_group(
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+def test_run_tolerates_an_already_dead_process_group(  # noqa: PLR0913
     tmp_path: Path,
     startup_svc: StartupService,
     write_script: Callable[..., Path],
     patch_popen: Callable[..., MagicMock],
     mocker: pytest_mock.MockFixture,
+    error: type[OSError],
 ) -> None:
-    """A group that raced us to exit is not an error the user should ever see."""
+    """
+    A group that raced us to exit is not an error the user should ever see.
+
+    Both errnos have to be tolerated: Linux reports an emptied group as ESRCH, Darwin as
+    EPERM. Letting the latter through masked the StartupScriptError on macOS.
+    """
     write_script()
     patch_popen(wait_error=subprocess.TimeoutExpired(cmd="sh", timeout=1.0))
-    mocker.patch("agent_wrap.domain.startup.service.os.killpg", side_effect=ProcessLookupError)
+    mocker.patch("agent_wrap.domain.startup.service.os.killpg", side_effect=error)
 
     with pytest.raises(StartupScriptError, match="exceeded its"):
         startup_svc.run(tmp_path, timeout=1.0, agent_name="proj", instance_id="proj-1")

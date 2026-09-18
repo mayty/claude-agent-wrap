@@ -11,8 +11,6 @@ if TYPE_CHECKING:
 
 
 class DockerfileLocation(NamedTuple):
-    """Where a project's Dockerfile was found, if anywhere."""
-
     #: The resolved file, or None when the project declares no Dockerfile.
     path: Path | None
     #: True when it was found at the deprecated ``<project>/Dockerfile.agent`` path.
@@ -21,8 +19,6 @@ class DockerfileLocation(NamedTuple):
 
 @dataclass
 class DockerfileAgentInfo:
-    """Parsed directives from a project Dockerfile."""
-
     agent_user: str = "ubuntu"
     expose_ports: list[str] = field(default_factory=list)
     extra_run_args: list[str] = field(default_factory=list)
@@ -79,8 +75,6 @@ class ProjectImageVerdict(NamedTuple):
 
 
 class RemovableImage(NamedTuple):
-    """One image ``agent cleanup`` offers to remove, ready to preview and to delete."""
-
     #: What ``docker rmi`` is given: the id for an untagged image, ``repo:tag`` for a
     #: wrapper image, ``repo@sha256:...`` for a sidecar one pinned by digest.
     ref: str
@@ -132,8 +126,6 @@ class ImageCleanupOutcome(NamedTuple):
 
 @dataclass
 class ResolvedImage:
-    """Result of resolving which Docker image to use."""
-
     image: str
     dockerfile: Path
     context: Path

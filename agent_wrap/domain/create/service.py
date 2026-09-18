@@ -17,13 +17,10 @@ if TYPE_CHECKING:
 
 
 class CreateService:
-    """Scaffolds a project Dockerfile with agent-name and FROM directives."""
-
     def __init__(self, display_service: DisplayService) -> None:
         self._display = display_service
 
     def create(self) -> int:
-        """Scaffold a project Dockerfile in the current directory. Returns exit code."""
         cwd = Path.cwd()
         dst = cwd / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
 

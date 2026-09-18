@@ -84,7 +84,6 @@ class DisplayRow:
 
 
 def build_project_tree(rows: list[ProjectRow]) -> Node:
-    """Build the display-ready trie over `rows`, then fill in the subtree totals."""
     root = cast("Node", build_path_tree([(str(r["path"]), r) for r in rows], node_factory=Node))
     _aggregate(root)
     return root

@@ -6,20 +6,31 @@ The autouse ``_mock_all_services`` fixture replaces every
 ``services.*_service`` with a spec-mocked instance so no CLI test
 can accidentally call real domain code. Individual tests configure
 specific return values or side effects on the already-mocked services.
+
+``runner`` is the click harness every CLI test invokes commands through. Commands are
+always invoked via ``cli_root`` rather than directly, so the root group's
+``help_option_names`` (``-h``) reaches them the way it does in production.
 """
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import pytest
+from click.testing import CliRunner
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
+
     import pytest_mock
 
-from agent_wrap.containers import services
+from agent_wrap.containers import core, services
 
-# NOTE: The domain-class imports below are an intentional exception to the
-# "never import from agent_wrap.domain.xxx directly" rule.  The classes are
-# used ONLY as ``spec=`` arguments to ``mocker.Mock(spec=SomeService)`` —
+# NOTE: The domain-class imports below — and ``ConnectionFactory`` from the
+# infrastructure layer — are an intentional exception to the "never import
+# from agent_wrap.domain.xxx directly" rule, and to the layering rule that
+# only containers.py imports agent_wrap.infrastructure at runtime.  The
+# classes are used ONLY as ``spec=`` arguments to ``mocker.Mock(spec=X)`` —
 # type metadata for the test harness, not domain logic.  No method is ever
 # called on the imported classes.
 from agent_wrap.domain.build.service import BuildService
@@ -35,6 +46,46 @@ from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.domain.stats.service import StatsService
 from agent_wrap.domain.status.service import InspectService
 from agent_wrap.domain.updates.service import UpdateService
+from agent_wrap.infrastructure.connection import ConnectionFactory
+
+
+@pytest.fixture
+def runner() -> CliRunner:
+    """Return a click test runner, the harness every CLI test invokes commands through."""
+    return CliRunner()
+
+
+@pytest.fixture
+def write_grants(mocker: pytest_mock.MockFixture) -> list[str]:
+    """
+    Return a list that records every database write grant the command takes, by database.
+
+    Which verbs may write is a safety property rather than a detail: the logs daemon
+    (``agent logs --foreground``) and ``agent cleanup --dry-run`` must take no grant on
+    the registry, and a stray one there is as much a bug as a missing one on ``agent
+    run``. Asserting on this list makes both directions a test failure.
+
+    Every database is patched, not just the registry, and each grant records *which* one
+    it was — otherwise the two would be indistinguishable, and the whole point of the
+    fixture is that a grant on the wrong database is a bug. The daemon is the case that
+    makes this matter: it takes a ``logs`` grant to ingest and must still take no
+    ``projects`` grant, so a list that could not tell them apart would assert nothing.
+    """
+    taken: list[str] = []
+
+    def grant_for(name: str) -> Callable[[], AbstractContextManager[None]]:
+        @contextlib.contextmanager
+        def grant() -> Generator[None]:
+            taken.append(name)
+            yield
+
+        return grant
+
+    for attribute, name in (("projects_db", "projects"), ("logs_db", "logs")):
+        factory = mocker.Mock(spec=ConnectionFactory)
+        factory.enable_writes.side_effect = grant_for(name)
+        mocker.patch.object(core, attribute, factory)
+    return taken
 
 
 @pytest.fixture(autouse=True)

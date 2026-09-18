@@ -1,57 +1,29 @@
 # This file has been edited with the assistance of an AI tool.
 """
-agent-wrap CLI entry point.
+agent-wrap CLI entry point: ``python3 -m agent_wrap <verb> [args...]``.
 
-Normal path:  python3 -m agent_wrap <verb> [args...]
-Complete path: AGENT_COMPLETE=1 python3 -m agent_wrap <cword> <word0> ...
+``prog_name`` is passed explicitly because this module is reached through ``bin/agent``,
+which execs ``-m agent_wrap``: click would otherwise detect the program name as
+``python -m agent_wrap`` and print that in every usage line. It also derives the
+shell-completion environment variable (``_AGENT_COMPLETE``) from the program name.
+
+The group carries the same name so that a test harness, which takes its program name
+from the command rather than from ``sys.argv``, renders the usage lines identically.
 """
 
-import os
-import sys
+import click
 
-from agent_wrap.cli.commands import command_meta, format_usage
-from agent_wrap.cli.constants import COMMANDS
-from agent_wrap.constants import MIN_ARGS
-from agent_wrap.containers import services
+from agent_wrap.cli import command_groups
+from agent_wrap.constants import CLI_CONTEXT_SETTINGS
 
 
-def main() -> int:
-    """Run the normal CLI dispatch path."""
-    if len(sys.argv) < MIN_ARGS:
-        meta = command_meta()
-        services.display_service.info(format_usage(meta), end="")
-        return 1
-
-    name = sys.argv[1]
-    args = sys.argv[2:]
-
-    entry = COMMANDS.get(name)
-    if entry is None:
-        services.display_service.error(f"Unknown command: {name}")
-        return 1
-
-    run_fn, _complete_fn = entry
-    return run_fn(args)
+@click.group("agent", context_settings=CLI_CONTEXT_SETTINGS)
+def cli_root() -> None: ...
 
 
-def _complete() -> None:
-    """Run the tab-completion dispatch path.  Prints candidates to stdout."""
-    cword = int(sys.argv[1])
-    words = sys.argv[2:]
-    verb = words[1] if len(words) > 1 else ""
-
-    if cword <= 1:
-        # Completing the verb itself
-        for name in sorted(COMMANDS):
-            print(name)
-    elif verb in COMMANDS:
-        _run_fn, complete_fn = COMMANDS[verb]
-        for candidate in complete_fn(cword, words):
-            print(candidate)
+for command_group in command_groups:
+    cli_root.add_command(command_group)
 
 
 if __name__ == "__main__":
-    if os.environ.get("AGENT_COMPLETE"):
-        _complete()
-    else:
-        sys.exit(main())
+    cli_root(prog_name="agent")

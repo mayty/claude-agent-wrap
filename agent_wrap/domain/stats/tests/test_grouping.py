@@ -6,21 +6,24 @@ from typing import TYPE_CHECKING
 import pytest
 
 from agent_wrap.constants import LITELLM_LOGS_DIRNAME
-from agent_wrap.domain.config.service import ConfigService
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.stats.constants import MARKER_NAME
-from agent_wrap.domain.stats.service import StatsService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import pytest_mock
 
+    from agent_wrap.domain.stats.service import StatsService
+
 
 @pytest.fixture
-def stats_svc(mocker: pytest_mock.MockFixture) -> StatsService:
-    """Return a StatsService with a spec-mocked pricing dependency."""
-    return StatsService(mocker.Mock(spec=PricingService), mocker.Mock(spec=ConfigService))
+def stats_svc(
+    mocker: pytest_mock.MockFixture, make_stats_service: Callable[[PricingService], StatsService]
+) -> StatsService:
+    """Return a StatsService whose grouping and orphan rules can be asked in isolation."""
+    return make_stats_service(mocker.Mock(spec=PricingService))
 
 
 def _marker(directory: Path, contents: str = "") -> None:
@@ -192,3 +195,88 @@ def test_orphaned_ignores_deleted_project_symlink(
 
     orphaned = stats_svc.orphaned_log_dirs([gone])
     assert orphaned == [tmp_path / LITELLM_LOGS_DIRNAME / "hashA"]
+
+
+def test_owners_names_the_hash_a_project_claims(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
+) -> None:
+    """The hash, not the path — that is the only project identity the index carries."""
+    mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
+    hash_a = _central(tmp_path, "hashA")
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / LITELLM_LOGS_DIRNAME).symlink_to(hash_a, target_is_directory=True)
+
+    assert stats_svc.project_owners([project]) == {project: "hashA"}
+
+
+def test_owners_and_orphans_partition_the_central_tree(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
+) -> None:
+    """
+    The two answers are complements, which is the property the report depends on.
+
+    Every hash is claimed by exactly one project or is orphaned. If the two rules could
+    ever both claim a hash the totals would double-count it, and if neither did its
+    spend would vanish from a report that still counted its requests in the by-day
+    table — so this is asserted as one statement about the pair rather than twice.
+    """
+    mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
+    hash_a = _central(tmp_path, "hashA")
+    _central(tmp_path, "hashB")
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / LITELLM_LOGS_DIRNAME).symlink_to(hash_a, target_is_directory=True)
+
+    owned = set(stats_svc.project_owners([project]).values())
+    orphaned = {d.name for d in stats_svc.orphaned_log_dirs([project])}
+
+    assert owned == {"hashA"}
+    assert owned | orphaned == {"hashA", "hashB"}
+    assert not owned & orphaned
+
+
+def test_owners_omits_a_project_with_no_logs_dir(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
+) -> None:
+    """
+    A deleted project owns nothing, which is what makes its indexed spend orphaned.
+
+    Re-deriving the hash from the project path would happily produce one here — the
+    path need not exist to be hashed — and would credit the row of a project the user
+    has already removed.
+    """
+    mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
+    _central(tmp_path, "hashA")
+
+    assert stats_svc.project_owners([tmp_path / "deleted-proj"]) == {}
+
+
+def test_owners_omits_logs_outside_the_central_tree(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    stats_svc: StatsService,
+) -> None:
+    """
+    A symlink pointing somewhere else claims nothing, however the directory is named.
+
+    Trusting the target's basename would let a project claim a real hash it has no
+    relation to, and that hash would then be counted twice — once on the project's row
+    and once as orphaned, since the reachability rule would still disown it.
+    """
+    mocker.patch("agent_wrap.domain.stats.service.TOOL_DIR", tmp_path)
+    _central(tmp_path, "hashA")
+    elsewhere = tmp_path / "elsewhere" / "hashA"
+    elsewhere.mkdir(parents=True)
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / LITELLM_LOGS_DIRNAME).symlink_to(elsewhere, target_is_directory=True)
+
+    assert stats_svc.project_owners([project]) == {}
+    assert stats_svc.orphaned_log_dirs([project]) == [tmp_path / LITELLM_LOGS_DIRNAME / "hashA"]

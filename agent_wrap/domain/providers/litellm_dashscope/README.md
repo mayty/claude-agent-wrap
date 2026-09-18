@@ -33,6 +33,7 @@ Agent container (injected by `get_agent_env`):
 - `ANTHROPIC_DEFAULT_OPUS_MODEL` — `qwen3.7-max[1m]`
 - `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `qwen3.6-flash`
 - `CLAUDE_CODE_SUBAGENT_MODEL` — `qwen3.6-flash`
+- `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP` — `1` — disables the built-in `Explore` agent's Opus cap, so `Explore` tracks the session's running model (`qwen3.7-plus` here) instead of the `qwen3.7-max` Opus tier. The cap misfires for any non-Anthropic model name (it substring-matches `haiku`/`sonnet`/`opus`); note this tracks the session model, not `CLAUDE_CODE_SUBAGENT_MODEL`.
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
 - `DISABLE_PROMPT_CACHING` — `1` — DashScope's explicit [context-cache mechanism](https://www.alibabacloud.com/help/en/model-studio/context-cache) doesn't work well with Claude Code's prompt-caching workflow
 

@@ -3,11 +3,11 @@
 
 import json
 import tempfile
-import urllib.error
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
+import httpx2
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
@@ -35,6 +35,7 @@ def _config(**overrides: object) -> TelegramSidecarConfig:
         "health_timeout_sec": 30,
         "cold_start_time": 45.0,
         "short_circuit_time": 2.0,
+        "pull_timeout_sec": 600,
         "log_dir": _TEST_LOG_DIR,
     }
     defaults.update(overrides)
@@ -49,8 +50,7 @@ def _sidecar(display: DisplayService | None = None, **overrides: object) -> Tele
 
 _SECRETS = {"TelegramBotToken": "test-bot-token", "TelegramChatId": "test-chat-id"}
 _DOCKER = "agent_wrap.domain.sidecars.telegram.docker_run"
-_IMAGE_EXISTS = "agent_wrap.domain.sidecars.telegram.image_exists"
-_URLOPEN = "urllib.request.urlopen"
+_HTTPX_POST = "agent_wrap.domain.sidecars.telegram.httpx2.post"
 
 
 def test_config_fields() -> None:
@@ -85,34 +85,20 @@ def test_container_name_property_exposes_the_config_value() -> None:
     assert _sidecar().container_name == "agent-wrap-telegram"
 
 
-def test_prepare_image_exists(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True)
-    mock_docker = mocker.patch(_DOCKER, autospec=True)
-    _sidecar().prepare()
-    mock_docker.assert_not_called()
-
-
-def test_prepare_pulls_missing_image(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    _sidecar().prepare()
-    assert any("pull" in str(c) for c in mock_docker.call_args_list)
-
-
-def test_prepare_pull_failure_raises(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    with pytest.raises(SystemExit):
-        _sidecar().prepare()
+def test_prepare_pulls_the_image(mocker: pytest_mock.MockFixture) -> None:
+    """The pull itself is ``Sidecar._ensure_image``'s; prepare only decides whether to."""
+    sc = _sidecar()
+    mock_pull = mocker.patch.object(sc, "_ensure_image", autospec=True)
+    sc.prepare()
+    mock_pull.assert_called_once_with()
 
 
 def test_prepare_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
-    """A headless run never pulls the image — prepare() touches nothing."""
-    mock_exists = mocker.patch(_IMAGE_EXISTS, autospec=True)
-    mock_docker = mocker.patch(_DOCKER, autospec=True)
-    _sidecar(headless=True).prepare()
-    mock_exists.assert_not_called()
-    mock_docker.assert_not_called()
+    """A headless run never uses the sidecar, so it must not pay for the image."""
+    sc = _sidecar(headless=True)
+    mock_pull = mocker.patch.object(sc, "_ensure_image", autospec=True)
+    sc.prepare()
+    mock_pull.assert_not_called()
 
 
 def test_ensure_noop_when_headless(mocker: pytest_mock.MockFixture) -> None:
@@ -149,91 +135,6 @@ def test_release_still_stops_running_container_when_headless(
     mock_spin.assert_called_once()
 
 
-def test_is_running_true(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("true", 0))
-    assert _sidecar()._is_running() is True
-
-
-def test_is_running_false(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("false", 0))
-    assert _sidecar()._is_running() is False
-
-
-def test_is_running_error(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    assert _sidecar()._is_running() is False
-
-
-def test_is_on_network_true(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("agent-wrap-net\ncustom-net\n", 0))
-    sc = _sidecar()
-    assert sc._is_on_network("custom-net") is True
-
-
-def test_is_on_network_false(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("agent-wrap-net\n", 0))
-    sc = _sidecar()
-    assert sc._is_on_network("custom-net") is False
-
-
-def test_is_on_network_error(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    sc = _sidecar()
-    assert sc._is_on_network("agent-wrap-net") is False
-
-
-def test_ensure_network_exists(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    _sidecar()._ensure_network()
-    calls = [c.args for c in mock_docker.call_args_list]
-    assert any("inspect" in c for c in calls)
-
-
-def test_ensure_network_creates(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
-    _sidecar()._ensure_network()
-
-
-def test_ensure_network_create_fails(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 1)])
-    with pytest.raises(SystemExit):
-        _sidecar()._ensure_network()
-
-
-def test_attach_to_network_missing_raises(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1)])  # network inspect fails
-    with pytest.raises(SystemExit):
-        _sidecar()._attach_to_network("missing-net")
-
-
-def test_attach_to_network_already_connected(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    # First call: network inspect (exists)
-    # Second: is_on_network (already connected)
-    sc = _sidecar()
-    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=True)
-    sc._attach_to_network("custom-net")
-    # Only network inspect was called; connect was skipped
-    assert not any("connect" in str(c) for c in mock_docker.call_args_list)
-
-
-def test_attach_to_network_connects(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    sc = _sidecar()
-    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
-    sc._attach_to_network("custom-net")
-    assert any("connect" in str(c) for c in mock_docker.call_args_list)
-
-
-def test_attach_to_network_connect_fails(mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar()
-    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=False)
-    # First: network inspect ok, then connect fails
-    mocker.patch(_DOCKER, autospec=True, side_effect=[("", 0), ("", 1)])
-    with pytest.raises(SystemExit):
-        sc._attach_to_network("custom-net")
-
-
 def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
     mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     mocker.patch(
@@ -264,17 +165,18 @@ def test_start_structure(mocker: pytest_mock.MockFixture) -> None:
     assert log_loc_args[0].endswith(".log")
 
 
-def test_start_reaps_existing_container(mocker: pytest_mock.MockFixture) -> None:
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
+def test_start_reaps_a_stale_container_first(mocker: pytest_mock.MockFixture) -> None:
+    """The container runs without --rm, so a previous corpse holds the name until reaped."""
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     mocker.patch(
         "agent_wrap.domain.sidecars.telegram.get_user_args", autospec=True, return_value=[]
     )
     sc = _sidecar()
+    mock_reap = mocker.patch.object(sc, "_reap_stale_container", autospec=True)
     sc._bot_token = "x"
     sc._chat_id = "x"
     sc._start()
-    rm_calls = [c.args for c in mock_docker.call_args_list if "rm" in c.args[:2]]
-    assert len(rm_calls) == 1
+    mock_reap.assert_called_once_with()
 
 
 def test_start_failure_raises(mocker: pytest_mock.MockFixture) -> None:
@@ -299,86 +201,76 @@ def test_start_creates_log_dir(mocker: pytest_mock.MockFixture, tmp_path: Path) 
     assert log_dir.is_dir()
 
 
-def test_health_poll_healthy(mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar()
-    mock_spin = mocker.patch.object(sc._display, "poll_until", return_value=True)
-    result = sc._health_poll()
-    assert result is True
-    mock_spin.assert_called_once()
+def _response(status: int, payload: object = None) -> httpx2.Response:
+    """
+    Build a real Response rather than a mock.
 
-
-def test_health_poll_unhealthy(mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar()
-    mock_spin = mocker.patch.object(sc._display, "poll_until", return_value=False)
-    result = sc._health_poll()
-    assert result is False
-    mock_spin.assert_called_once()
+    raise_for_status needs the originating request to be attached, and building the
+    genuine article costs less than teaching a mock to imitate one.
+    """
+    content = b"" if payload is None else json.dumps(payload).encode()
+    return httpx2.Response(
+        status,
+        content=content,
+        request=httpx2.Request("POST", "http://127.0.0.1:9999/register"),
+    )
 
 
 def test_register_success(mocker: pytest_mock.MockFixture) -> None:
-    # urlopen response mock — needs dunder methods for context-manager
-    # protocol, which spec= lists cannot provide. MagicMock is used
-    # intentionally here, with a spec= listing the known attributes.
-    mock_resp = mocker.MagicMock(spec=["read", "__enter__", "__exit__"])
-    mock_resp.read.return_value = json.dumps({"auth_token": "tok-abc-123"}).encode()
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen = mocker.patch(_URLOPEN, return_value=mock_resp)
+    mock_post = mocker.patch(
+        _HTTPX_POST, autospec=True, return_value=_response(200, {"auth_token": "tok-abc-123"})
+    )
 
     token = _sidecar()._register()
     assert token == "tok-abc-123"
 
     # Verify the payload sent to the sidecar
-    req = mock_urlopen.call_args[0][0]
-    sent_body = json.loads(req.data)
+    sent_body = json.loads(mock_post.call_args.kwargs["content"])
     assert sent_body["agent_id"] == "test-inst"
     assert sent_body["agent_name"] == "test-agent"
 
 
 def test_register_missing_token(mocker: pytest_mock.MockFixture) -> None:
-    # urlopen response mock — needs dunder methods for context-manager
-    # protocol, which spec= lists cannot provide. MagicMock is used
-    # intentionally here, with a spec= listing the known attributes.
-    mock_resp = mocker.MagicMock(spec=["read", "__enter__", "__exit__"])
-    mock_resp.read.return_value = json.dumps({}).encode()
-    mock_resp.__enter__.return_value = mock_resp
-    mocker.patch(_URLOPEN, return_value=mock_resp)
+    mocker.patch(_HTTPX_POST, autospec=True, return_value=_response(200, {}))
 
     token = _sidecar()._register()
     assert token == ""
 
 
 def test_register_http_error(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_URLOPEN, side_effect=urllib.error.URLError("timeout"))
+    mocker.patch(_HTTPX_POST, autospec=True, side_effect=httpx2.ConnectError("timeout"))
+
+    token = _sidecar()._register()
+    assert token == ""
+
+
+def test_register_treats_a_rejected_status_as_failure(mocker: pytest_mock.MockFixture) -> None:
+    """httpx2 returns a 5xx as an ordinary response, so raise_for_status is load-bearing."""
+    mocker.patch(_HTTPX_POST, autospec=True, return_value=_response(500, {"auth_token": "nope"}))
 
     token = _sidecar()._register()
     assert token == ""
 
 
 def test_unregister_sends_auth_header(mocker: pytest_mock.MockFixture) -> None:
-    # urlopen response mock — needs dunder methods for context-manager
-    # protocol, which spec= lists cannot provide. MagicMock is used
-    # intentionally here, with a spec= listing the known attributes.
-    mock_resp = mocker.MagicMock(spec=["read", "__enter__", "__exit__"])
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen = mocker.patch(_URLOPEN, return_value=mock_resp)
+    mock_post = mocker.patch(_HTTPX_POST, autospec=True, return_value=_response(200))
 
     sc = _sidecar()
     sc._auth_token = "tok-xyz"
     sc._unregister()
 
-    mock_urlopen.assert_called_once()
-    req = mock_urlopen.call_args[0][0]
-    assert req.get_header("Authorization") == "Bearer tok-xyz"
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer tok-xyz"
 
 
 def test_unregister_no_token_skips(mocker: pytest_mock.MockFixture) -> None:
-    mock_urlopen = mocker.patch(_URLOPEN)
+    mock_post = mocker.patch(_HTTPX_POST, autospec=True)
     _sidecar()._unregister()
-    mock_urlopen.assert_not_called()
+    mock_post.assert_not_called()
 
 
 def test_unregister_swallows_errors(mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_URLOPEN, side_effect=urllib.error.URLError("timeout"))
+    mocker.patch(_HTTPX_POST, autospec=True, side_effect=httpx2.ConnectError("timeout"))
     sc = _sidecar()
     sc._auth_token = "tok-err"
     sc._unregister()  # Should not raise

@@ -11,14 +11,18 @@ A Docker-based wrapper for the Claude Code CLI that isolates the agent in contai
 
 ```
 agent_wrap/
-├── cli/             # User-facing CLI commands (run, rebuild, create, logs, stats, inspect, cleanup, update, secrets)
+├── __main__.py      # Root click group; bin/agent execs `-m agent_wrap`
+├── cli/             # One click command per verb (run, rebuild, create, logs, stats, inspect, cleanup, update, secrets)
+│   ├── __init__.py  #   command_groups: the tuple the root group registers
+│   ├── params.py    #   Shared click.ParamType converters
+│   └── <verb>/run.py#   The verb's click command, plus its constants.py / tests/
 ├── domain/          # Business logic — one subpackage per concern, each with its own tests/
 │   ├── build/       #   Image build orchestration
 │   ├── config/      #   Configuration reading
 │   ├── create/      #   New agent bootstrap
 │   ├── display/     #   Centralized display/output formatting
 │   ├── launch/      #   Container launch and lifecycle
-│   ├── logs/        #   Log viewing and serving
+│   ├── logs/        #   Log viewing and serving (watcher.py drives the cache from FS events)
 │   ├── pricing/     #   Token pricing data
 │   ├── providers/   #   Provider plugin system + LiteLLM sidecar
 │   ├── secrets/     #   Credential management
@@ -26,10 +30,15 @@ agent_wrap/
 │   ├── stats/       #   Usage statistics
 │   ├── status/      #   System-state aggregation (the `inspect` command)
 │   └── updates/     #   Self-update checks
+├── infrastructure/  # Storage layer — SQLite databases, migrations, repositories
+│   ├── connection.py#   ConnectionFactory: rw()/ro(), migrates on construction
+│   ├── migrations.py#   MigrationRunner: numbered .sql scripts, backup before each step
+│   └── <database>/  #   One subpackage per Databases member: migrations/, repositories/, models.py
 ├── lib/             # Reusable general-purpose utilities — "could be extracted to a standalone library"
 ├── constants.py     # Module-level constants shared by multiple modules
 ├── exceptions.py    # ALL custom exceptions
-└── containers.py    # DI container — the singleton Services instance
+└── containers.py    # DI containers — the singleton Core / Repositories / Services instances,
+                     #   and the only place a rich Console or a ConnectionFactory is constructed
 ```
 
 ## Layered architecture
@@ -42,13 +51,26 @@ graph TD
     Container -->|"constructor DI"| SvcA["Domain Service A"]
     Container -->|"constructor DI"| SvcB["Domain Service B"]
     SvcA -->|"constructor DI"| SvcC["Domain Service C"]
+    Repos["Repositories Container"] -->|"constructor DI"| SvcA
+    Core["Core Container<br/>connection factories + rich consoles"] -->|"constructor DI"| Repos
+    Core -->|"constructor DI"| SvcB
 ```
 
 **From outside `agent_wrap/domain/`** (including the CLI), access domain logic ONLY through `services.xxx_service.method()`. Never import from `agent_wrap.domain.xxx.xxx` directly.
 
-## Services container
+## Containers
 
-`agent_wrap/containers.py` defines a `Services` class — a lazy-initialized singleton. Each service is a `@cached_property` that creates its dependencies via constructor injection. Services that are never accessed are never created.
+`agent_wrap/containers.py` defines three lazy-initialized singletons, each built on the one below it. Every member is a `@cached_property` that creates its dependencies via constructor injection, so anything never accessed is never created.
+
+| Container | Holds | Built from |
+| --- | --- | --- |
+| `Core` | one `ConnectionFactory` per database, and the three rich consoles (`console_out`, `console_err`, `console_render`) | its `db_dir` / `backups_dir` / `force_terminal` arguments |
+| `Repositories` | repository instances | `Core` |
+| `Services` | domain services | `Repositories`, `Core`, and each other |
+
+`Core` takes its directories as constructor arguments rather than reading a module-level constant. That is the seam tests override — a test builds its own `Core` against `tmp_path` instead of monkeypatching a path into place. Constructing a factory is what runs its database's migrations, so the laziness is load-bearing: `agent --help` opens no database.
+
+`force_terminal` is the same kind of seam for the consoles. rich resolves a console's colour system in its constructor and keeps that verdict for the object's life, so the laziness matters here too: built on first output, a console sees the real streams. A test states the answer outright instead, through the `non_tty_display` / `tty_display` fixtures in `agent_wrap/conftest.py`, each of which builds a throwaway `Core` to do it. `Services` takes `Core` alongside `Repositories` because that is where the display service's consoles come from.
 
 ```python
 # The singleton instance — the ONLY way external code reaches domain logic:
@@ -57,7 +79,7 @@ from agent_wrap.containers import services
 services.launch_service.launch(...)
 ```
 
-Inter-service dependencies are wired through constructors:
+Inter-service dependencies are wired through constructors, and a service that needs storage receives a repository the same way:
 
 ```python
 @cached_property
@@ -68,7 +90,27 @@ def launch_service(self) -> LaunchService:
         update_service=self.update_service,
         provider_service=self.provider_service,
     )
+
+
+@cached_property
+def config_service(self) -> ConfigService:
+    return ConfigService(
+        display_service=self.display_service,
+        projects_repository=self._repositories.projects_repository,
+    )
 ```
+
+## Infrastructure layer
+
+`agent_wrap/infrastructure/` is the storage layer, below `domain/`. Shared machinery sits at its root; each database is a subpackage owning its own `migrations/`, `repositories/`, `models.py` and `tests/`. Its full contract — connection semantics, the migration and backup rules, how to add a database — is in [infrastructure.md](infrastructure.md). The boundary rules that matter from outside:
+
+- Nothing under `infrastructure/` may import `agent_wrap.domain.*` or `agent_wrap.cli.*`, at runtime or under `TYPE_CHECKING`.
+- A domain service reaches a repository by constructor injection only. `containers.py` is the composition root and the sole place permitted a runtime `agent_wrap.infrastructure` import.
+- Repositories return app objects, never rows or SQL. No `sqlite3` type ever leaves the layer; every `sqlite3.Error` surfaces as `StorageError` (see `exceptions.py`).
+- A database subpackage holds no path constants. Its directory name, its file's stem and its backup prefix are all one `Databases` member, and `containers.py` derives every path from it.
+- Writing is opt-in per database: `rw()` refuses outside a `with core.projects_db.enable_writes()` grant, and grants live in the CLI command entries. A process that never takes one — the `agent logs` viewer daemon above all — cannot mutate the database through a read, which is what lets the one-time `projects.txt` import sit on the read path safely.
+
+**`make arch-check` does not police this package.** `_models_constants_scope`'s allow-list is `("domain", "cli")`, so ED001/EE001/EF001 are silent here and the import-direction rules above are review-only. EB001 and EG001 are global and do apply.
 
 ## Domain service structure
 
@@ -157,25 +199,141 @@ Providers access sidecar functionality through an injected `SidecarService` (see
     exception is ``providers/litellm_runtime/``, which runs on the LiteLLM image's
     older Python and still needs it to keep ``TYPE_CHECKING`` imports out of
     runtime annotations — the same carve-out rule 3 (EC001) draws.
+13. **Only the ingester names a log file** (EH001). The two filenames a session is
+    made of on disk, and the constants holding them, may appear in
+    ``logs/constants.py`` (which declares them), ``logs/ingest.py`` (the only module
+    permitted to open one), ``providers/litellm_runtime/`` (the callback that writes
+    them, which EC001 forbids any ``agent_wrap`` import so it carries its own
+    literals) and tests. Everything else reads ``logs.db`` — that is what makes a
+    read cost what was asked for rather than the whole log history, and a caller with
+    a question *about* such a path asks ``LogFiles``. The rule is about the name
+    rather than about opening the file, because a name is what an AST can check.
 
 ## The interpreter, and the dependency policy
 
-`bin/agent` execs a pinned CPython that `bin/agent-bootstrap` provisions into `.python/`
-(version and per-platform SHA-256 in `python-pin.env`). There is deliberately no fallback
+`bin/agent-bootstrap` provisions a pinned CPython into `.python/` (version and
+per-platform SHA-256 in `python-pin.env`) and, on top of it, a venv holding the locked
+third-party dependencies. `bin/agent` execs *the venv*. There is deliberately no fallback
 to the host's `python3`: a fallback would be a floor in disguise, and the point of owning
 the interpreter is that the oldest distro anyone runs no longer decides what this code may
-use. `requires-python` pins that exact version, and `make python-check` fails when the two
+use.
+
+**`bin/agent` provisions on demand.** When the venv pointer names nothing runnable — a first
+run, or a checkout that moved — the launcher runs the bootstrap itself rather than exiting
+with instructions, then re-reads the pointer and execs. The bootstrap is non-interactive,
+idempotent and lock-serialised, so there is no decision to hand back to a human; it is the
+same reasoning behind `UpdateService._reprovision_interpreter`, which runs it unconditionally
+after a HEAD-advancing update. Two deliberate carve-outs: the launcher calls the *plain*
+bootstrap, never `--dev` (`--dev` needs `uv`, and this is the end-user path), and it skips
+provisioning entirely under `AGENT_COMPLETE`, because `agent-wrap.bashrc` discards the
+completion subshell's stderr and exit code and would offer any stdout as a candidate.
+
+**A runnable venv is not automatically the right one.** The launcher also derives the
+constraints digest the section below describes and compares it against the pointer's
+suffix, so a plain `git pull` that moves `bin/requirements.txt` re-provisions on the next
+`agent` command instead of silently running new code against the old dependency set. Three
+things bound that check. It never fires on a `-dev` slug, which carries no digest to
+compare and would be republished away on every contributor's run. It is skipped under
+`AGENT_COMPLETE`, so a TAB press still costs one builtin `read` and no fork. And its
+failure is **non-fatal**, unlike a first run's: there is a working venv on disk, so the
+launcher warns and execs it rather than refusing to run because someone pulled while
+offline — which is the state `agent inspect` then reports on the `interpreter` row. The
+bootstrap's progress is redirected to stderr so a verb's stdout stays clean for whatever is
+parsing it — and that progress is deliberately loud: the bootstrap names the target and
+venv it resolved, says why it decided to do work (or that it had none), traces every
+external command it runs, and leaves each one's own output unmuted, so provisioning is
+watchable instead of a silent pause on a 34MB download. `scripts/test_agent_launcher.py` covers all of this against a stub bootstrap. `requires-python` pins that exact version, and `make python-check` fails when the two
 files disagree or when the running interpreter is not the pinned one.
 
-**The host runtime is stdlib-only.** `[project]` declares no `dependencies`, and the
-`dev` dependency group holds tools only — the bootstrap installs the group without
-installing `agent_wrap` itself, so nothing can shadow the source `PYTHONPATH` provides.
+**Dependencies are declared once and pinned twice.** `[project].dependencies` holds
+first-degree requirements as `x>=y` ranges; `uv.lock` resolves them; `bin/requirements.txt`
+is the hash-pinned export the bootstrap actually installs, regenerated by
+`make dump-prod-constraints` and guarded by `make constraints-check`. `[tool.uv]` sets
+`exclude-newer = "7 days"`, so a release has to survive a week on PyPI before this project
+will resolve to it. pip installs the export under `--require-hashes`, which makes the
+hashes a hard gate rather than decoration — the same posture as the interpreter tarball's
+SHA-256 check. `uv` is a developer and CI tool only; the end-user path needs pip and PyPI,
+nothing more.
 
-**Two regions do not run on the pinned interpreter** and must stay inside a lower floor:
+**The `uv` targets run against the checkout's own interpreter, like every other target.**
+`requires-python` is an exact pin, and uv resolves something matching it before it will
+lock, export or walk the tree — searching only its own managed installs and `PATH`, neither
+of which is where `.python/` is. Left to itself uv downloads a second copy of the pinned
+version, or fails outright where downloads are unavailable. So the `Makefile` exports
+`UV_PROJECT_ENVIRONMENT` at the provisioned venv, which uv adopts instead of resolving
+anything — the same lever `bin/agent-bootstrap` already pulls for its own `uv sync`. That
+makes `make install` a precondition for every `uv`-backed target, which is why each one
+guards on `python-check` as well as `uv-check`.
+
+**Declared requirements are floors, and a floor is an output.** No requirement here carries
+an upper bound — the lock pins, and the cooldown is what holds back a release that is too
+new, so a cap would only hide majors from the upgrade path. That path is two targets:
+`make available-upgrades` re-resolves with `--dry-run` and reports what could move without
+writing anything, and `make upgrade-deps` performs it, pipes `uv tree` through
+`scripts/sync-dependencies.py` to rewrite each `>=` in `pyproject.toml` to the version just
+locked, re-locks so `uv.lock`'s recorded requirements match, and re-exports the constraints.
+So the floors state what was last resolved rather than a hand-chosen minimum, and the three
+artifacts move as one unit.
+
+**A dependency without a wheel everywhere is a `bin/agent-bootstrap` carve-out, not a
+`pyproject.toml` one.** `watchdog` is the first of these: its macOS wheels carry a compiled
+fsevents extension and stop at cp313, so under `requires-python = "==3.14.7"` there is no
+Darwin wheel to install and `--only-binary=:all:` would fail the whole install there. The
+requirement itself stays an ordinary unconditional floor — marking it
+`sys_platform != 'darwin'` would make it *absent* on macOS, and the code has no
+reduced mode to fall back to. Instead the bootstrap adds `--no-binary=watchdog` on Darwin
+and builds it from the sdist, whose hash `bin/requirements.txt` already carries, so
+`--require-hashes` still gates it and every other requirement stays wheels-only on every
+platform.
+
+That carve-out has a floor: the sdist must build with tooling it is reasonable to demand of
+the host. `cryptography` sits below it — its only Darwin wheel is `macosx_11_0_arm64` and
+its sdist builds through Rust, so on Intel macOS the choice was a Rust toolchain on every
+Mac or no Intel macOS. The bootstrap takes the second and rejects `x86_64-apple-darwin` at
+target resolution, next to the musl check and for the same reason: a host that cannot be
+provisioned should hear so before anything is downloaded, not from pip three steps later.
+Supported targets are therefore `x86_64`/`aarch64` Linux (glibc) and `aarch64` macOS, and
+`python-pin.env` carries one interpreter hash per each.
+
+**The venv the CLI runs on is content-addressed and never mutated.** Its directory name
+embeds the interpreter pin, the target triple, and the first 12 hex of the SHA-256 of the
+constraints it was built from. A dependency change therefore publishes a *new* directory
+and moves the one-line `current-venv` pointer with a single atomic rename; the previous
+venv stays on disk and keeps working for anything still running on it. A failed install
+never moves the pointer, so the CLI falls back to the old dependency set rather than to
+none.
+
+**The project itself is still never installed.** The bootstrap installs the constraints
+alone and `[tool.uv] package = false` keeps `uv sync` from installing `agent_wrap` either,
+so nothing can shadow the source `PYTHONPATH` provides.
+
+**Dev tooling is one flag, not a second step.** `make install` is
+`bin/agent-bootstrap --dev`, which skips the pip half entirely and hands the whole
+dependency question to `uv sync --locked` — prod dependencies and the `dev` group
+together, out of the lock the constraints were exported from. Docs, CI and
+`.claude-agent-wrap/Dockerfile` all say `make install` and nothing else. Without the flag
+the bootstrap builds exactly the runtime the shipped CLI needs and requires no `uv` at
+all, so an end user never pays for pytest, ruff or pyrefly.
+
+**The `--dev` venv is the one exception to the paragraph above.** It is named
+`venv-<ver>+<rel>-<target>-dev` — the interpreter alone, no content hash — and is synced
+in place rather than republished. A hash would gate nothing there: `uv sync` reconciles
+the venv against `uv.lock` on every run, which is also what catches a dev-group bump that
+left `bin/requirements.txt` untouched. The atomic-swap guarantee is for the venvs `agent`
+itself execs, and nothing on that path passes `--dev` — `agent update` re-provisions with
+the plain bootstrap. The missing hash propagates upward to both readers of the slug, which
+must each special-case it: `agent inspect` cannot judge such a venv against the constraints
+file and so reports nothing rather than guessing (`_deps_current` in
+`domain/status/service.py`), and `bin/agent` leaves it alone rather than treating the
+unmatchable slug as drift and re-provisioning the plain venv over it on every command.
+
+**Two regions do not run on the pinned interpreter** and must stay inside their own floor.
+They also have no access to the venv above, so they stay **stdlib-only permanently** —
+neither has a mechanism by which a third-party package could be installed for it:
 
 | Region | Runs on | Floor |
 | --- | --- | --- |
-| `ops/statusline.py` | the agent container's `python3` | 3.12 |
+| `ops/statusline.py` | the agent container's `python3` | 3.14 |
 | `agent_wrap/domain/providers/litellm_runtime/` | the pinned LiteLLM image's Python | 3.13 |
 
 Both floors are the versions actually running, read off the images rather than
@@ -188,16 +346,19 @@ than the one hosting the code, which is exactly the case in the LiteLLM image
 something: `ruff check` for version-gated syntax, `pyrefly` for stdlib APIs that do not
 exist yet on the floor (`datetime.UTC`), and `ruff format` — because at `py314` the
 *formatter* strips the parentheses from `except (A, B):`, which is a `SyntaxError` on
-older interpreters. Those files are excluded from the default format pass for that reason
-and are formatted at their own target instead. Each region is checked at its own floor,
-so the two never have to share the more conservative number.
+anything older. Those files are excluded from the default format pass for that reason and
+are formatted at their own target instead. Each region is checked at its own floor, so the
+two never have to share the more conservative number. A floor may equal the project's
+`target-version` — the statusline's does — and the region keeps its own leg regardless,
+because the next base image bump moves that floor again.
 
 ## Key conventions
 
 - **Exceptions**: all custom exceptions are defined in `agent_wrap/exceptions.py`. Consumers import directly from there.
 - **Constants**: module-level constants imported by more than one module belong in `agent_wrap/constants.py`. Subpackage-scoped constants (public or `_`-prefixed) belong in an optional ``constants.py`` within their domain subpackage (see rule 10).
-- **``__init__.py``**: must not re-export names from sibling modules. Every consumer imports directly from the module that defines the name.
+- **``__init__.py``**: must not re-export names from sibling modules. Every consumer imports directly from the module that defines the name. Defining a name of the package's own is different and is allowed — `agent_wrap/cli/__init__.py` builds the `command_groups` tuple the root click group registers, which is a new binding rather than a passthrough to something a consumer could import directly.
 - **Private names**: never import a private (`_`-prefixed) name from another module. If a name is intended for import outside its defining module, it must be public (no underscore).
+- **Comments**: a comment or docstring is kept only when it names something a reader cannot recover from the code — an external system's non-obvious behaviour, an ordering/locking/threading invariant whose violation is silent, a rejected alternative with its reason, or a measured number. Restating a signature, narrating the next line, banner separators, and "X used to be Y" history are all noise. Docstrings are optional (`D100`–`D105`, `D107` ignored); the click callback docstrings, public nested class docstrings (`D106`), `# noqa` / `# type: ignore` directives and click `help=` strings are not. See CLAUDE.md for the full rule.
 - **Namespace classes**: comment-separated blocks of standalone functions that share a micro-domain must be replaced with a namespace class — a class whose methods are all ``@staticmethod`` and that has no instance state (see rule 7). They are pure organizational containers; do not confuse them with domain service classes.
 - **``models.py``**: data- and type-carrying classes (dataclasses, TypedDicts, NamedTuples, type aliases) belong in an optional ``models.py`` within their domain subpackage (see rule 8).
 - **``constants.py``**: module-level constants (whether public or ``_``-prefixed), including enums, belong in an optional ``constants.py`` within their domain subpackage, neighboring ``models.py`` (see rule 10).
@@ -229,8 +390,21 @@ so the two never have to share the more conservative number.
   is needed. The generic docker verbs it stands on (`list_images`, `inspect_images`,
   `remove_image`, `parse_image_ref`) live in `lib/docker_utils.py`; every wrapper-specific
   judgement about which of those results matter stays in the domain.
+- **Logs cache single-writer**: `LogsCache` holds no lock over the structures the HTTP
+  handler threads read. That is safe only because `CacheWatcher` owns a single consumer
+  thread and every call into the cache — `apply_paths` for a `messages.jsonl` a watch
+  named, `reconcile` for everything else, and `rebuild` at startup — happens on it. The
+  cache builds fresh structures and swaps references, so a reader sees a consistent
+  snapshot; watchdog's own emitter threads never reach the cache at all, only
+  `SimpleQueue.put`, which is what makes the invariant hold by construction rather than by
+  convention. The one exception is the single-slot hot-session cache, which both that
+  thread and handler threads write and which therefore has its own lock. Anything that
+  would call into the cache from another thread breaks this and needs a different design,
+  not an added lock. `lib/mounts.py` (`filesystem_type`) supports the related startup
+  check: inotify accepts a watch on `drvfs`/`9p`/`nfs` and then silently delivers nothing,
+  which cannot be probed for at runtime, so the install location is checked instead.
 - **`lib/` boundary**: modules in `lib/` must be general-purpose — "could be extracted to a standalone library." Domain-specific logic (agent-wrap concepts, LLM tokens, Docker image naming conventions) belongs in `domain/` or `cli/`. Conversely, general-purpose code (data structures, concurrency primitives, terminal rendering) should move to `lib/` rather than masquerading as domain-specific.
-- **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`, `MetaData`) live in `providers/models.py`.
+- **`providers/litellm_runtime/`**: a plain directory (no `__init__.py`) of Python files mounted into the LiteLLM sidecar container. It is not a Python package — files within it use `sys.path` manipulation for intra-directory imports. Shared types consumed by external code (`LogRecord`) live in `providers/models.py`.
 - **NamedTuple for 3+ element tuple returns**: any function or method whose return type is a `tuple` with three or more type arguments must use a properly typed `NamedTuple` (defined in the appropriate `models.py`) instead of a bare `tuple[...]`. This applies equally to module-level tuple type aliases used as return types. Two-element tuples are exempt.
 
 ## Anti-patterns (explicitly forbidden)

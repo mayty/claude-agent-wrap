@@ -64,7 +64,7 @@ from agent_wrap.lib.utils import (
 )
 
 if TYPE_CHECKING:
-    from typing import TextIO
+    from filelock import BaseFileLock
 
     from agent_wrap.domain.build.models import ResolvedImage
     from agent_wrap.domain.build.service import BuildService
@@ -85,8 +85,6 @@ if TYPE_CHECKING:
 
 
 class LaunchService:
-    """Prepares and launches a Claude Code Docker container."""
-
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         config_service: ConfigService,
@@ -108,8 +106,6 @@ class LaunchService:
         self._startup = startup_service
         self._display = display_service
         self._logs = logs_service
-
-    # Public entry point
 
     def launch(self, *, use_base: bool, claude_args: list[str]) -> int:  # noqa: C901, PLR0911
         """
@@ -192,7 +188,7 @@ class LaunchService:
 
         self._display.banner(f"Agent instance: {instance_id}")
 
-        running_handles: dict[str, TextIO | None] = {}
+        running_handles: dict[str, BaseFileLock | None] = {}
         try:
             provider_run_args, running_handles = self._prepare_for_launch(
                 sidecars,
@@ -244,10 +240,7 @@ class LaunchService:
             self._release_sidecars(sidecars, tracker, instance_id, running_handles)
             self._remove_instance_state(Path.cwd(), instance_id)
 
-    # Instance helpers (shared utility methods)
-
     def _extract_network(self, extra_run_args: list[str]) -> str | None:
-        """Extract --network value from a list of docker run flags."""
         for i, arg in enumerate(extra_run_args):
             if arg in ("--network", "--net"):
                 if i + 1 < len(extra_run_args):
@@ -377,7 +370,6 @@ class LaunchService:
         return any(arg in HEADLESS_FLAGS for arg in claude_args)
 
     def _build_wslg_args(self) -> list[str]:
-        """Build WSLg-related volume mounts and env vars."""
         if not Path("/mnt/wslg").is_dir():
             return []
         return [
@@ -426,7 +418,6 @@ class LaunchService:
         *,
         disable_nonessential_traffic: bool,
     ) -> list[str]:
-        """Build -e flags for the docker run command."""
         disabler_flag = (
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
             if disable_nonessential_traffic
@@ -501,7 +492,6 @@ class LaunchService:
         return mounts
 
     def _build_agent_labels(self, instance_id: str) -> list[str]:
-        """Build the agent container's --label / --name flags."""
         if not instance_id:
             return []
         return [
@@ -563,8 +553,6 @@ class LaunchService:
         """
         return sum(sc.cold_start_time + queue_depth * sc.short_circuit_time for sc in sidecars)
 
-    # Instance methods (use injected services)
-
     def _resolve_sidecar_secrets(
         self,
         sidecar_name: str,
@@ -573,7 +561,6 @@ class LaunchService:
         optional: bool,
         headless: bool,
     ) -> dict[str, str] | None:
-        """Atomically resolve all secrets for a sidecar."""
         prompt_on_missing = sys.stdin.isatty() and not optional and not headless
 
         try:
@@ -597,7 +584,6 @@ class LaunchService:
         agent_network: str | None,
         port_args: list[str],
     ) -> HostNetworkResult:
-        """Resolve AGENT_USE_HOST_NETWORK env var."""
         env_val = os.environ.get("AGENT_USE_HOST_NETWORK", "")
         if not is_truthy_env(env_val):
             return HostNetworkResult(use_host_net=False, host_net_args=[], port_args=port_args)
@@ -628,7 +614,7 @@ class LaunchService:
         sidecars: list[Sidecar],
         tracker: SidecarTracker,
         instance_id: str,
-        running_handles: dict[str, TextIO | None],
+        running_handles: dict[str, BaseFileLock | None],
     ) -> None:
         """
         Per-container last-light-out teardown.
@@ -658,8 +644,6 @@ class LaunchService:
                 if not tracker.has_live_runners(sidecar.container_name, exclude_id=instance_id):
                     sidecar.release()
 
-    # Private helpers
-
     def _telegram_sidecar(
         self,
         *,
@@ -679,6 +663,7 @@ class LaunchService:
             health_timeout_sec=30,
             cold_start_time=45.0,
             short_circuit_time=2.0,
+            pull_timeout_sec=600,
             log_dir=AGENT_LAUNCHES_DIR / "telegram-sidecar-logs",
             headless=headless,
         )
@@ -761,7 +746,7 @@ class LaunchService:
             sidecar.prepare()
 
         run_args: list[str] = []
-        running_handles: dict[str, TextIO | None] = {}
+        running_handles: dict[str, BaseFileLock | None] = {}
         timeout = self._sidecar_lock_timeout(sidecars, self._expected_queue_depth())
         with priority_lock(
             Priority.HI,

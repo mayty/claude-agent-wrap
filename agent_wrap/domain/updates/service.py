@@ -32,11 +32,8 @@ if TYPE_CHECKING:
 
 
 class _GitOps:
-    """Git operations for update detection and application."""
-
     @staticmethod
     def git(*args: str, cwd: str | None = None, timeout: int | None = None) -> tuple[str, int]:
-        """Run a git command and return (stdout, returncode)."""
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -51,7 +48,6 @@ class _GitOps:
 
     @staticmethod
     def git_full(*args: str, cwd: str | None = None) -> GitFullResult:
-        """Run a git command and return (stdout, returncode, stderr)."""
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -131,7 +127,6 @@ class _GitOps:
 
     @staticmethod
     def detect_claude_md_state() -> MdState:
-        """Return the state of the user's CLAUDE.md relative to the default."""
         user_claude_md = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
         default_claude_md = OPS_DIR / "default-CLAUDE.md"
         if not (user_claude_md.exists() and default_claude_md.exists()):
@@ -151,7 +146,6 @@ class _GitOps:
 
     @staticmethod
     def handle_claude_md_propagation(before: str, after: str, pre_state: MdState) -> MdPropagation:
-        """Handle default-CLAUDE.md propagation after a successful pull."""
         user_claude_md = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
 
         _, rc = _GitOps.git(
@@ -176,7 +170,6 @@ class _GitOps:
 
     @staticmethod
     def changed_files(before: str, after: str) -> set[str]:
-        """Return the set of file paths changed between two commits."""
         out, rc = _GitOps.git("diff", "--name-only", before, after, cwd=str(TOOL_DIR))
         if rc != 0 or not out:
             return set()
@@ -193,7 +186,6 @@ class _GitOps:
 
     @staticmethod
     def print_status(before: str, after: str, pre_state: MdState, display: DisplayService) -> None:
-        """Print post-update status summary."""
         before_ref = _GitOps.resolve_ref(before)
         after_ref = _GitOps.resolve_ref(after)
         display.success(f"Updated {before_ref} -> {after_ref}")
@@ -206,7 +198,7 @@ class _GitOps:
             display.success("no re-source needed")
 
         if changed & BOOTSTRAP_FILES:
-            display.warning("the pinned CPython moved — re-provisioning")
+            display.warning("the interpreter or its dependencies moved — re-provisioning")
         else:
             display.success("no re-provision needed")
 
@@ -249,8 +241,6 @@ class _GitOps:
 
 
 class UpdateService:
-    """Git-based self-update logic for agent-wrap."""
-
     def __init__(
         self,
         display_service: DisplayService,
@@ -415,15 +405,18 @@ class UpdateService:
         """
         Re-run the bootstrap after an update that actually advanced HEAD.
 
-        Invoked unconditionally rather than gated on ``BOOTSTRAP_FILES`` appearing in
-        the diff: the bootstrap's own fast path makes it a few-millisecond no-op when
-        the pin has not moved, which costs nothing and additionally repairs a previous
-        bootstrap that was interrupted. Gating here would mean parsing the pin file in
+        Provisions both halves: the pinned interpreter and the venv holding the locked
+        dependencies. Invoked unconditionally rather than gated on ``BOOTSTRAP_FILES``
+        appearing in the diff: the bootstrap's own fast path makes it a few-millisecond
+        no-op when neither the pin nor ``bin/requirements.txt`` has moved, which costs
+        nothing and additionally repairs a previous bootstrap that was interrupted.
+        Gating here would mean parsing the pin file and hashing the constraints in
         Python as well as in sh, for no gain.
 
-        Best-effort by design. A failure leaves the *existing* interpreter in place and
-        working, so it must not turn a successful update into a failed one — the message
-        names the command to re-run.
+        Best-effort by design. A failure leaves the *existing* interpreter and venv
+        published and working — the bootstrap only moves its pointers once an install
+        has fully succeeded — so it must not turn a successful update into a failed one.
+        The message names the command to re-run.
         """
         after, rc = _GitOps.git("rev-parse", "HEAD", cwd=str(TOOL_DIR))
         if rc != 0 or after == before:

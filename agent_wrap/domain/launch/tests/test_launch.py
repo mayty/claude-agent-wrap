@@ -1,7 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.launch.launch.LaunchService."""
 
-import io
 import os
 import time
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import call as mocker_call
 
 import pytest
+from filelock import BaseFileLock
 
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
@@ -50,10 +50,11 @@ from agent_wrap.exceptions import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import TextIO
     from unittest.mock import Mock
 
     import pytest_mock
+
+    from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
 
 
 @pytest.fixture
@@ -941,8 +942,8 @@ def test_release_clears_every_registration_before_taking_the_stop_lock(
     lazily, per container, would let it be counted as its own live runner.
     """
     tracker.has_live_runners.return_value = False
-    handles: dict[str, TextIO | None] = {
-        sc.container_name: mocker.Mock(spec=io.TextIOWrapper) for sc in two_sidecars
+    handles: dict[str, BaseFileLock | None] = {
+        sc.container_name: mocker.Mock(spec=BaseFileLock) for sc in two_sidecars
     }
 
     launch_svc._release_sidecars(two_sidecars, tracker, "inst-1", handles)
@@ -1113,7 +1114,10 @@ def test_sweep_tolerates_absent_instances_dir(
 
 
 def test_prepare_config_precreates_every_project_mount_source(
-    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    projects_repository: ProjectsRepository,
 ) -> None:
     """
     Every host-side mount source must exist, as the right kind of node, before docker run.
@@ -1132,7 +1136,10 @@ def test_prepare_config_precreates_every_project_mount_source(
         autospec=True,
         return_value=False,
     )
-    launch_svc._config = ConfigService(display_service=mocker.Mock(spec=DisplayService))
+    launch_svc._config = ConfigService(
+        display_service=mocker.Mock(spec=DisplayService),
+        projects_repository=projects_repository,
+    )
     instance_id = "agent-abc"
 
     launch_svc._prepare_config(instance_id=instance_id, telegram_available=False)

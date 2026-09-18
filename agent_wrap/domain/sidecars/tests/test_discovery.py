@@ -92,9 +92,6 @@ def _require(row: SidecarContainer | None) -> SidecarContainer:
     return row
 
 
-# --- litellm sidecar rows ---
-
-
 def test_sidecar_recovers_port_and_provider_from_env() -> None:
     row = _require(ContainerRows.sidecar(_sidecar_line()))
     assert row.port == 48620
@@ -131,9 +128,6 @@ def test_sidecar_flags_stale_image() -> None:
 
 def test_sidecar_pinned_image_is_not_stale() -> None:
     assert _require(ContainerRows.sidecar(_sidecar_line())).stale_image is False
-
-
-# --- telegram sidecar rows ---
 
 
 def test_telegram_port_falls_back_to_port_binding() -> None:
@@ -188,9 +182,6 @@ def test_exited_agent_has_no_uptime() -> None:
     assert row.uptime_sec is None
 
 
-# --- redaction ---
-
-
 def test_sidecar_row_carries_no_secret_values() -> None:
     """The env array holds live credentials; none may survive into the model."""
     row = _require(ContainerRows.sidecar(_sidecar_line()))
@@ -217,9 +208,6 @@ def test_allowlisted_env_keeps_values_containing_equals() -> None:
     """Splitting on the first '=' only, so a base64-ish value survives intact."""
     env = ContainerParsing.allowlisted_env(json.dumps(["AGENT_WRAP_PROVIDER=a=b=c"]))
     assert env["AGENT_WRAP_PROVIDER"] == "a=b=c"
-
-
-# --- agent rows ---
 
 
 def test_agent_row_reads_cwd_from_workspace_mount() -> None:
@@ -288,9 +276,6 @@ def test_agent_row_missing_workspace_mount_is_blank() -> None:
     row = ContainerRows.agent(_agent_line(mounts=json.dumps([])), {})
     assert row is not None
     assert row.cwd == ""
-
-
-# --- malformed input ---
 
 
 @pytest.mark.parametrize("line", ["", "only-one-field", "a\tb\tc"])

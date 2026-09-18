@@ -33,6 +33,10 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
             "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3.7-plus[1m]",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3.6-flash",
             "CLAUDE_CODE_SUBAGENT_MODEL": "qwen3.6-flash",
+            # Explore's built-in "inherit" guard caps it at Opus whenever the session model's name
+            # lacks a haiku/sonnet/opus token, true for every non-Anthropic ID. Disable it so
+            # Explore tracks the session's running model, not CLAUDE_CODE_SUBAGENT_MODEL.
+            "CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP": "1",
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
             # Disable prompt caching: DashScope's explicit caching mechanism doesn't work well with Claude Code workflow
             # https://www.alibabacloud.com/help/en/model-studio/context-cache
@@ -41,7 +45,6 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
 
     @override
     def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
-        """Return the tiered pricing table for DashScope models."""
         return {
             "qwen3.7-plus": [
                 {
@@ -90,8 +93,6 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
                 },
             ],
         }
-
-    # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 
     @override
     def on_started(self, master_key: str) -> None:

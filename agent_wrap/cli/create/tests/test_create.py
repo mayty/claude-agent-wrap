@@ -8,36 +8,31 @@ in ``agent_wrap/cli/conftest.py``.
 
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.create.complete import complete as create_complete
-from agent_wrap.cli.create.run import run as create_run
+from agent_wrap.__main__ import cli_root
 from agent_wrap.containers import services
 
 if TYPE_CHECKING:
-    import pytest
+    from click.testing import CliRunner
 
 
-def test_create_complete_no_completions() -> None:
-    assert create_complete(2, ["agent", "create", ""]) == []
-
-
-def test_create_delegates_to_service() -> None:
-    """CLI entry point delegates to services.create_service.create()."""
+def test_create_delegates_to_service(runner: CliRunner) -> None:
     services.create_service.create.return_value = 0  # pyrefly: ignore [missing-attribute]
-    rc = create_run([])
-    assert rc == 0
+    result = runner.invoke(cli_root, ["create"])
+    assert result.exit_code == 0
     services.create_service.create.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
 
 
-def test_create_forwards_service_error_code() -> None:
+def test_create_forwards_service_error_code(runner: CliRunner) -> None:
     """Non-zero return from the service is forwarded to the caller."""
     services.create_service.create.return_value = 1  # pyrefly: ignore [missing-attribute]
-    rc = create_run([])
-    assert rc == 1
-    services.create_service.create.assert_called_once_with()  # reason: service was called  # pyrefly: ignore [missing-attribute]
+    result = runner.invoke(cli_root, ["create"])
+    assert result.exit_code == 1
+    services.create_service.create.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
 
 
-def test_create_rejects_extra_args(capsys: pytest.CaptureFixture[str]) -> None:
-    """Create accepts no arguments (parser rejects extras)."""
-    rc = create_run(["extra-arg"])
-    assert rc != 0
-    assert "unrecognized arguments" in capsys.readouterr().err
+def test_create_rejects_extra_args(runner: CliRunner) -> None:
+    """Create accepts no arguments."""
+    result = runner.invoke(cli_root, ["create", "extra-arg"])
+    assert result.exit_code == 2
+    assert "Got unexpected extra argument" in result.output
+    services.create_service.create.assert_not_called()  # pyrefly: ignore [missing-attribute]

@@ -5,6 +5,15 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.11.0](releases/0.11.0.md) — 2026-09-18
+
+**Breaking:** Intel Macs are no longer supported, `agent` exits `2` on a usage error,
+`agent secrets` is now a command group, and `~/claude_keys.json` is no longer imported.
+The wrapper indexes the request logs and adds `agent reindex`, with optional retention.
+`agent` runs on a venv it provisions itself. Re-source `agent-wrap.bashrc` for completion,
+and install on a local filesystem for `agent logs`. DeepSeek runs its flash model on every
+tier. The next `agent run` rebuilds every image on Ubuntu 26.04.
+
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 
 **Breaking:** the wrapper now runs a CPython version it pins itself, not the host's

@@ -2,18 +2,12 @@
 """
 Provider interface definition.
 
-Every provider routes model traffic through a LiteLLM sidecar — that is a structural
-invariant, not a convention. A provider is therefore a thin factory: it declares its
-own proxy container plus its pricing table, and supplies the image pin, the auth-key
-paths, the agent-side env vars, and its resolved on-disk paths.
+Every provider routes model traffic through a LiteLLM sidecar -- a structural invariant,
+not a convention -- named after the provider, so agents on different providers run
+concurrently against their own instead of fighting over one.
 
-The container is named after the provider, so agents on different providers run
-concurrently against their own sidecars instead of fighting over one.
-
-The container lifecycle — lazy start, health polling, network-mode detection, and
-master key minting/recovery — lives in ``agent_wrap/domain/sidecars/litellm.py``.
-Subclasses override a handful of class attributes and two abstract env hooks; the base
-wires them into a ``LiteLLMSidecarConfig`` in ``sidecar()``.
+The container lifecycle lives in ``agent_wrap/domain/sidecars/litellm.py``; this wires a
+subclass's class attributes and env hooks into a ``LiteLLMSidecarConfig``.
 """
 
 from abc import ABC, abstractmethod
@@ -31,6 +25,7 @@ from agent_wrap.constants import (
 from agent_wrap.domain.providers.constants import (
     DEFAULT_SIDECAR_PORT,
     MODEL_CONTEXT_SUFFIX_RE,
+    PRICING_CACHE_FILENAME,
     UNKNOWN_MODEL_COST_THRESHOLD_USD,
 )
 from agent_wrap.domain.providers.pricing import CostComputer, ModelKeyMatcher
@@ -47,10 +42,8 @@ class Provider(ABC):
     """
     Abstract base class for model-routing providers.
 
-    Each provider declares the LiteLLM proxy sidecar an agent run depends on — its own,
-    named after the provider. The launcher ensures it before docker run, splices the
-    connectivity flags it returns into the agent's docker run command, and releases it
-    after the last agent on this provider exits.
+    The launcher ensures the declared sidecar before docker run, splices in the connectivity
+    flags it returns, and releases it after the last agent on this provider exits.
     """
 
     #: Provider name matching the AGENT_PROVIDER env var (e.g. "litellm-bedrock").
@@ -58,10 +51,6 @@ class Provider(ABC):
     #: container name (see ``container_name``) and the ``<provider>`` segment of the
     #: request-log path, which ``litellm_runtime/callback.py`` validates.
     name: str
-
-    # ------------------------------------------------------------------
-    # Class attributes (overridden by subclasses)
-    # ------------------------------------------------------------------
 
     #: Pinned Docker image with tag + digest.
     image: ClassVar[str] = LITELLM_IMAGE
@@ -84,10 +73,6 @@ class Provider(ABC):
     #: reports seat consumption, not spend -- overrides this to False.
     autostart_logs_viewer: ClassVar[bool] = True
 
-    # ------------------------------------------------------------------
-    # Shared defaults (rarely overridden)
-    # ------------------------------------------------------------------
-
     network_name: ClassVar[str] = SIDECAR_NETWORK_NAME
     #: Preferred base port for this provider's sidecar. Not the port finally used: the
     #: sidecar scans upward from here at cold start and records what it resolved, so
@@ -95,6 +80,9 @@ class Provider(ABC):
     internal_port: ClassVar[int] = DEFAULT_SIDECAR_PORT
     health_timeout_sec: ClassVar[int] = 90
     health_endpoint: ClassVar[str] = "/health/liveliness"
+    #: Ceiling on the image pull. Generous: the LiteLLM image is large, and a cold pull
+    #: on a slow link is the one step here that legitimately takes minutes.
+    pull_timeout_sec: ClassVar[int] = 900
     #: Seconds a cold start takes (docker run + health poll). The one launcher that
     #: wins the shared lock pays this; it dominates the lock-timeout budget. Kept
     #: above health_timeout_sec for the docker-run + reap tail.
@@ -118,34 +106,25 @@ class Provider(ABC):
         """
         Return ``(key_name, description)`` tuples for secrets this provider needs.
 
-        A provider needing no upstream secret leaves ``secret_description`` empty and
-        gets an empty list; the resolved secrets dict reaching ``get_sidecar_env`` is
-        keyed by exactly the names returned here.
+        The resolved secrets dict reaching ``get_sidecar_env`` is keyed by exactly these
+        names; a provider needing none leaves ``secret_description`` empty.
         """
         if cls.secret_description:
             return [("api_key", cls.secret_description)]
         return []
-
-    # ------------------------------------------------------------------
-    # Sidecar declaration
-    # ------------------------------------------------------------------
 
     @property
     def container_name(self) -> str:
         """
         Name this provider's own sidecar container: ``agent-wrap-<name>``.
 
-        Per-provider rather than shared, so two agents on different providers each get
-        their own upstream instead of one inheriting the other's. It is also the
-        runner's refcount key, so each provider's sidecar is torn down independently.
-
-        A subclass may still pin a literal by assigning ``container_name = "…"``: a
-        class attribute shadows this property via the MRO.
+        Also the runner's refcount key, so each provider's sidecar is torn down
+        independently. A subclass may pin a literal by assigning ``container_name = "…"``
+        -- a class attribute shadows this property via the MRO.
         """
         return f"{CONTAINER_NAME_PREFIX}-{self.name}"
 
     def sidecar(self) -> Sidecar:
-        """Return the LiteLLM proxy sidecar an agent run with this provider depends on."""
         return self._sidecar_service.create_litellm_sidecar(**self._sidecar_config())
 
     def _sidecar_config(self) -> dict[str, object]:
@@ -159,8 +138,9 @@ class Provider(ABC):
             "provider_name": self.name,
             "health_timeout_sec": self.health_timeout_sec,
             "health_endpoint": self.health_endpoint,
-            "cold_start_time": float(self.cold_start_time),
-            "short_circuit_time": float(self.short_circuit_time),
+            "pull_timeout_sec": self.pull_timeout_sec,
+            "cold_start_time": self.cold_start_time,
+            "short_circuit_time": self.short_circuit_time,
             "config_path": self._config_path(),
             "callback_dir": self._callback_dir(),
             "log_dir": self._log_dir(),
@@ -170,10 +150,6 @@ class Provider(ABC):
             "on_stopping": self.on_stopping,
             "required_secrets": self.required_secrets(),
         }
-
-    # ------------------------------------------------------------------
-    # Abstract hooks (subclasses must implement)
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def get_sidecar_env(self, secrets: dict[str, Any]) -> dict[str, str]:
@@ -185,20 +161,13 @@ class Provider(ABC):
         """
 
     @abstractmethod
-    def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]:
-        """Return env vars injected into the agent container."""
-
-    # ------------------------------------------------------------------
-    # Optional lifecycle hooks (overridden by subclasses)
-    # ------------------------------------------------------------------
+    def get_agent_env(self, master_key: str, base_url: str) -> dict[str, str]: ...
 
     def on_started(self, master_key: str) -> None:  # noqa: B027
         """
         Run once, under the lock, right after the sidecar is started.
 
-        Default no-op. Subclasses that must register the master key (e.g. approve
-        it in .claude.json) override this — it runs exactly once per sidecar
-        lifetime, not per agent.
+        Default no-op. Once per sidecar *lifetime*, not per agent.
         """
 
     def on_stopping(self, master_key: str) -> None:  # noqa: B027
@@ -208,13 +177,11 @@ class Provider(ABC):
         Default no-op. The inverse of on_started (e.g. un-approve the master key).
         """
 
-    # ------------------------------------------------------------------
-    # Config resolution (introspect the provider subclass module)
-    # ------------------------------------------------------------------
-
     def _config_path(self) -> Path:
-        """Resolve config.yaml next to this provider's provider.py."""
         return self._state_dir() / "config.yaml"
+
+    def _pricing_cache_path(self) -> Path:
+        return self._state_dir() / PRICING_CACHE_FILENAME
 
     def _state_dir(self) -> Path:
         """Resolve the provider's source directory (for lock/activity/state files)."""
@@ -234,32 +201,18 @@ class Provider(ABC):
         """
         Shared host directory bind-mounted into the sidecar at /var/log/agent-wrap.
 
-        Project-independent: a single directory under the agent-wrap install root.
-        The callback writes to <project_hash>/<provider>/<session_id>/ beneath it,
-        using the x-agent-wrap-log-prefix header the wrapper injects per launch and
-        the AGENT_WRAP_PROVIDER env var set on the sidecar. This is required because
-        each provider's sidecar (first-launch-wins per provider) serves every project
-        on the host, and several providers' sidecars share this directory — the
-        <provider> segment is what keeps their subtrees disjoint.
+        Project-independent, because one sidecar per provider serves every project on the
+        host. The callback writes to <project_hash>/<provider>/<session_id>/ beneath it,
+        and the <provider> segment is what keeps several providers' subtrees disjoint.
         """
         return TOOL_DIR / LITELLM_LOGS_DIRNAME
-
-    # ------------------------------------------------------------------
-    # Raw pricing data (subclass contract)
-    # ------------------------------------------------------------------
 
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, dict[str, float]]:
         """
         Return a flat pricing table for this provider.
 
-        Keys are canonical model identifiers (e.g., 'claude-sonnet-4-5').
-        Values are dicts with keys: 'in', 'out', 'cw_5m', 'cw_1h', 'cr'
-        representing the cost per 1 million tokens.
-
-        *refresh_pricing_data* re-fetches pricing from upstream, bypassing cached data.
-
-        Raises ``NotImplementedError`` by default — providers that support
-        flat-rate pricing must override.
+        Keys are canonical model identifiers; values give the cost per 1 million tokens.
+        Raises ``NotImplementedError`` unless the provider supports flat-rate pricing.
         """
         raise NotImplementedError
 
@@ -267,33 +220,19 @@ class Provider(ABC):
         """
         Return a tiered pricing table for this provider.
 
-        Keys are canonical model identifiers.  Values are lists of
-        :class:`Tier` dicts, each with 'max_in' (token threshold), 'in_',
-        'out', 'cw_5m', 'cw_1h', and 'cr' fields.
-
-        *refresh_pricing_data* re-fetches pricing from upstream, bypassing cached data.
-
-        Raises ``NotImplementedError`` by default — providers that support
-        tiered pricing must override.
+        Keys are canonical model identifiers; values are :class:`Tier` lists. Raises
+        ``NotImplementedError`` unless the provider supports tiered pricing.
         """
         raise NotImplementedError
-
-    # ------------------------------------------------------------------
-    # Pricing table construction
-    # ------------------------------------------------------------------
 
     @cache  # noqa: B019
     def _build_pricing_table(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
         """
         Build a unified tiered pricing table.
 
-        Tries ``_get_tiered_pricing()`` first (already in the right shape).
-        Falls back to ``_get_pricing()``, converting each flat-rate entry
-        into a single infinite tier.  Returns an empty dict when neither
-        method is implemented.
-
-        *refresh_pricing_data* re-fetches pricing from upstream instead of serving any cached
-        table; the result is still cached under its (self, refresh_pricing_data) key.
+        ``_get_tiered_pricing()`` first, else each flat ``_get_pricing()`` entry as a
+        single infinite tier, else empty. A refresh is still cached, under its own
+        ``(self, refresh_pricing_data)`` key.
         """
         if refresh_pricing_data:
             self._build_pricing_table.cache_clear()
@@ -323,21 +262,15 @@ class Provider(ABC):
 
     def _cost_for_tiers(self, tiers: list[Tier], usage: TokenUsage) -> float:
         """
-        Calculate the cost of a single request given its applicable tier list.
-
-        *tiers* must be sorted by ``max_in`` (ascending). The first tier whose
-        ``max_in >= input_tokens`` wins; the last tier is the fallback.
+        Price one request via :meth:`CostComputer.cost_for_tiers`, warning once per provider
+        instance if that call reports token-convention drift.
         """
         cost, convention_warn = CostComputer.cost_for_tiers(tiers, usage)
         if convention_warn and not self._usage_convention_warned:
             self._usage_convention_warned = True
-            in_tokens: int = usage["input_tokens"]
-            cc = usage.get("cache_creation", {})
-            cw_5m: int = cc.get("ephemeral_5m_input_tokens", 0) or 0
-            cw_1h: int = cc.get("ephemeral_1h_input_tokens", 0) or 0
-            if not (cw_5m or cw_1h):
-                cw_5m = usage.get("cache_creation_input_tokens", 0)
-            cr_tokens: int = usage["cache_read_input_tokens"]
+            in_tokens = usage.input_tokens
+            cw_5m, cw_1h = usage.cache_write_split()
+            cr_tokens = usage.cache_read_input_tokens
             self._display.warning(
                 "token usage convention drift detected — "
                 f"input_tokens ({in_tokens}) < cache-write ({cw_5m + cw_1h}) + "
@@ -361,29 +294,16 @@ class Provider(ABC):
         """
         Compute the USD cost of a single request, or None if pricing is unknown.
 
-        The default implementation builds the pricing table from
-        ``_get_tiered_pricing()`` or ``_get_pricing()``, strips context-length
-        suffixes from *model*, prefix-matches against pricing keys, selects the
-        appropriate tier, and computes the cost.
+        *hour* is the UTC hour the usage belongs to (half-open ``[hour, hour+1)``) and
+        *weekday* the UTC weekday, either None when unknown. The flat default ignores
+        both; a provider with time-of-day pricing overrides this to consume them.
 
-        *hour* is the UTC hour the usage belongs to (the half-open interval
-        ``[hour, hour+1)``), or None when unknown. *weekday* is the UTC weekday
-        (``datetime.weekday()``: 0=Monday ... 6=Sunday), or None when unknown. The
-        flat default ignores both; a provider with time-of-day pricing overrides
-        this method to consume them.
+        *model* arrives already normalized by ``PricingService``, though raw names are
+        still tolerated as a fallback.
 
-        Subclasses can override this method to add custom logic (e.g., time-of-day
-        multipliers).  *model* arrives already-normalized by ``PricingService``
-        (Claude display names → canonical keys), but the default implementation
-        still tolerates raw model names as a fallback.
-
-        *refresh_pricing_data* re-fetches pricing from upstream instead of serving the cached
-        pricing table.
-
-        When *model* has no pricing-table match, this returns a known ``0.0``
-        instead of ``None`` if the usage's cost would round down to $0 even
-        under the most expensive tier this provider knows — see
-        ``CostComputer.worst_case_cost``.
+        An unmatched *model* returns a known ``0.0`` rather than ``None`` when the usage
+        would round down to $0 even under the most expensive tier this provider knows --
+        see ``CostComputer.worst_case_cost``.
         """
         table = self._build_pricing_table(refresh_pricing_data=refresh_pricing_data)
         if not table:

@@ -1,23 +1,42 @@
 # This file has been created with the assistance of an AI tool.
-"""Record normalization for the logs viewer."""
+"""
+Reading a log record's fields, and pricing what it reported.
+
+What is left of the old record normalizer. ``extract_record_fields`` is the one place
+that knows the two shapes a request body arrives in, and both readers of a record go
+through it: the ingester, on the way into ``logs.db``, and
+:mod:`agent_wrap.domain.logs.stream`, rebuilding the response side on the way out.
+``enrich_with_costs`` prices one record at read time, which is why no cost is stored --
+a pricing-table change reaches history instead of only the records ingested after it.
+"""
 
 import json
 from typing import TYPE_CHECKING, Any
 
 from agent_wrap.domain.logs.constants import ALIAS_NAME_RE, TITLE_RE
-from agent_wrap.domain.logs.hash_resolver import resolve_hashes
-from agent_wrap.domain.logs.models import ExtractedFields, NormalizedRecordBase
+from agent_wrap.domain.logs.models import ExtractedFields
 from agent_wrap.lib.daytime import epoch_to_dt
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from agent_wrap.domain.logs.models import NormalizedRecordBase
     from agent_wrap.domain.pricing.service import PricingService
     from agent_wrap.domain.providers.models import LogRecord
 
 
-def _extract_record_fields(
+def extract_record_fields(
     rec: LogRecord,
 ) -> ExtractedFields:
-    """Extract (data, agent_id, reply, usage, finish_reason) from one record."""
+    """
+    Extract ``(data, agent_id, reply, usage, finish_reason)`` from one record.
+
+    Public because the ingester needs it too, and importing a private name across
+    modules is forbidden. It is the one place that knows a request body comes in two
+    shapes -- ``request.body`` for some providers and ``request.body.data`` for others,
+    a 43/57 split across the current log tree -- so both the read path and ingest must
+    go through it or half the corpus reads as empty.
+    """
     psr = rec.get("request")
     data: dict[str, Any] = {}
     agent_id: str | None = None
@@ -52,49 +71,30 @@ def _extract_record_fields(
     return ExtractedFields(data, agent_id, reply, usage, finish_reason)
 
 
-def normalize_record_unresolved(rec: LogRecord) -> NormalizedRecordBase:
+def usage_source(rec: Mapping[str, Any]) -> str:
     """
-    Reduce one raw log record to the shape the UI consumes, WITHOUT resolving
-    ``hash:<sha256>`` pointers.  Callers that want hash resolution should use
-    :func:`normalize_record` instead.
+    Classify how a success record's usage was obtained.
 
-    Pure (no I/O) so it can be unit-tested directly.
+    Stored per request so ``"unrecoverable"`` can be counted: those requests contribute
+    $0 to the totals, and the stats footnote says so rather than letting them read as
+    free. Mirrors the three outcomes the callback's ``_usable_response`` stamps onto a
+    record's ``response`` (see ``providers/litellm_runtime/callback.py``):
+      * ``"native"`` — a parsed response dict with no ``_usage_source`` key (usage
+        came straight from the response);
+      * ``"standard_logging_object"`` — dict tagged with that source (usage was
+        recovered from LiteLLM's standard logging object fallback);
+      * ``"unrecoverable"`` — dict tagged ``"unrecoverable"``, or a bare legacy
+        ``"<Response ...>"`` string; no usable usage at all.
     """
-    data, agent_id, reply, usage, finish_reason = _extract_record_fields(rec)
-    raw_max_tokens = data.get("max_tokens")
-    # bool is an int subclass, and a stray True here would render as a cap of 1.
-    max_tokens = (
-        raw_max_tokens
-        if isinstance(raw_max_tokens, int) and not isinstance(raw_max_tokens, bool)
-        else None
-    )
-
-    return {
-        "timing": rec.get("timing"),
-        "status": rec.get("status"),
-        "model": rec.get("model"),
-        "agent_id": agent_id,
-        "messages": data.get("messages") or [],
-        "system": data.get("system"),
-        "tools": data.get("tools") or [],
-        "response": reply,
-        "usage": usage,
-        "error": rec.get("error"),
-        "finish_reason": finish_reason,
-        "max_tokens": max_tokens,
-    }
-
-
-def normalize_record(rec: LogRecord, strings: dict[str, str]) -> NormalizedRecordBase:
-    """
-    Reduce one raw log record to the shape the UI consumes.
-
-    Pure (no I/O) so it can be unit-tested directly. Pulls the real prompt
-    from ``request.body.data`` and the reply from
-    ``response.choices[0].message``, resolving ``hash:<sha256>`` pointers.
-    """
-    resolved = resolve_hashes(rec, strings)
-    return normalize_record_unresolved(resolved)
+    response = rec.get("response")
+    if isinstance(response, str):
+        return "unrecoverable"
+    if isinstance(response, dict):
+        src = response.get("_usage_source")
+        if src in ("standard_logging_object", "unrecoverable"):
+            return src
+        return "native"
+    return "unrecoverable"
 
 
 def enrich_with_costs(
@@ -121,9 +121,9 @@ def enrich_with_costs(
     # Use the canonical token extraction so field-resolution logic lives in one
     # place (extract_usage handles prompt_tokens/input_tokens fallback, etc.).
     norm_usage = pricing.extract_usage(raw_response, request_ttl)
-    in_t = norm_usage["input_tokens"]
-    out_t = norm_usage["output_tokens"]
-    cr_t = norm_usage["cache_read_input_tokens"]
+    in_t = norm_usage.input_tokens
+    out_t = norm_usage.output_tokens
+    cr_t = norm_usage.cache_read_input_tokens
 
     # Only set cache_percent when there are actual cache reads, so the frontend
     # can skip displaying "(0% cached)".

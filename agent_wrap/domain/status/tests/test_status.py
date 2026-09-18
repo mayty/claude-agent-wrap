@@ -2,6 +2,7 @@
 """Tests for the status domain service (the body of `agent inspect`)."""
 
 import dataclasses
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -13,7 +14,7 @@ from agent_wrap.constants import AUTOSTART_LOGS_ENV, BASE_IMAGE_NAME, SKIP_SAFET
 from agent_wrap.domain.build.models import ImageStaleness, ResolvedImage, StaleProjectImage
 from agent_wrap.domain.build.service import BuildService
 from agent_wrap.domain.config.service import ConfigService
-from agent_wrap.domain.logs.models import ViewerState
+from agent_wrap.domain.logs.models import IndexLag, ViewerState
 from agent_wrap.domain.logs.service import LogsService
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
@@ -23,6 +24,8 @@ from agent_wrap.domain.status.models import StaleImageRow
 from agent_wrap.domain.status.service import InspectService
 from agent_wrap.domain.updates.models import WrapperRevision
 from agent_wrap.domain.updates.service import UpdateService
+from agent_wrap.infrastructure.logs.models import IndexFootprint
+from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -36,6 +39,8 @@ _LATEST_CLAUDE_VERSION = "agent_wrap.domain.status.service.docker_utils.latest_c
 _IS_WSL = "agent_wrap.domain.status.service.docker_utils.is_wsl"
 _DOCKER_RUN = "agent_wrap.domain.status.service.docker_utils.docker_run"
 _DIR_SIZE = "agent_wrap.domain.status.service.directory_size"
+_VENV_POINTER = "agent_wrap.domain.status.service.PYTHON_VENV_POINTER_FILE"
+_CONSTRAINTS = "agent_wrap.domain.status.service.PYTHON_CONSTRAINTS_FILE"
 
 _SIDECAR = SidecarContainer(
     name="agent-wrap-litellm-bedrock",
@@ -148,6 +153,7 @@ def logs_mock(mocker: pytest_mock.MockFixture) -> Mock:
         log_mtime=1_700_000_000.0,
     )
     mock.connect_line.return_value = "LiteLLM log viewer running at http://127.0.0.1:8765"
+    mock.index_lag.return_value = IndexLag(behind=0, total=613)
     return mock
 
 
@@ -180,6 +186,15 @@ def build_mock(mocker: pytest_mock.MockFixture) -> Mock:
 
 
 @pytest.fixture
+def log_sessions_mock(mocker: pytest_mock.MockFixture) -> Mock:
+    mock = mocker.create_autospec(SessionRepository, instance=True)
+    mock.footprint.return_value = IndexFootprint(
+        database_bytes=301_989_888, sessions=613, requests=47_458, last_ingested_ns=1_700_000_000
+    )
+    return mock
+
+
+@pytest.fixture
 def service(  # noqa: PLR0913
     sidecar_mock: Mock,
     provider_mock: Mock,
@@ -188,6 +203,7 @@ def service(  # noqa: PLR0913
     updates_mock: Mock,
     config_mock: Mock,
     build_mock: Mock,
+    log_sessions_mock: Mock,
     docker_probes: dict[str, Mock],
 ) -> InspectService:
     del docker_probes  # patches must be active for every test using this service
@@ -199,6 +215,7 @@ def service(  # noqa: PLR0913
         updates_service=updates_mock,
         config_service=config_mock,
         build_service=build_mock,
+        log_session_repository=log_sessions_mock,
     )
 
 
@@ -827,3 +844,56 @@ def test_version_probes_run_concurrently(
     assert report.environment.base_image_version == "2.0.50"
     assert report.project is not None
     assert report.project.claude_version == "2.0.50"
+
+
+_VENV_STEM = "venv-3.14.7+20260825-x86_64-unknown-linux-gnu"
+_CONSTRAINTS_BODY = b"httpx2==2.12.0 --hash=sha256:cafe\n"
+
+
+def _stage_venv(mocker: pytest_mock.MockFixture, tmp_path: Path, pointer: str) -> None:
+    """Point the interpreter row's two inputs at throwaway copies under tmp_path."""
+    pointer_file = tmp_path / "current-venv"
+    pointer_file.write_text(f"{pointer}\n", encoding="utf-8")
+    constraints_file = tmp_path / "requirements.txt"
+    constraints_file.write_bytes(_CONSTRAINTS_BODY)
+    mocker.patch(_VENV_POINTER, pointer_file)
+    mocker.patch(_CONSTRAINTS, constraints_file)
+
+
+def test_interpreter_row_accepts_a_venv_built_from_the_constraints_on_disk(
+    service: InspectService, mocker: pytest_mock.MockFixture, tmp_path: Path
+) -> None:
+    """The venv name's own suffix is the metadata, so nothing else has to be read."""
+    digest = hashlib.sha256(_CONSTRAINTS_BODY).hexdigest()[:12]
+    _stage_venv(mocker, tmp_path, f"{_VENV_STEM}-{digest}")
+    assert service.build_report().wrapper.deps_current is True
+
+
+def test_interpreter_row_flags_a_venv_the_constraints_have_moved_past(
+    service: InspectService, mocker: pytest_mock.MockFixture, tmp_path: Path
+) -> None:
+    """A `git pull` moves bin/requirements.txt without re-provisioning anything."""
+    _stage_venv(mocker, tmp_path, f"{_VENV_STEM}-000000000000")
+    assert service.build_report().wrapper.deps_current is False
+
+
+def test_interpreter_row_says_nothing_about_a_dev_venv(
+    service: InspectService, mocker: pytest_mock.MockFixture, tmp_path: Path
+) -> None:
+    """
+    `--dev` holds uv.lock, not the constraints, and is named for the interpreter alone.
+
+    So the constraints hash cannot speak to it. False here would render as "dependencies
+    stale" at every contributor's venv, which is why the answer has to be None.
+    """
+    _stage_venv(mocker, tmp_path, f"{_VENV_STEM}-dev")
+    assert service.build_report().wrapper.deps_current is None
+
+
+def test_interpreter_row_says_nothing_when_the_pointer_is_missing(
+    service: InspectService, mocker: pytest_mock.MockFixture, tmp_path: Path
+) -> None:
+    """An unprovisioned tree is not a stale one -- the report must not claim a mismatch."""
+    mocker.patch(_VENV_POINTER, tmp_path / "absent")
+    mocker.patch(_CONSTRAINTS, tmp_path / "requirements.txt")
+    assert service.build_report().wrapper.deps_current is None

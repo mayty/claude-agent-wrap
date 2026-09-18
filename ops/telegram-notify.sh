@@ -19,7 +19,6 @@
 
 set -e
 
-# --- helpers ---
 
 LOG_FILE="${TELEGRAM_HOOK_LOG:-/workspace/.claude/telegram-hook.log}"
 # Ensure the log directory exists (best-effort)
@@ -53,7 +52,6 @@ summarise() {
     " 2>/dev/null || echo '<unparseable>'
 }
 
-# --- signals ---
 
 # The "terminal wins" race: if the user answers the terminal permission
 # prompt before tapping a Telegram button, Claude sends SIGTERM to this
@@ -79,7 +77,6 @@ term_handler() {
 trap term_handler TERM
 trap cleanup_temp EXIT
 
-# --- main ---
 
 HOOK_STDIN=$(cat)
 HOOK_MODE="${1:-permission}"

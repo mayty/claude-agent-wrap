@@ -1,3 +1,4 @@
+# This file has been edited with the assistance of an AI tool.
 """
 CLI-layer tests for agent_wrap.cli.logs — argument parsing and calling protocol.
 
@@ -5,84 +6,92 @@ CLI-layer tests for agent_wrap.cli.logs — argument parsing and calling protoco
 in ``agent_wrap/cli/conftest.py``.
 """
 
+from typing import TYPE_CHECKING
+
+import click
 import pytest
 
-from agent_wrap.cli.logs.complete import complete as logs_complete
-from agent_wrap.cli.logs.run import build_parser, run
+from agent_wrap.__main__ import cli_root
+from agent_wrap.cli.logs.run import logs_command
+from agent_wrap.constants import LOGS_DEFAULT_PORT
 from agent_wrap.containers import services
 
-
-def test_parse_port_default() -> None:
-    assert build_parser().parse_args([]).port == 8765
-
-
-def test_parse_port_custom() -> None:
-    assert build_parser().parse_args(["--port", "9000"]).port == 9000
+if TYPE_CHECKING:
+    from click.testing import CliRunner
 
 
-def test_parse_p_flag() -> None:
-    """-p is the shorthand for --port."""
-    assert build_parser().parse_args(["-p", "9000"]).port == 9000
+def test_port_defaults_to_the_wrapper_default(runner: CliRunner) -> None:
+    services.logs_service.running_server.return_value = None  # pyrefly: ignore [missing-attribute]
+    services.logs_service.spawn_background.return_value = 0  # pyrefly: ignore [missing-attribute]
+    result = runner.invoke(cli_root, ["logs"])
+    assert result.exit_code == 0
+    services.logs_service.spawn_background.assert_called_once_with(LOGS_DEFAULT_PORT)  # pyrefly: ignore [missing-attribute]
 
 
-def test_parse_port_rejects_non_integer(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        build_parser().parse_args(["--port", "abc"])
-    assert exc.value.code != 0
-    assert "expects an integer" in capsys.readouterr().err
+@pytest.mark.parametrize("flag", ["--port", "-p"])
+def test_port_is_forwarded(runner: CliRunner, flag: str) -> None:
+    services.logs_service.running_server.return_value = None  # pyrefly: ignore [missing-attribute]
+    services.logs_service.spawn_background.return_value = 0  # pyrefly: ignore [missing-attribute]
+    result = runner.invoke(cli_root, ["logs", flag, "9000"])
+    assert result.exit_code == 0
+    services.logs_service.spawn_background.assert_called_once_with(9000)  # pyrefly: ignore [missing-attribute]
 
 
-@pytest.mark.parametrize("bad", ["0", "70000"])
-def test_parse_port_rejects_out_of_range(bad: str, capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        build_parser().parse_args(["--port", bad])
-    assert exc.value.code != 0
-    assert "must be between" in capsys.readouterr().err
+def test_port_rejects_non_integer(runner: CliRunner) -> None:
+    result = runner.invoke(cli_root, ["logs", "--port", "abc"])
+    assert result.exit_code == 2
+    assert "is not a valid integer range" in result.output
+    services.logs_service.spawn_background.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
-def test_parse_port_help_returns_zero() -> None:
-    with pytest.raises(SystemExit) as exc:
-        build_parser().parse_args(["-h"])
-    assert exc.value.code == 0
+@pytest.mark.parametrize("bad", ["0", "70000", "-1"])
+def test_port_rejects_out_of_range(runner: CliRunner, bad: str) -> None:
+    result = runner.invoke(cli_root, ["logs", "--port", bad])
+    assert result.exit_code == 2
+    assert "is not in the range" in result.output
+    services.logs_service.spawn_background.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
-def test_parse_port_unknown_arg(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        build_parser().parse_args(["--bogus"])
-    assert exc.value.code != 0
-    assert "unrecognized" in capsys.readouterr().err
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_exits_zero(runner: CliRunner, flag: str) -> None:
+    result = runner.invoke(cli_root, ["logs", flag])
+    assert result.exit_code == 0
+    assert "--port" in result.output
 
 
-def test_parsestop_daemon_flag() -> None:
-    assert build_parser().parse_args(["--stop"]).stop is True
+def test_unknown_flag_is_a_usage_error(runner: CliRunner) -> None:
+    result = runner.invoke(cli_root, ["logs", "--bogus"])
+    assert result.exit_code == 2
+    assert "No such option '--bogus'" in result.output
 
 
-def test_parse_s_flag() -> None:
-    """-s is the shorthand for --stop."""
-    assert build_parser().parse_args(["-s"]).stop is True
-
-
-def test_runstop_daemon_dispatches_tostop_daemon() -> None:
-    """--stop delegates to services.logs_service.stop_daemon()."""
+@pytest.mark.parametrize("flag", ["--stop", "-s"])
+def test_stop_dispatches_to_stop_daemon(runner: CliRunner, flag: str) -> None:
     services.logs_service.stop_daemon.return_value = 0  # pyrefly: ignore [missing-attribute]
-    assert run(["--stop"]) == 0
+    result = runner.invoke(cli_root, ["logs", flag])
+    assert result.exit_code == 0
     services.logs_service.stop_daemon.assert_called_once_with()  # pyrefly: ignore [missing-attribute]
 
 
-def test_runstop_daemon_rejects_extra_args() -> None:
-    """--stop rejects --port (no extra args allowed)."""
-    assert run(["--stop", "--port", "9000"]) == 1
+@pytest.mark.parametrize("extra", [["--port", "9000"], ["--port", "8765"], ["--foreground"]])
+def test_stop_rejects_every_other_argument(runner: CliRunner, extra: list[str]) -> None:
+    """``--port 8765`` is rejected too: an explicit default is still an explicit argument."""
+    result = runner.invoke(cli_root, ["logs", "--stop", *extra])
+    assert result.exit_code == 1
+    services.display_service.error.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
+        "agent logs --stop (takes no other arguments)"
+    )
+    services.logs_service.stop_daemon.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
-def test_run_foreground_dispatches_to_serve_foreground() -> None:
-    """--foreground delegates to serve_foreground with the parsed port."""
+def test_foreground_dispatches_to_serve_foreground(runner: CliRunner) -> None:
     services.logs_service.serve_foreground.return_value = 0  # pyrefly: ignore [missing-attribute]
-    assert run(["--foreground", "--port", "9000"]) == 0
+    result = runner.invoke(cli_root, ["logs", "--foreground", "--port", "9000"])
+    assert result.exit_code == 0
     services.logs_service.serve_foreground.assert_called_once_with(9000)  # pyrefly: ignore [missing-attribute]
 
 
-def test_run_already_running_prints_connect_line_and_skips_spawn() -> None:
-    """When a server is already running, print connect line and skip spawn."""
+def test_already_running_prints_connect_line_and_skips_spawn(runner: CliRunner) -> None:
     services.logs_service.running_server.return_value = {  # pyrefly: ignore [missing-attribute]
         "pid": 1,
         "port": 9123,
@@ -92,14 +101,15 @@ def test_run_already_running_prints_connect_line_and_skips_spawn() -> None:
         "LiteLLM log viewer running at http://127.0.0.1:9123"
     )
 
-    assert run(["--port", "8765"]) == 0
+    result = runner.invoke(cli_root, ["logs", "--port", "8765"])
+    assert result.exit_code == 0
     services.logs_service.spawn_background.assert_not_called()  # pyrefly: ignore [missing-attribute]
     services.display_service.info.assert_called_once_with(  # pyrefly: ignore [missing-attribute]
         "LiteLLM log viewer running at http://127.0.0.1:9123"
     )
 
 
-def test_run_starting_server_prints_starting_line_and_skips_spawn() -> None:
+def test_starting_server_prints_starting_line_and_skips_spawn(runner: CliRunner) -> None:
     """A claimed-but-not-listening viewer is reported as starting, not started again."""
     services.logs_service.running_server.return_value = {  # pyrefly: ignore [missing-attribute]
         "pid": 1,
@@ -108,46 +118,69 @@ def test_run_starting_server_prints_starting_line_and_skips_spawn() -> None:
     }
     services.logs_service.starting_line.return_value = "viewer is starting"  # pyrefly: ignore [missing-attribute]
 
-    assert run(["--port", "8765"]) == 0
+    result = runner.invoke(cli_root, ["logs", "--port", "8765"])
+    assert result.exit_code == 0
     services.logs_service.spawn_background.assert_not_called()  # pyrefly: ignore [missing-attribute]
     services.logs_service.connect_line.assert_not_called()  # pyrefly: ignore [missing-attribute]
     services.display_service.info.assert_called_once_with("viewer is starting")  # pyrefly: ignore [missing-attribute]
 
 
-def test_run_spawns_when_not_running() -> None:
-    """When no server is running, spawn a new background server."""
+def test_forwards_spawn_exit_code(runner: CliRunner) -> None:
+    services.logs_service.running_server.return_value = None  # pyrefly: ignore [missing-attribute]
+    services.logs_service.spawn_background.return_value = 7  # pyrefly: ignore [missing-attribute]
+    result = runner.invoke(cli_root, ["logs"])
+    assert result.exit_code == 7
+
+
+def test_foreground_flag_is_hidden_from_completion_and_help() -> None:
+    """The re-exec'd child's flag must not be offered to users or documented."""
+    ctx = click.Context(logs_command, info_name="logs")
+    offered = [item.value for item in logs_command.shell_complete(ctx, "-")]
+    assert "--port" in offered
+    assert "--stop" in offered
+    assert "--foreground" not in offered
+    assert "--foreground" not in logs_command.get_help(ctx)
+
+
+def test_logs_takes_no_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
     services.logs_service.running_server.return_value = None  # pyrefly: ignore [missing-attribute]
     services.logs_service.spawn_background.return_value = 0  # pyrefly: ignore [missing-attribute]
 
-    assert run(["--port", "9000"]) == 0
-    services.logs_service.spawn_background.assert_called_once_with(9000)  # pyrefly: ignore [missing-attribute]
+    runner.invoke(cli_root, ["logs"])
+
+    assert write_grants == []
 
 
-def test_run_help_returns_zero() -> None:
-    assert run(["-h"]) == 0
+def test_the_viewer_daemon_takes_no_registry_write_grant(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    ``--foreground`` *is* the viewer daemon, re-exec'd as its own process.
+
+    It reads the registry on every reconcile, so a registry grant here would let a
+    filesystem event migrate host state. This is the invocation the whole gate exists
+    for, and it is now asserted per database rather than in the aggregate: the daemon
+    does hold one grant, on the index it fills.
+    """
+    services.logs_service.serve_foreground.return_value = 0  # pyrefly: ignore [missing-attribute]
+
+    runner.invoke(cli_root, ["logs", "--foreground"])
+
+    assert "projects" not in write_grants
 
 
-def test_complete_bare_tab_shows_flags() -> None:
-    result = logs_complete(2, ["agent", "logs", ""])
-    assert "--port" in result
-    assert "-p" in result
-    assert "--stop" in result
-    assert "-s" in result
-    assert "--foreground" not in result  # hidden
+def test_the_viewer_daemon_takes_a_logs_write_grant(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    The daemon is what keeps the request index current, so it must be able to write it.
 
+    Nothing else on a normal host ingests. Without this grant every ingest pass is
+    refused and every consumer's totals -- `agent stats`, the statusline, the viewer --
+    freeze at whatever the last `agent reindex` saw, with no error anywhere to say so.
+    """
+    services.logs_service.serve_foreground.return_value = 0  # pyrefly: ignore [missing-attribute]
 
-def test_complete_port_consumed() -> None:
-    result = logs_complete(3, ["agent", "logs", "--stop", ""])
-    assert "--stop" not in result
-    assert "--port" in result
+    runner.invoke(cli_root, ["logs", "--foreground"])
 
-
-def test_complete_port_value_position_returns_empty() -> None:
-    """--port takes a value; tabbing right after shows nothing."""
-    result = logs_complete(3, ["agent", "logs", "--port", ""])
-    assert result == []
-
-
-def test_complete_after_port_value() -> None:
-    result = logs_complete(4, ["agent", "logs", "--port", "8765", ""])
-    assert "--stop" in result
+    assert write_grants == ["logs"]

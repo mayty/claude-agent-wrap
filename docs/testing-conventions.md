@@ -39,6 +39,11 @@ How tests are organized, mocked, and written in this project. All code contribut
 - Never use bare `mocker.Mock()`, `mocker.MagicMock()`, or
   `type("MockName", (), {})()`.
 - For subprocess results, use `mocker.Mock(spec=["returncode", "stdout", "stderr"])`.
+- For a third-party library, patch it where the module under test names it
+  (`agent_wrap.domain.sidecars.telegram.httpx2.post`), not at its source — and prefer
+  constructing the library's real value objects over mocking them. An `httpx2.Response`
+  built with its originating `Request` attached costs less than teaching a mock to
+  imitate one, and it exercises the real `raise_for_status`.
 
 ## Fixtures (not helpers)
 
@@ -59,6 +64,21 @@ How tests are organized, mocked, and written in this project. All code contribut
   service layer — no test can accidentally call real domain code.
   Individual tests that need specific behavior or return values override
   the relevant mock further (e.g., `services.launch_service.launch.return_value = 0`).
+- **The root conftest (`agent_wrap/conftest.py`) MUST keep its autouse
+  `_isolate_databases` fixture ahead of that one in the hierarchy.**
+  `patch.object` saves the original by `getattr`, so mocking a service
+  *evaluates* the `cached_property` chain and opens a real database as a
+  side effect. `_isolate_databases` redirects `containers.core` and
+  `containers.repositories` at `tmp_path` first; autouse fixtures from a
+  parent conftest run before a child's, which is what makes that safe.
+  Moving it down the hierarchy would let the suite write the developer's
+  own `.agent-launches/db/`.
+- **The `projects_repository` fixture holds a database write grant** for
+  the test's duration, the way a CLI command would, so anything
+  downstream of it (`register_projects`, every `svc`/`config_svc`
+  fixture) can write. A test that needs a write *refused* — the logs
+  daemon's position — builds over the `read_only_core` fixture instead,
+  which is a second `Core` whose factory has never been granted writes.
 - **Negative-path tests must verify the *reason* for failure** (check
   stderr/stdout for the expected message), not just the exit code. A test
   that only asserts `rc == 1` can pass for the wrong reason.

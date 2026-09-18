@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PORT_SCAN_LIMIT, PollResult
+from agent_wrap.constants import LITELLM_SIDECAR_LABEL, PORT_SCAN_LIMIT
 from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.sidecars.litellm import LiteLLMSidecar
 from agent_wrap.domain.sidecars.models import LiteLLMSidecarConfig
@@ -30,6 +30,7 @@ def _config(tmp_path: Path, **overrides: object) -> LiteLLMSidecarConfig:
         "health_endpoint": "/health/liveliness",
         "cold_start_time": 300.0,
         "short_circuit_time": 30.0,
+        "pull_timeout_sec": 900,
         "config_path": tmp_path / "config.yaml",
         "callback_dir": tmp_path / "callbacks",
         "log_dir": tmp_path / "logs",
@@ -60,6 +61,12 @@ _FIND_FREE_PORT = "agent_wrap.domain.sidecars.litellm.find_free_port"
 _PORT_ENV_LINE = "AGENT_WRAP_SIDECAR_PORT=48622\n"
 
 
+@pytest.fixture
+def no_reap(mocker: pytest_mock.MockFixture) -> None:
+    """Stub the stale-container reap: it is ``Sidecar``'s, and covered in its own tests."""
+    mocker.patch.object(LiteLLMSidecar, "_reap_stale_container", autospec=True)
+
+
 def test_timing(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     assert sc.cold_start_time == 300.0
@@ -70,74 +77,6 @@ def test_generate_master_key(tmp_path: Path) -> None:
     key = _sidecar(tmp_path)._generate_master_key()
     assert key.startswith("sk-test-")
     assert "-" not in key.removeprefix("sk-test-")
-
-
-def test_is_running_true(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("true", 0))
-    assert _sidecar(tmp_path)._is_running() is True
-
-
-def test_is_running_false(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("false", 0))
-    assert _sidecar(tmp_path)._is_running() is False
-
-
-def test_is_running_error(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    assert _sidecar(tmp_path)._is_running() is False
-
-
-def test_is_on_network_true(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("agent-wrap-net\nhost\n", 0))
-    assert _sidecar(tmp_path)._is_on_network("host") is True
-
-
-def test_is_on_network_false(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("agent-wrap-net\n", 0))
-    assert _sidecar(tmp_path)._is_on_network("host") is False
-
-
-def test_ensure_network_exists(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """An existing network is left alone — no create is attempted."""
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=True)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    _sidecar(tmp_path)._ensure_network()
-    assert mock_docker.call_args_list == []
-
-
-def test_ensure_network_creates(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """A missing network is created."""
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=False)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    _sidecar(tmp_path)._ensure_network()
-    calls = [c.args for c in mock_docker.call_args_list]
-    assert any("network" in c and "create" in c for c in calls)
-
-
-def test_ensure_network_create_fails(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=False)
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    with pytest.raises(SystemExit):
-        _sidecar(tmp_path)._ensure_network()
-
-
-def test_attach_to_network_already_connected(
-    tmp_path: Path, mocker: pytest_mock.MockFixture
-) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    mocker.patch.object(sc, "_is_on_network", autospec=True, return_value=True)
-    sc._attach_to_network("mynet")
-
-
-def test_sidecar_ip_on_network(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("172.18.0.2", 0))
-    assert _sidecar(tmp_path)._sidecar_ip_on_network("agent-wrap-net") == "172.18.0.2"
-
-
-def test_sidecar_ip_on_network_failure(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    assert _sidecar(tmp_path)._sidecar_ip_on_network("agent-wrap-net") == ""
 
 
 def test_connectivity_host_sidecar_host_agent(tmp_path: Path) -> None:
@@ -282,7 +221,7 @@ def test_prepare_pulls_image(tmp_path: Path, mocker: pytest_mock.MockFixture) ->
 
 
 def test_ensure_does_not_pull(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """ensure() no longer pulls — that moved to prepare()."""
+    """Pulling belongs to prepare(), which runs lock-free; ensure() must not pull."""
     sc = _sidecar(tmp_path)
     ensure_image = mocker.patch.object(sc, "_ensure_image", autospec=True)
     mocker.patch.object(sc, "_ensure_network", autospec=True)
@@ -407,103 +346,36 @@ def fake_monotonic(mocker: pytest_mock.MockFixture) -> None:
     mocker.patch("sys.stderr.isatty", return_value=False)
 
 
-def test_health_poll_healthy_quick(
-    tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch.object(
-        sc._display,
-        "poll_until",
-        side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS,  # pyrefly: ignore [implicit-any-lambda]
-    )
-    mocker.patch(_DOCKER, autospec=True, return_value=("healthy", 0))
-    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
-    assert sc._health_poll() is True
-
-
-def test_health_poll_unhealthy(
-    tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch.object(
-        sc._display,
-        "poll_until",
-        side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS,  # pyrefly: ignore [implicit-any-lambda]
-    )
-    mocker.patch(_DOCKER, autospec=True, return_value=("unhealthy", 0))
-    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
-    assert sc._health_poll() is False
-
-
-def test_health_poll_container_gone(
-    tmp_path: Path,
-    mocker: pytest_mock.MockFixture,
-) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch.object(
-        sc._display,
-        "poll_until",
-        side_effect=lambda **kw: kw["poll"]()[0] == PollResult.SUCCESS,  # pyrefly: ignore [implicit-any-lambda]
-    )
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    assert sc._health_poll() is False
-
-
-def test_ensure_image_present_skips_pull(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True)
-    mock_docker = mocker.patch(_DOCKER, autospec=True)
-    sc._ensure_image()
-    pull_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "pull"]
-    assert pull_calls == []
-
-
-def test_ensure_image_absent_pulls(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    sc._ensure_image()
-    pull_calls = [c for c in mock_docker.call_args_list if c.args and c.args[0] == "pull"]
-    assert len(pull_calls) == 1
-
-
-def test_ensure_image_pull_fails_raises(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar(tmp_path)
-    mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=False)
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    with pytest.raises(SystemExit):
-        sc._ensure_image()
-    assert "failed to pull" in _last_error(sc)
-
-
+@pytest.mark.usefixtures("no_reap")
 def test_start_creates_container(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(tmp_path)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
-    assert any("run" in str(c) for c in mock_docker.call_args_list)
+    assert mock_docker.call_args.args[0] == "run"
 
 
-def test_start_reaps_stopped_container(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
+def test_start_reaps_a_stale_container_first(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+) -> None:
+    """A `--rm`-less container from a crashed run holds the name until it is reaped."""
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(tmp_path)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 0), ("", 0), ("", 0)])
+    mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
+    mock_reap = mocker.patch.object(sc, "_reap_stale_container", autospec=True)
     sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
-    calls = [c.args[0] for c in mock_docker.call_args_list if c.args]
-    assert "rm" in calls
+    mock_reap.assert_called_once_with()
 
 
+@pytest.mark.usefixtures("no_reap")
 def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
-    """_start mounts the logging callback and the host log dir into the sidecar."""
     (tmp_path / "config.yaml").write_text("model: test")
     log_dir = tmp_path / "logs"
     callback_dir = tmp_path / "callbacks"
     callback_dir.mkdir()
     (callback_dir / "callback.py").touch()
     sc = _sidecar(tmp_path, log_dir=log_dir, callback_dir=callback_dir)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
 
     run_call = next(c for c in mock_docker.call_args_list if c.args and c.args[0] == "run")
@@ -516,6 +388,7 @@ def test_start_mounts_callback_and_log_dir(tmp_path: Path, mocker: pytest_mock.M
     assert log_dir.is_dir()
 
 
+@pytest.mark.usefixtures("no_reap")
 def test_start_passes_every_declared_secret_to_the_provider_hook(
     tmp_path: Path, mocker: pytest_mock.MockFixture
 ) -> None:
@@ -528,7 +401,7 @@ def test_start_passes_every_declared_secret_to_the_provider_hook(
             "SECONDARY": secrets["secondary_key"],
         },
     )
-    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc._start({"primary_key": "one", "secondary_key": "two"}, "sk-test-master", "bridge")
 
     run_args = list(next(c for c in mock_docker.call_args_list if c.args[0] == "run").args)
@@ -536,11 +409,12 @@ def test_start_passes_every_declared_secret_to_the_provider_hook(
     assert "SECONDARY=two" in run_args
 
 
+@pytest.mark.usefixtures("no_reap")
 def test_start_with_no_secrets_declared(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
     """A provider fronting an unauthenticated upstream declares and receives nothing."""
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(tmp_path, get_sidecar_env=lambda _secrets: {}, required_secrets=[])  # pyrefly: ignore [implicit-any-lambda]
-    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
     sc._start({}, "sk-test-master", "bridge")
 
     run_args = list(next(c for c in mock_docker.call_args_list if c.args[0] == "run").args)
@@ -669,7 +543,7 @@ def test_start_passes_the_resolved_port_to_the_proxy_and_the_health_cmd(
     (tmp_path / "config.yaml").write_text("model: test")
     sc = _sidecar(tmp_path)
     sc._port = 48623
-    mock_docker = mocker.patch(_DOCKER, autospec=True, side_effect=[("", 1), ("", 0)])
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
 
     sc._start({"api_key": "upstream-key"}, "sk-test-master", "bridge")
 

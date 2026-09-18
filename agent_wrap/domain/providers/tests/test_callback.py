@@ -49,8 +49,6 @@ _get_session_id = _callback._get_session_id
 _record_failure = _callback._record_failure
 _resolve_thinking_reasoning_conflict = _callback._resolve_thinking_reasoning_conflict
 build_record = _callback.build_record
-extract_session_alias = _callback.extract_session_alias
-extract_session_title = _callback.extract_session_title
 get_session_hasher = _helpers.get_session_hasher
 _SESSION_HASHERS = _helpers._SESSION_HASHERS
 StringHasher = _string_hasher.StringHasher
@@ -446,9 +444,9 @@ def test_build_record_recovery_preserves_response_content() -> None:
     # Usage was synthesized from the SLO's flat token fields...
     assert response["usage"]["prompt_tokens"] == 1357
     assert response["usage"]["completion_tokens"] == 152
-    # ...and the response content was preserved (not dropped), so alias extraction works.
+    # ...and the response content was preserved rather than dropped, which is what
+    # the viewer renders and what the ingester reads a session's alias out of.
     assert response["choices"][0]["message"]["content"] == '{"name": "my-session"}'
-    assert extract_session_alias(response) == "my-session"
 
 
 def test_build_record_failure_does_not_recover_or_mark() -> None:
@@ -458,7 +456,6 @@ def test_build_record_failure_does_not_recover_or_mark() -> None:
 
 
 def test_build_record_hashes_long_strings() -> None:
-    """Test that build_record hashes long strings in the output."""
     long_string = "e" * 100
     kwargs = {
         "model": "bedrock/claude",
@@ -484,7 +481,6 @@ def test_build_record_hashes_long_strings() -> None:
 
 
 def test_build_record_leaves_short_strings_unchanged() -> None:
-    """Test that build_record leaves short strings unchanged."""
     short_string = "short"
     kwargs = {
         "model": "bedrock/claude",
@@ -504,67 +500,6 @@ def test_build_record_leaves_short_strings_unchanged() -> None:
     assert len(messages) == 1
     content = messages[0]["content"]
     assert content == short_string
-
-
-def _name_response(content: str) -> dict[str, Any]:
-    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
-
-
-def test_extract_session_alias_from_name_payload() -> None:
-    resp = _name_response('{"name": "agent-logs-web-viewer"}')
-    assert extract_session_alias(resp) == "agent-logs-web-viewer"
-
-
-def test_extract_session_alias_ignores_title_payload() -> None:
-    # The sibling title-generation call must not be treated as an alias.
-    resp = _name_response('{"title": "Build a web viewer for logs"}')
-    assert extract_session_alias(resp) is None
-
-
-def test_extract_session_alias_tolerates_trailing_prose() -> None:
-    resp = _name_response('{"name": "fix-login-bug"} sure thing!')
-    assert extract_session_alias(resp) == "fix-login-bug"
-
-
-def test_extract_session_alias_handles_choices_text_shape() -> None:
-    resp = {"choices": [{"text": '{"name": "add-auth-feature"}'}]}
-    assert extract_session_alias(resp) == "add-auth-feature"
-
-
-def test_extract_session_alias_none_for_freeform_and_empty() -> None:
-    assert extract_session_alias(_name_response("just some words")) is None
-    assert extract_session_alias(_name_response('{"name": ""}')) is None
-    assert extract_session_alias(_name_response('{"name": "   "}')) is None
-    assert extract_session_alias({}) is None
-    assert extract_session_alias(None) is None
-
-
-def testextract_session_title_from_title_payload() -> None:
-    resp = _name_response('{"title": "Build a web viewer for logs"}')
-    assert extract_session_title(resp) == "Build a web viewer for logs"
-
-
-def testextract_session_title_ignores_name_payload() -> None:
-    resp = _name_response('{"name": "some-slug"}')
-    assert extract_session_title(resp) is None
-
-
-def testextract_session_title_none_for_freeform_and_empty() -> None:
-    assert extract_session_title(_name_response("just some words")) is None
-    assert extract_session_title(_name_response('{"title": ""}')) is None
-    assert extract_session_title(_name_response('{"title": "   "}')) is None
-    assert extract_session_title({}) is None
-    assert extract_session_title(None) is None
-
-
-def testextract_session_title_tolerates_trailing_prose() -> None:
-    resp = _name_response('{"title": "Fix the login bug"} here you go!')
-    assert extract_session_title(resp) == "Fix the login bug"
-
-
-def testextract_session_title_handles_choices_text_shape() -> None:
-    resp = {"choices": [{"text": '{"title": "Add authentication"}'}]}
-    assert extract_session_title(resp) == "Add authentication"
 
 
 def test_get_session_id_extracted_from_headers() -> None:
@@ -1000,8 +935,14 @@ def test_post_call_failure_hook_writes_a_failure_record(tmp_path: Path) -> None:
     assert record["request"]["url"] == "/anthropic/v1/messages"
 
 
-def test_post_call_failure_hook_counts_the_record_in_metadata(tmp_path: Path) -> None:
-    """meta.json must count passthrough failures like any other logged call."""
+def test_post_call_failure_hook_writes_no_metadata_file(tmp_path: Path) -> None:
+    """
+    The callback writes records and interned strings, and nothing else.
+
+    Anything else written into the tree the viewer watches would force the watcher to
+    filter its own writes back out. The record itself is asserted elsewhere; what matters
+    here is the absence.
+    """
     mod = _load_callback_with_stub_litellm(tmp_path)
     request_data = {
         "model": "claude-sonnet-5",
@@ -1020,9 +961,8 @@ def test_post_call_failure_hook_counts_the_record_in_metadata(tmp_path: Path) ->
         )
     )
 
-    meta = json.loads((tmp_path / "sess-meta" / "meta.json").read_text(encoding="utf-8"))
-    assert meta["count"] == 1
-    assert meta["models"] == ["claude-sonnet-5"]
+    written = sorted(path.name for path in (tmp_path / "sess-meta").iterdir())
+    assert written == ["messages.jsonl"]
 
 
 def test_log_stream_event_writes_a_success_record(tmp_path: Path) -> None:
@@ -1239,8 +1179,8 @@ def test_post_call_failure_hook_timestamps_the_record(tmp_path: Path) -> None:
     """
     The passthrough hook is handed no datetime bounds and the passthrough route's
     standard_logging_object has no timestamps, so _record_failure supplies "now".
-    Without it the record sorts out of chronological order in the logs viewer and
-    meta.json never gets a last_ts.
+    Without it the record lands with an all-null timing, which sorts it out of the
+    viewer's chronological order and leaves the session with no last event at all.
     """
     mod = _load_callback_with_stub_litellm(tmp_path)
     before = datetime.now(tz=UTC).timestamp()
@@ -1258,22 +1198,6 @@ def test_post_call_failure_hook_timestamps_the_record(tmp_path: Path) -> None:
     assert before <= timing["start"] <= after
     assert before <= timing["end"] <= after
     assert timing["completionStart"] is None
-
-
-def test_post_call_failure_hook_records_last_ts_in_metadata(tmp_path: Path) -> None:
-    """_write_metadata only sets last_ts from a non-null timing.end."""
-    mod = _load_callback_with_stub_litellm(tmp_path)
-
-    asyncio.run(
-        mod.file_logger_instance.async_post_call_failure_hook(
-            request_data=_failure_kwargs("sess-lastts", "call-lastts"),
-            original_exception=RuntimeError("429 rate_limit_error"),
-            user_api_key_dict=None,
-        )
-    )
-
-    meta = json.loads((tmp_path / "sess-lastts" / "meta.json").read_text(encoding="utf-8"))
-    assert meta["last_ts"] is not None
 
 
 def test_log_failure_event_prefers_real_timestamps_over_now(tmp_path: Path) -> None:

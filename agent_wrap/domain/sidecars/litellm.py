@@ -34,14 +34,11 @@ from agent_wrap.constants import (
     PORT_SCAN_LIMIT,
     SIDECAR_PORT_ENV,
     SIDECAR_PROVIDER_ENV,
-    PollResult,
 )
 from agent_wrap.domain.sidecars.base import Sidecar
 from agent_wrap.lib.docker_utils import (
     docker_run,
     get_user_args,
-    image_exists,
-    network_exists,
 )
 from agent_wrap.lib.net import find_free_port
 from agent_wrap.lib.path_hash import project_path_hash
@@ -60,34 +57,16 @@ class LiteLLMSidecar(Sidecar):
         config: LiteLLMSidecarConfig,
         display_service: DisplayService,
     ) -> None:
+        super().__init__(config, display_service)
+        #: The same object the base holds as its container view, at the full type --
+        #: see ``Sidecar``'s docstring for why both exist.
         self.config = config
-        self._display = display_service
         self._master_key: str = ""
         #: Port this container actually listens on — scanned at cold start, recovered
         #: from the running container on the hot path. Zero until ``ensure()`` resolves
         #: it; read it through the ``port`` property, never ``config.internal_port``
         #: (which is only the preferred base).
         self._port: int = 0
-
-    @property
-    @override
-    def cold_start_time(self) -> float:
-        return self.config.cold_start_time
-
-    @property
-    @override
-    def short_circuit_time(self) -> float:
-        return self.config.short_circuit_time
-
-    # Convenience accessors mirroring the old provider attributes.
-    @property
-    @override
-    def container_name(self) -> str:
-        return self.config.container_name
-
-    @property
-    def network_name(self) -> str:
-        return self.config.network_name
 
     @property
     def internal_port(self) -> int:
@@ -100,18 +79,11 @@ class LiteLLMSidecar(Sidecar):
         return self._port
 
     @property
-    def image(self) -> str:
-        return self.config.image
-
-    @property
-    def health_timeout_sec(self) -> int:
-        return self.config.health_timeout_sec
-
-    @property
     def health_endpoint(self) -> str:
         return self.config.health_endpoint
 
     @property
+    @override
     def _label(self) -> str:
         """Display label naming the provider — two sidecars may be up at once."""
         return f"{LITELLM_SIDECAR_LABEL} ({self.config.provider_name})"
@@ -119,8 +91,6 @@ class LiteLLMSidecar(Sidecar):
     @override
     def required_secrets(self) -> list[tuple[str, str]]:
         return list(self.config.required_secrets)
-
-    # --- Public: prepare / ensure ---
 
     @override
     def prepare(self) -> None:
@@ -138,15 +108,15 @@ class LiteLLMSidecar(Sidecar):
         secrets: dict[str, str] | None = None,
     ) -> list[str]:
         if agent_network == "bridge":
-            self._display.error(
-                f"{self._label}: --network bridge is not supported "
+            msg = (
+                "--network bridge is not supported "
                 "(Docker's default bridge has no embedded DNS).\n"
                 "Use a user-defined network (`docker network create <name>`) "
                 "or remove --network from agent-run-args to use agent-wrap-net."
             )
-            raise SystemExit(1)
+            raise self._fatal(msg)
 
-        agent_in_host_netns = bool(use_host_net) or agent_network == "host"
+        agent_in_host_netns = use_host_net or agent_network == "host"
 
         # Runs under the runner's shared lock (held across the whole launch), so the
         # start decision + health poll are atomic against every concurrent launcher.
@@ -169,16 +139,13 @@ class LiteLLMSidecar(Sidecar):
         )
 
     def _ensure_sidecar(self, *, use_host_net: bool, secrets: dict[str, str]) -> str:
-        """Ensure the sidecar is running + healthy. Returns its network mode."""
         # Migration: sidecar from before agent-wrap-net refactor
         if (
             self._is_running()
             and not self._is_on_network(self.network_name)
             and not self._is_on_network("host")
         ):
-            self._display.warning(
-                f"{self._label}: existing sidecar predates agent-wrap-net; restarting"
-            )
+            self._warn("existing sidecar predates agent-wrap-net; restarting")
             docker_run("stop", self.container_name)
 
         if self._is_running():
@@ -221,7 +188,6 @@ class LiteLLMSidecar(Sidecar):
         agent_in_host_netns: bool,
         agent_network: str | None,
     ) -> list[str]:
-        """Build env var flags and connectivity args for the agent container."""
         base_url = f"http://{self.container_name}:{self.port}"
         agent_env = dict(self.config.get_agent_env(self._master_key, base_url))
 
@@ -246,18 +212,16 @@ class LiteLLMSidecar(Sidecar):
         if agent_in_host_netns:
             sidecar_ip = self._sidecar_ip_on_network(self.network_name)
             if not sidecar_ip:
-                self._display.error(
-                    f"{self._label}: sidecar has no IP on {self.network_name} "
+                msg = (
+                    f"sidecar has no IP on {self.network_name} "
                     "— was it disconnected from the network?"
                 )
-                raise SystemExit(1)
+                raise self._fatal(msg)
             return [*env_args, "--add-host", f"{self.container_name}:{sidecar_ip}"]
 
         if not agent_network:
             return [*env_args, "--network", self.network_name]
         return [*env_args]
-
-    # --- Public: release ---
 
     @override
     def release(self) -> None:
@@ -279,14 +243,12 @@ class LiteLLMSidecar(Sidecar):
             work=lambda: docker_run("stop", self.container_name),
         )
 
-    # --- Internal helpers ---
-
     def _config_path(self) -> Path:
         """Return the resolved config.yaml path, validating it exists."""
         config = self.config.config_path
         if not config.exists():
-            self._display.error(f"{self._label}: config not found at {config}")
-            raise SystemExit(1)
+            msg = f"config not found at {config}"
+            raise self._fatal(msg)
         return config
 
     def _callback_dir(self) -> Path:
@@ -340,21 +302,17 @@ class LiteLLMSidecar(Sidecar):
             "--format={{range .Config.Env}}{{println .}}{{end}}",
         )
         if rc != 0:
-            self._display.error(self._port_recovery_error("container gone"))
-            raise SystemExit(1)
+            raise self._fatal(self._port_recovery_error("container gone"))
         prefix = f"{SIDECAR_PORT_ENV}="
         for line in stdout.splitlines():
             if line.startswith(prefix):
                 raw = line.removeprefix(prefix).strip()
                 if raw.isdigit():
                     return int(raw)
-                self._display.error(self._port_recovery_error(f"unparseable value {raw!r}"))
-                raise SystemExit(1)
-        self._display.error(self._port_recovery_error("env line absent"))
-        raise SystemExit(1)
+                raise self._fatal(self._port_recovery_error(f"unparseable value {raw!r}"))
+        raise self._fatal(self._port_recovery_error("env line absent"))
 
     def _port_recovery_error(self, reason: str) -> str:
-        """Build the abort message for an unrecoverable recorded port."""
         return (
             f"{self._label}: {SIDECAR_PORT_ENV} not recoverable from "
             f"{self.container_name} ({reason}); aborting\n"
@@ -362,59 +320,13 @@ class LiteLLMSidecar(Sidecar):
             "so the next launch cold-starts."
         )
 
-    def _is_running(self) -> bool:
-        stdout, rc = docker_run(
-            "container",
-            "inspect",
-            "-f",
-            "{{.State.Running}}",
-            self.container_name,
-        )
-        return rc == 0 and stdout.strip() == "true"
-
-    def _is_on_network(self, network: str) -> bool:
-        stdout, rc = docker_run(
-            "inspect",
-            self.container_name,
-            "--format",
-            "{{range $k, $_ := .NetworkSettings.Networks}}{{println $k}}{{end}}",
-        )
-        if rc != 0:
-            return False
-        return network in stdout.splitlines()
-
-    def _ensure_network(self) -> None:
-        if network_exists(self.network_name):
-            return
-        _, rc = docker_run("network", "create", self.network_name)
-        if rc != 0:
-            self._display.error(
-                f"{self._label}: failed to create docker network {self.network_name}"
-            )
-            raise SystemExit(1)
-
-    def _ensure_image(self) -> None:
-        """Pull the sidecar image if it isn't present locally (streams progress)."""
-        if image_exists(self.image):
-            return
-        self._display.warning(
-            f"{self._label}: pulling {self.image} (first run, may take a few minutes)…"
-        )
-        _, rc = docker_run("pull", self.image, capture=False, timeout=900)
-        if rc != 0:
-            self._display.error(f"{self._label}: failed to pull image {self.image}")
-            raise SystemExit(1)
-
     def _start(self, secrets: dict[str, str], master_key: str, sidecar_mode: str) -> None:
         config_path = self._config_path()
         callback_dir = self._callback_dir()
         log_dir = self._log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Reap any stopped container under our name
-        _, rc = docker_run("container", "inspect", self.container_name)
-        if rc == 0:
-            docker_run("rm", "-f", self.container_name)
+        self._reap_stale_container()
 
         network = "host" if sidecar_mode == "host" else self.network_name
 
@@ -484,60 +396,5 @@ class LiteLLMSidecar(Sidecar):
         ]
         _, rc = docker_run(*cmd)
         if rc != 0:
-            self._display.error(f"{self._label}: failed to start {self.container_name}")
-            raise SystemExit(1)
-
-    def _health_poll(self) -> bool:
-        def poll() -> tuple[PollResult, str]:
-            stdout, rc = docker_run(
-                "inspect",
-                self.container_name,
-                "--format={{.State.Health.Status}}",
-            )
-            if rc != 0:
-                return PollResult.FAILURE, ""
-            status = stdout.strip()
-            if status == "healthy":
-                return PollResult.SUCCESS, status
-            if status == "unhealthy" or not self._is_running():
-                return PollResult.FAILURE, status
-            return PollResult.PENDING, status
-
-        return self._display.poll_until(
-            label=self._label,
-            poll=poll,
-            message="waiting for healthy",
-            done_message="ready",
-            timeout=self.health_timeout_sec,
-        )
-
-    def _attach_to_network(self, network: str) -> None:
-        _, rc = docker_run("network", "inspect", network)
-        if rc != 0:
-            self._display.error(
-                f"{self._label}: network '{network}' (from agent-run-args) does not exist"
-            )
-            raise SystemExit(1)
-
-        # Check if already connected
-        if self._is_on_network(network):
-            return
-
-        _, rc = docker_run("network", "connect", network, self.container_name)
-        if rc != 0:
-            self._display.error(
-                f"{self._label}: failed to attach {self.container_name} to network '{network}'"
-            )
-            raise SystemExit(1)
-
-    def _sidecar_ip_on_network(self, network: str) -> str:
-        fmt = (
-            f'{{{{with index .NetworkSettings.Networks "{network}"}}}}{{{{.IPAddress}}}}{{{{end}}}}'
-        )
-        stdout, rc = docker_run(
-            "inspect",
-            self.container_name,
-            "--format",
-            fmt,
-        )
-        return stdout.strip() if rc == 0 else ""
+            msg = f"failed to start {self.container_name}"
+            raise self._fatal(msg)
