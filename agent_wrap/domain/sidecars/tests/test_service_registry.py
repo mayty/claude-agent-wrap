@@ -56,7 +56,7 @@ def test_registry_state_omits_dead_owner_but_keeps_its_file(
     """A reporting read must not reap — unlike has_live_runners, which does."""
     handle = tracker.register_running(_BEDROCK, "dead-inst")
     assert handle is not None
-    handle.close()  # owner "crashed": lock dropped, file left behind
+    handle.release()  # owner "crashed": lock dropped, file left behind
 
     assert svc.registry_state(tmp_path).by_container == {_BEDROCK: []}
     assert (tracker.running_dir_for(_BEDROCK) / "dead-inst").exists()
@@ -81,7 +81,7 @@ def test_registry_state_reports_start_queue_separately(
         assert state.waiting == ["inst-2"]
         assert state.by_container == {_BEDROCK: ["inst-1"]}
     finally:
-        waiter.close()
+        waiter.release()
         tracker.clear_running(running, _BEDROCK, "inst-1")
 
 

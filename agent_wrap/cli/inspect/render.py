@@ -7,13 +7,10 @@ registered projects whose own image is already stale. ``Details`` — the third 
 rather than a block of ``Label: value`` lines so the whole report reads as one kind of
 output, and its three concerns (logs, secrets, wrapper/host) are separated by dividers
 rather than left to run together. The fourth closes the report because its empty state is
-a green line ``run.py`` prints in its place, and only a trailing section can be replaced
-that way.
+a green line standing in its place, and only a trailing section can be replaced that way.
 
-Each renderer returns lines rather than printing, so ``run.py`` owns all output and the
-whole report can be assembled before anything reaches the terminal. That is also why the
-one green line in the report is not built here: an unstyled line list has nowhere to carry
-it, and ``DisplayService.success`` prints rather than returning.
+Each renderer returns a renderable rather than printing, so ``run.py`` owns all output and
+the whole report is assembled before anything reaches the terminal.
 
 Colour carries one meaning throughout: green confirms something is ready, yellow flags
 something the user may want to act on (a container not running, a stale image, a missing
@@ -29,24 +26,26 @@ is not drawn empty. A lite report closes with one line naming what it skipped, i
 marking each row the omission touched.
 """
 
+import time
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from humanize import naturaltime
+from rich.console import Group
+from rich.text import Text
+
 from agent_wrap.cli.inspect.constants import (
-    AGENT_ALIGNS,
-    AGENT_HEADERS,
-    DETAILS_ALIGNS,
-    DETAILS_HEADERS,
+    AGENT_TABLE,
+    DETAILS_TABLE,
     DETAILS_TITLE,
     LEGACY_DOCKERFILE_NOTE,
     LITE_NOTE,
+    NO_STALE_IMAGES,
     NONE_CELL,
     NOT_MEASURED,
     PROJECT_IMAGE_LABEL,
-    SIDECAR_ALIGNS,
-    SIDECAR_HEADERS,
-    STALE_IMAGES_ALIGNS,
-    STALE_IMAGES_ELIDE,
-    STALE_IMAGES_HEADERS,
+    SIDECAR_TABLE,
+    STALE_IMAGES_TABLE,
     UNKNOWN,
 )
 from agent_wrap.constants import (
@@ -56,11 +55,13 @@ from agent_wrap.constants import (
     RUNNING_STATUS,
     SKIP_SAFETY_CHECK_ENV,
 )
-from agent_wrap.domain.display.constants import Ansi
+from agent_wrap.domain.display.constants import Style
 from agent_wrap.domain.display.models import RowItem
 from agent_wrap.lib.path_tree import build_path_tree, expand_widest_chain, walk_path_tree
 
 if TYPE_CHECKING:
+    from rich.console import RenderableType
+
     from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.status.models import (
@@ -78,12 +79,8 @@ if TYPE_CHECKING:
     )
     from agent_wrap.lib.path_tree import PathTreeLine, PathTreeNode
 
-#: Divider sentinel understood by ``DisplayService.render_table``.
-
 
 class Cells:
-    """Value-to-cell conversions shared by the tables."""
-
     @staticmethod
     def port(port: int | None) -> str:
         return UNKNOWN if port is None else str(port)
@@ -105,12 +102,9 @@ class Cells:
         """
         Shorten a sidecar's image reference to the part that identifies the build.
 
-        Sidecars are pinned by digest, so the reference docker reports is around 110
-        characters — long enough to wrap the row on any normal terminal. The digest is
-        dropped because nobody reads a sha256 off a table, and the registry path with
-        it: whether a build came from ghcr.io or Docker Hub is a property of the pin,
-        not of this container. Drift from the pin is already flagged on the CONTAINER
-        cell, so the name and tag left here are what tells you *which* build drifted.
+        A digest-pinned reference is ~110 characters and would wrap the row. Drift from
+        the pin is already flagged on the CONTAINER cell, so the name and tag left here
+        are what say *which* build drifted.
         """
         return image.split("@", 1)[0].rsplit("/", 1)[-1] or UNKNOWN
 
@@ -119,27 +113,25 @@ class Cells:
         """
         Build one stale-images row from a walked tree line.
 
-        A structural line stands for a directory and says nothing else: it has no image to
-        rebuild and no reason to report, so the two remaining cells stay empty rather than
-        carrying a subtotal nobody would act on.
+        A structural line is a directory with no image to rebuild, so its two remaining
+        cells stay empty rather than carrying a subtotal nobody would act on.
         """
         row = line.node.row
         if row is None:
-            return RowItem(cells=[line.label, "", ""], style=Ansi.DIM, prefix_len=line.prefix_len)
+            return RowItem(cells=[line.label, "", ""], style=Style.DIM, prefix_len=line.prefix_len)
         return RowItem(
             cells=[line.label, row.image, row.reason],
-            style=Ansi.BOLD_YELLOW,
+            style=Style.BOLD_YELLOW,
             prefix_len=line.prefix_len,
         )
 
     @staticmethod
-    def row_style(status: str) -> Ansi:
+    def row_style(status: str) -> Style:
         """Flag anything not running; leave a healthy row unstyled."""
-        return Ansi.NONE if status == RUNNING_STATUS else Ansi.BOLD_YELLOW
+        return Style.NONE if status == RUNNING_STATUS else Style.BOLD_YELLOW
 
     @staticmethod
-    def row(label: str, value: str, style: Ansi = Ansi.NONE) -> RowItem:
-        """Build one two-column details row."""
+    def row(label: str, value: str, style: Style = Style.NONE) -> RowItem:
         return RowItem(cells=[label, value], style=style, prefix_len=0)
 
 
@@ -147,17 +139,17 @@ class Tables:
     """The two container tables, and the fleet-wide stale-image table under them."""
 
     @staticmethod
-    def sidecars(rows: list[SidecarRow], queued: list[str], display: DisplayService) -> list[str]:
+    def sidecars(
+        rows: list[SidecarRow], queued: list[str], display: DisplayService
+    ) -> list[RenderableType]:
         """
         Render the sidecar table, plus the footnotes about the shared sidecar lock.
 
-        The queued-launch count lives here rather than with the details below, because it
-        is a fact about this table's containers: those launches are blocked waiting to
-        start or attach to one of them.
+        The queued-launch count belongs here because those launches are blocked waiting on
+        one of this table's containers.
         """
         if not rows:
-            lines = ["No sidecars are running."]
-            return lines + Tables.lock_footnotes([], queued)
+            return ["No sidecars are running.", *Tables.lock_footnotes([], queued)]
 
         body: list[RowItemOrDivider] = [
             RowItem(
@@ -176,24 +168,21 @@ class Tables:
             )
             for row in rows
         ]
-        headers = list(SIDECAR_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        lines = display.render_table(
-            f"Sidecars ({len(rows)}):", headers, list(SIDECAR_ALIGNS), body, 1, shared
-        )
         idle = [
             row.name for row in rows if row.status == RUNNING_STATUS and not row.attached_agents
         ]
-        return lines + Tables.lock_footnotes(idle, queued)
+        return [
+            display.render_table(f"Sidecars ({len(rows)}):", SIDECAR_TABLE, body),
+            *Tables.lock_footnotes(idle, queued),
+        ]
 
     @staticmethod
     def lock_footnotes(idle: list[str], queued: list[str]) -> list[str]:
         """
         Note idle sidecars and queued launches under the sidecar table.
 
-        Both are stated as facts, with no suggested action: teardown clears registrations
-        before it stops the container, so an idle sidecar is a normal transient state,
-        and a queued launch resolves itself once the lock is free.
+        Stated without a suggested action: teardown clears registrations before stopping
+        the container, so an idle sidecar is a normal transient state.
         """
         lines: list[str] = []
         if idle:
@@ -203,7 +192,7 @@ class Tables:
         return lines
 
     @staticmethod
-    def agents(rows: list[AgentRow], display: DisplayService) -> list[str]:
+    def agents(rows: list[AgentRow], display: DisplayService) -> list[RenderableType]:
         """Render the agent table, or a one-line note when there are none."""
         if not rows:
             return ["No agents are running."]
@@ -222,78 +211,48 @@ class Tables:
             )
             for row in rows
         ]
-        headers = list(AGENT_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        return display.render_table(
-            f"Agents ({len(rows)}):", headers, list(AGENT_ALIGNS), body, 1, shared
-        )
+        return [display.render_table(f"Agents ({len(rows)}):", AGENT_TABLE, body)]
 
     @staticmethod
-    def stale_images(rows: list[StaleImageRow] | None, display: DisplayService) -> list[str]:
+    def stale_images(
+        rows: list[StaleImageRow] | None, display: DisplayService
+    ) -> list[RenderableType]:
         """
         Render one row per registered project whose own image is already stale.
 
-        Returns nothing for both of the empty cases, which are different facts and are
-        both reported elsewhere: None means the sweep did not run (lite mode says so on its
-        closing line; an unreachable daemon is already the report's headline), and an empty
-        list is the good news ``run.py`` prints in green instead of an empty table.
+        The two empty cases are not interchangeable: None means the sweep never ran, while
+        an empty list is the measured verdict that nothing is stale -- the one section
+        whose empty state is good news, and so the one green line in the report. It stands
+        in for the table and not for the gap above it, which is why the blank line belongs
+        to the table rather than to the caller.
 
-        ``PROJECT`` is a path tree rather than a column of absolute paths, the same
-        rendering `agent stats` gives its projects: registered projects cluster under a few
-        parents, so the shared prefix is worth stating once instead of once per row. The
-        column is measured rather than capped, and chopped down to the console when the
-        measurement does not fit -- the fold that states a shared prefix once is the same
-        fold that makes one node very wide, so it is undone a segment at a time until the
-        table fits.
+        ``PROJECT`` is chopped a segment at a time until the table fits, before ``IMAGE``
+        and ``REASON`` give up characters -- chopping costs height, not information, and a
+        truncated path identifies nothing. ``PROJECT`` never ellipsises.
 
-        Chopping comes first because it costs nothing but height. Only once the tree is as
-        narrow as it goes do ``IMAGE`` and ``REASON`` start giving up characters and ending
-        in an ellipsis, and ``PROJECT`` never does: a path is what the reader acts on, and
-        half of one identifies nothing. ``-j``/``--json`` carries every reason in full
-        whatever the console does here.
-
-        Every project row is yellow, unlike the container tables where the style
-        distinguishes rows from each other: here it is the whole table that is the
-        actionable finding, and a plain row would read as a project that is fine. The
-        directory rows the tree adds are the exception, dim and blank across the other two
-        columns: they are scaffolding, and a directory is not a thing to go and rebuild.
-
-        The title counts projects, not lines, so it keeps agreeing with ``--json`` however
-        the tree comes out.
+        The title counts projects, not lines, so it agrees with ``--json`` however the
+        tree comes out.
         """
-        if not rows:
+        if rows is None:
             return []
+        if not rows:
+            return [Text(NO_STALE_IMAGES, style=Style.BOLD_GREEN)]
 
         placed = [row for row in rows if row.project]
         unplaceable = [row for row in rows if not row.project]
         root = build_path_tree([(row.project, row) for row in placed]) if placed else None
-        headers = list(STALE_IMAGES_HEADERS)
 
-        def measure() -> tuple[list[RowItemOrDivider], list[int]]:
-            """Return the body as the tree stands now, plus the widths of its other columns."""
-            body = Tables.stale_body(root, unplaceable)
-            return body, display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-
-        # Chop the tree only while the tree is the thing that does not fit -- that is what
-        # `table_overflow` reports once told which columns can be cut instead. Then `elide`
-        # cuts those. Both are no-ops when there is no terminal width to respect.
-        body, shared = measure()
-        while (
-            root is not None
-            and display.table_overflow(headers, body, 1, shared, elide=STALE_IMAGES_ELIDE)
-            and expand_widest_chain(root)
-        ):
-            body, shared = measure()
-
-        return display.render_table(
-            f"Stale images ({len(rows)}):",
-            headers,
-            list(STALE_IMAGES_ALIGNS),
-            body,
-            1,
-            shared,
-            elide=STALE_IMAGES_ELIDE,
+        # Chop the tree only while the tree is the thing that does not fit; the spec's
+        # elidable columns absorb whatever is left over at render time.
+        body, shared = display.fit_table(
+            STALE_IMAGES_TABLE,
+            lambda: Tables.stale_body(root, unplaceable),
+            shrink=lambda: root is not None and expand_widest_chain(root),
         )
+        return [
+            "",
+            display.render_table(f"Stale images ({len(rows)}):", STALE_IMAGES_TABLE, body, shared),
+        ]
 
     @staticmethod
     def stale_body(
@@ -302,18 +261,17 @@ class Tables:
         """
         Lay the stale-image rows out under the tree, rebuildable as the tree is chopped.
 
-        A row whose project is empty names no path and cannot be placed in the tree.
-        Dropping it would leave the title counting a row nothing shows, so it is listed flat
-        underneath, the way `agent stats` hangs its `<orphaned>` row off the root.
+        A row whose project is empty cannot be placed in the tree, and dropping it would
+        leave the title counting a row nothing shows -- so it is listed flat underneath.
         """
         body: list[RowItemOrDivider] = []
         if root is not None:
-            body.append(RowItem(cells=[root.name, "", ""], style=Ansi.DIM, prefix_len=0))
+            body.append(RowItem(cells=[root.name, "", ""], style=Style.DIM, prefix_len=0))
             body.extend(Cells.stale_row(line) for line in walk_path_tree(root))
         body.extend(
             RowItem(
                 cells=[UNKNOWN, row.image, row.reason],
-                style=Ansi.BOLD_YELLOW,
+                style=Style.BOLD_YELLOW,
                 prefix_len=0,
             )
             for row in unplaceable
@@ -336,7 +294,6 @@ class Details:
         storage: StorageRow,
         display: DisplayService,
     ) -> list[RowItem]:
-        """Report the logs viewer's liveness and the on-disk footprint of what it serves."""
         if viewer.running:
             detail = f"(pid {viewer.pid}" if viewer.pid is not None else "("
             if viewer.log_size is not None:
@@ -365,39 +322,62 @@ class Details:
         if storage.projects_stale:
             text += f", {storage.projects_stale} with no logs directory"
         autostart_text, autostart_style = Details.logs_autostart(autostart)
+        index_text, index_style = Details.logs_index(storage, display)
         return [
             viewer_row,
             Cells.row("logs viewer autostart", autostart_text, autostart_style),
             Cells.row("logs storage", text),
+            Cells.row("request index", index_text, index_style),
         ]
 
     @staticmethod
-    def logs_autostart(autostart: AutostartRow) -> tuple[str, Ansi]:
+    def logs_index(storage: StorageRow, display: DisplayService) -> tuple[str, Style]:
+        """
+        Report the index's size, what it holds, and how far behind the log files it is.
+
+        Freshness is an age rather than a date: the question is whether ingest is keeping
+        up. Deliberately silent about lag in `--lite` mode rather than reporting zero --
+        not measured is not the same as up to date.
+        """
+        parts = [
+            display.format_bytes(storage.index_bytes),
+            f"{storage.index_sessions} session(s), {storage.index_requests} request(s)",
+        ]
+        if storage.index_last_ingested is None:
+            parts.append("never ingested")
+        else:
+            age = time.time() - storage.index_last_ingested
+            parts.append(f"last ingest {naturaltime(timedelta(seconds=age))}")
+        if storage.index_behind:
+            parts.append(f"{storage.index_behind} behind — run `agent reindex`")
+            return " · ".join(parts), Style.BOLD_YELLOW
+        return " · ".join(parts), Style.NONE
+
+    @staticmethod
+    def logs_autostart(autostart: AutostartRow) -> tuple[str, Style]:
         """
         Whether the next `agent run` would start the viewer, and what decides it.
 
-        The casing is inverted relative to `host network`: this feature is on by default,
-        so "off" is the state worth noticing. Requested-but-ignored is flagged for the
-        same reason there — a variable that is set and does nothing otherwise reads as the
-        setting simply not working.
+        Inverted relative to `host network`: this is on by default, so "off" is the state
+        worth noticing. Requested-but-ignored is flagged because a variable that is set
+        and does nothing otherwise reads as the setting not working.
         """
         if autostart.effective:
-            return "on", Ansi.NONE
+            return "on", Style.NONE
         if autostart.requested is False:
-            return f"OFF ({AUTOSTART_LOGS_ENV})", Ansi.NONE
+            return f"OFF ({AUTOSTART_LOGS_ENV})", Style.NONE
         reason = f"{autostart.declining_provider} does not use it"
         if autostart.requested:
-            return f"requested but IGNORED ({reason})", Ansi.BOLD_YELLOW
-        return f"OFF ({reason})", Ansi.NONE
+            return f"requested but IGNORED ({reason})", Style.BOLD_YELLOW
+        return f"OFF ({reason})", Style.NONE
 
     @staticmethod
     def secrets_rows(rows: list[ProviderRow]) -> list[RowItem]:
         """
         One row per known provider/sidecar and its secret readiness.
 
-        Readiness is stated as one of two states and nothing more. The required key
-        names are deliberately left out: `agent secrets check` prints them, and here
-        they only pad the row with detail that does not change what the reader does.
+        The required key names are deliberately left out -- `agent secrets check` prints
+        them.
         """
         if not rows:
             return [Cells.row("providers", "none discovered")]
@@ -405,9 +385,9 @@ class Details:
         for row in rows:
             label = f"{row.name} (default)" if row.is_default else row.name
             if row.secrets_ok:
-                out.append(Cells.row(label, "Secrets OK", Ansi.BOLD_GREEN))
+                out.append(Cells.row(label, "Secrets OK", Style.BOLD_GREEN))
             else:
-                out.append(Cells.row(label, "Secrets NOT SET", Ansi.DIM))
+                out.append(Cells.row(label, "Secrets NOT SET", Style.DIM))
         return out
 
     @staticmethod
@@ -417,9 +397,8 @@ class Details:
         """
         Report the installed revision, then the host facts behind most surprises.
 
-        The project image sits directly under the base image it inherits from, because the
-        two are read together: which one ``agent run`` will actually launch here, and
-        whether the Claude Code inside it has fallen behind.
+        The project image sits directly under the base image it inherits from, since the
+        two are read together.
         """
         host_net, host_net_style = Details.host_network(environment)
         return [
@@ -458,31 +437,30 @@ class Details:
         """
         Report the provisioned CPython, flagged when it has fallen behind the pin.
 
-        A drifted interpreter is not broken -- the old one still runs -- so it is a
-        warning and not an error. It does mean the wrapper is running on something
-        other than what this revision pins, which is worth saying out loud since
-        nothing else in the report would reveal it.
+        A drifted interpreter still runs, so it is a warning rather than an error --
+        but nothing else in the report would reveal it.
 
-        Stale dependencies are the same shape of drift and get the same treatment. It
-        only shows up after a manual ``git pull``: ``agent update`` re-runs the bootstrap
-        itself. The pin is reported first when both have moved, because one bootstrap
-        run fixes both and there is no value in naming it twice.
+        Stale dependencies are the same shape of drift, but a rarer one: ``bin/agent``
+        compares the constraints hash on every launch and re-provisions on a mismatch,
+        so reaching this row means that re-provisioning *failed* -- it is deliberately
+        non-fatal, and leaves the previous venv running. The pin is reported first when
+        both have moved: one bootstrap run fixes both.
         """
         running = wrapper.python_version
         pinned = wrapper.python_pinned
         if running is None:
-            return Cells.row("interpreter", "not provisioned", Ansi.BOLD_YELLOW)
+            return Cells.row("interpreter", "not provisioned", Style.BOLD_YELLOW)
         if pinned and pinned != running:
             return Cells.row(
                 "interpreter",
                 f"{running} (pinned {pinned}) -- run bin/agent-bootstrap",
-                Ansi.BOLD_YELLOW,
+                Style.BOLD_YELLOW,
             )
         if wrapper.deps_current is False:
             return Cells.row(
                 "interpreter",
                 f"{running} (dependencies stale) -- run bin/agent-bootstrap",
-                Ansi.BOLD_YELLOW,
+                Style.BOLD_YELLOW,
             )
         return Cells.row("interpreter", running)
 
@@ -491,19 +469,17 @@ class Details:
         """
         Whether the base image exists, which Claude Code it carries, and if that is stale.
 
-        Yellow when absent, when the next launch would rebuild it, or when it is behind the
-        registry (an update is available); plain when present and current, including when
-        the registry was not consulted at all — ``--lite`` leaves the latest version
-        unknown, and an unknown latest must never look like an update.
+        Plain when present and current, *including* when the registry was not consulted --
+        ``--lite`` leaves the latest version unknown, and an unknown latest must never
+        look like an update.
 
-        Absence is no longer an instruction: ``agent run`` builds a missing image itself,
-        so the row says when that will happen rather than what to type.
+        Absence is not an instruction: ``agent run`` builds a missing image itself.
         """
         if not environment.base_image_present:
             return Cells.row(
                 "base image",
                 f"{environment.base_image} MISSING (built on the next `agent run`)",
-                Ansi.BOLD_YELLOW,
+                Style.BOLD_YELLOW,
             )
         state = f"{environment.base_image} present"
         if environment.base_image_version:
@@ -512,10 +488,10 @@ class Details:
             state += (
                 f" -- STALE, rebuilt on the next `agent run`: {environment.base_image_stale_reason}"
             )
-            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
+            return Cells.row("base image", state, Style.BOLD_YELLOW)
         if environment.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
-            return Cells.row("base image", state, Ansi.BOLD_YELLOW)
+            return Cells.row("base image", state, Style.BOLD_YELLOW)
         return Cells.row("base image", state)
 
     @staticmethod
@@ -526,14 +502,11 @@ class Details:
         Describe the image this project's Dockerfile declares, or nothing when it declares
         none.
 
-        Absent from the report rather than reported as empty: a project with no
-        `.claude-agent-wrap/Dockerfile` has nothing to say here, and a row saying so would
-        be noise in every project that never customized anything. Colour follows the base
-        image above it, and for the same reasons.
+        Absent rather than reported as empty, which would be noise in every project that
+        never customized anything.
 
         The available version is read off *environment*: there is one registry answer per
-        report and both image rows are measured against it, so naming it here rather than
-        saying "newer" keeps the two rows directly comparable.
+        report, and naming it keeps the two image rows directly comparable.
         """
         if project is None:
             return []
@@ -542,22 +515,22 @@ class Details:
                 Cells.row(
                     PROJECT_IMAGE_LABEL,
                     f"{project.image} MISSING (built on the next `agent run`)",
-                    Ansi.BOLD_YELLOW,
+                    Style.BOLD_YELLOW,
                 )
             ]
         state = f"{project.image} present"
         if project.claude_version:
             state += f" (Claude Code v{project.claude_version})"
-        style = Ansi.NONE
+        style = Style.NONE
         if project.stale_reason:
             state += f" -- STALE, rebuilt on the next `agent run`: {project.stale_reason}"
-            style = Ansi.BOLD_YELLOW
+            style = Style.BOLD_YELLOW
         if project.claude_update_available and environment.latest_claude_version is not None:
             state += f" → v{environment.latest_claude_version} available"
-            style = Ansi.BOLD_YELLOW
+            style = Style.BOLD_YELLOW
         if project.is_legacy:
             state += LEGACY_DOCKERFILE_NOTE
-            style = Ansi.BOLD_YELLOW
+            style = Style.BOLD_YELLOW
         return [Cells.row(PROJECT_IMAGE_LABEL, state, style)]
 
     @staticmethod
@@ -565,15 +538,14 @@ class Details:
         """
         Whether the shared sidecar network exists.
 
-        Absent is stated without alarm and without yellow: docker creates it on the next
-        launch, so unlike a missing image there is nothing for the reader to do.
+        Absent is stated without yellow: docker creates it on the next launch.
         """
         if environment.network_present:
             return Cells.row("network", f"{environment.network_name} present")
         return Cells.row("network", f"{environment.network_name} absent (created on next launch)")
 
     @staticmethod
-    def host_network(environment: EnvironmentRow) -> tuple[str, Ansi]:
+    def host_network(environment: EnvironmentRow) -> tuple[str, Style]:
         """
         Whether AGENT_USE_HOST_NETWORK is set and whether it will actually apply.
 
@@ -581,19 +553,18 @@ class Details:
         otherwise reads as the setting simply not working.
         """
         if not environment.host_network_requested:
-            return "off", Ansi.NONE
+            return "off", Style.NONE
         if environment.host_network_effective:
-            return "ON", Ansi.NONE
-        return "requested but IGNORED (only honored on WSL)", Ansi.BOLD_YELLOW
+            return "ON", Style.NONE
+        return "requested but IGNORED (only honored on WSL)", Style.BOLD_YELLOW
 
     @staticmethod
     def day_boundary(environment: EnvironmentRow) -> str:
         """
         Describe the resolved stats day boundary, noting an explicit override.
 
-        The offset is stated against UTC midnight, which is the only reading that makes
-        a bare number meaningful. The sign is dropped at zero, where there is no
-        direction to signal and "+0h" reads as a formatting artefact.
+        Stated against UTC midnight, the only reading that makes a bare number meaningful.
+        The sign is dropped at zero, where "+0h" reads as a formatting artefact.
         """
         hours = environment.day_start_hours
         day = f"{hours:+d}h UTC" if hours else "0h UTC"
@@ -604,8 +575,7 @@ class Details:
         return day
 
     @staticmethod
-    def table(report: InspectReport, display: DisplayService) -> list[str]:
-        """Render the three groups as one table, dividing group from group."""
+    def table(report: InspectReport, display: DisplayService) -> Group:
         groups = [
             Details.logs_rows(report.viewer, report.logs_autostart, report.storage, display),
             Details.secrets_rows(report.providers),
@@ -619,35 +589,27 @@ class Details:
                 body.append(DIVIDER)
             body.extend(group)
 
-        headers = list(DETAILS_HEADERS)
-        shared = display.compute_shared_widths([(headers, body, 1)], len(headers) - 1)
-        return display.render_table(DETAILS_TITLE, headers, list(DETAILS_ALIGNS), body, 1, shared)
+        return display.render_table(DETAILS_TITLE, DETAILS_TABLE, body)
 
 
-def render(report: InspectReport, display: DisplayService) -> list[str]:
-    """Render the whole report as terminal lines, containers first."""
-    lines: list[str] = []
+def render(report: InspectReport, display: DisplayService) -> Group:
+    parts: list[RenderableType] = []
     if not report.docker.available:
-        lines.append(report.docker.error)
-        lines.append("")
+        parts.append(report.docker.error)
+        parts.append("")
     else:
-        lines.extend(Tables.sidecars(report.sidecars, report.queued_launches, display))
-        lines.append("")
-        lines.extend(Tables.agents(report.agents, display))
-        lines.append("")
+        parts.extend(Tables.sidecars(report.sidecars, report.queued_launches, display))
+        parts.append("")
+        parts.extend(Tables.agents(report.agents, display))
+        parts.append("")
 
-    lines.extend(Details.table(report, display))
+    parts.append(Details.table(report, display))
     if report.lite:
         # One closing line rather than a marker on each affected row: the skipped steps are
         # a property of the run, and naming them once keeps the tables reading the same in
         # both modes.
-        lines.append(LITE_NOTE)
+        parts.append(LITE_NOTE)
 
-    # Last, and never in lite mode, so it can never collide with the note above. The
-    # position is also what lets `run.py` print the green "nothing is stale" line in its
-    # place: colour outside a table cell has no route through a line list.
-    stale = Tables.stale_images(report.stale_images, display)
-    if stale:
-        lines.append("")
-        lines.extend(stale)
-    return lines
+    # Last, and never in lite mode, so it can never collide with the note above.
+    parts.extend(Tables.stale_images(report.stale_images, display))
+    return Group(*parts)

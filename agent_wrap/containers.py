@@ -1,10 +1,45 @@
 # This file has been edited with the assistance of an AI tool.
-"""Singleton service container with lazy-initialized, dependency-injected services."""
+"""
+Singleton containers with lazy-initialized, dependency-injected members.
+
+Three tiers, each built on the one below it:
+
+``Core``
+    The process-level objects everything above is composed from: a connection factory
+    per database, and the rich consoles the display layer writes through. Constructing
+    a factory is what migrates its database, so the laziness is load-bearing:
+    ``agent --help`` opens nothing.
+``Repositories``
+    Repository instances, each over a factory from ``Core``.
+``Services``
+    Domain services, wired to each other, to ``Core``'s consoles, and to the
+    repositories they need.
+
+This is the composition root, and the only place permitted to import from
+``agent_wrap.infrastructure`` at runtime -- everything above reaches a repository
+through constructor injection.
+"""
 
 from functools import cached_property
 from typing import TYPE_CHECKING
 
+from agent_wrap.constants import AGENT_LAUNCHES_DIR, RENDER_CONSOLE_SIZE
+from agent_wrap.infrastructure.constants import (
+    BACKUPS_DIRNAME,
+    DB_DIRNAME,
+    DB_FILE_SUFFIX,
+    INFRASTRUCTURE_DIR,
+    LOGS_CONNECTION_PRAGMAS,
+    LOGS_DATABASE_PRAGMAS,
+    MIGRATIONS_DIRNAME,
+    Databases,
+)
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from rich.console import Console
+
     from agent_wrap.domain.build.service import BuildService
     from agent_wrap.domain.config.service import ConfigService
     from agent_wrap.domain.create.service import CreateService
@@ -19,6 +54,168 @@ if TYPE_CHECKING:
     from agent_wrap.domain.stats.service import StatsService
     from agent_wrap.domain.status.service import InspectService
     from agent_wrap.domain.updates.service import UpdateService
+    from agent_wrap.infrastructure.connection import ConnectionFactory
+    from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+    from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+    from agent_wrap.infrastructure.logs.repositories.usage import UsageRepository
+    from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
+
+
+class Core:
+    """
+    Lazy-initialized container for the connection factories and the rich consoles.
+
+    Takes its directories and its terminal verdict as constructor arguments rather than
+    reading them from a module-level constant or probing a stream: that is the seam a
+    test overrides, by building its own ``Core`` against ``tmp_path`` instead of
+    monkeypatching a path into place.
+
+    Each factory runs its database's migrations when it is first constructed, so a
+    command that never touches a database never migrates one.
+
+    The consoles are equally load-bearing in their laziness. ``Console`` resolves
+    ``color_system="auto"`` in its constructor and keeps that verdict for the object's
+    life, so one built at import -- while ``sys.stdout`` is still a test's capture
+    buffer, or a pipe -- would print unstyled to a terminal ever after. Built on first
+    output instead, the real streams are already in place. ``force_terminal`` is how a
+    test states the answer outright rather than racing that.
+
+    None is handed a ``file``: rich falls back to ``sys.stdout`` / ``sys.stderr`` at
+    write time, so replacing either stream is enough to redirect the output, and rich
+    drops colour under ``NO_COLOR`` and on a dumb terminal without anything here asking.
+
+    ``markup``, ``highlight`` and ``emoji`` are all off: every string printed through
+    these is somebody's message or a path, and rich must not read ``[ERROR]`` as a style
+    tag, recolour a number inside one, or rewrite ``:sunny:`` into a picture.
+    """
+
+    def __init__(
+        self, db_dir: Path, backups_dir: Path, *, force_terminal: bool | None = None
+    ) -> None:
+        self._db_dir = db_dir
+        self._backups_dir = backups_dir
+        self._force_terminal = force_terminal
+
+    @cached_property
+    def console_out(self) -> Console:
+        from rich.console import Console
+
+        return Console(
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            force_terminal=self._force_terminal,
+        )
+
+    @cached_property
+    def console_err(self) -> Console:
+        from rich.console import Console
+
+        return Console(
+            stderr=True,
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            force_terminal=self._force_terminal,
+        )
+
+    @cached_property
+    def console_render(self) -> Console:
+        """
+        The stdout console a composed renderable is printed through, sized here.
+
+        Its size is stated rather than probed, which is why it is a console of its own:
+        a table's columns were negotiated against the terminal before it ever reached
+        rich, and a console left to size itself would collapse them again to fit.
+        """
+        from rich.console import Console
+
+        width, height = RENDER_CONSOLE_SIZE
+        return Console(
+            width=width,
+            height=height,
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            force_terminal=self._force_terminal,
+        )
+
+    @cached_property
+    def projects_db(self) -> ConnectionFactory:
+        from agent_wrap.infrastructure.connection import ConnectionFactory
+
+        return ConnectionFactory(
+            name=Databases.PROJECTS,
+            db_path=self._db_dir / f"{Databases.PROJECTS}{DB_FILE_SUFFIX}",
+            migrations_dir=INFRASTRUCTURE_DIR / Databases.PROJECTS / MIGRATIONS_DIRNAME,
+            backups_dir=self._backups_dir,
+        )
+
+    @cached_property
+    def logs_db(self) -> ConnectionFactory:
+        """
+        The ingested index over the sidecar's JSONL log tree.
+
+        Takes its own PRAGMA sets rather than the shared defaults: this database is a
+        blob store two orders of magnitude larger than the registry, and two of the
+        settings it needs cannot be applied once its first page exists.
+        """
+        from agent_wrap.infrastructure.connection import ConnectionFactory
+
+        return ConnectionFactory(
+            name=Databases.LOGS,
+            db_path=self._db_dir / f"{Databases.LOGS}{DB_FILE_SUFFIX}",
+            migrations_dir=INFRASTRUCTURE_DIR / Databases.LOGS / MIGRATIONS_DIRNAME,
+            backups_dir=self._backups_dir,
+            database_pragmas=LOGS_DATABASE_PRAGMAS,
+            connection_pragmas=LOGS_CONNECTION_PRAGMAS,
+        )
+
+
+class Repositories:
+    """
+    Lazy-initialized container for repositories, each over a database from ``Core``.
+
+    A repository is the only thing above the storage layer that knows a database exists.
+    Domain services receive one by constructor injection and see app objects, never rows.
+    """
+
+    def __init__(self, core: Core) -> None:
+        self._core = core
+
+    @cached_property
+    def projects_repository(self) -> ProjectsRepository:
+        from agent_wrap.infrastructure.projects.repositories.projects import ProjectsRepository
+
+        return ProjectsRepository(connection_factory=self._core.projects_db)
+
+    @cached_property
+    def log_ingest_repository(self) -> LogIngestRepository:
+        from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+
+        return LogIngestRepository(connection_factory=self._core.logs_db)
+
+    @cached_property
+    def log_session_repository(self) -> SessionRepository:
+        from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+
+        return SessionRepository(connection_factory=self._core.logs_db)
+
+    @cached_property
+    def log_request_repository(self) -> RequestRepository:
+        from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+
+        return RequestRepository(connection_factory=self._core.logs_db)
+
+    @cached_property
+    def usage_repository(self) -> UsageRepository:
+        from agent_wrap.infrastructure.logs.repositories.usage import UsageRepository
+
+        return UsageRepository(connection_factory=self._core.logs_db)
 
 
 class Services:
@@ -27,13 +224,25 @@ class Services:
 
     Each service is a ``@cached_property`` that creates its dependencies via
     constructor injection. Services that are never accessed are never created.
+
+    Takes ``Core`` alongside ``Repositories`` because the consoles live there: the
+    display service is the one service composed from something below the repository
+    tier rather than from another service.
     """
+
+    def __init__(self, repositories: Repositories, core: Core) -> None:
+        self._repositories = repositories
+        self._core = core
 
     @cached_property
     def display_service(self) -> DisplayService:
         from agent_wrap.domain.display.service import DisplayService
 
-        return DisplayService()
+        return DisplayService(
+            console_out=self._core.console_out,
+            console_err=self._core.console_err,
+            console_render=self._core.console_render,
+        )
 
     @cached_property
     def provider_service(self) -> ProviderService:
@@ -54,7 +263,10 @@ class Services:
     def config_service(self) -> ConfigService:
         from agent_wrap.domain.config.service import ConfigService
 
-        return ConfigService(display_service=self.display_service)
+        return ConfigService(
+            display_service=self.display_service,
+            projects_repository=self._repositories.projects_repository,
+        )
 
     @cached_property
     def secrets_service(self) -> SecretsService:
@@ -131,6 +343,9 @@ class Services:
             stats_service=self.stats_service,
             config_service=self.config_service,
             display_service=self.display_service,
+            log_ingest_repository=self._repositories.log_ingest_repository,
+            log_session_repository=self._repositories.log_session_repository,
+            log_request_repository=self._repositories.log_request_repository,
         )
 
     @cached_property
@@ -145,6 +360,7 @@ class Services:
             updates_service=self.update_service,
             config_service=self.config_service,
             build_service=self.build_service,
+            log_session_repository=self._repositories.log_session_repository,
         )
 
     @cached_property
@@ -154,7 +370,14 @@ class Services:
         return StatsService(
             pricing_service=self.pricing_service,
             config_service=self.config_service,
+            usage_repository=self._repositories.usage_repository,
+            log_ingest_repository=self._repositories.log_ingest_repository,
         )
 
 
-services = Services()
+core = Core(
+    db_dir=AGENT_LAUNCHES_DIR / DB_DIRNAME,
+    backups_dir=AGENT_LAUNCHES_DIR / DB_DIRNAME / BACKUPS_DIRNAME,
+)
+repositories = Repositories(core=core)
+services = Services(repositories=repositories, core=core)

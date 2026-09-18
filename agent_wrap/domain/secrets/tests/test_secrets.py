@@ -4,12 +4,13 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from unittest.mock import Mock
 
     import pytest_mock
 
+import base64
 import contextlib
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -19,18 +20,33 @@ import pytest
 import agent_wrap.domain.secrets.store as store_mod
 from agent_wrap.domain.providers.service import ProviderService
 from agent_wrap.domain.secrets.service import SecretsService
-from agent_wrap.domain.secrets.store import (
-    EncryptedFileStore,
-    EncryptionPrimitives,
-    KeyDerivation,
-)
+from agent_wrap.domain.secrets.store import EncryptedFileStore, KeyDerivation
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 _FIXED_KEY = b"0" * 32  # stable key for reproducible tests
+
+#: What both pinned payloads below encrypt, under ``_FIXED_KEY``. 110 bytes of JSON:
+#: three full 32-byte CTR blocks plus a short tail, so the superseded reader's block
+#: counter and its trailing-chunk handling are both covered.
+_PINNED_SECRETS = {"litellm-bedrock:api_key": "A" * 40, "telegram:bot_token": "t" * 7}
+
+#: A Fernet token over ``_PINNED_SECRETS``, written by the build that introduced it.
+_PINNED_TOKEN = (
+    b"gAAAAABlU_EAAAECAwQFBgcICQoLDA0OD9ayf5TOeeH6ln7m4hIzmb8l22gpqnADlzTsQmyvgHlI"
+    b"WVErqVZX-4RhSXPTS6r5bMAsq0Qnr3hGcm9faMI3G2IGJODvmVbzh5kLZDnGG_MCxTCpmcKV-vFR"
+    b"RdYsBck6Pbioe5j5R5VpZd-sXqFoUqu_Z7KYqRK-zzI3VJ8U7xzQGs8xDuZvMi1GGmw0wcaaHA=="
+)
+
+#: The same secrets in the pre-0.11.0 ``nonce || HMAC-CTR || mac`` format, which
+#: :func:`store._decrypt_legacy` still reads and ``read_all`` upgrades in place.
+_PINNED_LEGACY_PAYLOAD = base64.b64decode(
+    "AAECAwQFBgcICQoLDA0OD6rizJ6aNa4FPhUUni7Z0uj/cHpOgTbMb6AbtrCc/pX5+ARBcWNNk+vo"
+    "3/xcjY1IuO3ECcyH8NUUoHCjmOGgs/3QTsZEn7P8zF11i4UnpRdARMwfqDWCUYh2NQYC6odpPjY0"
+    "ta0D0+xZ7WAdRsxe6mDsIBz7Ap0xMVt6bwBaG4Vk3PPGWCetA7gWhIWUCNw="
+)
 _PATCH_KEYFILE_PATH = "agent_wrap.domain.secrets.store.SECRETS_KEYFILE_PATH"
 _PATCH_ENCRYPTED_FILE_PATH = "agent_wrap.domain.secrets.store.SECRETS_ENCRYPTED_FILE_PATH"
-_PATCH_OLD_SECRETS_PATH = "agent_wrap.domain.secrets.store.OLD_SECRETS_PATH"
 _PATCH_DERIVE_KEY = "agent_wrap.domain.secrets.store.KeyDerivation.derive_key"
 
 
@@ -49,9 +65,7 @@ def secrets_paths(tmp_path: Path, mocker: pytest_mock.MockerFixture) -> tuple[Pa
     keyfile_path = tmp_path / ".secrets-key"
     mocker.patch(_PATCH_ENCRYPTED_FILE_PATH, secrets_path)
     mocker.patch(_PATCH_KEYFILE_PATH, keyfile_path)
-    mocker.patch(_PATCH_OLD_SECRETS_PATH, tmp_path / "claude_keys.json")
     KeyDerivation.derive_key.cache_clear()
-    EncryptedFileStore.maybe_migrate_old_fallback.cache_clear()
     return secrets_path, keyfile_path
 
 
@@ -152,83 +166,102 @@ def test_derive_key_empty_machine_id(
 
 
 @pytest.mark.parametrize(
-    "plaintext",
+    "value",
     [
-        b"",
-        b"hello",
-        b"x" * 5000,
-        "café-\U0001f4a1\U0001f511".encode(),
+        "",
+        "hello",
+        "x" * 5000,
+        "café-\U0001f4a1\U0001f511",
     ],
 )
-def test_encrypt_decrypt_roundtrip(plaintext: bytes) -> None:
-    key = b"k" * 32
-    ct = EncryptionPrimitives.encrypt(plaintext, key)
-    assert EncryptionPrimitives.decrypt(ct, key) == plaintext
+@pytest.mark.usefixtures("secrets_paths", "fixed_key")
+def test_write_read_roundtrip(value: str, display_mock: Mock) -> None:
+    EncryptedFileStore.write_all({"ns:key": value}, display=display_mock)
+    assert EncryptedFileStore.read_all(display=display_mock) == {"ns:key": value}
 
 
-def test_encrypt_known_answer_pins_on_disk_format(mocker: pytest_mock.MockFixture) -> None:
+@pytest.mark.usefixtures("secrets_paths", "fixed_key")
+def test_a_pinned_token_still_decrypts(tmp_path: Path, display_mock: Mock) -> None:
     """
-    Pin the exact ciphertext for a fixed key and nonce.
+    Pin a token written by an earlier build against ``_FIXED_KEY``.
 
-    The CTR block counter is derived from the block index, so a change to the
-    chunking loop shifts the keystream *identically* in encrypt and decrypt --
-    ``test_encrypt_decrypt_roundtrip`` would still pass while every secrets file
-    already on disk became undecryptable. Only a known-answer vector catches that.
-    The plaintext is 772 bytes: 24 full 32-byte blocks plus a 4-byte tail, so both
-    the multi-block counter and the short final block are covered.
+    Everything between the master key and the token -- the HKDF label, the base64
+    armouring, the cipher itself -- is invisible to a round-trip test, which re-derives
+    both halves from the same code. Change any of it and every secrets file already on
+    disk becomes undecryptable while the round-trip stays green. Only a pinned token
+    written by the *previous* code catches that.
     """
-    # encrypt() calls os.urandom exactly once, for the 16-byte nonce.
-    mocker.patch.object(store_mod.os, "urandom", return_value=bytes(range(16)))
-    key = b"k" * 32
-    plaintext = bytes(range(256)) * 3 + b"tail"
+    (tmp_path / "secrets.enc").write_bytes(_PINNED_TOKEN)
 
-    ct = EncryptionPrimitives.encrypt(plaintext, key)
-
-    assert ct[:16] == bytes(range(16))  # the stubbed nonce, stored verbatim
-    assert len(ct) == 16 + len(plaintext) + 32
-    assert (
-        hashlib.sha256(ct).hexdigest()
-        == "a29847b2ca0c95f54024309860a4505ec8d9c06cceb4940f5d323d5ef65d9baf"
-    )
-    assert EncryptionPrimitives.decrypt(ct, key) == plaintext
+    assert EncryptedFileStore.read_all(display=display_mock) == _PINNED_SECRETS
+    display_mock.warning.assert_not_called()
 
 
-def test_encrypt_nonce_randomness() -> None:
-    """Two encryptions of the same plaintext produce different ciphertexts."""
-    key = b"k" * 32
-    pt = b"same data"
-    ct1 = EncryptionPrimitives.encrypt(pt, key)
-    ct2 = EncryptionPrimitives.encrypt(pt, key)
-    assert ct1 != ct2
-    # Both should decrypt to the same plaintext
-    assert EncryptionPrimitives.decrypt(ct1, key) == pt
-    assert EncryptionPrimitives.decrypt(ct2, key) == pt
+@pytest.mark.usefixtures("secrets_paths", "fixed_key")
+def test_two_writes_of_one_value_differ(tmp_path: Path, display_mock: Mock) -> None:
+    """A fresh IV per write, so a repeated secret is not a repeated file."""
+    secrets_path = tmp_path / "secrets.enc"
+    EncryptedFileStore.write_all({"ns:key": "same"}, display=display_mock)
+    first = secrets_path.read_bytes()
+    EncryptedFileStore.write_all({"ns:key": "same"}, display=display_mock)
+
+    assert secrets_path.read_bytes() != first
+    assert EncryptedFileStore.read_all(display=display_mock) == {"ns:key": "same"}
 
 
-def test_decrypt_wrong_key() -> None:
-    ct = EncryptionPrimitives.encrypt(b"secret", b"a" * 32)
-    assert EncryptionPrimitives.decrypt(ct, b"b" * 32) is None
+#: Ways a secrets file can be damaged, each paired with the name it gets in the test id.
+_CORRUPTIONS: list[tuple[Callable[[bytes], bytes], str]] = [
+    (lambda t: t[:20] + bytes([t[20] ^ 0xFF]) + t[21:], "flipped ciphertext byte"),
+    (lambda t: t[:-1] + bytes([t[-1] ^ 0xFF]), "flipped tag byte"),
+    (lambda t: t[:20], "truncated"),
+    (lambda _: b"short", "not a token at all"),
+]
 
 
-def test_decrypt_tampered_ciphertext() -> None:
-    ct = bytearray(EncryptionPrimitives.encrypt(b"secret", b"k" * 32))
-    ct[20] ^= 0xFF  # flip bits in ciphertext
-    assert EncryptionPrimitives.decrypt(bytes(ct), b"k" * 32) is None
+@pytest.mark.parametrize(("corrupt", "description"), _CORRUPTIONS)
+@pytest.mark.usefixtures("secrets_paths", "fixed_key")
+def test_a_tampered_file_reads_as_empty(
+    corrupt: Callable[[bytes], bytes],
+    description: str,  # noqa: ARG001 -- names the case in the test id
+    tmp_path: Path,
+    display_mock: Mock,
+) -> None:
+    EncryptedFileStore.write_all({"ns:key": "v"}, display=display_mock)
+    secrets_path = tmp_path / "secrets.enc"
+    secrets_path.write_bytes(corrupt(secrets_path.read_bytes()))
+
+    assert EncryptedFileStore.read_all(display=display_mock) == {}
+    assert "decrypt" in display_mock.warning.call_args[0][0].lower()
 
 
-def test_decrypt_tampered_mac() -> None:
-    ct = bytearray(EncryptionPrimitives.encrypt(b"secret", b"k" * 32))
-    ct[-1] ^= 0xFF  # flip last byte of MAC
-    assert EncryptionPrimitives.decrypt(bytes(ct), b"k" * 32) is None
+@pytest.mark.usefixtures("secrets_paths", "fixed_key")
+def test_the_superseded_payload_is_read_and_rewritten(
+    tmp_path: Path, mocker: pytest_mock.MockerFixture, display_mock: Mock
+) -> None:
+    """A pre-0.11.0 HMAC-CTR file reads back, and is upgraded in place on that read."""
+    secrets_path = tmp_path / "secrets.enc"
+    secrets_path.write_bytes(_PINNED_LEGACY_PAYLOAD)
+
+    assert EncryptedFileStore.read_all(display=display_mock) == _PINNED_SECRETS
+    display_mock.warning.assert_not_called()
+
+    assert secrets_path.read_bytes() != _PINNED_LEGACY_PAYLOAD
+    # The upgrade is the point: a second read must not reach the superseded reader.
+    spy = mocker.spy(store_mod, "_decrypt_legacy")
+    assert EncryptedFileStore.read_all(display=display_mock) == _PINNED_SECRETS
+    spy.assert_not_called()
 
 
-def test_decrypt_truncated() -> None:
-    ct = EncryptionPrimitives.encrypt(b"secret", b"k" * 32)
-    assert EncryptionPrimitives.decrypt(ct[:20], b"k" * 32) is None
+@pytest.mark.usefixtures("secrets_paths", "fixed_key")
+def test_a_tampered_superseded_payload_reads_as_empty(tmp_path: Path, display_mock: Mock) -> None:
+    secrets_path = tmp_path / "secrets.enc"
+    tampered = bytearray(_PINNED_LEGACY_PAYLOAD)
+    tampered[20] ^= 0xFF
+    secrets_path.write_bytes(bytes(tampered))
 
-
-def test_decrypt_too_short() -> None:
-    assert EncryptionPrimitives.decrypt(b"short", b"k" * 32) is None
+    assert EncryptedFileStore.read_all(display=display_mock) == {}
+    assert "decrypt" in display_mock.warning.call_args[0][0].lower()
+    assert secrets_path.read_bytes() == bytes(tampered)
 
 
 @pytest.mark.usefixtures("secrets_paths", "fixed_key")
@@ -403,275 +436,12 @@ def test_read_all_filters_non_strings(
     # Bypass the public API to write a dict with a non-string value
     encrypted = tmp_path / "secrets.enc"
     plaintext = json.dumps({"keep": "val", "drop_int": 42, "drop_none": None}).encode()
-    encrypted.write_bytes(EncryptionPrimitives.encrypt(plaintext, _FIXED_KEY))
+    encrypted.write_bytes(store_mod._fernet(_FIXED_KEY).encrypt(plaintext))
 
     data = EncryptedFileStore.read_all(display=display_mock)
     assert data == {"keep": "val"}
     assert "drop_int" not in data
     assert "drop_none" not in data
-
-
-def _write_old_file(tmp_path: Path, data: dict[str, Any]) -> Path:
-    """Write *data* as JSON to the mocked ``claude_keys.json`` path."""
-    old = tmp_path / "claude_keys.json"
-    old.write_text(json.dumps(data))
-    return old
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_no_old_file(
-    display_mock: Mock,
-) -> None:
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-    # No crash, no side effects
-    assert EncryptedFileStore.read_all(display=display_mock) == {}
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_copies_data(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    _write_old_file(tmp_path, {"BedrockBearerToken": "bedrock-val"})
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    assert EncryptedFileStore.read_all(display=display_mock) == {
-        "litellm-bedrock:api_key": "bedrock-val"
-    }
-    assert not (tmp_path / "claude_keys.json").is_file()
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_all_keys(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    _write_old_file(
-        tmp_path,
-        {
-            "BedrockBearerToken": "b",
-            "DashScopeAPIKey": "d",
-            "DeepSeekAPIKey": "ds",
-            "TelegramBotToken": "tgb",
-            "TelegramChatId": "tgc",
-        },
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    assert EncryptedFileStore.read_all(display=display_mock) == {
-        "litellm-bedrock:api_key": "b",
-        "litellm-dashscope:api_key": "d",
-        "litellm-deepseek:api_key": "ds",
-        "telegram:TelegramBotToken": "tgb",
-        "telegram:TelegramChatId": "tgc",
-    }
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_service_specific_credential_fallback(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    """ServiceSpecificCredential used when BedrockBearerToken is missing."""
-    _write_old_file(
-        tmp_path,
-        {"ServiceSpecificCredential": {"ServiceCredentialSecret": "ssc-secret"}},
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    assert EncryptedFileStore.read_all(display=display_mock) == {
-        "litellm-bedrock:api_key": "ssc-secret"
-    }
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_bedrock_bearer_takes_priority(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    """BedrockBearerToken wins over ServiceSpecificCredential when both present."""
-    _write_old_file(
-        tmp_path,
-        {
-            "BedrockBearerToken": "bearer",
-            "ServiceSpecificCredential": {"ServiceCredentialSecret": "ssc"},
-        },
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    assert EncryptedFileStore.read_all(display=display_mock) == {
-        "litellm-bedrock:api_key": "bearer"
-    }
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_per_key_no_overwrite(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    """Already-present keys are not overwritten during migration."""
-    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "existing"}, display=display_mock)
-    _write_old_file(
-        tmp_path,
-        {"BedrockBearerToken": "new-val", "DashScopeAPIKey": "ds-val"},
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    data = EncryptedFileStore.read_all(display=display_mock)
-    # Bedrock was already present — preserved
-    assert data["litellm-bedrock:api_key"] == "existing"
-    # DashScope was missing — migrated
-    assert data["litellm-dashscope:api_key"] == "ds-val"
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_does_not_overwrite_existing(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    """When the encrypted store already has all keys, nothing changes."""
-    EncryptedFileStore.write_all(
-        {
-            "litellm-bedrock:api_key": "keep-b",
-            "litellm-dashscope:api_key": "keep-d",
-        },
-        display=display_mock,
-    )
-    encrypted = tmp_path / "secrets.enc"
-    encrypted_bytes = encrypted.read_bytes()
-
-    _write_old_file(
-        tmp_path,
-        {"BedrockBearerToken": "should-not-migrate", "DashScopeAPIKey": "also-skip"},
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    # Encrypted file unchanged
-    assert encrypted.read_bytes() == encrypted_bytes
-    assert EncryptedFileStore.read_all(display=display_mock) == {
-        "litellm-bedrock:api_key": "keep-b",
-        "litellm-dashscope:api_key": "keep-d",
-    }
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_corrupt_old_file(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    old = tmp_path / "claude_keys.json"
-    old.write_text("not valid json")
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    assert not old.is_file(), "corrupt old file should be deleted"
-    assert EncryptedFileStore.read_all(display=display_mock) == {}
-    display_mock.warning.assert_called_once()
-    assert "corrupt" in display_mock.warning.call_args[0][0].lower()
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_empty_old_file(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    old = tmp_path / "claude_keys.json"
-    old.write_text(json.dumps({}))
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    # Empty dict: no keys to migrate, but file is still removed
-    assert not old.is_file()
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_prints_message(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    _write_old_file(tmp_path, {"TelegramBotToken": "tg"})
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    display_mock.success.assert_called_once()
-    assert "Migrated 1 secret" in display_mock.success.call_args[0][0]
-
-
-def test_read_triggers_migration(tmp_path: Path, svc: SecretsService) -> None:
-    old = tmp_path / "claude_keys.json"
-    old.write_text(json.dumps({"TelegramBotToken": "migrated-tg"}))
-
-    result = svc.read("telegram:TelegramBotToken", "desc")
-    assert result == "migrated-tg"
-    assert not old.is_file()
-
-
-def test_write_triggers_migration(
-    tmp_path: Path,
-    svc: SecretsService,
-    display_mock: Mock,
-) -> None:
-    old = tmp_path / "claude_keys.json"
-    old.write_text(json.dumps({"TelegramBotToken": "migrated-tg"}))
-    display_mock.prompt_secret.return_value = "new-val"
-
-    svc._write("new-key", "desc")
-
-    data = EncryptedFileStore.read_all(display=display_mock)
-    assert data["telegram:TelegramBotToken"] == "migrated-tg"
-    assert data["new-key"] == "new-val"
-    assert not old.is_file()
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_skip_empty_values(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    """Empty-string or missing keys are skipped (not migrated)."""
-    _write_old_file(
-        tmp_path,
-        {
-            "BedrockBearerToken": "",
-            "DashScopeAPIKey": "",
-            "TelegramBotToken": "",
-        },
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    # Nothing was migrated — all values were empty
-    assert EncryptedFileStore.read_all(display=display_mock) == {}
-
-
-@pytest.mark.usefixtures("secrets_paths", "fixed_key")
-def test_migrate_bedrock_empty_falls_back_to_ssc(
-    tmp_path: Path,
-    display_mock: Mock,
-) -> None:
-    """Empty BedrockBearerToken falls back to ServiceSpecificCredential."""
-    _write_old_file(
-        tmp_path,
-        {
-            "BedrockBearerToken": "",
-            "ServiceSpecificCredential": {"ServiceCredentialSecret": "ssc-secret"},
-        },
-    )
-
-    EncryptedFileStore.maybe_migrate_old_fallback(display=display_mock)
-
-    assert EncryptedFileStore.read_all(display=display_mock) == {
-        "litellm-bedrock:api_key": "ssc-secret"
-    }
-
-
-# --- missing_keys_by_sidecar (read-only reporting probe) ---
 
 
 @pytest.fixture
@@ -714,18 +484,6 @@ def test_missing_keys_empty_when_stored(reporting_svc: SecretsService, display_m
     result = reporting_svc.missing_keys_by_sidecar()
     assert result["litellm-bedrock"] == []
     assert result["telegram"] == []
-
-
-def test_missing_keys_does_not_migrate_legacy_file(
-    tmp_path: Path, reporting_svc: SecretsService
-) -> None:
-    """The reporting probe must not run the migration that deletes ~/claude_keys.json."""
-    old = tmp_path / "claude_keys.json"
-    old.write_text(json.dumps({"TelegramBotToken": "legacy-tg"}))
-
-    reporting_svc.missing_keys_by_sidecar()
-
-    assert old.is_file(), "reporting must not consume the legacy keyfile"
 
 
 def test_missing_keys_does_not_rewrite_the_store(

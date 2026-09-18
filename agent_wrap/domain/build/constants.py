@@ -16,11 +16,21 @@ DEFAULT_STARTUP_TIMEOUT_SECONDS = 10.0
 STARTUP_TRUTHY_WORDS = frozenset({"true", "yes", "on"})
 STARTUP_FALSY_WORDS = frozenset({"false", "no", "off"})
 
-# A ``FROM`` line, and the subset of them that names the wrapper's base image. Any tag
-# reads as the base: the wrapper only ever builds it untagged, so a tagged spelling can
-# only mean the same image, and the id comparison downstream is against that one build.
-FROM_RE = re.compile(r"^[Ff][Rr][Oo][Mm]\s+(\S+)")
+# The subset of ``FROM`` images that names the wrapper's base image. Any tag reads as the
+# base: the wrapper only ever builds it untagged, so a tagged spelling can only mean the
+# same image, and the id comparison downstream is against that one build.
 BASE_FROM_RE = re.compile(rf"^{BASE_IMAGE_NAME}(:.*)?$")
+
+# The ``# agent-*`` directives, matched against a comment's text rather than its line:
+# dockerfile-parse hands back a COMMENT entry with the "#" and the space after it already
+# stripped, so none of these carries one.
+AGENT_NAME_RE = re.compile(r"^agent-name:\s*(\S+)")
+AGENT_USER_RE = re.compile(r"^agent-user:\s*(\S+)")
+AGENT_RUN_ARGS_RE = re.compile(r"^agent-run-args:\s*(.+)")
+AGENT_ENABLE_STARTUP_RE = re.compile(r"^agent-enable-startup:\s*(\S+)")
+
+# What an ``# agent-name:`` value must look like: Docker image names are lowercase.
+AGENT_NAME_VALUE_RE = re.compile(r"^[a-z0-9_.\-]+$")
 
 # The namespace every project image is tagged into. A local repository belongs to the
 # wrapper when it equals BASE_IMAGE_NAME or starts with this and carries no "/" -- the
@@ -60,8 +70,6 @@ PROJECT_BUILD_CACHE_NOTE = "this build runs with --no-cache and re-runs every RU
 
 
 class BuildReason(Enum):
-    """Why an image is about to be built."""
-
     #: No image by that name exists on this host.
     MISSING = auto()
     #: Present, but carries no wrapper build stamp -- built before stamping existed.
@@ -91,8 +99,6 @@ BUILD_REASON_TEXT = {
 
 
 class ImageCleanupReason(Enum):
-    """Why an image is no longer needed and ``agent cleanup`` offers to remove it."""
-
     #: An untagged wrapper build, left behind by a later build of the same tag.
     SUPERSEDED = auto()
     #: A ``claude-agent-<name>`` tag no registered project resolves to any more.

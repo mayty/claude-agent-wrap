@@ -8,18 +8,16 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agent_wrap.domain.providers.models import RequestTiming
+    from agent_wrap.infrastructure.logs.models import BlobSweep, SessionKey
 
 
 class DaemonState(TypedDict):
     """
     State of a logs viewer daemon that is running or coming up.
 
-    *starting* is True between the spawn claim and the moment the viewer actually binds
-    its port: the claim is written by the spawning side as soon as it knows the pid, so a
-    concurrent launcher sees the slot taken instead of starting a second viewer. The
-    viewer itself clears the flag once it is listening, and corrects *port* at the same
-    time -- until then *port* is the port that was requested, not necessarily the one
-    finally bound.
+    *starting* is True between the spawn claim and the viewer binding its port, so a
+    concurrent launcher sees the slot taken instead of starting a second viewer. Until
+    it clears, *port* is the port *requested*, not necessarily the one bound.
     """
 
     pid: int
@@ -28,10 +26,16 @@ class DaemonState(TypedDict):
 
 
 class Fingerprint(TypedDict):
-    """Change-marker for detecting stale caches via mtime + size."""
+    """
+    Change-marker the browser polls, and the wire shape of the ``*-stat`` endpoints.
 
-    mtime: int | None
-    size: int | None
+    ``rev`` is the newest ``sessions.last_ingested_at`` in scope (unix ns, ``None`` for
+    an empty scope) and ``count`` how many session rows it covers. Both come from the
+    index, so the marker describes exactly what a fetch would return.
+    """
+
+    rev: int | None
+    count: int
 
 
 @dataclass(frozen=True)
@@ -39,9 +43,8 @@ class ViewerState:
     """
     A logs-viewer snapshot for reporting, including its logfile's liveness.
 
-    Distinct from :class:`DaemonState`: that is the on-disk state file's shape, read on
-    the path that also *repairs* it. This adds what a report wants (is the logfile
-    growing?) and is produced without touching anything.
+    Distinct from :class:`DaemonState`, which is the state file's shape and is read on
+    the path that also *repairs* it. This is produced without touching anything.
     """
 
     running: bool
@@ -57,8 +60,6 @@ class ViewerState:
 
 
 class GroupInfo(TypedDict):
-    """A transient project group."""
-
     root: Path
     name: str
     paths: list[Path]
@@ -66,8 +67,6 @@ class GroupInfo(TypedDict):
 
 
 class ProjectInfo(TypedDict):
-    """Summary row for a project in the viewer listing."""
-
     id: int
     path: str
     name: str
@@ -75,42 +74,33 @@ class ProjectInfo(TypedDict):
     last_ts: float | None
 
 
-class ProviderSessionMeta(TypedDict):
-    """Per-session metadata from a single provider."""
-
-    provider: str
-    session_id: str
-    alias: str | None
-    title: str | None
-    count: int
-    first_ts: float | None
-    last_ts: float | None
-    models: list[str]
-
-
 class CombinedSessionMeta(TypedDict):
-    """Per-session metadata merged across providers."""
-
     providers: list[str]
     session_id: str
     alias: str | None
     title: str | None
     count: int
-    first_ts: float | None
     last_ts: float | None
     models: list[str]
 
 
 class NormalizedRecordBase(TypedDict):
-    """Core fields of a normalized log record (before cost enrichment)."""
+    """
+    Core fields of one request as the viewer consumes it, before cost enrichment.
+
+    The three request-side fields carry ``blob:<id>`` *references*, not content, which
+    keeps a session's payload proportional to its length rather than its square. ``tools``
+    is ``[]`` rather than a reference when the request carried none, so the client's "are
+    there any" test needs no special case.
+    """
 
     timing: RequestTiming | None
     status: str | None
     model: str | None
     agent_id: str | None
-    messages: list[Any]
+    messages: list[str]
     system: str | None
-    tools: list[Any]
+    tools: list[Any] | str
     response: dict[str, Any]
     usage: dict[str, Any]
     error: str | None
@@ -126,10 +116,10 @@ class NormalizedRecordBase(TypedDict):
 
 class NormalizedRecord(NormalizedRecordBase, total=False):
     """
-    Full normalized log record after cost enrichment.
+    One request as the viewer consumes it, priced.
 
-    Fields in the ``total=False`` subclass are added by ``enrich_with_costs``
-    after the core fields are built by ``normalize_record``.
+    The ``total=False`` fields are derived at read time, never stored: pricing tables
+    move, and a cost column would freeze each request at the day it was ingested.
     """
 
     context_tokens: int
@@ -138,28 +128,7 @@ class NormalizedRecord(NormalizedRecordBase, total=False):
     cost: float | None
 
 
-class ReadSessionResult(TypedDict):
-    """Return type for :func:`read_session`."""
-
-    reqs: list[NormalizedRecord]
-    session_meta: CombinedSessionMeta | None
-
-
-class SessionMeta:
-    """Accumulates cheap per-session metadata as records are scanned."""
-
-    def __init__(self) -> None:
-        self.count = 0
-        self.first_ts: float | None = None
-        self.last_ts: float | None = None
-        self.models: set[str] = set()
-        self.derived_alias: str | None = None
-        self.derived_title: str | None = None
-
-
 class ExtractedFields(NamedTuple):
-    """Fields extracted from one raw or resolved log record."""
-
     data: dict[str, Any]
     agent_id: str | None
     reply: dict[str, Any]
@@ -167,9 +136,105 @@ class ExtractedFields(NamedTuple):
     finish_reason: str | None
 
 
-class ProviderSessionRead(NamedTuple):
-    """Return type for :func:`_read_provider_session`."""
+@dataclass(frozen=True)
+class IngestReport:
+    """
+    What one ingest pass over the log tree did.
 
-    records: list[NormalizedRecord]
-    meta: ProviderSessionMeta | None
-    strings: dict[str, str]
+    The two counts differing is the normal state of a warm tree, so "613 seen, 0 changed"
+    means up to date rather than idle.
+
+    ``failed`` names the session directories that raised rather than aborting the pass: a
+    backfill of hundreds should not be lost to one unreadable directory, but the failure
+    must still make the verb exit non-zero.
+    """
+
+    sessions_seen: int
+    sessions_changed: int
+    sessions_reset: int
+    records_ingested: int
+    failed: tuple[tuple[Path, str], ...]
+
+    @property
+    def ok(self) -> bool:
+        """Report whether every session the pass looked at was ingested."""
+        return not self.failed
+
+
+# How far behind the log files the index is, as `agent stats` reports it.
+#
+# Two counts rather than a list: the warning names a shortfall and points at
+# `agent reindex`, and a user who wants the sessions themselves runs that. *behind* is
+# the number of indexed sessions whose file has grown past its watermark, plus every
+# session directory the index has never seen at all.
+class IndexLag(NamedTuple):
+    behind: int
+    total: int
+
+    @property
+    def is_stale(self) -> bool:
+        return self.behind > 0
+
+
+class ExpiredSession(NamedTuple):
+    """
+    One session directory old enough for retention to delete, with what that costs.
+
+    ``path`` is carried rather than rebuilt from ``key``, so the directory the survey
+    measured is the directory the run removes.
+
+    ``messages_offset`` is the index's watermark, kept so the run can re-ask under the
+    lock whether the index has read the whole file. A session whose file has grown since
+    is not expired at all -- the growth is newer than the age that selected it.
+    """
+
+    key: SessionKey
+    path: Path
+    messages_offset: int
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class RetentionScope:
+    """
+    What retention would delete, surveyed before anything is removed.
+
+    ``days`` of ``0`` means retention is switched off -- the default, and worth telling
+    apart from "nothing is old enough yet".
+    """
+
+    days: int
+    sessions: tuple[ExpiredSession, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.sessions
+
+    @property
+    def freed_estimate(self) -> int:
+        """Bytes the log tree would give back, summed over the surveyed directories."""
+        return sum(session.size_bytes for session in self.sessions)
+
+
+class RetentionResult(NamedTuple):
+    """
+    What retention actually deleted: session directories, and the bytes they held.
+
+    ``freed_bytes`` is log-tree bytes only: the content behind the deleted rows is
+    reclaimed by the blob sweep that follows, and reported separately as a different disk.
+    """
+
+    sessions: int
+    freed_bytes: int
+
+
+class IndexReclaim(NamedTuple):
+    """
+    Both halves of one reclaim pass: retention first, then the blob sweep.
+
+    One result because they are one lock and one order -- reversed, retention would free
+    nothing in the database until the *next* cleanup.
+    """
+
+    retention: RetentionResult
+    sweep: BlobSweep

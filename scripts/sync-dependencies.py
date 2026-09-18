@@ -15,9 +15,12 @@
 #   0 - the array is in step with the tree (rewritten if it was not)
 #   1 - usage error, an empty tree, or the named array is not in pyproject.toml
 
-import re
 import sys
 from pathlib import Path
+
+import tomlkit
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
@@ -27,29 +30,13 @@ PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 # project's own root line and any transitive line, whatever `--depth` was passed.
 TREE_CONNECTORS = ("├──", "└──")
 
-# The two arrays this script knows how to rewrite, each captured in three pieces:
-# the header through the opening bracket, the body, and the closing bracket. Both
-# are anchored on their owning table, so an array of the same name elsewhere in the
-# file cannot be hit by accident.
-SECTION_PATTERNS: dict[str, re.Pattern[str]] = {
-    "prod": re.compile(r"(?ms)^(\[project\].*?^dependencies = \[\n)(.*?)(^\])"),
-    "dev": re.compile(r"(?ms)^(\[dependency-groups\].*?^dev = \[\n)(.*?)(^\])"),
+# The two arrays this script knows how to rewrite, as the path to each through the
+# document. Anchored on the owning table, so an array of the same name elsewhere in
+# the file cannot be hit by accident.
+SECTION_PATHS: dict[str, tuple[str, str]] = {
+    "prod": ("project", "dependencies"),
+    "dev": ("dependency-groups", "dev"),
 }
-
-# One declared requirement: indent and opening quote, name, optional extras, the
-# version specifier, then the closing quote and whatever trails it.
-REQUIREMENT_PATTERN = re.compile(
-    r'^(?P<prefix>\s*")(?P<name>[A-Za-z0-9._-]+)(?P<extras>\[[^\]]*\])?'
-    r'(?P<spec>[^"]*)"(?P<trail>.*)$'
-)
-
-# The version in the first constraint of a specifier, e.g. `9.1.1` in `>=9.1.1,<10`.
-FLOOR_PATTERN = re.compile(r"^[<>=!~]=?\s*(?P<version>[^,\s]+)")
-
-
-def canonical(name: str) -> str:
-    """Return the PEP 503 canonical form of a package name."""
-    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def parse_tree(text: str) -> dict[str, str]:
@@ -62,54 +49,66 @@ def parse_tree(text: str) -> dict[str, str]:
         if len(fields) < 3:  # noqa: PLR2004 -- connector, name, version
             continue
         name = fields[1].split("[")[0]  # `uvicorn[standard]` -> `uvicorn`
-        versions[canonical(name)] = fields[2].removeprefix("v")
+        versions[canonicalize_name(name)] = fields[2].removeprefix("v")
     return versions
 
 
-def rewrite_body(body: str, versions: dict[str, str]) -> tuple[str, list[tuple[str, str, str]]]:
-    """
-    Rewrite each known requirement in *body* to `>=` its resolved version.
+def floor_of(requirement: Requirement) -> str:
+    """Return the version in the requirement's first constraint, or "" when it states none."""
+    return next((spec.version for spec in requirement.specifier), "")
 
-    Returns the new body and the (name, old, new) triples whose version moved.
-    Lines that are not requirements -- comments, blanks -- pass through untouched,
-    as do requirements the tree says nothing about.
+
+def rewrite(entry: str, versions: dict[str, str]) -> tuple[str, tuple[str, str, str] | None]:
     """
-    changes: list[tuple[str, str, str]] = []
-    lines: list[str] = []
-    for line in body.split("\n"):
-        match = REQUIREMENT_PATTERN.match(line)
-        version = versions.get(canonical(match["name"])) if match else None
-        if match is None or version is None:
-            lines.append(line)
-            continue
-        floor = FLOOR_PATTERN.match(match["spec"])
-        old = floor["version"] if floor else ""
-        if old != version:
-            changes.append((match["name"], old, version))
-        extras = match["extras"] or ""
-        lines.append(f'{match["prefix"]}{match["name"]}{extras}>={version}"{match["trail"]}')
-    return "\n".join(lines), changes
+    Restate one declared requirement as `>=` its resolved version.
+
+    Returns the new text and, when the floor moved, the (name, old, new) triple naming
+    the move. A requirement the tree says nothing about is returned untouched, and so is
+    anything that does not parse as a requirement at all -- this script rewrites floors,
+    and is not the place a malformed declaration should first be reported.
+    """
+    try:
+        requirement = Requirement(entry)
+    except InvalidRequirement:
+        return entry, None
+    version = versions.get(canonicalize_name(requirement.name))
+    if version is None:
+        return entry, None
+    old = floor_of(requirement)
+    change = None if old == version else (requirement.name, old, version)
+    extras = f"[{','.join(sorted(requirement.extras))}]" if requirement.extras else ""
+    return f"{requirement.name}{extras}>={version}", change
 
 
 def update_dependencies(section: str, tree: str) -> int:
-    """Sync one pyproject.toml array against *tree*. Returns a process exit code."""
     versions = parse_tree(tree)
     if not versions:
         print(f"no dependencies found in the {section} tree", file=sys.stderr)
         return 1
 
-    text = PYPROJECT.read_text(encoding="utf-8")
-    match = SECTION_PATTERNS[section].search(text)
-    if match is None:
+    # tomlkit rather than a regex splice: it round-trips the document, so the comments,
+    # blank lines and array formatting around the entries come back byte-identical and
+    # the diff is exactly the floors that moved.
+    document = tomlkit.parse(PYPROJECT.read_text(encoding="utf-8"))
+    table, key = SECTION_PATHS[section]
+    array = document.get(table, {}).get(key)
+    if array is None:
         print(f"no {section} dependency array in {PYPROJECT}", file=sys.stderr)
         return 1
 
-    body, changes = rewrite_body(match[2], versions)
-    if body == match[2]:
+    changes: list[tuple[str, str, str]] = []
+    for index, entry in enumerate(array):
+        replacement, change = rewrite(str(entry), versions)
+        if change is not None:
+            changes.append(change)
+        if replacement != str(entry):
+            array[index] = replacement
+
+    if not changes:
         print(f"{section} dependencies up to date")
         return 0
 
-    PYPROJECT.write_text(text[: match.start(2)] + body + text[match.end(2) :], encoding="utf-8")
+    PYPROJECT.write_text(tomlkit.dumps(document), encoding="utf-8")
     print(f"{section} dependencies updated")
     for name, old, new in changes:
         print(f"  {name} {old or '(none)'} -> {new}")
@@ -117,8 +116,8 @@ def update_dependencies(section: str, tree: str) -> int:
 
 
 def main(argv: list[str]) -> int:
-    sections = "|".join(SECTION_PATTERNS)
-    if len(argv) != 1 or argv[0] not in SECTION_PATTERNS:
+    sections = "|".join(SECTION_PATHS)
+    if len(argv) != 1 or argv[0] not in SECTION_PATHS:
         print(f"usage: uv tree ... | {Path(__file__).name} <{sections}>", file=sys.stderr)
         return 1
     return update_dependencies(argv[0], sys.stdin.read())

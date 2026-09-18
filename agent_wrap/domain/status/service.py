@@ -6,37 +6,25 @@ This service owns no state of its own. It composes the read-only accessors of th
 domains that do own it (sidecars, secrets, logs, updates, config, providers, build) into
 one ``InspectReport``. Three properties are load-bearing:
 
-**Read-only.** Nothing here writes, deletes, or prompts. Several neighbouring methods that
-look like the obvious choice are unusable for exactly that reason, and the alternatives
-exist because of it: ``SecretsService.present_keys`` instead of ``check_secrets`` (which
-runs the legacy-keyfile migration), ``LogsService.viewer_state`` instead of
-``running_server`` (which unlinks a stale state file), ``SidecarService.registry_state``
-instead of ``has_live_runners`` (which reaps stale lock files), ``UpdateService
-.current_revision`` instead of ``check_updates`` (which fetches, and prompts), and
-``BuildService.resolve_image``, ``BuildService.stale_summary`` and
-``BuildService.stale_project_images`` instead of ``ensure_images`` or anything else
-further along the rebuild path (which builds).
+**Read-only.** Several neighbouring methods that look like the obvious choice are
+unusable for exactly that reason, and their alternatives exist because of it:
+``SecretsService.present_keys`` not ``check_secrets`` (runs the legacy-keyfile
+migration), ``LogsService.viewer_state`` not ``running_server`` (unlinks a stale state
+file), ``SidecarService.registry_state`` not ``has_live_runners`` (reaps stale lock
+files), ``UpdateService.current_revision`` not ``check_updates`` (fetches, and prompts),
+and ``BuildService``'s read-only trio rather than anything on the rebuild path.
 
-Read-only is not the same as cheap, and two probes are neither local nor silent: reading
-the Claude Code version inside an image starts a throwaway container from it, and the "is
-there a newer one" check runs ``npm view`` in that container, which reaches the npm
-registry. ``lite=True`` drops those two, plus the fleet-wide staleness sweep, whose cost
-grows with the project registry rather than with the report — and keeps everything else,
-including both installed versions.
+Read-only is not cheap: reading the Claude Code version inside an image starts a
+throwaway container, and the "is there a newer one" check runs ``npm view`` in it.
+``lite=True`` drops those two plus the fleet-wide staleness sweep.
 
-**Total.** Every section degrades on its own. Docker being down empties the container
-lists and leaves everything filesystem-derived intact; a section that cannot be read
-reports absence rather than raising, because a diagnostic command is at its most useful
-precisely when something is broken. A project Dockerfile that cannot be resolved becomes a
-warning on the report rather than an abort.
+**Total.** Every section degrades on its own and reports absence rather than raising --
+a diagnostic command is most useful precisely when something is broken.
 
-**Concurrent.** The Docker probes fan out over a thread pool. They share no state, each
-already degrades to None/False/[] on its own failure, and every one of them is a
-``subprocess.run`` that spends its time waiting — so the pool buys wall clock and costs no
-new failure mode. Completion order is not observable in the report. The single ordering
-constraint is that a version probe must never run against an absent image, since
-``docker run`` would then try to *pull* it; that, and only that, is why the presence
-probes are an awaited phase of their own instead of another handful of futures.
+**Concurrent.** The Docker probes fan out over a thread pool; they share no state and
+each already degrades on its own failure. The single ordering constraint is that a
+version probe must never run against an absent image, since ``docker run`` would then
+try to *pull* it -- which is why the presence probes are an awaited phase of their own.
 """
 
 import hashlib
@@ -62,6 +50,7 @@ from agent_wrap.domain.status.constants import (
     DEV_VENV_SUFFIX,
     DOCKER_UNREACHABLE,
     HOST_NETWORK_ENV,
+    NANOSECONDS_PER_SECOND,
     PROBE_THREAD_PREFIX,
     PROBE_WORKERS,
     TIMEZONE_ENV,
@@ -100,11 +89,10 @@ if TYPE_CHECKING:
     from agent_wrap.domain.sidecars.models import AgentContainer, SidecarContainer
     from agent_wrap.domain.sidecars.service import SidecarService
     from agent_wrap.domain.updates.service import UpdateService
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
 
 
 class InspectService:
-    """Assembles a read-only snapshot of agent-wrap's state across the host."""
-
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         sidecar_service: SidecarService,
@@ -114,6 +102,7 @@ class InspectService:
         updates_service: UpdateService,
         config_service: ConfigService,
         build_service: BuildService,
+        log_session_repository: SessionRepository,
     ) -> None:
         self._sidecars = sidecar_service
         self._providers = provider_service
@@ -122,16 +111,14 @@ class InspectService:
         self._updates = updates_service
         self._config = config_service
         self._build = build_service
+        self._log_sessions = log_session_repository
 
     def build_report(self, *, lite: bool = False) -> InspectReport:
         """
         Collect every section into one report.
 
-        Docker is probed once up front so that "no containers" and "no daemon" stay
-        distinguishable — both produce empty listings otherwise, and only one of them is
-        a problem worth reporting. Everything that talks to Docker afterwards goes through
-        the pool; the filesystem-derived sections stay sequential, being cheap enough that
-        a thread would cost more than it saves.
+        Docker is probed once up front so "no containers" and "no daemon" stay
+        distinguishable -- both produce empty listings otherwise.
         """
         docker_up = docker_utils.daemon_reachable()
         docker = DockerStatus(available=docker_up, error="" if docker_up else DOCKER_UNREACHABLE)
@@ -159,6 +146,11 @@ class InspectService:
             logs_future = (
                 None if lite else pool.submit(directory_size, TOOL_DIR / LITELLM_LOGS_DIRNAME)
             )
+            # The second thing lite mode drops, and for the same reason: deciding how far
+            # behind the index is means stat()ing every session's messages file and
+            # walking the tree for directories it has never seen. The index's own size
+            # and counts are one probe and are always reported.
+            lag_future = None if lite else pool.submit(self._logs.index_lag)
             # The same verdict ``agent run`` acts on, asked of the one service that owns
             # it — a second implementation here would be free to disagree with the build
             # that actually happens.
@@ -181,6 +173,7 @@ class InspectService:
             found_sidecars = sidecars_future.result() if sidecars_future else []
             found_agents = agents_future.result() if agents_future else []
             logs_bytes = logs_future.result() if logs_future else None
+            behind = lag_future.result().behind if lag_future else None
             staleness = staleness_future.result() if staleness_future else None
             stale_images = (
                 self._stale_image_rows(stale_images_future.result())
@@ -203,7 +196,7 @@ class InspectService:
                 network_present=network_present,
                 staleness=staleness,
             ),
-            storage=self._storage_row(logs_bytes=logs_bytes),
+            storage=self._storage_row(logs_bytes=logs_bytes, index_behind=behind),
             project=self._project_image_row(
                 resolved, presence=presence, versions=versions, staleness=staleness
             ),
@@ -211,8 +204,6 @@ class InspectService:
             lite=lite,
             warnings=[project_warning] if project_warning else [],
         )
-
-    # --- docker probes, fanned out ---
 
     def _probe_presence(
         self, pool: ThreadPoolExecutor, resolved: ResolvedImage | None, *, docker_up: bool
@@ -247,10 +238,8 @@ class InspectService:
         """
         Read the installed Claude Code versions, and the registry's latest, in one batch.
 
-        Each of these starts a short-lived container, so running them one after another is
-        most of the report's wall clock. They go in together, each gated only on its own
-        image. ``latest`` is the single registry lookup for the whole report — both images
-        are compared against it — and lite mode omits it.
+        Each starts a short-lived container, so run serially they would be most of the
+        report's wall clock. ``latest`` is the whole report's single registry lookup.
         """
         base_future = (
             pool.submit(docker_utils.image_claude_version, BASE_IMAGE_NAME)
@@ -273,21 +262,15 @@ class InspectService:
             latest=latest_future.result() if latest_future else None,
         )
 
-    # --- per-section collectors ---
-
     def _project_dockerfile(self) -> tuple[ResolvedImage | None, str]:
         """
         Resolve the cwd's project image, or explain why it could not be resolved.
 
-        Goes through ``BuildService.resolve_image`` rather than probing paths here: that is
-        the wrapper's single Dockerfile discovery point, and a second implementation would
-        be free to drift from the one ``agent run`` actually launches.
+        Goes through ``BuildService.resolve_image`` rather than probing paths here: a
+        second discovery point would be free to drift from the one ``agent run`` uses.
 
-        Returns:
-            The resolved project image and "", or None and a warning for the report. None
-            with an empty warning means the project simply declares no Dockerfile —
-            ``agent_name is None`` is that predicate, not the file's basename.
-
+        None with an *empty* warning means the project simply declares no Dockerfile --
+        ``agent_name is None`` is that predicate, not the file's basename.
         """
         try:
             resolved = self._build.resolve_image()
@@ -343,8 +326,8 @@ class InspectService:
         """
         Map the build domain's sweep onto report rows, stringifying the project paths.
 
-        The conversion exists for that one reason: a ``Path`` anywhere in the report breaks
-        ``--json`` with no type error to warn about (see the models module docstring).
+        A ``Path`` anywhere in the report breaks ``--json`` with no type error to warn
+        about -- see the models module docstring.
         """
         return [
             StaleImageRow(project=str(row.project), image=row.image, reason=row.reason)
@@ -374,10 +357,9 @@ class InspectService:
         """
         Report every known sidecar's secret readiness, plus which provider is default.
 
-        The default is resolved the same way ``agent run`` resolves it, so this answers
-        "what would launch right now" rather than "what is installed". Telegram is
-        included — it is a known secrets holder — but is never the default, since it is
-        not a provider.
+        The default is resolved as ``agent run`` resolves it, so this answers "what would
+        launch right now". Telegram is included as a secrets holder but is never the
+        default, not being a provider.
         """
         default_name = self._default_provider_name()
         return [
@@ -394,9 +376,8 @@ class InspectService:
         """
         Resolve the provider ``agent run`` would use, or None when it cannot be resolved.
 
-        An unresolvable provider (bad AGENT_PROVIDER, broken plugin) must not abort the
-        report — the provider list itself still shows what exists, and the missing default
-        is visible by its absence.
+        An unresolvable provider must not abort the report: the list still shows what
+        exists, and the missing default is visible by its absence.
         """
         try:
             return self._providers.get_provider()
@@ -404,7 +385,6 @@ class InspectService:
             return None
 
     def _default_provider_name(self) -> str:
-        """Name of the provider ``agent run`` would use, or "" if it cannot resolve."""
         provider = self._default_provider()
         return provider.name if provider is not None else ""
 
@@ -412,14 +392,9 @@ class InspectService:
         """
         Report whether the next non-headless ``agent run`` would start the logs viewer.
 
-        Requested-vs-effective, for the same reason ``AGENT_USE_HOST_NETWORK`` is reported
-        that way: the variable can be set and still not apply, which otherwise reads as
-        the setting simply not working. Here the gate is the provider rather than the
-        host — one whose statusline segment is fed from somewhere else has no use for the
-        viewer and declines it.
-
-        Note the polarity is the opposite of host networking's: this is an opt-out, so an
-        unset variable means on, and only an explicit falsey value turns it off.
+        Requested-vs-effective, since a provider whose statusline is fed from elsewhere
+        declines the viewer. Note the polarity is the opposite of host networking's: this
+        is an opt-out, so an unset variable means on.
         """
         requested = optional_truthy_env(os.environ.get(AUTOSTART_LOGS_ENV, ""))
         provider = self._default_provider()
@@ -450,15 +425,11 @@ class InspectService:
         Report whether the published venv was built from the constraints now on disk.
 
         The venv directory name ends in the first 12 hex of the SHA-256 of
-        ``bin/requirements.txt`` (see bin/agent-bootstrap), so comparing the two needs
-        no metadata file and no import of anything the venv holds. None when either
-        side is unreadable -- the report says nothing rather than guessing.
+        ``bin/requirements.txt``, so the comparison needs no metadata file and no import.
 
-        None too for a ``--dev`` venv, which ends in ``-dev`` and carries no hash at
-        all: its contents come from uv.lock, so the constraints file cannot speak to
-        whether it is current, and `uv sync` is the only thing that can. Saying nothing
-        is the honest answer there; the alternative reads as "dependencies stale" at
-        every contributor's venv.
+        None when either side is unreadable, and None for a ``--dev`` venv: its contents
+        come from uv.lock, so the constraints file cannot speak to whether it is current
+        -- and the alternative reads as "dependencies stale" at every contributor's venv.
         """
         try:
             pointer = PYTHON_VENV_POINTER_FILE.read_text(encoding="utf-8").strip()
@@ -474,9 +445,8 @@ class InspectService:
         """
         Read AGENT_PY_VERSION out of python-pin.env, or None if it cannot be read.
 
-        Deliberately a two-line parse rather than anything that sources the file: this
-        runs inside a read-only report, and the file is a plain list of KEY=value lines
-        precisely so that both sh and this can read it without a shell.
+        A two-line parse rather than sourcing the file: it is a plain list of KEY=value
+        lines precisely so both sh and this can read it without a shell.
         """
         try:
             text = PYTHON_PIN_FILE.read_text(encoding="utf-8")
@@ -500,8 +470,7 @@ class InspectService:
         Describe the image this project's Dockerfile declares, or None when it declares none.
 
         The update flag reuses the report's single registry lookup rather than asking
-        again, so a project image built from a stale base is flagged for the same reason
-        and at the same cost as the base image itself.
+        again.
         """
         if resolved is None:
             return None
@@ -529,9 +498,8 @@ class InspectService:
         Collect the host facts behind the most common launch surprises.
 
         ``AGENT_USE_HOST_NETWORK`` is reported as requested-vs-effective because it is
-        silently ignored off WSL, which otherwise looks like the setting not working.
-        ``AGENT_SKIP_SAFETY_CHECK`` needs no such split — nothing overrides it — so it is
-        reported as the one thing there is to say: whether the guard is still on.
+        silently ignored off WSL. ``AGENT_SKIP_SAFETY_CHECK`` needs no such split --
+        nothing overrides it.
         """
         requested = is_truthy_env(os.environ.get(HOST_NETWORK_ENV, ""))
         day_start_overridden = bool(os.environ.get(DAY_START_ENV))
@@ -553,11 +521,26 @@ class InspectService:
             day_start_timezone=day_start_timezone,
         )
 
-    def _storage_row(self, *, logs_bytes: int | None) -> StorageRow:
-        """Count registry entries, and record the logs footprint the pool measured."""
+    def _storage_row(self, *, logs_bytes: int | None, index_behind: int | None) -> StorageRow:
+        """
+        Count registry entries, and report both footprints: the log tree and the index.
+
+        Freshness sits next to the index size because that is the pair a reader needs: an
+        index that is small *and* behind is not a compression win.
+        """
         registered = self._config.read_project_paths()
+        footprint = self._log_sessions.footprint()
         return StorageRow(
             logs_bytes=logs_bytes,
             projects_registered=len(registered),
             projects_stale=len(self._config.stale_project_paths()),
+            index_bytes=footprint.database_bytes,
+            index_sessions=footprint.sessions,
+            index_requests=footprint.requests,
+            index_last_ingested=(
+                None
+                if footprint.last_ingested_ns is None
+                else footprint.last_ingested_ns / NANOSECONDS_PER_SECOND
+            ),
+            index_behind=index_behind,
         )

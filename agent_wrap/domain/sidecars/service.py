@@ -2,10 +2,9 @@
 """
 Sidecar management domain service.
 
-This is the ONLY public API for the sidecar subpackage. Every other domain
-subpackage accesses sidecar functionality through an injected
-``SidecarService`` instance — never by importing the internal modules
-(``base``, ``litellm``, ``telegram``, ``tracker``) directly.
+The ONLY public API for the sidecar subpackage: every other domain subpackage goes
+through an injected ``SidecarService``, never by importing ``base``, ``litellm``,
+``telegram`` or ``tracker`` directly.
 """
 
 import operator
@@ -49,51 +48,34 @@ if TYPE_CHECKING:
 
 
 class SidecarService:
-    """
-    Factory and coordinator for sidecar instances.
-
-    Injected via constructor DI into every domain service that needs to
-    create or manage sidecars.
-    """
+    """Factory and coordinator for sidecar instances."""
 
     def __init__(self, display_service: DisplayService) -> None:
         self._display = display_service
 
-    # --- Factory methods ---
-
     def create_tracker(self, tool_dir: Path) -> SidecarTracker:
-        """Create a new ``SidecarTracker`` scoped to *tool_dir*."""
         return SidecarTracker(tool_dir)
 
     def create_telegram_sidecar(self, **kwargs: Any) -> TelegramSidecar:
-        """Create a ``TelegramSidecar`` from keyword arguments forwarded to the config."""
         return TelegramSidecar(TelegramSidecarConfig(**kwargs), display_service=self._display)
 
     def create_litellm_sidecar(self, **kwargs: Any) -> LiteLLMSidecar:
-        """Create a ``LiteLLMSidecar`` from keyword arguments forwarded to the config."""
         return LiteLLMSidecar(LiteLLMSidecarConfig(**kwargs), display_service=self._display)
 
     def telegram_required_secrets(self) -> list[tuple[str, str]]:
-        """Return the secrets required by the Telegram sidecar."""
         return TelegramSidecar.required_secrets()
-
-    # --- Discovery (read-only; for reporting, never for the launch decision) ---
 
     def registry_state(self, tool_dir: Path) -> RegistryState:
         """
         Read the whole flock registry under *tool_dir* without mutating it.
 
-        Every container's live runners plus the start queue. Reporting only: the launch
-        path asks its own narrower question through ``SidecarTracker.has_live_runners``,
-        which answers for one container and reaps stale entries as it goes. This walks
-        the whole tree, keys the result by container name, and mutates nothing — a reader
-        must not reap another run's state, and a stale file left here is reaped by the
-        next real launch.
+        Reporting only, and mutates nothing -- a reader must not reap another run's
+        state. The launch path asks the narrower ``SidecarTracker.has_live_runners``,
+        which does reap as it goes.
 
-        Containers whose registration directory exists but holds no live entry are
-        reported with an empty list rather than omitted: the directories are never
-        removed, so their presence is history, but "known container, nobody attached"
-        is worth telling apart from "never seen".
+        A container whose registration directory exists but holds no live entry is
+        reported with an empty list rather than omitted: "known container, nobody
+        attached" is worth telling apart from "never seen".
         """
         tracker = SidecarTracker(tool_dir)
         by_container: dict[str, list[str]] = {}
@@ -110,16 +92,12 @@ class SidecarService:
         """
         Discover every sidecar container on the host, running or not.
 
-        Selected by the ``agent-wrap-`` name prefix, which covers a provider's
-        ``agent-wrap-<provider>`` and the single ``agent-wrap-telegram`` while excluding
-        agent containers (``claude-agent-<instance_id>``). Sidecar containers carry no
-        agent-wrap labels, so the name is the only marker available — and the prefix has
-        the advantage of also finding a sidecar left behind by a provider that has since
-        been removed from the install.
+        Selected by the ``agent-wrap-`` name prefix: sidecar containers carry no
+        agent-wrap labels, so the name is the only marker -- and the prefix also finds one
+        left behind by a provider since removed from the install.
 
         Stopped containers are included on purpose: the Telegram sidecar runs without
-        ``--rm`` so that a crash during startup leaves its logs inspectable, and that
-        corpse is exactly what a report should surface.
+        ``--rm`` so a crash during startup leaves its logs inspectable.
         """
         names = list_container_names(f"name=^{CONTAINER_NAME_PREFIX}-")
         lines, _rc = inspect_containers(names, SIDECAR_INSPECT_TEMPLATE)
@@ -130,13 +108,11 @@ class SidecarService:
         """
         Discover every agent container, annotated with the sidecars it is attached to.
 
-        The attachment is not a Docker fact — no label links an agent to its sidecars —
-        so it is inverted out of the flock registry under *tool_dir*, whose layout is
-        ``running/<container_name>/<instance_id>``.
+        The attachment is not a Docker fact -- no label links an agent to its sidecars --
+        so it is inverted out of the flock registry under *tool_dir*.
 
-        Ordered by image then project directory, which groups a fleet the way its owner
-        thinks about it. Sorting by container name instead would order by instance id,
-        i.e. randomly. The name breaks remaining ties so the order stays stable.
+        Ordered by image then project directory; sorting by container name would order by
+        instance id, i.e. randomly.
         """
         state = self.registry_state(tool_dir)
         sidecars_by_instance: dict[str, list[str]] = {}
@@ -158,16 +134,14 @@ class SidecarService:
         """
         Every agent container and sidecar Docker currently reports as running.
 
-        Gated on ``daemon_reachable`` first because ``list_container_names`` returns []
-        both for "nothing matched" and for "docker is unavailable", and a caller that
-        refuses to act while something is live must not read the second as the first.
-        An unreachable daemon is then reported as nothing running rather than as
-        unknown: a host whose Docker is down has no agent left to protect, and treating
-        it as live would leave the wrapper permanently unable to update itself there.
+        Gated on ``daemon_reachable`` first: ``list_container_names`` returns [] both for
+        "nothing matched" and "docker is unavailable", and a caller that refuses to act
+        while something is live must not confuse the two. An unreachable daemon then
+        reads as nothing running -- a host whose Docker is down has no agent to protect,
+        and treating it as live would leave the wrapper unable to update itself there.
 
-        Unlike :meth:`registry_state` this asks Docker rather than the flock registry,
-        so it also sees an agent whose registration has already been cleared while its
-        container is still shutting down -- teardown clears registrations first.
+        Asks Docker rather than the flock registry, so it also sees an agent whose
+        registration is already cleared while its container is still shutting down.
         """
         if not daemon_reachable():
             return LiveContainers(agents=[], sidecars=[])

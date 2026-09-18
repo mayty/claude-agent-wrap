@@ -2,83 +2,49 @@
 """
 LiteLLM Anthropic Sub provider — routes Claude Code through Anthropic's own API.
 
-Unlike every other provider here, this one exists to spend a claude.ai
-subscription, not to bill per-token API credits. That inverts the
-usual design in a few load-bearing ways:
+Unlike every other provider here, this one spends a claude.ai subscription rather than
+per-token API credits. That inverts the usual design in load-bearing ways:
 
-- **No `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `get_agent_env`.** Either
-  one replaces the active credential Claude Code already holds from its own
-  claude.ai login (an OAuth token, `sk-ant-oat...`) and moves billing off the
-  subscription onto API credits instead — exactly what this provider must
-  not do. Only `ANTHROPIC_BASE_URL` is set, per Anthropic's documented gateway
-  pattern (code.claude.com/docs/en/llm-gateway): Claude Code keeps using its own
-  login and forwards it as `Authorization: Bearer sk-ant-oat...` plus
-  `anthropic-beta: oauth-2025-04-20` through the gateway.
+- **No `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `get_agent_env`.** Either replaces
+  the OAuth token Claude Code holds from its own claude.ai login and moves billing onto
+  API credits. Only `ANTHROPIC_BASE_URL` is set, per Anthropic's documented gateway
+  pattern, so Claude Code forwards its own login upstream.
 
-- **`master_key_prefix = "sk-aw-ant-"` must not start with `sk-ant-oat`** — that
-  shape is reserved for subscription OAuth tokens; LiteLLM would misclassify our
-  own generated master key as one.
+- **`master_key_prefix = "sk-aw-ant-"` must not start with `sk-ant-oat`** — LiteLLM would
+  misclassify our generated master key as a subscription OAuth token.
 
-- **The master key travels on `x-litellm-api-key`, never `Authorization`.**
-  LiteLLM's proxy accepts the master key on that header and leaves
-  `Authorization` free to carry the subscription OAuth token upstream — see
-  `MASTER_KEY_HEADER` in `constants.py`.
+- **The master key travels on `x-litellm-api-key`, never `Authorization`**, which must
+  stay free for the OAuth token. See `MASTER_KEY_HEADER`.
 
-- **`ANTHROPIC_BASE_URL` carries a `/anthropic` suffix.** It routes traffic to
-  LiteLLM's verbatim Anthropic passthrough rather than its translating
-  `/v1/messages` endpoint, whose rewrites strip the `claude-code-20250219` beta
-  value and the `x-anthropic-billing-header` system block — the two markers
-  Anthropic's OAuth gate uses to recognize first-party Claude Code traffic. See
-  `PASSTHROUGH_PREFIX` in `constants.py` for the full failure mode.
+- **`ANTHROPIC_BASE_URL` carries a `/anthropic` suffix**, routing to LiteLLM's verbatim
+  passthrough rather than its translating `/v1/messages`, whose rewrites strip the two
+  markers Anthropic's OAuth gate uses. See `PASSTHROUGH_PREFIX`.
 
-- **`ANTHROPIC_CUSTOM_HEADERS` pins the upstream `Accept-Encoding` to gzip.** Claude
-  Code asks for `br`/`zstd` too, the passthrough forwards that ask to Anthropic
-  verbatim, and LiteLLM's httpx cannot decode either — it falls back to identity
-  *silently*, so the agent gets compressed bytes labelled `application/json` and the
-  request's usage record is lost to a `UnicodeDecodeError`. See
-  `ACCEPT_ENCODING_OVERRIDE_HEADER` in `constants.py` for the full chain and for why
-  the override has to travel under LiteLLM's `x-pass-` prefix.
+- **`ANTHROPIC_CUSTOM_HEADERS` pins the upstream `Accept-Encoding` to gzip**, because
+  LiteLLM's httpx silently fails to decode `br`/`zstd`. See
+  `ACCEPT_ENCODING_OVERRIDE_HEADER`.
 
-- **`secret_description` is empty.** The credential is the agent's own claude.ai
-  login (via `/login` inside the container), not a pasteable string this
-  provider could store or prompt for. A non-empty description would make a
-  secret mandatory that this provider has no use for.
+- **`secret_description` is empty.** The credential is the agent's own claude.ai login,
+  not a pasteable string; a description would make a secret mandatory.
 
-- **No `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL`.** The upstream *is*
-  Anthropic, so Claude Code's own model names pass through the `anthropic/*`
-  route verbatim. Pinning them would freeze the model set at authoring time and
-  break `/model` tier switching.
+- **No `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL`.** The upstream *is* Anthropic, so
+  pinning them would freeze the model set and break `/model` tier switching.
 
-- **No `on_started`/`on_stopping`, no `MasterKeyApprovalMixin`.** That mixin
-  exists only because Claude Code prompts before sending a custom
-  `ANTHROPIC_API_KEY` upstream; since this provider never sends one, there is
-  nothing to approve.
+- **No `MasterKeyApprovalMixin`.** It exists only because Claude Code prompts before
+  sending a custom `ANTHROPIC_API_KEY`, which this provider never sends.
 
-- **`disable_nonessential_traffic = False`.** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
-  also disables Claude Code's feature-flag evaluation against Anthropic's
-  backend, which this provider's users need live — `/usage` is the documented
-  way to check subscription-seat consumption here (see "Pricing" in
-  `README.md`), and it depends on the same Anthropic-backed session that flag
-  would starve. `LaunchService._build_env_args` reads this flag and substitutes
-  `DISABLE_AUTOUPDATER=1` in its place, so the CLI baked into the image still
-  never tries to self-update.
+- **`disable_nonessential_traffic = False`.**
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` also disables the feature-flag evaluation
+  `/usage` depends on, which is how subscription-seat consumption is checked here.
+  `LaunchService._build_env_args` substitutes `DISABLE_AUTOUPDATER=1` in its place.
 
-- **`autostart_logs_viewer = False`.** `agent run` starts the `agent logs` viewer so
-  the statusline has today's token and cost totals to read, but under this provider
-  the statusline never reads them: `ops/statusline.py` detects the passthrough via
-  `ANTHROPIC_BASE_URL` and renders `rate_limit_segment` -- subscription-seat
-  consumption -- in place of `usage_segment`. Starting a background HTTP server to
-  maintain a file nothing consults would be pure waste, and `agent logs` still starts
-  it on demand for browsing request logs.
+- **`autostart_logs_viewer = False`.** `ops/statusline.py` renders `rate_limit_segment`
+  under this provider, so the viewer would maintain a file nothing consults.
 
-- **`compute_cost` is overridden directly, always returning `0.0`.** A
-  subscription has no marginal per-token cost, so there is no rate table to
-  maintain, and no dollar figure here would be truthful. Returning `0.0`
-  (rather than `None`) matters because `stats/scan.py` only flags a bucket as
-  `cost_unknown` when `compute_cost` returns `None` — `0.0` reports a truthful,
-  known zero instead. This also bypasses `_get_pricing`/`_build_pricing_table`/
-  `ModelKeyMatcher` entirely, so new Anthropic model ids need no maintenance
-  here.
+- **`compute_cost` returns `0.0`, not `None`.** A subscription has no marginal per-token
+  cost. `0.0` reports a truthful *known* zero, where `None` would flag the bucket as
+  `cost_unknown` — and it bypasses the pricing tables entirely, so new Anthropic model
+  ids need no maintenance here.
 """
 
 from typing import TYPE_CHECKING, Any, ClassVar, override

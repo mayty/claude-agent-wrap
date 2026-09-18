@@ -24,7 +24,12 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # Full history, because it is the only way to get the tags: markdown-check
+      # resolves every release note's pinned links against the tree at their tag, and
+      # the default shallow fetch brings down none of them.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Provision the pinned CPython and its dependencies
         run: ./bin/agent-bootstrap

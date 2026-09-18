@@ -11,6 +11,8 @@ from agent_wrap.domain.pricing.constants import (
 from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.providers.service import ProviderService
 
@@ -31,18 +33,27 @@ class PricingService:
 
     # Bucket factory for cross-domain consumers (accessed via injected instance).
     def new_bucket(self) -> Bucket:
-        """Return a fresh, empty :class:`Bucket` for token-count accumulation."""
         return Bucket()
+
+    def merged_bucket(self, buckets: Iterable[Bucket]) -> Bucket:
+        """
+        Return a fresh Bucket holding the sum of *buckets*.
+
+        Lets a caller total a collection without constructing an empty Bucket of its
+        own, so bucket creation stays inside the pricing domain.
+        """
+        return Bucket.merged(buckets)
 
     def bucket_from_usage(self, usage: TokenUsage, *, msgs: int, unrecorded: int = 0) -> Bucket:
         """
         Return a Bucket holding an already-aggregated *msgs* requests' worth of *usage*.
 
-        For callers that hold pre-summed token totals rather than per-request
-        usage (e.g. the stats usage archive). Token math still goes through
-        ``Bucket.add`` so its 5m/1h cache-write tier attribution stays the single
-        source of truth; only the two counters that cannot be derived from token
-        counts are then set explicitly, since ``add`` counts exactly one message.
+        For callers that hold pre-summed token totals rather than per-request usage —
+        the stats fold, whose unit is a whole ``(hour, session, model, source)`` cell.
+        Token math still goes through ``Bucket.add`` so its 5m/1h cache-write tier
+        attribution stays the single source of truth; only the two counters that cannot
+        be derived from token counts are then set explicitly, since ``add`` counts
+        exactly one message.
         """
         bucket = Bucket()
         bucket.add(usage, 0.0)
@@ -50,15 +61,38 @@ class PricingService:
         bucket.unrecorded = unrecorded
         return bucket
 
+    def usage_from_counts(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_write_tokens: int,
+        cache_read_tokens: int,
+    ) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_write_tokens,
+            cache_read_input_tokens=cache_read_tokens,
+        )
+
+    def usage_from_bucket(self, bucket: Bucket) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=bucket.in_,
+            output_tokens=bucket.out,
+            cache_creation_input_tokens=bucket.cw,
+            cache_read_input_tokens=bucket.cr,
+            cache_creation={
+                "ephemeral_5m_input_tokens": bucket.cw_5m,
+                "ephemeral_1h_input_tokens": bucket.cw_1h,
+            },
+        )
+
     def __init__(self, provider_service: ProviderService, display_service: DisplayService) -> None:
         self._provider_service = provider_service
         self._display = display_service
         # Per-instance warning state (print once).
         self._mixed_cache_ttl_warned = False
-
-    # ------------------------------------------------------------------
-    # Cache TTL helpers (inlined from UsageCollectors)
-    # ------------------------------------------------------------------
 
     def _collect_cache_ttls(self, node: Any, out: set[str]) -> None:
         """
@@ -116,10 +150,6 @@ class PricingService:
                     split[key] = source[key]
         return split
 
-    # ------------------------------------------------------------------
-    # Model normalization
-    # ------------------------------------------------------------------
-
     def normalize_model(self, model: str) -> str | None:
         """
         Return a canonical 'claude-<tier>-<ver>' key for a session model id.
@@ -141,10 +171,6 @@ class PricingService:
         tier = m.group("tier").lower()
         ver = m.group("ver").replace(".", "-")
         return f"claude-{tier}-{ver}"
-
-    # ------------------------------------------------------------------
-    # Cost computation (delegates to provider)
-    # ------------------------------------------------------------------
 
     def compute_cost(  # noqa: PLR0913
         self,
@@ -191,21 +217,15 @@ class PricingService:
             refresh_pricing_data=refresh_pricing_data,
         )
 
-    # ------------------------------------------------------------------
-    # Usage extraction
-    # ------------------------------------------------------------------
-
     def extract_usage(
         self, response: dict[str, Any] | None, request_ttl: str | None = None
     ) -> TokenUsage:
-        """Extract and normalize usage dict from a LiteLLM response object."""
-        _zero: TokenUsage = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        }
+        _zero = TokenUsage(
+            input_tokens=0,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
         if not response or not isinstance(response, dict):
             return _zero
         usage = response.get("usage")
@@ -229,13 +249,13 @@ class PricingService:
             else:
                 cache_creation["ephemeral_5m_input_tokens"] = cw_tokens
 
-        return {
-            "input_tokens": in_tokens,
-            "output_tokens": out_tokens,
-            "cache_creation_input_tokens": cw_tokens,
-            "cache_read_input_tokens": cr_tokens,
-            "cache_creation": cache_creation,
-        }
+        return TokenUsage(
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            cache_creation_input_tokens=cw_tokens,
+            cache_read_input_tokens=cr_tokens,
+            cache_creation=cache_creation,
+        )
 
     def _warn_mixed_cache_ttl(self) -> None:
         """Emit a warning (once) when a request mixed 5m and 1h cache TTLs."""
@@ -246,5 +266,5 @@ class PricingService:
             "a request mixed 5m and 1h cache TTLs, but the response reports "
             "only a flat cache-write total. Those writes are priced at the 5m rate; "
             "reported cache-write cost may be slightly low. See "
-            "agent_wrap/lib/usage.py:request_cache_ttl."
+            "agent_wrap/domain/pricing/service.py:PricingService.request_cache_ttl."
         )

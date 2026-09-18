@@ -5,7 +5,7 @@
 # lives in `scaffold` and is reused between builds, while the Claude Code CLI, which
 # ships a release most days, lives in the final stage and is reinstalled every time.
 # See BuildService._docker_build.
-FROM ubuntu:24.04 AS scaffold
+FROM ubuntu:26.04 AS scaffold
 
 ARG HOST_UID
 ARG HOST_GID

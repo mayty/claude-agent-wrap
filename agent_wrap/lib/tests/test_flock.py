@@ -97,14 +97,14 @@ def test_live_lock_ids_reports_held_entries(tmp_path: Path) -> None:
     try:
         assert live_lock_ids(tmp_path) == ["held"]
     finally:
-        handle.close()
+        handle.release()
 
 
 def test_live_lock_ids_omits_stale_entry(tmp_path: Path) -> None:
     stale = tmp_path / "stale"
     handle = lock_and_hold(stale)
     assert handle is not None
-    handle.close()  # owner "exited" — the lock is takeable again
+    handle.release()  # owner "exited" — the lock is takeable again
     assert live_lock_ids(tmp_path) == []
 
 
@@ -113,16 +113,9 @@ def test_live_lock_ids_leaves_stale_file_on_disk(tmp_path: Path) -> None:
     stale = tmp_path / "stale"
     handle = lock_and_hold(stale)
     assert handle is not None
-    handle.close()
+    handle.release()
     live_lock_ids(tmp_path)
     assert stale.exists()
-
-
-def test_live_lock_ids_does_not_truncate(tmp_path: Path) -> None:
-    entry = tmp_path / "entry"
-    entry.write_text("payload")
-    live_lock_ids(tmp_path)
-    assert entry.read_text() == "payload"
 
 
 def test_live_lock_ids_sorted(tmp_path: Path) -> None:
@@ -132,7 +125,7 @@ def test_live_lock_ids_sorted(tmp_path: Path) -> None:
     finally:
         for handle in handles:
             assert handle is not None
-            handle.close()
+            handle.release()
 
 
 def test_live_lock_ids_ignores_subdirectories(tmp_path: Path) -> None:

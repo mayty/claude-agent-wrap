@@ -1,5 +1,5 @@
 # This file has been created with the assistance of an AI tool.
-"""Tests for agent_wrap/commands/update.py."""
+"""Tests for agent_wrap/domain/updates/service.py."""
 
 from typing import TYPE_CHECKING
 
@@ -467,8 +467,6 @@ def test_apply_already_up_to_date(
     assert rc == 0
     display_mock.success.assert_any_call("Already up to date")
 
-
-# --- current_revision (local-only, read-only) ---
 
 _GIT = "agent_wrap.domain.updates.service._GitOps.git"
 

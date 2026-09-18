@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 
 
 class SecretsService:
-    """Encrypted secrets store with sidecar-aware orchestration."""
-
     def __init__(
         self,
         provider_service: ProviderService,
@@ -27,8 +25,6 @@ class SecretsService:
         self._provider_service = provider_service
         self._sidecar_service = sidecar_service
         self._display = display_service
-
-    # -- Core CRUD ----------------------------------------------------------
 
     def read(self, key: str, description: str, *, prompt_on_missing: bool = False) -> str:
         """
@@ -41,7 +37,6 @@ class SecretsService:
         Raises :class:`SecretNotFoundError` when the key is absent and
         *prompt_on_missing* is ``False``.
         """
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         data = EncryptedFileStore.read_all(display=self._display)
         value = data.get(key)
         if value is not None:
@@ -56,8 +51,6 @@ class SecretsService:
         return entered
 
     def _write(self, key: str, description: str) -> None:
-        """Prompt the user for *key* and persist it to the encrypted store."""
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         entered = self._display.prompt_secret(description)
         data = EncryptedFileStore.read_all(display=self._display)
         data[key] = entered
@@ -65,29 +58,20 @@ class SecretsService:
 
     def _delete(self, key: str) -> None:
         """Remove *key* from the encrypted store.  No-op when absent."""
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         data = EncryptedFileStore.read_all(display=self._display)
         if key in data:
             del data[key]
             EncryptedFileStore.write_all(data, display=self._display)
 
     def _list_keys(self) -> list[str]:
-        """Return all key names currently stored (sorted)."""
-        EncryptedFileStore.maybe_migrate_old_fallback(display=self._display)
         return sorted(EncryptedFileStore.read_all(display=self._display).keys())
 
-    # -- Sidecar discovery --------------------------------------------------
-
     def known_sidecars(self) -> list[str]:
-        """Return the sorted list of known sidecar names."""
         names = list(self._provider_service.discover_providers().keys())
         names.append(TELEGRAM_SIDECAR_NAME)
         return sorted(names)
 
-    # -- Required secrets resolution ----------------------------------------
-
     def get_required_secrets(self, sidecar_name: str) -> list[tuple[str, str]]:
-        """Return the required-secret ``(key, description)`` tuples for a sidecar."""
         if sidecar_name == TELEGRAM_SIDECAR_NAME:
             return self._sidecar_service.telegram_required_secrets()
 
@@ -113,8 +97,6 @@ class SecretsService:
             return self.get_required_secrets(sidecar_name)
         except ProviderNotFoundError, SystemExit:
             return []
-
-    # -- Sidecar secret actions ---------------------------------------------
 
     def check_secrets(self, sidecar_name: str) -> SecretsCheckReport:
         """
@@ -143,10 +125,9 @@ class SecretsService:
         Report, per known sidecar, which required secrets are absent — changing nothing.
 
         The read-only counterpart to :meth:`check_secrets`, which cannot be used for
-        reporting on two counts: it goes through :meth:`read`, which runs the legacy
-        ``~/claude_keys.json`` migration (rewriting the store and deleting that file),
-        and through :meth:`get_required_secrets`, which writes to stderr and raises
-        ``SystemExit`` on an unknown sidecar — so one stale name would abort a report.
+        reporting: it goes through :meth:`get_required_secrets`, which writes to stderr
+        and raises ``SystemExit`` on an unknown sidecar, so one stale name in the
+        registry would abort the whole report.
 
         Every known sidecar appears in the result; an empty list means fully configured.
         Covers all sidecars in one call because the store is decrypted once for the whole
@@ -187,7 +168,6 @@ class SecretsService:
         return SecretsSetResult(keys_set=keys_set)
 
     def clear_secrets(self, sidecar_name: str) -> list[str]:
-        """Delete all secrets for *sidecar_name*. Returns the list of removed keys."""
         prefix = f"{sidecar_name}:"
         removed: list[str] = []
         for key in self._list_keys():

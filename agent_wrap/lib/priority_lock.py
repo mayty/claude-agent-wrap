@@ -30,7 +30,7 @@ from agent_wrap.lib.flock import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from pathlib import Path
 
 #: How long a releasing (stopping) run sleeps before re-acquiring the shared lock
@@ -61,7 +61,7 @@ def _high_priority_lock(
     waiters_dir: Path,
     instance_id: str,
     timeout: float,
-) -> Iterator[None]:
+) -> Generator[None]:
     """HI-priority: register a start-waiter ticket, acquire the lock, clear waiter."""
     waiter_handle = lock_and_hold(waiters_dir / instance_id)
     try:
@@ -81,7 +81,7 @@ def _low_priority_lock(
     lock_path: Path,
     waiters_dir: Path,
     instance_id: str,  # noqa: ARG001 — consistent interface
-) -> Iterator[None]:
+) -> Generator[None]:
     """LO-priority: yield-and-retry loop — only enters when no starters are waiting."""
     while True:
         with file_lock(lock_path):

@@ -1,10 +1,8 @@
 # agent-name: agent-wrap
-# The container gets its OWN provisioned interpreter at the SAME path the host
-# uses. This project's directory is the wrapper's own tool directory, so the
-# host's .python/ is bind-mounted in at /workspace/.python — and on a macOS host
-# that is a Mach-O interpreter inside a Linux container. An anonymous volume
-# shadows it with the tree baked in below, which is what lets bin/agent and the
-# Makefile use one relative path everywhere with no override variable.
+# The container gets its OWN provisioned interpreter at the SAME path the host uses. This
+# project's directory is the wrapper's own tool directory, so the host's .python/ is bind-
+# mounted at /workspace/.python -- on a macOS host, a Mach-O interpreter inside a Linux
+# container. An anonymous volume shadows it with the tree baked in below.
 # agent-run-args: -v /workspace/.python
 # This file has been edited with the assistance of an AI tool.
 
@@ -15,10 +13,8 @@ RUN apt-get update \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-# uv is what `make install` syncs with, and it backs `make constraints-check` and
-# `make dump-prod-constraints`. A developer tool only -- bin/agent-bootstrap without
-# --dev uses pip against the exported constraints, so the end-user path never needs it.
-# Pinned and fetched the same way ops/Dockerfile fetches hadolint and crane.
+# uv is a developer tool only: bin/agent-bootstrap without --dev uses pip against the
+# exported constraints, so the end-user path never needs it.
 ARG UV_VERSION=0.12.9
 RUN curl -fsSL -o /tmp/uv.tar.gz \
         "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
@@ -28,11 +24,9 @@ RUN curl -fsSL -o /tmp/uv.tar.gz \
     && rm -f /tmp/uv.tar.gz
 
 # Staged at /workspace, not a scratch directory: the bootstrap derives everything it reads
-# -- and where it provisions -- from its own path, so putting it at the path a real
-# checkout uses is what makes `make install` work here with no arguments. `WORKDIR
-# /workspace` in the base image is already the cwd. These are the four files --dev reads;
-# bin/requirements.txt is not among them, because --dev neither installs nor hashes it.
-# All four are removed again further down, so the image carries no phantom half-checkout.
+# -- and where it provisions -- from its own path. These are the four files --dev reads;
+# bin/requirements.txt is not among them, since --dev neither installs nor hashes it. All
+# four are removed further down, so the image carries no phantom half-checkout.
 COPY python-pin.env pyproject.toml uv.lock Makefile /workspace/
 COPY bin/agent-bootstrap /workspace/bin/
 
@@ -52,7 +46,8 @@ RUN mkdir -p /workspace/.python && chown ubuntu:ubuntu /workspace/.python
 # runtime, so read+execute for everyone is enough. It runs last, after the install.
 #
 # `venv-current` is what puts the pinned interpreter on PATH below, so that a bare
-# `python`/`python3` is it and not the base image's apt python3.12. The venv's own
+# `python`/`python3` is it and not the base image's apt python3.14 -- which matches the pin
+# on the minor and differs only in the patch, so the two are easy to confuse. The venv's own
 # directory name embeds the pin and the python-build-standalone target triple, and ENV
 # cannot be computed from a RUN -- so the name is resolved once here, out of the pointer
 # file that is the tree's own answer to "which venv".

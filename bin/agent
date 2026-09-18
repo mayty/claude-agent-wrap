@@ -1,21 +1,14 @@
 #!/bin/sh
 # This file has been created with the assistance of an AI tool.
 #
-# agent-wrap: the `agent` launcher. Sets PYTHONPATH and dispatches to the
-# agent_wrap Python package. Works whether invoked via PATH (sourcing the
-# bashrc adds bin/ to PATH) or directly (e.g. from a subprocess / cron job).
-# POSIX sh — works under any caller shell.
+# agent-wrap: the `agent` launcher. POSIX sh, so it works under any caller shell.
 #
-# The interpreter is the venv bin/agent-bootstrap provisions on top of the pinned
-# CPython, addressed by path. There is deliberately no fallback to the host's
-# python3: a fallback is a floor in disguise, and the whole reason for provisioning
-# is to stop the oldest distro anyone runs from deciding what this code may use.
+# The interpreter is the venv bin/agent-bootstrap provisions, addressed by path. There is
+# deliberately no fallback to the host's python3: a fallback is a floor in disguise.
 #
-# When that venv is missing -- a first run, or a checkout that moved -- this script
-# runs the bootstrap itself rather than telling the user to. The bootstrap is
-# non-interactive, idempotent, and serialised against concurrent runs by its own
-# lock, so there is nothing here for a human to decide. Shell completion is the one
-# exception, for the reason given below.
+# A missing venv is bootstrapped here rather than reported, and so is one the constraints
+# have moved past: the bootstrap is non-interactive, idempotent and self-serialising, so
+# there is nothing to decide. Shell completion is the one exception, for the reason below.
 
 # Resolve this script's real path, following symlinks (portable; readlink -f
 # is unavailable on some platforms).
@@ -31,14 +24,12 @@ done
 bin_dir=$(cd -P "$(dirname "$src")" && pwd)
 wrap_dir=$(dirname "$bin_dir")
 
-# `current-venv` names the venv directory to use -- the interpreter plus its locked
-# dependencies; see bin/agent-bootstrap for why it is a text file and not a symlink.
-# `read` is a builtin, so the completion path — which runs on every TAB — pays no
-# fork for this, and neither does wrapping it in a function. The [ -f ] guard is
-# what keeps the shell from writing its own "cannot open" line to stderr.
+# `current-venv` names the venv directory to use; see bin/agent-bootstrap for why it is a
+# text file and not a symlink. `read` is a builtin, so the completion path -- which runs
+# on every TAB -- pays no fork. The [ -f ] guard keeps the shell from writing its own
+# "cannot open" line to stderr.
 #
-# A function because it runs twice: once to read what is already published, and
-# again after a bootstrap has published something new.
+# A function because it runs twice: before a bootstrap, and again after one.
 py_root="$wrap_dir/.python"
 resolve_venv() {
     venv_slug=""
@@ -46,48 +37,99 @@ resolve_venv() {
     py="$py_root/$venv_slug/bin/python3"
 }
 
+# Whether the venv the pointer names was built from the constraints now on disk. The slug
+# ends in the first 12 hex of their SHA-256, so the comparison needs no metadata file.
+#
+# Returns 1 only when the pointer *demonstrably* names a venv built from different ones.
+# Anything undeterminable is a 0: re-provisioning a wrapper that is working fine, on every
+# invocation, is the worse failure. A host with no SHA-256 tool cannot provision at all --
+# the bootstrap dies on the same check -- so there the venv on disk is all there is.
+deps_current() {
+    # The dev venv carries no content hash: uv.lock owns its contents and `uv sync`
+    # reconciles them. A suffix compare could never match, so it would republish
+    # current-venv away from every contributor's venv on every run.
+    case "$venv_slug" in
+        *-dev) return 0 ;;
+    esac
+    req_file="$wrap_dir/bin/requirements.txt"
+    [ -f "$req_file" ] || return 0
+    # Kept deliberately identical to sha256_of in bin/agent-bootstrap -- change one,
+    # change the other. A divergence does not fail here, it re-provisions on every
+    # invocation, so scripts/test_agent_launcher.py pins both to hashlib rather than
+    # leaving the agreement to review.
+    if command -v sha256sum >/dev/null 2>&1; then
+        req12=$(sha256sum "$req_file" | cut -d' ' -f1 | cut -c1-12)
+    elif command -v shasum >/dev/null 2>&1; then
+        req12=$(shasum -a 256 "$req_file" | cut -d' ' -f1 | cut -c1-12)
+    elif command -v openssl >/dev/null 2>&1; then
+        req12=$(openssl dgst -sha256 "$req_file" | sed 's/.*= *//' | cut -c1-12)
+    else
+        return 0
+    fi
+    case "$venv_slug" in
+        *-"$req12") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 resolve_venv
 
 if [ -z "$venv_slug" ] || [ ! -x "$py" ]; then
-    # Completion must stay silent: agent-wrap.bashrc discards this script's stderr
-    # and exit code, and anything on stdout would be offered as a candidate. So it
-    # does not provision either -- a TAB press is no place to spend a 34MB download
-    # whose progress the shell would swallow. An unprovisioned checkout falls back
-    # to filename completion, which is what the bashrc already does on empty output.
-    [ -n "${AGENT_COMPLETE:-}" ] && exit 0
+    # Completion must stay silent: anything on stdout is parsed by click's completion
+    # function as a `type,value` candidate line. It does not provision either -- a TAB
+    # press is no place to spend a 34MB download whose progress the shell would swallow.
+    [ -n "${_AGENT_COMPLETE:-}" ] && exit 0
 
-    # The bootstrap's own progress says what it is doing; this says why it is
-    # happening at all, which is the part someone who just typed `agent run` lacks.
+    # The bootstrap says what it is doing; this says why it is happening at all.
     printf '%s\n' \
         "agent-wrap: not provisioned (first run, or the checkout moved); provisioning now." >&2
 
     # Plain, never --dev: --dev needs uv on PATH, and this is the end-user path.
     #
-    # The redirection is load-bearing. The bootstrap reports progress on stdout, and
-    # this script's stdout belongs to the verb about to be exec'd -- anything parsing
-    # that output must not have to filter provisioning chatter out of it. The
-    # bootstrap's own fatal errors already go to stderr.
+    # The redirection is load-bearing: this script's stdout belongs to the verb about to
+    # be exec'd, and anything parsing it must not have to filter provisioning chatter out.
     #
     # `if !` rather than comparing $? to 1: the bootstrap runs under `set -e`, so an
-    # unguarded failure surfaces *that* command's status. The contract is non-zero.
+    # unguarded failure surfaces *that* command's status.
     if ! "$bin_dir/agent-bootstrap" >&2; then
-        # Load-bearing, same as before. For a project startup script or any other
-        # non-interactive caller this is the only thing anyone will see, so it names
-        # the absolute path of the one command to re-run by hand.
+        # For a non-interactive caller this is the only thing anyone will see, so it
+        # names the absolute path of the one command to re-run by hand.
         printf '%s\n' \
             "agent-wrap: provisioning failed." \
             "Run: $bin_dir/agent-bootstrap" >&2
         exit 1
     fi
 
-    # `current-venv` is published last and atomically, so re-reading it is what turns
-    # "the bootstrap exited 0" into "there is an interpreter here to exec".
+    # `current-venv` is published last and atomically, so re-reading it turns "the
+    # bootstrap exited 0" into "there is an interpreter here to exec".
     resolve_venv
     if [ -z "$venv_slug" ] || [ ! -x "$py" ]; then
         printf '%s\n' \
             "agent-wrap: still not provisioned after running the bootstrap." \
             "Run: $bin_dir/agent-bootstrap" >&2
         exit 1
+    fi
+elif [ -z "${_AGENT_COMPLETE:-}" ] && ! deps_current; then
+    # The hash is guarded on _AGENT_COMPLETE rather than inside deps_current so that a TAB
+    # press keeps costing one builtin read and no fork at all.
+    printf '%s\n' \
+        "agent-wrap: dependencies moved since this venv was built; re-provisioning now." >&2
+
+    if "$bin_dir/agent-bootstrap" >&2; then
+        # current-venv is published last, so re-reading it is what turns "exited 0" into
+        # "there is a new interpreter here". The fallback has no counterpart in the branch
+        # above, which has no working venv to fall back to.
+        prev_py="$py"
+        resolve_venv
+        [ -x "$py" ] || py="$prev_py"
+    else
+        # Not fatal, unlike a first run: there is a working venv right here, and refusing
+        # to run because someone pulled while offline is worse than running on the
+        # previous dependency set. `agent inspect` keeps reporting the drift until a
+        # bootstrap succeeds.
+        printf '%s\n' \
+            "agent-wrap: re-provisioning failed; continuing on the current venv." \
+            "Run: $bin_dir/agent-bootstrap" >&2
     fi
 fi
 

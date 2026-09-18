@@ -18,3 +18,19 @@ MODEL_CONTEXT_SUFFIX_RE = re.compile(r"\[(?:1m|128k|32k|8k)\]$", re.IGNORECASE)
 # An unmatched model's worst-case cost (priced against the most expensive known
 # tier) below this threshold is reported as a known $0 rather than unknown.
 UNKNOWN_MODEL_COST_THRESHOLD_USD = 0.01
+
+# How long a scraped pricing table stays usable. A week: published prices change on the
+# order of months, and a provider's pricing page is not worth a round trip per run.
+PRICING_CACHE_TTL_SECONDS = 7 * 24 * 3600
+
+# HTTP timeout when fetching a pricing page. Short on purpose -- a slow page must not
+# hold up `agent stats`, which falls back to the cached table.
+PRICING_FETCH_TIMEOUT = 15
+
+PRICING_CACHE_FILENAME = "pricing.json"
+
+# The BeautifulSoup backend every pricing scraper parses with. Named rather than left to
+# BeautifulSoup's own pick, which is whichever of lxml/html5lib happens to be importable:
+# this is the stdlib one, so a page parses the same way on every host and no compiled
+# parser can slip into the dependency set by being installed for something else.
+HTML_PARSER = "html.parser"

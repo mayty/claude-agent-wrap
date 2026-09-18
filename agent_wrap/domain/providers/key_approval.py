@@ -18,7 +18,6 @@ Mix into a ``Provider`` subclass and call ``_approve_master_key`` from
 ``on_started`` and ``_unapprove_master_key`` from ``on_stopping``.
 """
 
-import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
 
 from agent_wrap.constants import GLOBAL_CONFIG_DIR
 from agent_wrap.lib.atomic import atomic_write_json
+from agent_wrap.lib.jsonio import read_json_object
 
 
 def _api_key_approval_id(key: str) -> str:
@@ -34,32 +34,21 @@ def _api_key_approval_id(key: str) -> str:
 
 
 def _claude_json_path() -> Path:
-    """Resolve the global .claude.json file path."""
     return GLOBAL_CONFIG_DIR / ".claude.json"
 
 
 class MasterKeyApprovalMixin:
-    """Approve/un-approve the sidecar master key in the global ``.claude.json``."""
-
     def _load_claude_json(self) -> dict[str, Any] | None:
         """Load .claude.json, returning {} if missing/empty or None on malformed JSON."""
         path = _claude_json_path()
         if not path.exists():
             return {}
-        try:
-            text = path.read_text()
-            if not text.strip():
-                return {}
-            return json.loads(text)
-        except json.JSONDecodeError, OSError:
-            return None
+        return read_json_object(path)
 
     def _save_claude_json(self, data: dict[str, Any]) -> None:
-        """Atomically write .claude.json."""
         atomic_write_json(_claude_json_path(), data)
 
     def _approve_master_key(self, key: str) -> None:
-        """Add the current master key's approval id to .claude.json."""
         data = self._load_claude_json()
         if data is None:
             return
@@ -72,7 +61,6 @@ class MasterKeyApprovalMixin:
             self._save_claude_json(data)
 
     def _unapprove_master_key(self, key: str) -> None:
-        """Remove the current master key's approval id from .claude.json."""
         data = self._load_claude_json()
         if data is None:
             return

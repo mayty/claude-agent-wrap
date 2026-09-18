@@ -41,7 +41,6 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
 
     @override
     def _get_tiered_pricing(self, *, refresh_pricing_data: bool = False) -> dict[str, list[Tier]]:
-        """Return the tiered pricing table for DashScope models."""
         return {
             "qwen3.7-plus": [
                 {
@@ -90,8 +89,6 @@ class DashscopeProvider(MasterKeyApprovalMixin, Provider):
                 },
             ],
         }
-
-    # --- API key auto-approval (once per sidecar lifetime, via lifecycle hooks) ---
 
     @override
     def on_started(self, master_key: str) -> None:

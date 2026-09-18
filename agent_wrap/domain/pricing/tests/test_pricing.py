@@ -1,17 +1,15 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for agent_wrap.domain.pricing.service.PricingService."""
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
 
+from agent_wrap.domain.pricing.models import TokenUsage
 from agent_wrap.domain.pricing.service import PricingService
 from agent_wrap.domain.providers.base import Provider
 from agent_wrap.domain.providers.service import ProviderService
-
-if TYPE_CHECKING:
-    from agent_wrap.domain.pricing.models import TokenUsage
 
 
 @pytest.fixture
@@ -25,13 +23,12 @@ def svc(display_mock: Mock, provider_mock: Mock) -> PricingService:
 
 
 def _zero_usage() -> TokenUsage:
-    return {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    return TokenUsage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
 
 
 def test_new_bucket_is_zero(svc: PricingService) -> None:
@@ -49,13 +46,13 @@ def test_new_bucket_is_zero(svc: PricingService) -> None:
 
 def test_bucket_add_increments_counts(svc: PricingService) -> None:
     b = svc.new_bucket()
-    usage: TokenUsage = {
-        "input_tokens": 100,
-        "output_tokens": 50,
-        "cache_creation_input_tokens": 20,
-        "cache_read_input_tokens": 10,
-        "cache_creation": {"ephemeral_5m_input_tokens": 20},
-    }
+    usage = TokenUsage(
+        input_tokens=100,
+        output_tokens=50,
+        cache_creation_input_tokens=20,
+        cache_read_input_tokens=10,
+        cache_creation={"ephemeral_5m_input_tokens": 20},
+    )
     b.add(usage, request_cost=0.005)
     assert b.msgs == 1
     assert b.in_ == 100
@@ -68,13 +65,12 @@ def test_bucket_add_increments_counts(svc: PricingService) -> None:
 
 def test_bucket_add_unknown_cost(svc: PricingService) -> None:
     b = svc.new_bucket()
-    usage: TokenUsage = {
-        "input_tokens": 10,
-        "output_tokens": 5,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=10,
+        output_tokens=5,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     b.add(usage, request_cost=None)
     assert b.cost_unknown is True
     assert b.cost == 0.0
@@ -88,13 +84,12 @@ def test_bucket_add_unrecorded(svc: PricingService) -> None:
 
 def test_bucket_from_usage_sets_aggregate_counters(svc: PricingService) -> None:
     """Pre-summed callers set msgs explicitly — add() would only ever count one."""
-    usage: TokenUsage = {
-        "input_tokens": 300,
-        "output_tokens": 150,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 40,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=300,
+        output_tokens=150,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=40,
+    )
     b = svc.bucket_from_usage(usage, msgs=7, unrecorded=2)
     assert b.msgs == 7
     assert b.unrecorded == 2
@@ -112,16 +107,16 @@ def test_bucket_from_usage_defaults_unrecorded_to_zero(svc: PricingService) -> N
 
 def test_bucket_from_usage_preserves_explicit_cache_tiers(svc: PricingService) -> None:
     """An explicit split must pass through untouched, not hit add()'s flat fallback."""
-    usage: TokenUsage = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_creation_input_tokens": 300,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {
+    usage = TokenUsage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=300,
+        cache_read_input_tokens=0,
+        cache_creation={
             "ephemeral_5m_input_tokens": 100,
             "ephemeral_1h_input_tokens": 200,
         },
-    }
+    )
     b = svc.bucket_from_usage(usage, msgs=1)
     assert b.cw_5m == 100
     assert b.cw_1h == 200
@@ -129,13 +124,12 @@ def test_bucket_from_usage_preserves_explicit_cache_tiers(svc: PricingService) -
 
 def test_bucket_from_usage_applies_flat_cache_fallback(svc: PricingService) -> None:
     """Without a split, the flat total still lands on the 5m tier via Bucket.add."""
-    usage: TokenUsage = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_creation_input_tokens": 500,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=500,
+        cache_read_input_tokens=0,
+    )
     b = svc.bucket_from_usage(usage, msgs=1)
     assert b.cw_5m == 500
     assert b.cw_1h == 0
@@ -152,13 +146,12 @@ def test_bucket_from_usage_returns_independent_buckets(svc: PricingService) -> N
 def test_bucket_add_falls_back_to_5m_when_no_ephemeral_split(svc: PricingService) -> None:
     """When cache_creation has no ephemeral keys, cw_5m gets the flat total."""
     b = svc.new_bucket()
-    usage: TokenUsage = {
-        "input_tokens": 10,
-        "output_tokens": 5,
-        "cache_creation_input_tokens": 30,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=10,
+        output_tokens=5,
+        cache_creation_input_tokens=30,
+        cache_read_input_tokens=0,
+    )
     b.add(usage)
     assert b.cw_5m == 30
     assert b.cw_1h == 0
@@ -167,30 +160,54 @@ def test_bucket_add_falls_back_to_5m_when_no_ephemeral_split(svc: PricingService
 def test_bucket_add_uses_ephemeral_split(svc: PricingService) -> None:
     """When cache_creation has ephemeral keys, they take precedence."""
     b = svc.new_bucket()
-    usage: TokenUsage = {
-        "input_tokens": 10,
-        "output_tokens": 5,
-        "cache_creation_input_tokens": 30,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {
+    usage = TokenUsage(
+        input_tokens=10,
+        output_tokens=5,
+        cache_creation_input_tokens=30,
+        cache_read_input_tokens=0,
+        cache_creation={
             "ephemeral_5m_input_tokens": 10,
             "ephemeral_1h_input_tokens": 20,
         },
-    }
+    )
     b.add(usage)
     assert b.cw_5m == 10
     assert b.cw_1h == 20
 
 
+def test_cache_write_split_prefers_the_reported_ephemeral_tiers() -> None:
+    usage = TokenUsage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=300,
+        cache_read_input_tokens=0,
+        cache_creation={
+            "ephemeral_5m_input_tokens": 100,
+            "ephemeral_1h_input_tokens": 200,
+        },
+    )
+    assert usage.cache_write_split() == (100, 200)
+
+
+def test_cache_write_split_charges_a_flat_total_wholly_at_5m() -> None:
+    """The Bedrock/LiteLLM case: no breakdown anywhere, so the total is the 5m tier."""
+    usage = TokenUsage(
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=300,
+        cache_read_input_tokens=0,
+    )
+    assert usage.cache_write_split() == (300, 0)
+
+
 def test_bucket_merge_combines_buckets(svc: PricingService) -> None:
     a = svc.new_bucket()
-    usage: TokenUsage = {
-        "input_tokens": 100,
-        "output_tokens": 50,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=100,
+        output_tokens=50,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     a.add(usage, request_cost=1.0)
 
     b = svc.new_bucket()
@@ -359,8 +376,8 @@ def test_response_cache_split_top_level_keys_override(svc: PricingService) -> No
 
 def test_extract_usage_none_response(svc: PricingService) -> None:
     usage = svc.extract_usage(None)
-    assert usage["input_tokens"] == 0
-    assert usage["output_tokens"] == 0
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
 
 
 def test_extract_usage_basic(svc: PricingService) -> None:
@@ -372,18 +389,18 @@ def test_extract_usage_basic(svc: PricingService) -> None:
         }
     }
     usage = svc.extract_usage(response)
-    assert usage["input_tokens"] == 100
-    assert usage["output_tokens"] == 50
-    assert usage["cache_read_input_tokens"] == 10
-    assert usage["cache_creation_input_tokens"] == 0
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 50
+    assert usage.cache_read_input_tokens == 10
+    assert usage.cache_creation_input_tokens == 0
 
 
 def test_extract_usage_prompt_completion_fallback(svc: PricingService) -> None:
     """Falls back to prompt_tokens / completion_tokens when input/output absent."""
     response: dict[str, Any] = {"usage": {"prompt_tokens": 200, "completion_tokens": 80}}
     usage = svc.extract_usage(response)
-    assert usage["input_tokens"] == 200
-    assert usage["output_tokens"] == 80
+    assert usage.input_tokens == 200
+    assert usage.output_tokens == 80
 
 
 def test_extract_usage_cache_creation_split(svc: PricingService) -> None:
@@ -399,11 +416,11 @@ def test_extract_usage_cache_creation_split(svc: PricingService) -> None:
         }
     }
     usage = svc.extract_usage(response)
-    assert usage["cache_creation"] == {
+    assert usage.cache_creation == {
         "ephemeral_5m_input_tokens": 20,
         "ephemeral_1h_input_tokens": 10,
     }
-    assert usage["cache_creation_input_tokens"] == 30
+    assert usage.cache_creation_input_tokens == 30
 
 
 def test_extract_usage_flat_cache_write_inferred_from_ttl(svc: PricingService) -> None:
@@ -416,7 +433,7 @@ def test_extract_usage_flat_cache_write_inferred_from_ttl(svc: PricingService) -
         }
     }
     usage = svc.extract_usage(response, request_ttl="1h")
-    assert usage["cache_creation"]["ephemeral_1h_input_tokens"] == 30
+    assert usage.cache_creation["ephemeral_1h_input_tokens"] == 30
 
 
 def test_extract_usage_mixed_ttl_warns_once(svc: PricingService, display_mock: Mock) -> None:
@@ -434,13 +451,12 @@ def test_extract_usage_mixed_ttl_warns_once(svc: PricingService, display_mock: M
 
 
 def test_compute_cost_normalizes_and_delegates(svc: PricingService) -> None:
-    usage: TokenUsage = {
-        "input_tokens": 100,
-        "output_tokens": 50,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    usage = TokenUsage(
+        input_tokens=100,
+        output_tokens=50,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
     fake_provider = Mock(spec=Provider)
     fake_provider.compute_cost.return_value = 0.005
     svc._provider_service.get_provider.return_value = fake_provider  # pyrefly: ignore [missing-attribute]

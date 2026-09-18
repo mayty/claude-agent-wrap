@@ -32,11 +32,8 @@ if TYPE_CHECKING:
 
 
 class _GitOps:
-    """Git operations for update detection and application."""
-
     @staticmethod
     def git(*args: str, cwd: str | None = None, timeout: int | None = None) -> tuple[str, int]:
-        """Run a git command and return (stdout, returncode)."""
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -51,7 +48,6 @@ class _GitOps:
 
     @staticmethod
     def git_full(*args: str, cwd: str | None = None) -> GitFullResult:
-        """Run a git command and return (stdout, returncode, stderr)."""
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -131,7 +127,6 @@ class _GitOps:
 
     @staticmethod
     def detect_claude_md_state() -> MdState:
-        """Return the state of the user's CLAUDE.md relative to the default."""
         user_claude_md = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
         default_claude_md = OPS_DIR / "default-CLAUDE.md"
         if not (user_claude_md.exists() and default_claude_md.exists()):
@@ -151,7 +146,6 @@ class _GitOps:
 
     @staticmethod
     def handle_claude_md_propagation(before: str, after: str, pre_state: MdState) -> MdPropagation:
-        """Handle default-CLAUDE.md propagation after a successful pull."""
         user_claude_md = GLOBAL_CONFIG_DIR / ".claude" / "CLAUDE.md"
 
         _, rc = _GitOps.git(
@@ -176,7 +170,6 @@ class _GitOps:
 
     @staticmethod
     def changed_files(before: str, after: str) -> set[str]:
-        """Return the set of file paths changed between two commits."""
         out, rc = _GitOps.git("diff", "--name-only", before, after, cwd=str(TOOL_DIR))
         if rc != 0 or not out:
             return set()
@@ -193,7 +186,6 @@ class _GitOps:
 
     @staticmethod
     def print_status(before: str, after: str, pre_state: MdState, display: DisplayService) -> None:
-        """Print post-update status summary."""
         before_ref = _GitOps.resolve_ref(before)
         after_ref = _GitOps.resolve_ref(after)
         display.success(f"Updated {before_ref} -> {after_ref}")
@@ -249,8 +241,6 @@ class _GitOps:
 
 
 class UpdateService:
-    """Git-based self-update logic for agent-wrap."""
-
     def __init__(
         self,
         display_service: DisplayService,

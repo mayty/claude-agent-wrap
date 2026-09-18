@@ -1,32 +1,31 @@
-# This file has been created with the assistance of an AI tool.
+# This file has been edited with the assistance of an AI tool.
 """The `rebuild` subcommand — builds Docker images."""
 
-from typing import TYPE_CHECKING
+import click
 
 from agent_wrap.containers import services
-from agent_wrap.lib.argparsing import make_parser, parse_or_code
-
-if TYPE_CHECKING:
-    import argparse
-
-USAGE = "[-f|--full]"
-SUMMARY = "Rebuild Docker image"
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("rebuild", usage_summary=USAGE)
-    parser.add_argument(
-        "-f",
-        "--full",
-        action="store_true",
-        help="Rebuild the base 'claude-agent' image first, then the project image.",
-    )
-    return parser
+@click.command("rebuild")
+@click.option(
+    "-f",
+    "--full",
+    is_flag=True,
+    help="Rebuild the base 'claude-agent' image first, then the project image.",
+)
+@click.pass_context
+def rebuild_command(ctx: click.Context, *, full: bool) -> None:
+    """
+    Rebuild Docker image
 
+    Rebuild the resolved image for the current directory, passing the HOST_UID/HOST_GID
+    build args. A project image is rebuilt with --no-cache; the base image reuses docker's
+    layer cache below the Claude Code CLI install, which is reinstalled either way.
 
-def run(args: list[str]) -> int:
-    """Execute the `rebuild` subcommand."""
-    ns = parse_or_code(build_parser(), args)
-    if isinstance(ns, int):
-        return ns
-    return services.build_service.rebuild(full=ns.full)
+    This is the force. `agent run` already builds whatever is missing or stale by itself,
+    so what is left for this verb is the rebuild the wrapper cannot infer -- most often
+    applying an edit just made to the project's own Dockerfile, which nothing hashes. The
+    base image is still ensured underneath, so a project build never runs on an absent or
+    stale base.
+    """
+    ctx.exit(services.build_service.rebuild(full=full))

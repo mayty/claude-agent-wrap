@@ -1,20 +1,66 @@
 # This file has been edited with the assistance of an AI tool.
-"""Terminal rendering for the stats command."""
+"""
+Terminal rendering for the stats command.
 
+`stats` emits two stacked tables over the same usage window — "Projects"
+(per-project tree) and "By day" (per-model + per-day) — with the trailing six
+numeric columns width-aligned across both. The windowing is applied at scan
+time (the per-day dict and the project rows are already restricted to the
+range), so this layer just renders what it is given.
+"""
+
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_wrap.cli.stats.render import range_label, render_core
-from agent_wrap.cli.stats.tree import DisplayRow, build_project_tree, flatten_tree
-from agent_wrap.constants import DIVIDER, USAGE_SOURCES
-from agent_wrap.domain.display.constants import Ansi
-from agent_wrap.domain.display.models import RowItem
+from rich.console import Group
+
+from agent_wrap.cli.stats.constants import PROJECTS_TABLE, RECENT_TABLE
+from agent_wrap.cli.stats.tree import DisplayRow, Node, build_project_tree, flatten_tree
+from agent_wrap.constants import DIVIDER, ORPHANED_LABEL
+from agent_wrap.domain.display.constants import Style
+from agent_wrap.domain.display.models import RowItem, RowItemOrDivider
 from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.lib.path_tree import expand_widest_chain
 
 if TYPE_CHECKING:
-    from agent_wrap.domain.display.models import RowItemOrDivider
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.stats.models import OrphanedResult, ProjectRow
+
+
+def range_label(from_iso: str | None, until_iso: str | None) -> str:
+    if from_iso is None and until_iso is None:
+        return "all time"
+    if from_iso is None:
+        return f"through {until_iso}"
+    if until_iso is None:
+        return f"{from_iso} onward"
+    if from_iso == until_iso:
+        return from_iso
+    return f"{from_iso} … {until_iso}"
+
+
+def usage_cells(bucket: Bucket, *, cost: str, display: DisplayService, scale: int = 1) -> list[str]:
+    """
+    Render *bucket* as the trailing columns of a usage table, in `USAGE_HEADERS` order.
+
+    *cost* is already formatted, because the callers reach it three different ways --
+    from ``Bucket.cost`` paired with ``cost_unknown``, from a subtree's known/unknown
+    pair, or from a `DisplayRow`'s precomputed string. ``Bucket.cost`` alone is never
+    enough: that float cannot tell "known to be zero" from "unknown", which is the
+    ``$0.00`` / ``?`` / ``$X+?`` distinction, and ``cost_unknown`` is what carries it.
+
+    *scale* divides every count, for the DAILY AVG row. It is a parameter rather than a
+    pre-divided `Bucket` because bucket construction stays inside the pricing domain.
+    """
+    return [
+        display.format_count(bucket.msgs // scale),
+        display.format_count(bucket.in_ // scale),
+        display.format_count(bucket.out // scale),
+        display.format_count(bucket.cw // scale),
+        display.format_count(bucket.cr // scale),
+        cost,
+    ]
 
 
 def _model_display_rows(
@@ -56,23 +102,185 @@ def _build_model_section(
     blanks = [""] * leading_blanks
     body: list[RowItemOrDivider] = []
     for dr in _model_display_rows(totals_by_model, display):
-        style = Ansi.DIM if dr.is_structural else Ansi.NONE
+        style = Style.DIM if dr.is_structural else Style.NONE
         body.append(
             RowItem(
                 cells=[
                     dr.label,
                     *blanks,
-                    display.format_count(dr.bucket.msgs),
-                    display.format_count(dr.bucket.in_),
-                    display.format_count(dr.bucket.out),
-                    display.format_count(dr.bucket.cw),
-                    display.format_count(dr.bucket.cr),
-                    dr.cost_str,
+                    *usage_cells(dr.bucket, cost=dr.cost_str, display=display),
                 ],
                 style=style,
                 prefix_len=dr.prefix_len,
             )
         )
+    return body
+
+
+def _build_total_body(
+    tree_root: Node,
+    display_rows: list[DisplayRow],
+    display: DisplayService,
+    orphaned: OrphanedResult | None = None,
+) -> list[RowItemOrDivider]:
+    body: list[RowItemOrDivider] = []
+
+    body.append(
+        RowItem(
+            cells=[
+                "/",
+                str(tree_root.subtree_sessions),
+                display.format_timestamp(tree_root.subtree_last_ts),
+                *usage_cells(
+                    tree_root.subtree_bucket,
+                    cost=display.format_cost_with_unknown(
+                        tree_root.subtree_known_cost, unknown=tree_root.subtree_unknown
+                    ),
+                    display=display,
+                ),
+            ],
+            style=Style.DIM,
+            prefix_len=0,
+        )
+    )
+    for dr in display_rows:
+        if dr.transient:
+            style = Style.CYAN
+        elif dr.is_structural:
+            style = Style.DIM
+        else:
+            style = Style.NONE
+        body.append(
+            RowItem(
+                cells=[
+                    dr.label,
+                    str(dr.sessions),
+                    display.format_timestamp(dr.last_ts),
+                    *usage_cells(dr.bucket, cost=dr.cost_str, display=display),
+                ],
+                style=style,
+                prefix_len=dr.prefix_len,
+            )
+        )
+
+    if orphaned is not None:
+        # A sibling of the "/" root (prefix_len 0, not under the fs tree): logs
+        # left behind by deleted projects. Its usage is already folded into the
+        # per-model section of the By-day table.
+        b = orphaned["total"]
+        body.append(
+            RowItem(
+                cells=[
+                    ORPHANED_LABEL,
+                    str(orphaned["sessions"]),
+                    display.format_timestamp(orphaned["last_ts"]),
+                    *usage_cells(
+                        b,
+                        cost=display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
+                        display=display,
+                    ),
+                ],
+                style=Style.CYAN,
+                prefix_len=0,
+            )
+        )
+
+    return body
+
+
+def _build_recent_body(
+    totals_by_day_by_model: dict[str, dict[str, Bucket]],
+    display: DisplayService,
+) -> list[RowItemOrDivider]:
+    body: list[RowItemOrDivider] = []
+
+    # The day dict is already restricted to the window at scan time; the
+    # synthetic "?" key (records with no timestamp) is the one exception and is
+    # only present in the all-time view, where it is shown alongside dated days.
+    dated = {d: m for d, m in totals_by_day_by_model.items() if d != "?"}
+    shown_days = sorted(dated.keys(), reverse=True)
+
+    recent_models: dict[str, Bucket] = defaultdict(Bucket)
+    for d in shown_days:
+        for model, b in dated[d].items():
+            recent_models[model].merge(b)
+
+    if recent_models:
+        body.extend(_build_model_section(dict(recent_models), 0, display))
+
+    if not shown_days:
+        return body
+
+    if body:
+        body.append(DIVIDER)
+
+    # A day carrying even one unpriced model contributes nothing to its own total and
+    # nothing to the grand total, rather than a known-good partial sum that would read
+    # as the whole day's spend. The "+?" the formatter appends is the rest of it.
+    day_rows = [
+        (
+            d,
+            Bucket.merged(dated[d].values()),
+            sum(b.cost for b in dated[d].values() if not b.cost_unknown),
+            any(b.cost_unknown for b in dated[d].values()),
+        )
+        for d in shown_days
+    ]
+    total_cost = sum(cost for _d, _b, cost, unknown in day_rows if not unknown)
+    total_unknown = any(unknown for _d, _b, _c, unknown in day_rows)
+    total_b = Bucket.merged(b for _d, b, _c, _unk in day_rows)
+
+    for d, b, day_cost, day_unknown in reversed(day_rows):
+        body.append(
+            RowItem(
+                cells=[
+                    d,
+                    *usage_cells(
+                        b,
+                        cost=display.format_cost_with_unknown(day_cost, unknown=day_unknown),
+                        display=display,
+                    ),
+                ],
+                style=Style.NONE,
+                prefix_len=0,
+            )
+        )
+
+    body.append(DIVIDER)
+    body.append(
+        RowItem(
+            cells=[
+                "TOTAL",
+                *usage_cells(
+                    total_b,
+                    cost=display.format_cost_with_unknown(total_cost, unknown=total_unknown),
+                    display=display,
+                ),
+            ],
+            style=Style.BOLD_YELLOW,
+            prefix_len=0,
+        )
+    )
+    # Average over the days that actually have activity in the window.
+    n_days = len(shown_days)
+    body.append(
+        RowItem(
+            cells=[
+                "DAILY AVG",
+                *usage_cells(
+                    total_b,
+                    cost=display.format_cost_with_unknown(
+                        total_cost / n_days, unknown=total_unknown
+                    ),
+                    display=display,
+                    scale=n_days,
+                ),
+            ],
+            style=Style.BOLD_YELLOW,
+            prefix_len=0,
+        )
+    )
+
     return body
 
 
@@ -84,80 +292,37 @@ def render(  # noqa: PLR0913
     *,
     orphaned: OrphanedResult | None = None,
     display: DisplayService,
-) -> str:
-    # Per-request cost is baked into `Bucket.cost` during the scan; the bucket's
-    # `cost_unknown` flag (set when a billable request had no known price) is the
-    # authoritative "?" signal — a 0.0 cost without that flag is a known zero.
-    return render_core(
-        rows,
-        totals_by_day_by_model,
-        from_iso,
-        until_iso,
-        cost_fn=lambda _model, b: (b.cost, b.cost_unknown),
-        build_model_section=_build_model_section,
-        orphaned=orphaned,
-        display=display,
+) -> Group:
+    # Two stacked tables over the same window: "Projects" (per-project tree) and
+    # "By day" (per-model + per-day). Each table has internal sections separated
+    # by a `├─┼─┤` divider; the trailing numeric columns are width-aligned across
+    # both, which is what `fit_table`'s `others` carries.
+    label = range_label(from_iso, until_iso)
+    tree_root = build_project_tree(rows)
+
+    # Built before the Projects body because it does not depend on the project tree, and
+    # the fit loop below rebuilds that body several times.
+    recent_body = _build_recent_body(totals_by_day_by_model, display)
+
+    # Chop the tree down until the table fits the console: `_compress` folds a chain nothing
+    # branches on into one very wide node, which is exactly the shape that overflows, and
+    # splitting it back out spends a line of height to buy a segment of width.
+    total_body, shared_widths = display.fit_table(
+        PROJECTS_TABLE,
+        lambda: _build_total_body(
+            tree_root, flatten_tree(tree_root, display=display), display, orphaned
+        ),
+        shrink=lambda: expand_widest_chain(tree_root),
+        others=[(RECENT_TABLE, recent_body)],
     )
 
-
-def render_source_breakdown(
-    totals_by_source: dict[str, dict[str, Bucket]],
-    from_iso: str | None,
-    until_iso: str | None,
-    *,
-    display: DisplayService,
-) -> str:
-    """
-    Render the verbose "usage source breakdown" table for the selected window.
-
-    One row per usage source (native / standard_logging_object / unrecoverable,
-    see :func:`usage_source`) showing how much of the reported totals came
-    straight from responses vs. were recovered from LiteLLM's standard logging
-    object fallback vs. were lost — so a reader can judge how far the headline
-    cost depends on the recovery path. The source dict is already restricted to
-    the window at scan time; rendered standalone (its own column widths) since
-    it prints after the main tables.
-
-    *totals_by_source* is ``{source: {model: Bucket}}``. Model buckets are merged
-    within each source to get per-source totals. Cost reads ``Bucket.cost`` /
-    ``cost_unknown`` directly, valid here because ``price_buckets`` has already
-    priced the model-keyed buckets (same basis as :func:`render`).
-    Returns "" when no source has activity in the window.
-    """
-    merged = {
-        source: Bucket.merged(by_model.values()) for source, by_model in totals_by_source.items()
-    }
-
-    headers = ["SOURCE", "MSGS", "INPUT", "OUTPUT", "CACHE-W", "CACHE-R", "COST"]
-    aligns = ["<", ">", ">", ">", ">", ">", ">"]
-
-    def _row(label: str, b: Bucket, style: Ansi) -> RowItem:
-        return RowItem(
-            cells=[
-                label,
-                display.format_count(b.msgs),
-                display.format_count(b.in_),
-                display.format_count(b.out),
-                display.format_count(b.cw),
-                display.format_count(b.cr),
-                display.format_cost_with_unknown(b.cost, unknown=b.cost_unknown),
-            ],
-            style=style,
-            prefix_len=0,
-        )
-
-    # Unrecoverable rows carry msgs but zero tokens; the msgs guard keeps them
-    # (intentionally surfaced) while dropping sources with no activity at all.
-    active = [(s, merged[s]) for s in USAGE_SOURCES if s in merged and merged[s].msgs > 0]
-    body: list[RowItemOrDivider] = [_row(s, b, Ansi.NONE) for s, b in active]
-    total = Bucket.merged(b for _s, b in active)
-
-    if not body:
-        return ""
-
-    body.append(DIVIDER)
-    body.append(_row("TOTAL", total, Ansi.BOLD_YELLOW))
-
-    shared_widths = display.compute_shared_widths([(headers, body, 1)], 6)
-    title = f"Usage source breakdown ({range_label(from_iso, until_iso)}):"
-    return "\n".join(display.render_table(title, headers, aligns, body, 1, shared_widths))
+    projects = display.render_table(
+        f"Projects ({label}):", PROJECTS_TABLE, total_body, shared_widths
+    )
+    if not recent_body:
+        return Group(projects)
+    return Group(
+        projects,
+        "",
+        display.render_table(f"By day ({label}):", RECENT_TABLE, recent_body, shared_widths),
+    )

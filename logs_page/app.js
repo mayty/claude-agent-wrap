@@ -6,16 +6,7 @@ const chatHead = () => document.querySelector("#chat .chat-head");
 let state = { project: null, session: null, reqs: [], groups: null, tab: "main",
               poll: null, fp: null, gen: 0,
               listPoll: null, projectsFp: null, sessionsFp: null,
-              rawReqs: [], pendingHashes: null };
-
-// Stand-in text for a hash:<sha256> pointer whose original string has not been
-// fetched yet. replaceLoadingPlaceholders() swaps it for a spinner on an exact
-// match, so anything rendering it must keep it alone in its own text node.
-const LOADING_PLACEHOLDER = "➳ Loading…";
-
-function hasPendingHashes() {
-  return state.pendingHashes !== null && state.pendingHashes.size > 0;
-}
+              blobs: {}, strings: {} };
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -23,12 +14,17 @@ async function getJSON(url) {
   return r.json();
 }
 
-// Read an NDJSON response stream, returning {meta, records}.
-// When *onRecord* is provided it is called for each record as it arrives
-// (before the record is appended to the returned array), enabling
-// progressive rendering.  When *onMeta* is provided it is called as soon
-// as the session_meta line is parsed, so the caller can render the header
-// before any records arrive.
+// Read a session stream, returning {meta, records}.
+//
+// Three line types, and the order they arrive in is a contract the server keeps: the
+// session_meta header, then content, then the records that point at it. So a content line
+// is always filed before the record needing it is hydrated, and nothing has to be held
+// back or re-resolved later.
+//
+// When *onRecord* is provided it is called for each record as it arrives (before the
+// record is appended to the returned array), enabling progressive rendering. When *onMeta*
+// is provided it is called as soon as the session_meta line is parsed, so the caller can
+// render the header before any records arrive.
 async function readNDJSONStream(response, onRecord, onMeta) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -42,9 +38,12 @@ async function readNDJSONStream(response, onRecord, onMeta) {
     if (item.__type__ === "session_meta") {
       meta = item;
       if (onMeta) onMeta(item);
+    } else if (item.__type__ === "blob") {
+      storeContent(item.ref, item.value);
     } else {
-      records.push(item);
-      if (onRecord) onRecord(item);
+      const record = hydrate(item);
+      records.push(record);
+      if (onRecord) onRecord(record);
     }
   }
 
@@ -65,41 +64,54 @@ async function readNDJSONStream(response, onRecord, onMeta) {
   return { meta, records };
 }
 
-// Parse raw strings.jsonl content into a {hash: original} lookup dict.
-// Each line is a JSON object {"hash": "...", "original": "..."}.
-// Malformed lines are silently skipped.
-function parseStrings(text) {
-  const strings = {};
-  if (!text) return strings;
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.hash && entry.original !== undefined) {
-        strings[entry.hash] = entry.original;
-      }
-    } catch (e) { /* skip corrupt lines */ }
-  }
-  return strings;
+// File one content line under the reference the records spell it with.
+//
+// Two tables, told apart by the reference's prefix. An interned string is keyed by the
+// `hash:` pointer that appears *inside* other content, so resolveRecord() looks it up
+// exactly as it did when the strings arrived from their own endpoint. A structural value
+// is keyed by `blob:<id>`, and is resolved here rather than per record: the whole point of
+// the format is that one value serves every record that references it.
+function storeContent(ref, value) {
+  if (ref.startsWith("hash:")) state.strings[ref] = value;
+  else state.blobs[ref] = resolveRecord(value, state.strings);
 }
 
-// Recursively resolve hash:<sha256> references in a record's tree, using the
-// strings table from /api/strings.  Returns a new object tree (does not
-// mutate the input).  When *strings* is empty, returns the input unchanged.
+// The content behind one reference, or the reference itself when it never arrived.
+//
+// Showing the reference is the same policy resolveRecord() applies to an unresolved
+// hash pointer: render what is there rather than invent an empty message. It should not
+// happen -- an incremental response sends every value its records introduced -- so a
+// visible `blob:12` is a bug report, not a degraded mode.
+function contentFor(ref) {
+  const value = state.blobs[ref];
+  return value === undefined ? ref : value;
+}
+
+// Turn one wire record into what the renderers read.
+//
+// The reference-valued fields are swapped for the shared content *by reference*, never
+// copied. A long session re-sends its whole conversation prefix on every turn, so copying
+// each record's messages would rebuild the conversation once per record in the browser --
+// the same quadratic the wire format exists to remove.
+function hydrate(record) {
+  const out = resolveRecord(record, state.strings);
+  out.messages = (record.messages || []).map(contentFor);
+  out.system = record.system == null ? null : contentFor(record.system);
+  out.tools = typeof record.tools === "string" ? contentFor(record.tools) : (record.tools || []);
+  return out;
+}
+
+// Recursively resolve hash:<sha256> pointers in a value, using the strings the session
+// stream carried.  Returns a new object tree (does not mutate the input).  When *strings*
+// is empty, returns the input unchanged.  An unknown pointer is left intact: the original
+// is not in the index and never will be, so the pointer is the honest rendering.
 function resolveRecord(r, strings) {
   if (!strings || Object.keys(strings).length === 0) return r;
 
   function walk(v) {
     if (typeof v === "string") {
       const resolved = strings[v];
-      if (resolved !== undefined) return resolved;
-      // Detect unresolved hash references (format: "hash:" + 64 hex chars).
-      if (/^hash:[a-f0-9]{64}$/.test(v)) {
-        if (state.pendingHashes === null) state.pendingHashes = new Set();
-        state.pendingHashes.add(v);
-        return LOADING_PLACEHOLDER;
-      }
-      return v;
+      return resolved !== undefined ? resolved : v;
     }
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === "object") {
@@ -235,31 +247,6 @@ function el(tag, cls, text) {
   return e;
 }
 
-// Replace "➳ Loading…" text nodes in `container` with spinner elements.
-// Uses exact-match so JSON-stringified tool inputs (where the placeholder is
-// embedded in a larger string) are left alone.
-function replaceLoadingPlaceholders(container) {
-  const placeholder = LOADING_PLACEHOLDER;
-  const walker = document.createTreeWalker(
-    container,
-    NodeFilter.SHOW_TEXT,
-    null,
-    false
-  );
-  const textNodes = [];
-  while (walker.nextNode()) {
-    if (walker.currentNode.nodeValue.trim() === placeholder) {
-      textNodes.push(walker.currentNode);
-    }
-  }
-  for (const node of textNodes) {
-    const span = document.createElement("span");
-    span.className = "loading-hash";
-    span.innerHTML = '<span class="spinner-icon"></span> Loading…';
-    node.parentNode.replaceChild(span, node);
-  }
-}
-
 function renderProjectsList(projects) {
   const list = $("proj-list");
   list.innerHTML = "";
@@ -357,20 +344,19 @@ async function selectSession(s, item) {
   const gen = ++state.gen;
   state.session = s.session_id;
   state.reqs = [];
-  state.rawReqs = [];
-  state.pendingHashes = null;
+  // Emptied per session so a long one is not held after the user moves on. The keys are
+  // global rather than per-session, so a stale in-flight stream still writing into the
+  // fresh tables can only add content this session does not reference.
+  state.blobs = {};
+  state.strings = {};
   state.groups = null;
   document.querySelectorAll("#sess-list .item").forEach(e => e.classList.remove("active"));
   item.classList.add("active");
   chatHead().innerHTML = "";
   chatBody().innerHTML = '<div class="hint">Loading…</div>';
   try {
-    // Step 1: fetch strings first (unchanged)
-    const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
-    const strings = parseStrings(stringsText);
-    if (gen !== state.gen) return;
-
-    // Step 2: stream session as NDJSON, rendering turns as they arrive
+    // One request for the whole session: content and records arrive on the same stream,
+    // in an order that lets each turn render as it is read.
     const response = await fetch(`/api/session?${sessionQuery(s)}`);
     if (!response.ok) throw new Error(await response.text());
 
@@ -378,16 +364,12 @@ async function selectSession(s, item) {
     body.innerHTML = "";
     let displayIdx = 0;
     const reqs = [];
-    const rawReqs = [];
 
     const { meta } = await readNDJSONStream(response, (record) => {
       if (gen !== state.gen) return;
-      rawReqs.push(record);
-      const resolved = resolveRecord(record, strings);
-      reqs.push(resolved);
-      state.rawReqs = rawReqs;
+      reqs.push(record);
       state.reqs = reqs;
-      body.appendChild(renderTurn(resolved, ++displayIdx));
+      body.appendChild(renderTurn(record, ++displayIdx));
       renderChatHead();
     }, (metaItem) => {
       if (gen !== state.gen) return;
@@ -397,10 +379,9 @@ async function selectSession(s, item) {
 
     if (gen !== state.gen) return;
 
-    // Step 3: finalize — tabs replace spinner, body stays intact
+    // Finalize — tabs replace spinner, body stays intact
     const session_meta = meta || s;
     state.reqs = reqs;
-    state.rawReqs = rawReqs;
     state.session_meta = session_meta;
     state.groups = groupBySubagent(reqs, buildSubagentCallMap(reqs));
     insertMarkers(state.groups);
@@ -408,7 +389,7 @@ async function selectSession(s, item) {
     renderChatHead();
     ensureScrollButton();
 
-    // Step 4: seed fingerprint and start polling
+    // Seed the fingerprint and start polling
     try { state.fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`)); }
     catch (e) { state.fp = null; }
     if (gen !== state.gen) return;
@@ -426,8 +407,11 @@ async function selectSession(s, item) {
 // Live polling: refresh the open session as the agent appends new requests.
 // ---------------------------------------------------------------------------
 
+// Collapse a /api/*-stat response into the string the pollers compare. `rev` is the
+// newest ingest instant among the sessions in scope and `count` is how many there are,
+// so between them every change either list can render moves the key.
 function fpKey(o) {
-  return `${o && o.mtime}:${o && o.size}`;
+  return `${o && o.rev}:${o && o.count}`;
 }
 
 function stopPolling() {
@@ -466,37 +450,18 @@ async function tick(s) {
   state.tickInFlight = true;
   try {
     const fp = fpKey(await getJSON(`/api/session-stat?${sessionQuery(s)}`));
-    if (fp === state.fp && !hasPendingHashes()) return;
-    const stringsText = await (await fetch(`/api/strings?${sessionQuery(s)}`)).text();
+    if (fp === state.fp) return;
+    // `from` asks for the records this client does not have, and the response carries
+    // only the content those records introduced — a few kilobytes for one new turn,
+    // whatever the length of the session behind it.
     const fromIndex = state.reqs.length;
     const response = await fetch(`/api/session?${sessionQuery(s)}&from=${fromIndex}`);
     if (!response.ok) return;
     const { meta, records } = await readNDJSONStream(response);
     if (state.session !== s.session_id) return; // user moved on during the fetch
-    const strings = parseStrings(stringsText);
-
-    // fp unchanged + pending hashes: try to resolve without fetching session data.
-    if (fp === state.fp && hasPendingHashes()) {
-      let anyResolved = false;
-      for (const h of state.pendingHashes) {
-        if (strings[h] !== undefined) { anyResolved = true; break; }
-      }
-      if (anyResolved) {
-        state.pendingHashes = new Set();  // clear; resolveRecord repopulates
-        state.reqs = state.rawReqs.map(r => resolveRecord(r, strings));
-        if (!hasPendingHashes()) state.pendingHashes = null;
-        renderStreamPreservingScroll();
-      }
-      state.fp = fp;
-      renderChatHead();
-      return;
-    }
-
-    for (const r of records) state.rawReqs.push(r);
-    const resolved = records.map(r => resolveRecord(r, strings));
 
     // If no new records arrived, just refresh metadata and fingerprint.
-    if (resolved.length === 0) {
+    if (records.length === 0) {
       state.session_meta = meta || state.session_meta;
       state.fp = fp;
       updateSessionListItem(meta);
@@ -511,10 +476,7 @@ async function tick(s) {
       if (!fullResp.ok) return;
       const full = await readNDJSONStream(fullResp);
       if (state.session !== s.session_id) return;
-      const fullResolved = full.records.map(r => resolveRecord(r, strings));
-      state.rawReqs = full.records;
-      state.reqs = fullResolved;
-      state.pendingHashes = null;
+      state.reqs = full.records;
       state.groups = groupBySubagent(state.reqs, buildSubagentCallMap(state.reqs));
       state.session_meta = full.meta || state.session_meta;
       state.fp = fp;
@@ -530,7 +492,7 @@ async function tick(s) {
     // appending after it) so it stays the last element in flow — position:
     // sticky only tracks the viewport bottom while it has no later siblings.
     const wrapBot = body.querySelector(".scroll-btn-wrap-bot");
-    for (const r of resolved) {
+    for (const r of records) {
       state.reqs.push(r);
       const turnEl = renderTurn(r, state.reqs.length);
       if (wrapBot) body.insertBefore(turnEl, wrapBot);
@@ -672,20 +634,19 @@ function appendThinkingBlock(tb, parent) {
     box.appendChild(el("div", "meta", "(thinking occurred; not shown by the model)"));
   }
   parent.appendChild(box);
-  replaceLoadingPlaceholders(box);
 }
 
 // Append one image block. Shared by top-level `image` content blocks and the ones
-// nested inside a tool_result (what an image Read returns). A base64 payload is
-// long enough to be stored as a hash pointer, so the data may still be an
-// unresolved placeholder on first paint — emit the placeholder in its own text
-// node instead of a broken <img> and let replaceLoadingPlaceholders() turn it into
-// a spinner; the pending-hash refetch re-renders with the real image.
+// nested inside a tool_result (what an image Read returns). A base64 payload is long
+// enough that the sidecar interns it, so the data arrives as a hash pointer and is
+// resolved from the session stream like any other string. A pointer that survives
+// resolution has no original in the index — say so rather than emit a broken <img>
+// whose src is the pointer.
 function appendImageBlock(source, parent) {
   if (!source || !source.data) return;
   const box = el("div", "block-image");
-  if (source.data === LOADING_PLACEHOLDER || /^hash:[a-f0-9]{64}$/.test(source.data)) {
-    box.appendChild(el("div", "meta", LOADING_PLACEHOLDER));
+  if (/^hash:[a-f0-9]{64}$/.test(source.data)) {
+    box.appendChild(el("div", "meta", "(image not in the index)"));
     parent.appendChild(box);
     return;
   }
@@ -787,7 +748,6 @@ function renderContent(content, parent) {
       parent.appendChild(box);
     }
   }
-  replaceLoadingPlaceholders(parent);
 }
 
 // Copy `text` to the clipboard, flashing the button to confirm. Uses the async
@@ -1187,12 +1147,10 @@ function compactJSON(v) {
   return typeof v === "string" ? v : JSON.stringify(v);
 }
 
-// A one-line gist of `text` for a collapsed row. Returns the loading
-// placeholder untouched so it still becomes a spinner.
+// A one-line gist of `text` for a collapsed row.
 function descSnippet(text) {
   if (typeof text !== "string") return "";
   const trimmed = text.trim();
-  if (trimmed === LOADING_PLACEHOLDER) return trimmed;
   const line = (trimmed.split("\n").find((l) => l.trim()) || "").trim();
   if (line.length <= SNIPPET_MAX) return line;
   return line.slice(0, SNIPPET_MAX - 1).trimEnd() + "…";
@@ -1220,7 +1178,7 @@ function appendExtras(extras, parent, label) {
 
 // The full description, behind a nested toggle because tool descriptions run to
 // hundreds of lines. Adds nothing when the row's snippet already showed the
-// whole text — which includes an unresolved description's placeholder.
+// whole text.
 function appendToolDescription(desc, parent) {
   if (typeof desc !== "string") return;
   const text = desc.trim();
@@ -1361,7 +1319,6 @@ function renderFullDetail(r) {
   renderResponse(r.response, body);
   const notice = finishReasonNotice(r);
   if (notice) body.appendChild(notice);
-  replaceLoadingPlaceholders(body);
   return body;
 }
 
@@ -1624,7 +1581,6 @@ function renderTurn(r, displayIdx) {
   if (info) turn.appendChild(info);
 
   turn.onclick = () => openModal(r, displayIdx);
-  replaceLoadingPlaceholders(turn);
   return turn;
 }
 
@@ -1822,8 +1778,8 @@ function looksTerminal(r) {
 // Claude Code emits the two markers as content blocks of their own, so this
 // looks for text blocks trimming to exactly "<transcript>" and "</transcript>"
 // within one message. Both markers are shorter than the log's string-hashing
-// threshold, so they are always stored literally — this works before
-// strings.jsonl has resolved. Returns { content, open, close } or null.
+// threshold, so they are stored literally rather than as pointers, and this reads them
+// straight out of the message. Returns { content, open, close } or null.
 function transcriptBlocks(r) {
   const msgs = r.messages || [];
   for (let i = 0; i < msgs.length; i++) {
@@ -1979,9 +1935,9 @@ function parseClassifierResult(r) {
 // keys on the prompt's opening line, with the word count matched loosely so a
 // future "4-6 words" rewrite still hits.
 //
-// The prompt is far longer than the log's string-hashing threshold, so it only
-// matches once /api/strings has resolved; tick() re-renders the stream when a
-// pending hash arrives, so a live session corrects itself within a poll.
+// The prompt is far longer than the log's string-hashing threshold, so what the record
+// holds is a pointer. The session stream sends the original ahead of the content quoting
+// it, so the text is in hand by the time this runs.
 const STATUS_SUMMARY_RE = /^Describe your most recent action in \d+-\d+ words/;
 
 // The prompt is appended as the trailing text of the last user message: the whole
@@ -2328,9 +2284,8 @@ function renderStream() {
 }
 
 // Rebuild the whole stream while keeping the reader where they were. A reader
-// following the newest turn stays pinned to the bottom: the rebuild usually
-// makes the stream taller (a resolved hash placeholder becomes its real text),
-// so restoring the old offset would leave them just above the new bottom and
+// following the newest turn stays pinned to the bottom: the rebuild can make the stream
+// taller, so restoring the old offset would leave them just above the new bottom and
 // silently end auto-following. Anyone who has scrolled up keeps their offset.
 function renderStreamPreservingScroll() {
   // Probe before renderStream() clears innerHTML, which resets scrollTop to 0.

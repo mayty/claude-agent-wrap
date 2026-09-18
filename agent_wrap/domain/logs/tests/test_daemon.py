@@ -1,21 +1,33 @@
 # This file has been edited with the assistance of an AI tool.
 import json
+import logging
 import re
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+import pytest
+
 from agent_wrap.domain.logs.daemon import (
     log_debug,
     log_info,
+    logger,
     read_state,
     state_file,
     write_state,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
-    import pytest
+
+@pytest.fixture
+def debug_logging() -> Iterator[None]:
+    """Turn on the DEBUG level ``AGENT_LOG_DEBUG=1`` sets at import, for one test."""
+    previous = logger.level
+    logger.setLevel(logging.DEBUG)
+    yield
+    logger.setLevel(previous)
 
 
 def test_state_file_path(tmp_path: Path):
@@ -73,19 +85,14 @@ def test_log_info_context_manager_logs_completion(capsys: pytest.CaptureFixture[
     )
 
 
-def test_log_debug_silent_when_log_debug_disabled(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr("agent_wrap.domain.logs.daemon.LOG_DEBUG", False)
+def test_log_debug_silent_when_log_debug_disabled(capsys: pytest.CaptureFixture[str]):
     with log_debug("Category", "hello", threshold=timedelta(seconds=60)):
         pass
     assert capsys.readouterr().out == ""
 
 
-def test_log_debug_prints_when_log_debug_enabled(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr("agent_wrap.domain.logs.daemon.LOG_DEBUG", True)
+@pytest.mark.usefixtures("debug_logging")
+def test_log_debug_prints_when_log_debug_enabled(capsys: pytest.CaptureFixture[str]):
     with log_debug("Category", "hello", threshold=timedelta(seconds=60)):
         pass
     lines = capsys.readouterr().out.splitlines()
@@ -96,10 +103,7 @@ def test_log_debug_prints_when_log_debug_enabled(
     )
 
 
-def test_log_debug_escalates_completion_line_past_threshold(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    monkeypatch.setattr("agent_wrap.domain.logs.daemon.LOG_DEBUG", False)
+def test_log_debug_escalates_completion_line_past_threshold(capsys: pytest.CaptureFixture[str]):
     with log_debug("Category", "hello", threshold=timedelta(seconds=-1)):
         pass
     lines = capsys.readouterr().out.splitlines()

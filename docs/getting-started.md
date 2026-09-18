@@ -3,6 +3,7 @@
 
 ## Requirements
 
+- A supported host: Linux on `x86_64` or `aarch64` (glibc; musl is not supported), or macOS on Apple Silicon. WSL2 counts as Linux. Intel Macs are not supported — one of the wrapper's dependencies publishes no `x86_64` macOS wheel. `bin/agent-bootstrap` stops on anything else and names the reason before it downloads anything.
 - Docker
 - `git` — to clone the wrapper, and for `agent update` to fast-forward it later.
 - `curl` and `tar` — used once, by `bin/agent-bootstrap`, to fetch the CPython the wrapper runs on. **No system Python is needed:** the wrapper provisions its own pinned interpreter and never falls back to the host's `python3`, so it does not matter which Python (if any) your distro ships.
@@ -22,7 +23,9 @@ source ~/claude-agent-wrap/agent-wrap.bashrc
 
 This adds `bin/agent` to your `PATH` and registers tab-completion. Programmatic callers that only need to launch `agent` can instead put `<repo>/bin` on `PATH` or symlink `bin/agent` into a directory already on `PATH` — no sourcing required. See [Shell Commands](shell-commands.md).
 
-That is the whole setup. The first `agent` command provisions the interpreter it runs on: it downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython, verifies it against the SHA-256 in `python-pin.env`, unpacks it into `.python/` inside the checkout, and builds a venv on top holding `bin/requirements.txt` — a fully pinned, hash-verified export of `uv.lock`. That costs a few seconds, once per checkout, and `agent update` redoes it whenever the pin or the dependencies move. It narrates the whole thing as it goes — each command it runs is printed before it runs, with that command's own output left intact — so you can see where the time is going and what failed if anything does. There is deliberately no fallback to a system `python3`, so if provisioning fails `agent` stops and names `bin/agent-bootstrap` for you to re-run by hand.
+**Clone it onto a local filesystem** — not a Windows drive under WSL2 (`/mnt/c/...`) and not a network share. Every sidecar writes its request logs into the checkout, at `<wrap-dir>/litellm-logs/`, and the [`agent logs`](shell-commands.md#agent-logs) viewer watches that directory for changes. `drvfs`, `9p`, `v9fs`, `cifs`, `smb3`, `nfs` and `nfs4` accept a filesystem watch and then never deliver an event, so on those the viewer only notices new requests on its periodic check, up to a minute late — and the statusline's token and cost segment lags with it. Your *projects* can live anywhere, including `/mnt/c`; only the wrapper's own location matters. `agent logs` warns when it detects one of these.
+
+That is the whole setup. The first `agent` command provisions the interpreter it runs on: it downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython, verifies it against the SHA-256 in `python-pin.env`, unpacks it into `.python/` inside the checkout, and builds a venv on top holding `bin/requirements.txt` — a fully pinned, hash-verified export of `uv.lock`. That costs a few seconds, once per checkout. `agent` redoes it by itself whenever the dependencies move — it compares the venv against `bin/requirements.txt` on every launch, so a plain `git pull` re-provisions on your next command rather than leaving new code running against the old packages — and `agent update` redoes it whenever the pin moves too. A re-provisioning run that fails is not fatal, since the previous venv is still there and still works: `agent` says so and carries on, and `agent inspect` keeps flagging it on the `interpreter` row until a `bin/agent-bootstrap` succeeds. It narrates the whole thing as it goes — each command it runs is printed before it runs, with that command's own output left intact — so you can see where the time is going and what failed if anything does. There is deliberately no fallback to a system `python3`, so if provisioning fails `agent` stops and names `bin/agent-bootstrap` for you to re-run by hand.
 
 Nothing is ever replaced in place: each venv's directory name encodes the constraints it was built from, so a dependency change publishes a new one and leaves the old one usable. That also means `.python/` grows over time — `rm -rf .python` reclaims it, and the next `agent` command provisions again.
 
@@ -35,6 +38,12 @@ make install
 ```
 
 That is `bin/agent-bootstrap --dev`: it provisions the same pinned interpreter, then hands the whole dependency question to `uv sync --locked` — the prod dependencies **and** the dev group, out of the one lock `bin/requirements.txt` is exported from. So there is no second step and no reason to run the plain bootstrap first. It publishes its own venv, `venv-<ver>+<rel>-<target>-dev`, alongside any the plain bootstrap built; re-run it after any `uv lock`, and it re-syncs in place.
+
+Run it before the `uv`-backed targets rather than instead of them: those targets are pointed
+at the venv it provisions (`UV_PROJECT_ENVIRONMENT`), because `requires-python` is an exact
+pin and uv would otherwise hunt for a matching interpreter in its own managed installs and
+on `PATH` — where this checkout's copy is not. Without a provisioned venv they stop with
+`No provisioned interpreter. Run: make install`.
 
 `make check` then runs the full QA suite. Working inside this project's own agent container, both `uv` and the dev group are already in the image — `agent rebuild` is enough.
 

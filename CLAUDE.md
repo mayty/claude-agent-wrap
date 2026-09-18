@@ -21,6 +21,7 @@ A Docker-based wrapper for running Claude Code CLI through multiple AI providers
 | [docs/shell-commands.md](docs/shell-commands.md) | Adding/editing an `agent` verb or its flags |
 | [docs/container-environment.md](docs/container-environment.md) | Adding/editing container env var injection |
 | [docs/architecture.md](docs/architecture.md) | Understanding the codebase architecture |
+| [docs/infrastructure.md](docs/infrastructure.md) | Adding a database, a migration, or a repository; the storage layer's boundary rules |
 | [docs/testing-conventions.md](docs/testing-conventions.md) | Writing or reviewing tests |
 | [agent-wrap.bashrc](agent-wrap.bashrc) | Adding/editing shell completion or the `PATH` setup for `agent` |
 | [agent_wrap/domain/providers/README.md](agent_wrap/domain/providers/README.md) | Understanding the sidecar lifecycle or adding a LiteLLM provider |
@@ -34,7 +35,7 @@ See [docs/container-environment.md](docs/container-environment.md) for always-in
 
 ### Authentication
 
-Provider credentials are resolved via an encrypted secrets store. The primary flow is the interactive prompt on the first `agent run` — provider secrets are required, so a TTY triggers a prompt when one is missing. `agent secrets set/check/clear/cleanup <sidecar>` manages secrets explicitly (e.g. for headless/scripted setup). Telegram secrets are optional and never trigger an interactive prompt — they must be set manually via `agent secrets set telegram`. `~/claude_keys.json` is only a legacy path: any keys found there are migrated into the encrypted store once, then the file is deleted.
+Provider credentials are resolved via an encrypted secrets store. The primary flow is the interactive prompt on the first `agent run` — provider secrets are required, so a TTY triggers a prompt when one is missing. `agent secrets set/check/clear/cleanup <sidecar>` manages secrets explicitly (e.g. for headless/scripted setup). Telegram secrets are optional and never trigger an interactive prompt — they must be set manually via `agent secrets set telegram`.
 
 ### Agent lifecycle
 
@@ -56,7 +57,7 @@ See [docs/docker-sandboxing.md](docs/docker-sandboxing.md).
 
 A `Makefile` provides all QA targets. Follow these rules:
 
-- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + constraints-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + carveout-check + check-executables) passes cleanly.
+- **`make check` must pass before handing off.** Never conclude a task until `make check` (python-check + constraints-check + lintcheck + format-check + test + typecheck + markdown-check + arch-check + cli-check + carveout-check + check-executables) passes cleanly.
 - **Save `agent rebuild` for the end of the session.** `make install` updates the venv
   this session runs on, so nothing is blocked in the meantime. But the container's
   `.python/` is an anonymous volume on a `--rm` container: it dies with the session, and
@@ -142,10 +143,40 @@ A `Makefile` provides all QA targets. Follow these rules:
   functions that share a micro-domain must be grouped into a namespace class
   (``@staticmethod``-only, no instance state) instead of being divided by
   ``# --- Topic ---`` comment separators.
+- **A comment must earn its line.** Keep one only when it names something a reader
+  cannot recover from the code: an external system's non-obvious behaviour (Docker,
+  SQLite, LiteLLM, inotify, WSLg, Claude Code), an ordering/locking/threading
+  invariant whose violation is *silent*, a rejected alternative and the reason it
+  was rejected, or a measured number. Everything else is noise, because the name and
+  the type signature are already the documentation.
+  - Do **not** write a docstring that restates the signature
+    (`"""Check if a Docker network exists."""` on `network_exists`), an `Args:` /
+    `Returns:` block that repeats the annotations, a comment narrating the next line
+    (`# Handle primitive types`), or a `# ---- Topic ----` banner.
+  - Do **not** describe how the system used to work. "X used to be Y", "this
+    replaces Z", and references to deleted artifacts age into lies; state the
+    present invariant instead. The exception is a sentence that explains why
+    something *still exists* — keep that.
+  - Docstrings are optional: `D100`–`D105` and `D107` are all ignored, so a function
+    whose name and signature answer the question should carry none. A docstring that
+    is kept states its point and stops — if it is longer than the body it documents,
+    it is narrating rather than recording, and the surplus is the part to cut. Four things
+    still must not be removed: the 14 click callback docstrings (they are
+    `agent --help`), a public *nested* class docstring (`D106`), a `# noqa` /
+    `# type: ignore` / `# pyrefly: ignore` directive, and `help=` on a click option.
 
 ## Architecture
 
 Domain-layer architecture rules and project structure — see [docs/architecture.md](docs/architecture.md).
+
+**The storage layer lives in `agent_wrap/infrastructure/`, below `domain/`.** SQLite
+databases, numbered `.sql` migrations, and repositories that translate app objects ↔ rows.
+Nothing there may import `agent_wrap.domain.*` or `agent_wrap.cli.*`; a domain service
+reaches a repository by constructor DI only, wired in `containers.py` — the composition
+root and the sole place permitted a runtime `agent_wrap.infrastructure` import. Repositories
+return app objects, never rows or SQL, and every `sqlite3.Error` surfaces as `StorageError`.
+`make arch-check` does **not** enforce any of this — see
+[docs/infrastructure.md](docs/infrastructure.md).
 
 ## Test conventions
 

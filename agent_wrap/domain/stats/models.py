@@ -10,16 +10,13 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
-    from agent_wrap.domain.pricing.models import Bucket, TokenUsage
+    from agent_wrap.domain.pricing.models import Bucket
 
 
 @dataclass
 class UsageArgs:
-    """The resolved selection window and filters for one ``agent stats`` invocation."""
-
     from_iso: str | None = None
     until_iso: str | None = None
-    verbose: bool = False
     pattern: re.Pattern[str] | None = None
     refresh: bool = False
 
@@ -46,75 +43,24 @@ class Group:
         self.exists = False
 
 
-# A unit of parallel work. *dir_index* tags which logs dir the file belongs to
-# so the parent can fold results per dir (a project's sessions vs. an orphaned
-# dir's) without the worker knowing.
-class WorkUnit(NamedTuple):
-    dir_index: int
-    provider_name: str
-    messages_file: Path
-
-
-# A scan cache maps each logs dir to its folded
-# (sessions, last_ts, by_day, by_source) result, so the
-# aggregation pass can look results up instead of re-scanning.
-class DirResult(NamedTuple):
-    sessions: int
-    last_ts: datetime | None
-    by_day: dict[str, dict[str, Bucket]]
-    by_source: dict[str, dict[str, Bucket]]
-
-
-type ScanCache = dict[Path, DirResult]
-
-
-# A raw record returned by scan workers. Workers produce these without any
-# pricing-domain knowledge; the master normalizes model names and folds into
-# Buckets.
+# One project hash's whole in-window usage, folded and priced.
 #
-# *ts* is the record's raw UTC timestamp, kept alongside *day_key* because the
-# latter has already had ``DAY_START_HOURS`` applied — the usage archive needs
-# the un-offset instant so ``agent stats`` can re-bucket it at read time with
-# whatever ``AGENT_DAY_START_UTC`` is in force then.
-class RawRecord(NamedTuple):
-    day_key: str
-    display_model: str
-    usage: TokenUsage
-    source: str
-    unrecorded: bool
-    ts: datetime | None
-
-
-# A raw file result from a pool worker.
-class RawFileResult(NamedTuple):
-    had_record: bool
-    last_ts: datetime | None
-    records: list[RawRecord]
-
-
-# Return type for accumulate_record: extracted fields from one log record.
-class AccumulatedRecord(NamedTuple):
-    accumulated: bool
-    ts: datetime | None
-    day_key: str | None
-    display_model: str | None
-    usage: TokenUsage | None
-    source: str
-    unrecorded: bool
-
-
-# Return type for scan_project: a single project's scan result plus existence flag.
-class ScanProjectResult(NamedTuple):
+# Keyed by hash rather than by project path because that is the only project identity
+# the index carries; the caller resolves a hash to a registered project, or to none at
+# all, which is what makes its spend orphaned. *sessions* counts the distinct sessions
+# that contributed, and *last_ts* is the newest contributing request's exact instant.
+class HashUsage(NamedTuple):
     sessions: int
     last_ts: datetime | None
     by_day: dict[str, dict[str, Bucket]]
-    by_source: dict[str, dict[str, Bucket]]
-    exists: bool
+
+
+# The folded usage of every project hash the index holds, so one aggregate serves the
+# project rows, the shared totals and the orphaned row without being run three times.
+type UsageCache = dict[str, HashUsage]
 
 
 class _ProjectRowBase(TypedDict):
-    """Fields common to project rows and model display rows."""
-
     path: Path
     exists: bool
     sessions: int
@@ -137,40 +83,9 @@ class ProjectRow(_ProjectRowBase, total=False):
 
 
 class OrphanedResult(TypedDict):
-    """Aggregated result for orphaned sessions."""
-
     sessions: int
     last_ts: datetime | None
     total: Bucket
-
-
-class ArchiveLeaf(TypedDict):
-    """
-    One archived ``(date, hour, model, source)`` cell's token counts.
-
-    Field names are descriptive rather than mirroring ``Bucket``'s internal
-    ``in_``/``cw_5m`` slots — this is a persisted on-disk format, not an
-    in-memory struct. Cost is deliberately absent: pricing is applied fresh on
-    every read so archived spend tracks later pricing-table changes.
-    """
-
-    msgs: int
-    input_tokens: int
-    output_tokens: int
-    cache_write_5m: int
-    cache_write_1h: int
-    cache_read: int
-    unrecorded: int
-
-
-# The usage archive: date -> hour -> "provider/model" -> source -> leaf.
-#
-# Dates are raw UTC calendar days (``YYYY-MM-DD``) and hours are zero-padded UTC
-# hours (``"00"``-``"23"``), NOT stats-bucketed days — re-bucketing via
-# ``get_day``/``DAY_START_HOURS`` happens at read time. Records with no
-# timestamp use ``"?"`` for both, matching ``day_in_range``'s synthetic key.
-# Hours are a dict rather than a list because most hours in a day are empty.
-type ArchiveDoc = dict[str, dict[str, dict[str, dict[str, ArchiveLeaf]]]]
 
 
 # The pre-collapse bucket key carrying the UTC instant a bucket's usage falls into.
@@ -184,39 +99,25 @@ class HourKey(NamedTuple):
 
 
 # Buckets keyed outer → hour → model, produced before pricing collapses the hour
-# axis. The outer key is a stats day (by_day) or a usage source (by_source); the
-# inner key is an :class:`HourKey` so both weekday and UTC hour survive to pricing.
+# axis. The outer key is a stats day; the inner key is an :class:`HourKey`, so both
+# weekday and UTC hour survive to pricing.
 HourBuckets = dict[str, dict[HourKey, dict[str, "Bucket"]]]
 
 
-# Archived usage materialized into priceable buckets, before it is merged into
-# the shared stats totals. *last_ts* is the newest in-window archived hour.
-class ArchivedBuckets(NamedTuple):
-    by_day: HourBuckets
-    by_source: HourBuckets
-    last_ts: datetime | None
-
-
-# Return type for archive_and_delete_orphaned.
+# Return type for delete_orphaned_logs.
 #
 # *removed*/*freed_bytes* count only dirs actually deleted, so they may fall
 # short of the pre-confirmation estimate when a ``rmtree`` failed.
-# *finalized* is False when promoting the staging file over the real archive
-# failed, meaning the caller must tell the user to move it by hand.
 class CleanupResult(NamedTuple):
     removed: int
     freed_bytes: int
-    archive_path: Path
-    staging_path: Path
-    finalized: bool
 
 
-# Return type for aggregate_projects: the four render inputs rolled up across all projects.
+# Return type for aggregate_projects: the render inputs rolled up across all projects.
 class AggregateResult(NamedTuple):
     rows: list[ProjectRow]
     totals_by_model: dict[str, Bucket]
     totals_by_day_by_model: dict[str, dict[str, Bucket]]
-    totals_by_source: dict[str, dict[str, Bucket]]
 
 
 # Return type for resolve_group: a project path resolved to its transient group.
@@ -235,7 +136,6 @@ class CleanupScope(NamedTuple):
 
     @property
     def is_empty(self) -> bool:
-        """Whether there is nothing to clean up."""
         return not self.orphaned_dirs and not self.stale_paths
 
 
@@ -243,8 +143,9 @@ class CleanupOutcome(NamedTuple):
     """
     What a cleanup actually did.
 
-    *removed_paths* is empty when the archive did not finalize — the registry is
-    deliberately left alone in that case (see ``StatsService.run_cleanup``).
+    *removed_paths* is the registry entries pruned, which is a separate list from the
+    log directories in *result*: a project can be in the registry with its logs already
+    gone, or have logs and still be registered.
     """
 
     result: CleanupResult
@@ -255,9 +156,10 @@ class StatsReport(NamedTuple):
     """
     Everything ``agent stats`` renders for one selection window.
 
-    ``rows`` holds only projects that contributed sessions; ``orphaned`` is the merged
-    live + archived ``<orphaned>`` row, or None when the pattern suppresses it. The
-    totals already include the orphaned spend, so the tables agree with each other.
+    ``rows`` holds only projects that contributed sessions; ``orphaned`` is the
+    ``<orphaned>`` row -- the spend of every indexed project hash the registry does not
+    claim -- or None when the pattern suppresses it. The totals already include that
+    spend, so the tables agree with each other.
     ``unrecorded`` counts successful requests whose usage was never logged, which the
     caller footnotes because those requests contribute $0 to the costs above.
     """
@@ -265,7 +167,6 @@ class StatsReport(NamedTuple):
     rows: list[ProjectRow]
     totals_by_model: dict[str, Bucket]
     totals_by_day_by_model: dict[str, dict[str, Bucket]]
-    totals_by_source: dict[str, dict[str, Bucket]]
     orphaned: OrphanedResult | None
     unrecorded: int
 

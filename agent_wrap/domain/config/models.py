@@ -1,13 +1,16 @@
 # This file has been created with the assistance of an AI tool.
 """Data models for the config domain."""
 
-from dataclasses import dataclass
+from typing import NamedTuple
 
 
-@dataclass
-class Entry:
-    """Intermediate representation used during project-registry compression."""
+class RegistryFingerprint(NamedTuple):
+    """
+    A cheap summary of the project registry, for HTTP cache validation.
 
-    compressed: str
-    first_original: str
-    last_original: str
+    Stands in for the ``(mtime, size)`` the logs viewer used to stat off the registry
+    file. ``last_change`` is unix nanoseconds, or ``None`` when nothing is registered.
+    """
+
+    last_change: int | None
+    count: int

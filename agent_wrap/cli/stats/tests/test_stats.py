@@ -1,6 +1,8 @@
 # This file has been edited with the assistance of an AI tool.
 """CLI-layer tests for the `stats` subcommand — rendering and arg parsing."""
 
+import contextlib
+import io
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -8,111 +10,97 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent_wrap.cli.stats.complete import complete as stats_complete
-from agent_wrap.cli.stats.display import render, render_source_breakdown
-from agent_wrap.cli.stats.run import run as stats_run
+from agent_wrap.__main__ import cli_root
+from agent_wrap.cli.stats.display import render
 from agent_wrap.constants import ORPHANED_LABEL
 from agent_wrap.containers import services
 from agent_wrap.domain.display.service import DisplayService
-from agent_wrap.domain.pricing.models import Bucket
+from agent_wrap.domain.logs.models import IndexLag
+from agent_wrap.domain.pricing.models import Bucket, TokenUsage
 from agent_wrap.domain.stats.models import ProjectRow, StatsReport
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from click.testing import CliRunner
     from pytest_mock import MockerFixture
+    from rich.console import RenderableType
 
 
 @pytest.fixture
-def display_service() -> Mock:
+def display_service(non_tty_display: DisplayService) -> Mock:
     """Mock DisplayService that delegates formatting to the real implementation."""
-    return Mock(spec=DisplayService, wraps=DisplayService())
+    return Mock(spec=DisplayService, wraps=non_tty_display)
+
+
+@pytest.fixture
+def shown(non_tty_display: DisplayService) -> Callable[..., str]:
+    """
+    Return the text `show` puts on stdout for a renderable -- what a terminal receives.
+
+    None is rejected here rather than at each caller: a renderer that returns it has
+    reported "nothing to show", which no test asking for its text meant to ask for.
+    """
+
+    def _shown(renderable: RenderableType | None) -> str:
+        assert renderable is not None
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            non_tty_display.show(renderable)
+        return buffer.getvalue()
+
+    return _shown
 
 
 def _source_bucket(msgs: int, *, in_: int = 0) -> Bucket:
     b = Bucket()
     for _ in range(msgs):
         b.add(
-            {
-                "input_tokens": in_,
-                "output_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "cache_creation": {},
-            },
+            TokenUsage(
+                input_tokens=in_,
+                output_tokens=0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+            ),
             0.0,
         )
     return b
 
 
-def test_render_includes_orphaned_row(display_service: Mock) -> None:
+def test_render_includes_orphaned_row(display_service: Mock, shown: Callable[..., str]) -> None:
     """render() shows an <orphaned> row (accented in color, no text marker)."""
     b = Bucket()
     b.add(
-        {
-            "input_tokens": 1000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        },
+        TokenUsage(
+            input_tokens=1000,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
         0.0,
     )
     b.add(
-        {
-            "input_tokens": 1000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        },
+        TokenUsage(
+            input_tokens=1000,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
         0.0,
     )
     last_ts = datetime(2026, 6, 29, tzinfo=UTC)
     orphaned = {"sessions": 1, "last_ts": last_ts, "total": b}
-    out = render([], {}, None, None, orphaned=orphaned, display=display_service)
+    out = shown(render([], {}, None, None, orphaned=orphaned, display=display_service))
     assert ORPHANED_LABEL in out
     assert f"{ORPHANED_LABEL} *" not in out
 
 
-def test_render_without_orphaned_has_no_row(display_service: Mock) -> None:
+def test_render_without_orphaned_has_no_row(
+    display_service: Mock, shown: Callable[..., str]
+) -> None:
     """When orphaned is None, no <orphaned> row appears."""
-    out = render([], {}, None, None, orphaned=None, display=display_service)
+    out = shown(render([], {}, None, None, orphaned=None, display=display_service))
     assert ORPHANED_LABEL not in out
-
-
-def test_render_source_breakdown_lists_active_sources(display_service: Mock) -> None:
-    by_source = {
-        "native": {"bedrock/claude-opus-4-8": _source_bucket(3, in_=1000)},
-        "standard_logging_object": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=500)},
-        "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
-    }
-    out = render_source_breakdown(by_source, None, None, display=display_service)
-    assert "Usage source breakdown (all time):" in out
-    assert "native" in out
-    assert "standard_logging_object" in out
-    assert "unrecoverable" in out
-    assert "TOTAL" in out
-
-
-def test_render_source_breakdown_omits_zero_msg_sources(display_service: Mock) -> None:
-    by_source = {"native": {"bedrock/claude-opus-4-8": _source_bucket(2, in_=100)}}
-    out = render_source_breakdown(by_source, None, None, display=display_service)
-    assert "native" in out
-    assert "standard_logging_object" not in out
-
-
-def test_render_source_breakdown_empty_when_no_activity(display_service: Mock) -> None:
-    assert render_source_breakdown({}, None, None, display=display_service) == ""
-
-
-def test_render_source_breakdown_merges_across_models(display_service: Mock) -> None:
-    by_source = {
-        "unrecoverable": {"bedrock/claude-opus-4-8": _source_bucket(1)},
-        "native": {"bedrock/claude-haiku-4-5": _source_bucket(1, in_=1)},
-    }
-    out = render_source_breakdown(by_source, "2026-06-01", "2026-06-29", display=display_service)
-    assert "Usage source breakdown (2026-06-01 … 2026-06-29):" in out
-    assert "unrecoverable" in out
-    assert "native" in out
 
 
 @pytest.fixture
@@ -121,6 +109,9 @@ def wired_services(tmp_path: Path) -> None:
     services.config_service.read_project_paths.return_value = [tmp_path / "proj"]  # pyrefly: ignore [missing-attribute]
     services.stats_service.resolve_window.return_value = (None, None)  # pyrefly: ignore [missing-attribute]
     services.stats_service.build_report.return_value = _report()  # pyrefly: ignore [missing-attribute]
+    # A fully indexed host, so the staleness warning stays out of the way of every test
+    # that is about something else. The two that are about it override this.
+    services.logs_service.index_lag.return_value = IndexLag(behind=0, total=7)  # pyrefly: ignore [missing-attribute]
 
 
 def _report(
@@ -130,7 +121,6 @@ def _report(
         rows=rows or [],
         totals_by_model={},
         totals_by_day_by_model={},
-        totals_by_source={},
         orphaned=orphaned,  # pyrefly: ignore [bad-argument-type]
         unrecorded=unrecorded,
     )
@@ -152,18 +142,18 @@ def _project_row() -> dict[str, Any]:
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_renders_the_reports_orphaned_row(mocker: MockerFixture) -> None:
+def test_run_renders_the_reports_orphaned_row(runner: CliRunner, mocker: MockerFixture) -> None:
     """Whatever orphaned row the report carries is what render() is handed."""
     merged = _orphaned_result(3)
     services.stats_service.build_report.return_value = _report(orphaned=merged)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     assert render_spy.call_args.kwargs["orphaned"] is merged
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
+def test_run_renders_orphaned_only_state(runner: CliRunner, mocker: MockerFixture) -> None:
     """
     A report with no project rows but an orphaned row must still render.
 
@@ -174,110 +164,80 @@ def test_run_renders_orphaned_only_state(mocker: MockerFixture) -> None:
     services.stats_service.build_report.return_value = _report(orphaned=archived)  # pyrefly: ignore [missing-attribute]
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     render_spy.assert_called_once()
     services.display_service.error.assert_not_called()  # pyrefly: ignore [missing-attribute]
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_notes_when_report_is_empty(mocker: MockerFixture) -> None:
+def test_run_notes_when_report_is_empty(runner: CliRunner, mocker: MockerFixture) -> None:
     render_spy = mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     render_spy.assert_not_called()
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
-    assert "no LiteLLM logs found" in message
+    assert "no indexed requests found" in message
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_names_the_pattern_when_it_matched_nothing(mocker: MockerFixture) -> None:
+def test_run_names_the_pattern_when_it_matched_nothing(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
     """An empty report under a pattern must say so, not blame the whole registry."""
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
 
-    assert stats_run(["-p", "nomatch"]) == 0
+    assert runner.invoke(cli_root, ["stats", "-p", "nomatch"]).exit_code == 0
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "nomatch" in message
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_passes_the_parsed_window_to_the_report(mocker: MockerFixture) -> None:
+def test_run_passes_the_parsed_window_to_the_report(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
     services.stats_service.resolve_window.return_value = ("2026-07-01", "2026-07-20")  # pyrefly: ignore [missing-attribute]
     services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
 
-    assert stats_run(["--from", "2026-07-01", "--until", "2026-07-20"]) == 0
+    assert (
+        runner.invoke(
+            cli_root, ["stats", "--from", "2026-07-01", "--until", "2026-07-20"]
+        ).exit_code
+        == 0
+    )
     _projects, args = services.stats_service.build_report.call_args.args  # pyrefly: ignore [missing-attribute]
     assert (args.from_iso, args.until_iso) == ("2026-07-01", "2026-07-20")
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_footnotes_unrecorded_usage(mocker: MockerFixture) -> None:
+def test_run_footnotes_unrecorded_usage(runner: CliRunner, mocker: MockerFixture) -> None:
     mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
     services.stats_service.build_report.return_value = _report(rows=[_project_row()], unrecorded=4)  # pyrefly: ignore [missing-attribute]
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     warning = services.display_service.warning.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "4 successful request(s) had unrecorded usage" in warning
 
 
 @pytest.mark.usefixtures("wired_services")
-def test_run_notes_when_no_projects_registered() -> None:
+def test_run_notes_when_no_projects_registered(runner: CliRunner) -> None:
     services.config_service.read_project_paths.return_value = []  # pyrefly: ignore [missing-attribute]
 
-    assert stats_run([]) == 0
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
     message = services.display_service.info.call_args[0][0]  # pyrefly: ignore [missing-attribute]
     assert "no projects recorded yet" in message
-
-
-def test_complete_bare_tab_shows_all_flags() -> None:
-    result = stats_complete(2, ["agent", "stats", ""])
-    assert "-v" in result
-    assert "--verbose" in result
-    assert "-f" in result
-    assert "--from" in result
-    assert "-p" in result
-    assert "--pattern" in result
-
-
-def test_complete_verbose_consumed() -> None:
-    result = stats_complete(3, ["agent", "stats", "-v", ""])
-    assert "-v" not in result
-    assert "--verbose" not in result
-    assert "-f" in result  # still available
-
-
-def test_complete_shorthand_excludes_long() -> None:
-    result = stats_complete(3, ["agent", "stats", "-u", ""])
-    assert "-u" not in result
-    assert "--until" not in result
-
-
-def test_complete_value_flag_prev_returns_empty() -> None:
-    result = stats_complete(3, ["agent", "stats", "-d", ""])
-    assert result == []
-
-
-def test_complete_after_date_value() -> None:
-    result = stats_complete(4, ["agent", "stats", "-d", "14", ""])
-    assert "-v" in result
-
-
-def test_complete_pattern_value_prev_returns_empty() -> None:
-    result = stats_complete(3, ["agent", "stats", "-p", ""])
-    assert result == []
 
 
 def _tree_row(path: str) -> ProjectRow:
     """One project row, identical but for its path — the tree only reads the shape."""
     b = Bucket()
     b.add(
-        {
-            "input_tokens": 1000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation": {},
-        },
+        TokenUsage(
+            input_tokens=1000,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
         0.0,
     )
     return {
@@ -311,21 +271,23 @@ def _project_labels(out: str) -> list[str]:
 
 
 def test_render_leaves_the_project_tree_folded_on_a_wide_console(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """Nothing overflows, so the shared prefix stays stated once."""
     monkeypatch.setenv("COLUMNS", "200")
-    out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    out = shown(
+        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    )
     assert "└home/me/work/" in _project_labels(out)
 
 
 def test_render_chops_the_project_tree_to_fit_a_narrow_console(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """The fold that made one node wide is given back a segment at a time."""
     monkeypatch.setenv("COLUMNS", "100")
     labels = _project_labels(
-        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        shown(render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service))
     )
     assert "└home/me/work/" in labels
     assert " ├personal/" in labels
@@ -333,7 +295,7 @@ def test_render_chops_the_project_tree_to_fit_a_narrow_console(
 
 
 def test_render_overflows_rather_than_truncate_a_figure(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """
     Below the width its numeric columns need, the Projects table runs past the edge.
@@ -343,23 +305,100 @@ def test_render_overflows_rather_than_truncate_a_figure(
     one, so nothing here is nominated as safe to cut and the line is simply long.
     """
     monkeypatch.setenv("COLUMNS", "85")
-    out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    out = shown(
+        render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+    )
     drawn = [line for line in out.split("\n") if line.startswith(("│", "┌", "├", "└"))]
     assert max(len(line) for line in drawn) > 85
     assert not any("…" in line for line in drawn)
 
 
 def test_render_reports_the_same_totals_however_far_the_tree_was_chopped(
-    display_service: Mock, monkeypatch: pytest.MonkeyPatch
+    display_service: Mock, monkeypatch: pytest.MonkeyPatch, shown: Callable[..., str]
 ) -> None:
     """Chopping rearranges the label column and nothing else."""
 
     def root_figures(columns: str) -> list[str]:
         monkeypatch.setenv("COLUMNS", columns)
-        out = render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        out = shown(
+            render([_tree_row(p) for p in _TREE_PATHS], {}, None, None, display=display_service)
+        )
         root = [line for line in out.split("\n") if line.startswith("│")][1]
         return [cell.strip() for cell in root.split("│")[-9:-1]]
 
     wide, narrow = root_figures("200"), root_figures("85")
     assert wide == narrow
     assert wide[0] == "12"
+
+
+def test_stats_takes_no_registry_write_grant(runner: CliRunner, write_grants: list[str]) -> None:
+    """A reporting command does not get write permission just to migrate data."""
+    runner.invoke(cli_root, ["stats"])
+
+    assert write_grants == []
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_a_lagging_index_is_warned_about_and_names_the_fix(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
+    """
+    Lag is surfaced, never absorbed: this command reads the index and only the index.
+
+    A request the index has not seen is simply missing from the totals, and there is no
+    fallback that would go and find it -- reading the log files here is what the index
+    exists to stop. So the remedy is to say which sessions are behind and what to run.
+    """
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
+    services.logs_service.index_lag.return_value = IndexLag(behind=12, total=613)  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
+    warnings = [call[0][0] for call in services.display_service.warning.call_args_list]  # pyrefly: ignore [missing-attribute]
+    assert "12 of 613 session(s) are behind the log files" in warnings[-1]
+    assert "agent reindex" in warnings[-1]
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_a_current_index_is_not_warned_about(runner: CliRunner, mocker: MockerFixture) -> None:
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.stats_service.build_report.return_value = _report(rows=[_project_row()])  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
+    warnings = [call[0][0] for call in services.display_service.warning.call_args_list]  # pyrefly: ignore [missing-attribute]
+    assert not any("behind the log files" in w for w in warnings)
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_an_empty_report_still_warns_about_a_lagging_index(
+    runner: CliRunner, mocker: MockerFixture
+) -> None:
+    """
+    The case the warning matters most in, and the one an early return would skip.
+
+    A host whose logs have never been indexed produces an empty report, and "no indexed
+    requests found" reads as "you have spent nothing" -- which is the single wrong
+    conclusion this warning exists to prevent.
+    """
+    mocker.patch("agent_wrap.cli.stats.run.render", return_value="")
+    services.logs_service.index_lag.return_value = IndexLag(behind=613, total=613)  # pyrefly: ignore [missing-attribute]
+
+    assert runner.invoke(cli_root, ["stats"]).exit_code == 0
+    warnings = [call[0][0] for call in services.display_service.warning.call_args_list]  # pyrefly: ignore [missing-attribute]
+    assert "613 of 613 session(s) are behind the log files" in warnings[-1]
+
+
+@pytest.mark.usefixtures("wired_services")
+def test_stats_takes_no_write_grant_on_either_database(
+    runner: CliRunner, write_grants: list[str]
+) -> None:
+    """
+    A command that only reports may not mutate host state as a side effect of reading.
+
+    Both databases, asserted together: the registry has always been off limits here, and
+    the index now is too -- filling it is `agent logs`' and `agent reindex`'s job, and a
+    grant here would make a plain `agent stats` able to rewrite spend history.
+    """
+    runner.invoke(cli_root, ["stats"])
+
+    assert write_grants == []

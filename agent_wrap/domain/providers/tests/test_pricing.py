@@ -3,6 +3,7 @@
 
 from typing import TYPE_CHECKING
 
+from agent_wrap.domain.pricing.models import TokenUsage
 from agent_wrap.domain.providers.pricing import CostComputer, ModelKeyMatcher
 
 if TYPE_CHECKING:
@@ -10,20 +11,18 @@ if TYPE_CHECKING:
     from unittest.mock import Mock
 
     from agent_wrap.conftest import FakeProvider
-    from agent_wrap.domain.pricing.models import TokenUsage
     from agent_wrap.domain.providers.models import Tier
 
 _OPUS_RATES = {"in": 5.5, "out": 27.5, "cw_5m": 6.875, "cw_1h": 11.0, "cr": 0.55}
 
 
 def _usage(input_tokens: int, output_tokens: int = 0) -> TokenUsage:
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation": {},
-    }
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
 
 
 def test_exact_key_beats_date_stamped_siblings() -> None:

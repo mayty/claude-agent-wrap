@@ -10,7 +10,6 @@ import pytest
 
 from agent_wrap.constants import LOGS_DEFAULT_PORT
 from agent_wrap.domain.config.service import ConfigService
-from agent_wrap.domain.display.service import DisplayService
 from agent_wrap.domain.logs.constants import LOG_FILE_NAME
 from agent_wrap.domain.logs.daemon import read_state, state_dir, state_file, write_state
 from agent_wrap.domain.logs.service import LogsService
@@ -21,15 +20,37 @@ from agent_wrap.exceptions import LockTimeoutError
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
+    from agent_wrap.infrastructure.logs.repositories.ingest import LogIngestRepository
+    from agent_wrap.infrastructure.logs.repositories.requests import RequestRepository
+    from agent_wrap.infrastructure.logs.repositories.sessions import SessionRepository
+
 
 @pytest.fixture
-def logs_svc() -> LogsService:
-    """Return a LogsService with no-op pricing and stats dependencies."""
+def logs_svc(
+    display_mock: Mock,
+    log_ingest_repository: LogIngestRepository,
+    log_session_repository: SessionRepository,
+    log_request_repository: RequestRepository,
+) -> LogsService:
+    """
+    Return a LogsService with no-op pricing and stats dependencies.
+
+    Takes the shared ``display_mock`` rather than building its own, so a test can
+    assert on what the service told the user without reaching into the instance.
+
+    The ingest repository is the *real* one from the root conftest, over an empty
+    database in ``tmp_path`` -- a mock would make the ingest tests assert that calls
+    were made rather than that rows landed, which is the only thing worth asserting
+    about an ingest pass.
+    """
     return LogsService(
         pricing_service=Mock(spec=PricingService),
         stats_service=Mock(spec=StatsService),
         config_service=Mock(spec=ConfigService),
-        display_service=Mock(spec=DisplayService),
+        display_service=display_mock,
+        log_ingest_repository=log_ingest_repository,
+        log_session_repository=log_session_repository,
+        log_request_repository=log_request_repository,
     )
 
 
@@ -142,9 +163,6 @@ def test_stop_daemon_permission_error_propagates(mocker: MockerFixture, logs_svc
 
     with pytest.raises(PermissionError):
         logs_svc.stop_daemon()
-
-
-# --- viewer_state (read-only counterpart of running_server) ---
 
 
 def test_viewer_state_running_when_pid_alive(mocker: MockerFixture, logs_svc: LogsService) -> None:
@@ -336,3 +354,48 @@ def test_claim_or_spawn_forks_for_real_without_leaving_an_unreaped_child(
     except ChildProcessError:
         return  # no children at all: the intermediate was reaped
     assert reaped[0] == 0, f"an exited child was left unreaped: {reaped}"
+
+
+def test_install_location_warning_is_silent_on_a_local_filesystem(
+    logs_svc: LogsService, mocker: MockerFixture
+) -> None:
+    mocker.patch("agent_wrap.domain.logs.service.filesystem_type", return_value="ext4")
+    assert logs_svc.install_location_warning() is None
+
+
+def test_install_location_warning_is_silent_when_the_filesystem_is_unknown(
+    logs_svc: LogsService, mocker: MockerFixture
+) -> None:
+    """Off Linux there is nothing to read, and a guess would be worse than silence."""
+    mocker.patch("agent_wrap.domain.logs.service.filesystem_type", return_value=None)
+    assert logs_svc.install_location_warning() is None
+
+
+@pytest.mark.parametrize("fs_type", ["drvfs", "9p", "nfs4", "cifs"])
+def test_install_location_warning_names_an_eventless_filesystem(
+    logs_svc: LogsService, mocker: MockerFixture, fs_type: str
+) -> None:
+    """
+    A watch on these is accepted by inotify and then never delivers, silently.
+
+    There is no runtime signal to catch, so the install location is the only place
+    the problem can be reported at all.
+    """
+    mocker.patch("agent_wrap.domain.logs.service.filesystem_type", return_value=fs_type)
+    warning = logs_svc.install_location_warning()
+    assert warning is not None
+    assert fs_type in warning
+    assert "local filesystem" in warning
+
+
+def test_spawn_background_warns_before_starting_on_an_eventless_filesystem(
+    logs_svc: LogsService, display_mock: Mock, mocker: MockerFixture
+) -> None:
+    """The interactive path says it where the user is actually looking."""
+    mocker.patch("agent_wrap.domain.logs.service.filesystem_type", return_value="drvfs")
+    mocker.patch.object(logs_svc, "_claim_or_spawn", return_value=None)
+
+    assert logs_svc.spawn_background(LOGS_DEFAULT_PORT) == 1
+
+    assert display_mock.warning.call_count == 1
+    assert "drvfs" in display_mock.warning.call_args.args[0]

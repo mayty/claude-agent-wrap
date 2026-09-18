@@ -5,11 +5,15 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.11.0](releases/0.11.0.md) — 2026-09-03
+## [0.11.0](releases/0.11.0.md) — 2026-09-18
 
-`agent` now runs on a venv that carries the dependencies the wrapper pins, and provisions
-that venv itself on the first run. The setup is a clone and one `source` line. The
-bootstrap reports each step, and `agent inspect` reports a stale venv.
+**Breaking:** Intel Macs are no longer supported, `agent` exits `2` on a usage error,
+`agent secrets` is now a command group, and `~/claude_keys.json` is no longer imported.
+The wrapper indexes the LiteLLM request logs and adds `agent reindex`, with optional
+age-based retention. `agent` runs on a venv it provisions itself. Re-source
+`agent-wrap.bashrc` for the new completion, and install agent-wrap on a local filesystem
+for the new `agent logs` viewer. The next `agent run` rebuilds every image on Ubuntu
+26.04.
 
 ## [0.10.0](releases/0.10.0.md) — 2026-09-01
 

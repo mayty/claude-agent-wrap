@@ -1,12 +1,12 @@
 # This file has been edited with the assistance of an AI tool.
-"""Docker image building domain service."""
-
-import json
+import io
 import os
-import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from dockerfile_parse import DockerfileParser
 
 from agent_wrap.constants import (
     AGENT_ASSETS_DIR,
@@ -26,6 +26,11 @@ from agent_wrap.constants import (
     UpdateCheck,
 )
 from agent_wrap.domain.build.constants import (
+    AGENT_ENABLE_STARTUP_RE,
+    AGENT_NAME_RE,
+    AGENT_NAME_VALUE_RE,
+    AGENT_RUN_ARGS_RE,
+    AGENT_USER_RE,
     BASE_BUILD_CACHE_NOTE,
     BASE_FROM_RE,
     BUILD_ITERATION_BUILD_ARG,
@@ -34,7 +39,6 @@ from agent_wrap.domain.build.constants import (
     CLAUDE_CACHE_BUST_BUILD_ARG,
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     DOCKER_NONE,
-    FROM_RE,
     PINNED_SIDECAR_IMAGES,
     PROJECT_BUILD_CACHE_NOTE,
     SHORT_IMAGE_ID_LEN,
@@ -73,22 +77,33 @@ from agent_wrap.lib.docker_utils import (
     remove_image,
 )
 from agent_wrap.lib.flock import file_lock, try_file_lock
+from agent_wrap.lib.jsonio import json_object
 from agent_wrap.lib.utils import generate_uuid
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.updates.service import UpdateService
 
 
-class BuildService:
-    """Docker image building for agent-wrap."""
+def read_dockerfile(path: Path) -> DockerfileParser:
+    """
+    Parse the Dockerfile at *path*, whatever it is called.
 
+    Read through ``fileobj`` rather than ``path``: ``DockerfileParser``'s ``path`` decides
+    it was handed a directory unless the name ends in exactly ``Dockerfile``, so the
+    deprecated ``Dockerfile.agent`` would send it looking for ``Dockerfile.agent/Dockerfile``.
+    """
+    return DockerfileParser(fileobj=io.StringIO(path.read_text(encoding="utf-8")))
+
+
+class BuildService:
     def __init__(self, update_service: UpdateService, display_service: DisplayService) -> None:
         self._updates = update_service
         self._display = display_service
 
     def rebuild(self, *, full: bool) -> int:
-        """Execute the rebuild pipeline. Returns exit code."""
         outcome = self._updates.check_updates()
         if outcome is UpdateCheck.BLOCKED:
             return 1
@@ -102,24 +117,16 @@ class BuildService:
         """
         Run a docker build and return the exit code.
 
-        ``SPELLCHECK_LANG`` goes to both builds, like the UID/GID pair: a project
-        Dockerfile that declares no such ARG draws the same harmless
-        "build-args were not consumed" warning it already draws for those two, and one
-        that does declare it gets a hook for installing further dictionaries.
-
-        *labels* are stamped with ``--label`` rather than a ``LABEL`` instruction so no
+        *labels* are stamped with ``--label`` rather than a ``LABEL`` instruction, so no
         project Dockerfile has to cooperate to be trackable.
 
-        The base image is the only build that uses docker's layer cache. Its recipe is
-        this repo's own ``ops/Dockerfile``, split so that everything expensive and stable
-        sits in the ``scaffold`` stage: ``BUILD_ITERATION`` invalidates that stage when the
-        wrapper says the recipe moved, and a per-build ``CLAUDE_CACHE_BUST`` invalidates
-        the final stage every time, so a base build always lands the day's Claude Code
-        release without re-running apt. A project Dockerfile is somebody else's file under
-        no such contract, and ``agent rebuild`` is the verb for applying edits that nothing
-        hashes -- it keeps ``--no-cache``. The two cache build args are base-only for the
-        same reason: on the other side there is no cache to steer, only an
-        unconsumed-build-arg warning.
+        Only the base build uses docker's layer cache, and the two cache build args are
+        base-only for that reason. ``BUILD_ITERATION`` invalidates ``ops/Dockerfile``'s
+        expensive ``scaffold`` stage when the recipe moves; a per-build
+        ``CLAUDE_CACHE_BUST`` invalidates the final stage every time, so a base build
+        always lands the day's Claude Code release without re-running apt. A project
+        Dockerfile is somebody else's file under no such contract, and ``agent rebuild``
+        exists to apply edits nothing hashes -- so it keeps ``--no-cache``.
         """
         label_args: list[str] = []
         for key, value in labels.items():
@@ -160,15 +167,9 @@ class BuildService:
         """
         Resolve an ``# agent-enable-startup:`` value to a timeout, or None when off.
 
-        A boolean word selects ``DEFAULT_STARTUP_TIMEOUT_SECONDS``; a positive number is
-        a timeout in seconds. Numbers are *always* seconds, so ``1`` means one second
-        rather than "true" -- the shell validator warns about that spelling instead of
-        this parser guessing which was meant.
-
-        Raises:
-            DockerfileDirectiveError: If the value is neither a boolean word nor a
-                positive number.
-
+        A boolean word selects ``DEFAULT_STARTUP_TIMEOUT_SECONDS``. Numbers are *always*
+        seconds, so ``1`` means one second rather than "true" -- the shell validator
+        warns about that spelling instead of this parser guessing which was meant.
         """
         value = raw.strip().lower()
         if value in STARTUP_TRUTHY_WORDS:
@@ -194,50 +195,44 @@ class BuildService:
         """
         Extract the ``# agent-*`` and EXPOSE directives from a project Dockerfile.
 
-        Args:
-            dockerfile_path: Path to the project Dockerfile.
-            legacy: True when the file sits at the deprecated ``Dockerfile.agent`` path,
-                which is not allowed to enable startup scripts.
-
-        Returns:
-            DockerfileAgentInfo with parsed directives.
-
-        Raises:
-            DockerfileDirectiveError: On a malformed or misplaced directive.
-
+        *legacy* marks the deprecated ``Dockerfile.agent`` path, which is not allowed to
+        enable startup scripts.
         """
         info = DockerfileAgentInfo()
 
-        with open(dockerfile_path) as f:
-            for raw_line in f:
-                line = raw_line.strip()
+        # The instruction stream rather than the raw lines: the two things a hand-rolled
+        # line sweep gets wrong -- a "\"-continued EXPOSE and a lowercase "from" -- are
+        # exactly what the parser normalizes. A "# agent-*" directive arrives as a
+        # COMMENT entry whose value has the "#" and the space after it already removed.
+        for entry in read_dockerfile(dockerfile_path).structure:
+            instruction = entry["instruction"]
+            value = entry["value"]
 
-                # Handle agent-user directive
-                if match := re.match(r"^#\s*agent-user:\s*(\S+)", line):
-                    info.agent_user = match.group(1)
+            if instruction == "EXPOSE":
+                info.expose_ports.extend(token.split("/")[0] for token in value.split())
+                continue
+            if instruction != "COMMENT":
+                continue
 
-                # Handle agent-run-args directive
-                elif match := re.match(r"^#\s*agent-run-args:\s*(.+)", line):
-                    info.extra_run_args.extend(match.group(1).split())
+            if match := AGENT_USER_RE.match(value):
+                info.agent_user = match.group(1)
 
-                # Handle agent-enable-startup directive -- new location only, so that a
-                # project still on the deprecated path is told to migrate rather than
-                # having its startup script silently ignored.
-                elif match := re.match(r"^#\s*agent-enable-startup:\s*(\S+)", line):
-                    if legacy:
-                        msg = (
-                            f"'# agent-enable-startup:' is only supported in "
-                            f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'. Move "
-                            f"'{LEGACY_AGENT_DOCKERFILE_NAME}' there to use a startup script."
-                        )
-                        raise DockerfileDirectiveError(msg)
-                    info.startup_timeout = self.parse_startup_value(match.group(1))
+            elif match := AGENT_RUN_ARGS_RE.match(value):
+                # shlex, not str.split: a bind mount whose host path contains a space is
+                # written quoted, and splitting on whitespace would tear it in two.
+                info.extra_run_args.extend(shlex.split(match.group(1)))
 
-                # Parse EXPOSE <port> [<port>...]
-                elif match := re.match(r"^[Ee][Xx][Pp][Oo][Ss][Ee]\s+(.+)", line):
-                    for token in match.group(1).split():
-                        port = token.split("/")[0]
-                        info.expose_ports.append(port)
+            # New location only: a project still on the deprecated path is told to
+            # migrate rather than having its startup script silently ignored.
+            elif match := AGENT_ENABLE_STARTUP_RE.match(value):
+                if legacy:
+                    msg = (
+                        f"'# agent-enable-startup:' is only supported in "
+                        f"'{AGENT_ASSETS_DIR}/{AGENT_DOCKERFILE_NAME}'. Move "
+                        f"'{LEGACY_AGENT_DOCKERFILE_NAME}' there to use a startup script."
+                    )
+                    raise DockerfileDirectiveError(msg)
+                info.startup_timeout = self.parse_startup_value(match.group(1))
 
         return info
 
@@ -245,18 +240,13 @@ class BuildService:
         """
         Find the project Dockerfile, preferring the current location over the legacy one.
 
-        The single discovery point for the whole wrapper -- every caller that needs to
-        know whether a project customizes its image goes through here, so the two paths
-        cannot drift apart.
+        The single discovery point for the whole wrapper, so the two paths cannot drift
+        apart. Both locations populated is a ``SystemExit``: there is no way to tell which
+        one the author meant.
 
-        *warn* off silences the legacy-location deprecation notice, for a caller sweeping
-        many projects at once: the notice is addressed to whoever owns the Dockerfile, and
-        one copy per registered project would bury the report it was printed alongside.
-
-        Raises:
-            SystemExit: If both locations are populated, which leaves no way to tell
-                which one the author meant.
-
+        *warn* off silences the legacy-location deprecation notice for a caller sweeping
+        many projects at once -- one copy per registered project would bury the report it
+        is printed alongside.
         """
         current = cwd / AGENT_ASSETS_DIR / AGENT_DOCKERFILE_NAME
         legacy = cwd / LEGACY_AGENT_DOCKERFILE_NAME
@@ -290,24 +280,11 @@ class BuildService:
 
         Also the validation point for a project Dockerfile's identity: both the
         ``# agent-name:`` directive and the mandatory ``FROM claude-agent`` are checked
-        here, so every caller -- launch, rebuild, and the read-only ``agent inspect`` --
-        gets the same verdict from one file read.
+        here, so launch, rebuild and the read-only ``agent inspect`` all get the same
+        verdict from one file read. A Dockerfile failing either is a ``SystemExit``.
 
-        Args:
-            use_base: If True, always use the base claude-agent image.
-            project_dir: The project to resolve for; the cwd when None. Passed by the
-                fleet-wide sweep, which answers this question for projects the caller is
-                not standing in -- everything else asks about where it already is.
-            warn: Forwarded to :meth:`locate_dockerfile`; see the note there.
-
-        Returns:
-            ResolvedImage with image name, dockerfile path, and context directory.
-
-        Raises:
-            SystemExit: If the project Dockerfile is missing the required
-                '# agent-name:' comment, has an invalid name, or does not inherit from
-                the base image.
-
+        *project_dir* is the cwd when None; only the fleet-wide sweep passes one, since
+        everything else asks about where it already stands.
         """
         cwd = Path.cwd() if project_dir is None else project_dir
         location = (
@@ -317,19 +294,20 @@ class BuildService:
         )
 
         if location.path is not None:
-            with open(location.path) as f:
-                lines = f.readlines()
+            parser = read_dockerfile(location.path)
 
-            for line in lines:
-                if match := re.match(r"^#\s*agent-name:\s*(\S+)", line.strip()):
+            for entry in parser.structure:
+                if entry["instruction"] != "COMMENT":
+                    continue
+                if match := AGENT_NAME_RE.match(entry["value"]):
                     name = match.group(1)
-                    if not re.match(r"^[a-z0-9_.\-]+$", name):
+                    if not AGENT_NAME_VALUE_RE.match(name):
                         msg = (
                             f"agent-name '{name}' must match [a-z0-9_.-]+ "
                             f"(Docker image names are lowercase)"
                         )
                         raise SystemExit(msg)
-                    self._check_inherits_base(location.path, lines)
+                    self._check_inherits_base(location.path, parser.parent_images)
                     # Context stays the project root, not the Dockerfile's own
                     # directory, so `COPY <project-relative-path>` keeps working.
                     return ResolvedImage(
@@ -349,7 +327,7 @@ class BuildService:
             context=TOOL_DIR,
         )
 
-    def _check_inherits_base(self, dockerfile: Path, lines: list[str]) -> None:
+    def _check_inherits_base(self, dockerfile: Path, parent_images: Sequence[str]) -> None:
         """
         Require the *final* ``FROM`` of a project Dockerfile to be the base image.
 
@@ -361,14 +339,10 @@ class BuildService:
         the base image's id is stamped onto it at build time, and a project image built
         on something else could never be told apart from a current one.
 
-        Raises:
-            SystemExit: If no ``FROM`` is present, or the last one is not the base image.
-
+        *parent_images* comes from ``dockerfile-parse``, so it is one entry per stage with
+        any ``AS <name>`` already removed, and the last is the final stage's.
         """
-        from_image = ""
-        for line in lines:
-            if match := FROM_RE.match(line.strip()):
-                from_image = match.group(1)
+        from_image = parent_images[-1] if parent_images else ""
 
         if not from_image:
             msg = f"{dockerfile} must contain a 'FROM {BASE_IMAGE_NAME}' line"
@@ -487,7 +461,6 @@ class BuildService:
         base_rebuilt: bool,
         force: BuildForce,
     ) -> BuildReason | None:
-        """Why the project image needs building right now, or None when it is current."""
         if force in (BuildForce.PROJECT, BuildForce.ALL):
             return BuildReason.FORCED
         if base_rebuilt:
@@ -517,8 +490,7 @@ class BuildService:
         Announce one build, with the reason that triggered it, and run it.
 
         The cache note rides along on the reason line because an auto-build is wall clock
-        the user did not ask for, and the two image kinds cost very different amounts; a
-        forced ``agent rebuild`` prints no reason line and needs no such warning.
+        the user did not ask for, and the two image kinds cost very differently.
         """
         is_base = image == BASE_IMAGE_NAME
         described = f"base {image}" if is_base else image
@@ -529,7 +501,6 @@ class BuildService:
         return self._docker_build(dockerfile, image, context, labels=labels)
 
     def _reason_text(self, reason: BuildReason, base_stamp: ImageStamp | None) -> str:
-        """Fill in a ``BUILD_REASON_TEXT`` template from the base image's own stamp."""
         recorded = (
             base_stamp.labels.get(BUILD_ITERATION_LABEL, "unstamped") if base_stamp else "unstamped"
         )
@@ -541,10 +512,8 @@ class BuildService:
         """
         Report why each image would be rebuilt right now, without building anything.
 
-        Strictly read-only -- ``agent inspect`` calls it, and a report that changed the
-        state it describes would be worse than no report. Both fields are "" when the
-        image is current, and the project field is "" when there is no project image to
-        speak of.
+        Strictly read-only: ``agent inspect`` calls it, and a report that changed the
+        state it describes would be worse than no report.
         """
         if not daemon_reachable():
             return ImageStaleness(base="", project="")
@@ -568,22 +537,14 @@ class BuildService:
         Sweep *project_dirs* and report each one whose per-project image is stale.
 
         The fleet-wide counterpart to :meth:`stale_summary`, and read-only for the same
-        reason: ``agent inspect`` is its only caller, and a report that rebuilt what it
-        describes would be worse than no report.
+        reason. Three kinds of project are absent rather than reported as current:
 
-        Three kinds of project are absent from the result rather than reported as current:
-
-        * one that declares no Dockerfile -- its target is the base image, and the base's
-          staleness is one fact about this host, not one per project that inherits it;
-        * one whose image is not built on this host -- there is nothing stale about an
-          image that does not exist, and the launch that creates it is not a rebuild;
-        * one whose directory or Dockerfile cannot be read. Run from inside an agent
-          container, every project but the mounted one falls in here, and a Dockerfile
-          that fails validation is a fault its own project's ``agent run`` will report in
-          full -- neither is answerable from where this sweep stands.
-
-        A stale base short-circuits every project image to "the base moved", which
-        :meth:`_project_reason` already does without a docker call.
+        * one declaring no Dockerfile -- its target is the base, whose staleness is one
+          fact about this host rather than one per project that inherits it;
+        * one whose image is not built here -- nothing is stale about an image that does
+          not exist;
+        * one whose directory or Dockerfile cannot be read. Inside an agent container
+          that is every project but the mounted one.
         """
         if not daemon_reachable():
             return []  # an unreachable daemon is not evidence that anything is stale
@@ -608,20 +569,14 @@ class BuildService:
         """
         Judge every project image in *project_dirs*, and return the base stamp used.
 
-        One row per readable project that targets an image of its own; a project that
-        declares no Dockerfile is absent because its target is the base, whose staleness is
-        one fact about this host rather than one per project that inherits it. Callers that
-        need the base in a set of names add it themselves.
+        Memoised per image tag, so projects sharing an ``# agent-name:`` cost one inspect
+        between them. Unfiltered on purpose: the reporting caller wants only the
+        non-current rows, but the cleanup caller needs the current ones too -- those are
+        the *claimed* tags, and dropping them would leave a live project's image looking
+        like nobody's.
 
-        The verdict is memoised per image tag, so projects sharing an ``# agent-name:`` cost
-        one inspect between them rather than one each. Unfiltered on purpose: the reporting
-        caller wants only the non-current rows, while the cleanup caller needs the current
-        ones too -- those are the tags that are *claimed*, and dropping them would leave a
-        live project's image looking like nobody's.
-
-        The base stamp rides along because :meth:`_reason_text` needs it and re-reading it
-        would cost a second inspect for the same answer. Assumes a reachable daemon; every
-        caller has already established that.
+        The base stamp rides along because :meth:`_reason_text` needs it and re-reading
+        would cost a second inspect. Assumes a reachable daemon.
         """
         base_stamp = image_stamp(BASE_IMAGE_NAME)
         base_reason = self._base_reason(base_stamp, force=BuildForce.NONE, is_target=False)
@@ -650,8 +605,7 @@ class BuildService:
         """
         Resolve one project's target image, or None when the project cannot be read.
 
-        Everything :meth:`resolve_image` treats as fatal is merely a skipped row here --
-        see :meth:`stale_project_images` for why none of it is actionable from a sweep.
+        Everything :meth:`resolve_image` treats as fatal is merely a skipped row here.
         """
         try:
             if not project_dir.is_dir():
@@ -664,26 +618,21 @@ class BuildService:
         """
         Survey every image on this host that is no longer needed, removing nothing.
 
-        The read-only half of ``agent cleanup``'s image handling, in the same spirit as
-        :meth:`stale_summary` -- a survey the user confirms before :meth:`remove_images`
-        acts on exactly the list returned here.
+        Read-only: the user confirms this list before :meth:`remove_images` acts on
+        exactly it.
 
         Ownership is decided by **name**, never by a label being present: docker merges
         ``Config.Labels`` through ``FROM``, so a user's own image built on a wrapper image
         carries the wrapper's labels too, and everything built before the wrapper started
         stamping carries none. Four kinds come back:
 
-        * a *superseded* build -- untagged and carrying ``IMAGE_NAME_LABEL``. An untagged
-          image can never be the live one, since "live" means a tag points at it, so no id
-          comparison is needed and none is done. Deliberately not required to name a tag
-          that still exists: a superseded predecessor of a tag an earlier cleanup already
-          removed would otherwise sit on disk forever;
+        * a *superseded* build -- untagged and carrying ``IMAGE_NAME_LABEL``. Untagged
+          can never be live, so no id comparison is needed. It need not name a tag that
+          still exists, or a predecessor of an already-removed tag would sit there forever;
         * an *orphaned* project image -- a ``claude-agent-<name>`` tag no readable
-          registered project resolves to. A project whose directory cannot be read
-          contributes no claimed name, so its image reads as orphaned; the cost of that is
-          one rebuild, and every row is shown before anything is confirmed;
-        * a *stale* project image -- one a launch would rebuild anyway, so removing it
-          defers no work that was not already owed;
+          registered project resolves to. An unreadable project contributes no claimed
+          name, so its image reads as orphaned; that costs one rebuild;
+        * a *stale* project image -- one a launch would rebuild anyway;
         * a *superseded sidecar* -- a pulled image in a pinned repository whose digest is
           not the pinned one. An unknown digest is left alone rather than guessed at.
 
@@ -708,20 +657,15 @@ class BuildService:
 
     def _superseded_images(self) -> tuple[list[RemovableImage], int]:
         """
-        Untagged wrapper builds naming the tag they were built as, and the count of the rest.
+        Untagged wrapper builds naming the tag they were built as, and a count of the rest.
 
-        Two docker calls for the whole set: one listing of every untagged image, one batched
-        inspect that reads their labels. Both halves fall out of the same partition, which
-        is why the count comes back here rather than from a second pair of calls.
+        Those without ``IMAGE_NAME_LABEL`` are only counted, never removed: a wrapper
+        build from before the label existed is indistinguishable from a leftover of the
+        user's own ``docker build``, so the count exists only to let the summary point at
+        ``docker image prune`` instead of leaving that disk unexplained.
 
-        Those without ``IMAGE_NAME_LABEL`` are only counted. A wrapper build from before the
-        label existed and a leftover from the user's own unrelated ``docker build`` are
-        indistinguishable, and guessing would delete somebody else's image -- so the count
-        exists to let the summary name ``docker image prune`` once instead of leaving that
-        disk unexplained.
-
-        Labels come back as JSON for the reason ``image_stamp`` does it that way: an image
-        with no labels at all renders ``null`` rather than tripping the template.
+        Labels come back as JSON so an image with no labels renders ``null`` rather than
+        tripping the template.
         """
         sizes: dict[str, str] = {}
         for row in list_images("dangling=true", template=UNTAGGED_IMAGE_TEMPLATE):
@@ -759,24 +703,16 @@ class BuildService:
         """
         Read ``IMAGE_NAME_LABEL`` out of a rendered ``{{json .Config.Labels}}``, or "".
 
-        Unparseable or non-object JSON reads as "no label", which is the same verdict an
-        absent one gets: either way there is no name to attribute the image by.
+        Unparseable JSON reads as "no label": either way there is no name to attribute by.
         """
-        try:
-            parsed = json.loads(raw_labels)
-        except json.JSONDecodeError:
-            return ""
-        if not isinstance(parsed, dict):
-            return ""
-        return str(parsed.get(IMAGE_NAME_LABEL, ""))
+        return str(json_object(raw_labels).get(IMAGE_NAME_LABEL, ""))
 
     def _orphaned_and_stale_images(self, project_dirs: list[Path]) -> list[RemovableImage]:
         """
         Tagged wrapper images that no project claims, or that a launch would rebuild.
 
-        Both verdicts come off one sweep and one listing, and orphaned wins on overlap: an
-        image nobody builds is a stronger statement than one that is merely behind, and
-        saying "stale" of a deleted project's image would misdescribe why it is going.
+        Orphaned wins on overlap: saying "stale" of a deleted project's image would
+        misdescribe why it is going.
         """
         verdicts, base_stamp = self._sweep_project_reasons(project_dirs)
         claimed = {BASE_IMAGE_NAME} | {verdict.image for verdict in verdicts}
@@ -826,9 +762,8 @@ class BuildService:
         """
         Whether a local repository name is one the wrapper tags into.
 
-        The wrapper only ever builds ``claude-agent`` and ``claude-agent-<name>``, and never
-        into a registry, so a ``/`` rules a repository out however it is spelled -- and a
-        name that merely *contains* the prefix is somebody else's.
+        The wrapper never builds into a registry, so a ``/`` rules a repository out however
+        it is spelled -- and a name that merely *contains* the prefix is somebody else's.
         """
         if "/" in repository:
             return False
@@ -838,11 +773,9 @@ class BuildService:
         """
         Report pulled sidecar images that are not the digest the wrapper pins.
 
-        One listing per pinned repository, asking for ``--digests`` because the template
-        names ``{{.Digest}}`` and the flag is what fills it in. A row whose digest docker
-        does not know is left alone: the wrapper pulls by digest, so an unknown one means
-        the image came from somewhere else, and a tag comparison there would be a guess
-        about somebody else's image rather than a verdict about ours.
+        ``--digests`` is required because the template names ``{{.Digest}}`` and the flag
+        is what fills it in. A row whose digest docker does not know is left alone: the
+        wrapper pulls by digest, so an unknown one came from somewhere else.
         """
         rows: list[RemovableImage] = []
         for pinned in PINNED_SIDECAR_IMAGES:
@@ -874,14 +807,13 @@ class BuildService:
         """
         Remove every image in *scope*, reporting what went and what docker refused.
 
-        Takes the scope from a prior :meth:`image_cleanup_scope` call so the list a user
-        confirmed is the list acted on -- no re-survey, no TOCTOU gap.
+        Takes the scope from a prior :meth:`image_cleanup_scope` call, so the list the
+        user confirmed is the list acted on -- no re-survey, no TOCTOU gap.
 
-        A refusal is not a failure to abort on. ``remove_image`` never forces, so the usual
-        refusal is an image a running container still references, and the run should
-        continue and report it rather than stop or override it. An image that another row
-        already took with it reads as removed for the same reason: docker deleting a shared
-        parent is the outcome that was asked for.
+        A refusal is not a failure to abort on: ``remove_image`` never forces, so the
+        usual refusal is an image a running container still references. An image another
+        row already took with it reads as removed, since docker deleting a shared parent
+        is the outcome that was asked for.
         """
         removed: list[RemovableImage] = []
         skipped: list[RemovableImage] = []
@@ -890,7 +822,6 @@ class BuildService:
         return ImageCleanupOutcome(removed=removed, skipped=skipped)
 
     def _do_rebuild(self, *, full: bool) -> int:
-        """Perform the actual rebuild. Returns exit code."""
         try:
             resolved = self.resolve_image()
         except SystemExit as e:

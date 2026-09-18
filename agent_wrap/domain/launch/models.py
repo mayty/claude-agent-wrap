@@ -4,14 +4,12 @@
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from typing import TextIO
+    from filelock import BaseFileLock
 
     from agent_wrap.domain.sidecars.base import Sidecar
 
 
 class DockerfileDirectives(NamedTuple):
-    """Parsed directives from a project Dockerfile."""
-
     agent_user: str
     port_args: list[str]
     extra_run_args: list[str]
@@ -20,16 +18,12 @@ class DockerfileDirectives(NamedTuple):
 
 
 class HostNetworkResult(NamedTuple):
-    """Resolved host-network configuration."""
-
     use_host_net: bool
     host_net_args: list[str]
     port_args: list[str]
 
 
 class SidecarAssembly(NamedTuple):
-    """Assembled sidecars with their secrets and Telegram availability."""
-
     sidecars: list[Sidecar]
     per_sidecar_secrets: dict[Sidecar, dict[str, str]]
     telegram_available: bool
@@ -43,4 +37,4 @@ class LaunchPreparation(NamedTuple):
     #: Held ``running/`` registration handles, keyed by **sidecar container name** (the
     #: refcount identity). Empty when a sidecar failed to ensure, since registration is
     #: all-or-nothing — the last action under the lock.
-    running_handles: dict[str, TextIO | None]
+    running_handles: dict[str, BaseFileLock | None]
