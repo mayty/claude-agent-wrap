@@ -1,6 +1,7 @@
 # This file has been created with the assistance of an AI tool.
 """Tests for filesystem_type — naming the filesystem a path sits on."""
 
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -26,6 +27,11 @@ MOUNT_TABLE = [
     Partition("/mnt/share", "nfs4"),
     Partition("/mnt/c/nested", "ext4"),
 ]
+
+REAL_PSEUDO_MOUNT = {
+    "linux": (Path("/proc"), "proc"),
+    "darwin": (Path("/dev"), "devfs"),
+}
 
 
 @pytest.fixture
@@ -70,7 +76,10 @@ def test_filesystem_type_reads_the_real_mount_table() -> None:
     """
     The one test with no mock in it: every other one asserts against its own fixture.
 
-    ``all=True`` is what makes this pass -- the default filters to physical devices, and
-    on a WSL host that drops exactly the ``drvfs`` mount the startup check looks for.
+    ``all=True`` is what makes this pass -- both mounts named here are ones the default
+    filter drops, because their device is a name rather than a path. That same filter
+    drops the ``drvfs`` mount on a WSL host, which is the one the startup check exists
+    to find. A platform with no entry fails loudly rather than skipping.
     """
-    assert filesystem_type(Path("/proc")) == "proc"
+    path, expected = REAL_PSEUDO_MOUNT[sys.platform]
+    assert filesystem_type(path) == expected

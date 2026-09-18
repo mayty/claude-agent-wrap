@@ -6,9 +6,9 @@ Answers the one question ``os.stat`` cannot: not *which device*, but *what kind*
 ext4, drvfs, nfs. Callers use it to decide whether a filesystem supports something,
 which a device number cannot tell them.
 
-Linux only, by construction: the answer comes from the kernel's mount table. Everywhere
-else it is None, which callers must read as "unknown" rather than "no" -- there is no
-portable spelling of this, and guessing would be worse than declining to answer.
+The answer comes from the OS mount table, wherever psutil can read one -- Linux, macOS,
+the BSDs. Where it cannot, the answer is None, which callers must read as "unknown"
+rather than "no": guessing would be worse than declining to answer.
 """
 
 from pathlib import Path
