@@ -29,9 +29,8 @@ Agent container (injected by `get_agent_env`):
 
 - `ANTHROPIC_API_KEY` — the sidecar's master key
 - `ANTHROPIC_BASE_URL` — `http://agent-wrap-litellm-deepseek:<port>`
-- `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` — `deepseek-v4-flash-vision-exp[1m]`
-- `ANTHROPIC_DEFAULT_OPUS_MODEL` — `deepseek-v4-pro[1m]`
-- `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-v4-flash-vision-exp[1m]`
+- `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-flash[1m]`
+- `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP` — `1` — disables the built-in `Explore` agent's Opus cap, so `Explore` tracks the session's running model (`deepseek-flash` here) instead of the `deepseek-v4-pro` Opus tier. The cap misfires for any non-Anthropic model name (it substring-matches `haiku`/`sonnet`/`opus`); note this tracks the session model, not `CLAUDE_CODE_SUBAGENT_MODEL`. This is an undocumented internal flag, verified present in Claude Code 2.1.277.
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
 
 Sidecar container (injected by `get_sidecar_env`):
