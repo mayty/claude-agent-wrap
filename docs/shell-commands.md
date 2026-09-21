@@ -225,18 +225,19 @@ Spend from a deleted project is **not** preserved. Before 0.11.0 each dir's toke
 ## `agent secrets`
 
 ```
-agent secrets check|set|clear [OPTIONS] SIDECAR
+agent secrets check [OPTIONS] [SIDECAR]
+agent secrets set|clear [OPTIONS] SIDECAR
 agent secrets cleanup [OPTIONS]
 ```
 
 Manages secrets in the encrypted store, namespaced per sidecar/provider (e.g. `litellm-bedrock:api_key`, `telegram:TelegramBotToken`).
 
-This verb is a command group of its own, so each action below has its own `--help` (`agent secrets set --help`) and its own argument list. The three that operate on one sidecar require the name; `cleanup` takes none. Getting that wrong is a usage error (exit `2`), and `SIDECAR` tab-completes from the sidecars the wrapper knows about.
+This verb is a command group of its own, so each action below has its own `--help` (`agent secrets set --help`) and its own argument list. `set` and `clear` require the sidecar name, `cleanup` takes none, and `check` takes one optionally — omitting it reports every sidecar the wrapper knows about. Getting the arity wrong is a usage error (exit `2`), and `SIDECAR` tab-completes from the sidecars the wrapper knows about.
 
-- **`check SIDECAR`** — prints a table of the secrets `SIDECAR` requires, in declaration order, with a column each for the namespaced key, whether it is present (`OK`/`MISSING`), its length, and a masked hint (`sk***ef`, with base64 padding kept). A `MISSING` row leaves the last two columns empty rather than showing a zero — a secret stored as the empty string is `OK` at length `0`, and the two readings must stay apart. The value itself is never printed, and a secret short enough that the hint would give most of it away is shown as `***` alone. The length is what distinguishes a correctly entered credential from one that was pasted twice. The count of missing secrets goes to stderr under the table, and is what sets the exit code.
+- **`check [SIDECAR]`** — prints a table of the secrets `SIDECAR` requires, in declaration order, under a `Secrets:` title. `SIDECAR` is a column of its own and `SECRET` holds the key without its sidecar prefix, so the namespace is stated once per sidecar rather than once per key; then a column each for whether the key is present (`OK`/`MISSING`), its length, and a masked hint (`sk***ef`, with base64 padding kept). A `MISSING` row leaves the last two columns empty rather than showing a zero — a secret stored as the empty string is `OK` at length `0`, and the two readings must stay apart. The value itself is never printed, and a secret short enough that the hint would give most of it away is shown as `***` alone. The length is what distinguishes a correctly entered credential from one that was pasted twice. With no name it tables every sidecar the wrapper knows about at once, in sidecar-name order and declaration order within each sidecar; a sidecar that declares no secrets contributes no rows and is named in a single line under the table instead. The missing secrets are totalled on stderr under the table, naming the sidecars they belong to, and any missing secret is what sets the exit code to `1`.
 - **`set SIDECAR`** — prompts for and persists each secret required by `SIDECAR`. When an entered value turns out to be several copies of one shorter string — what a double paste produces — the prompt says so, gives both lengths and both hints, and offers to store the single copy instead. Answering anything but `y`, and interrupting, both keep the value exactly as typed.
-- **`clear SIDECAR`** — deletes all secrets stored for `SIDECAR`, and tables the keys it removed. A sidecar with nothing stored gets a one-line note instead.
-- **`cleanup`** — removes any stored keys that don't belong to a known sidecar/provider, and tables them the same way.
+- **`clear SIDECAR`** — deletes all secrets stored for `SIDECAR`, and tables the keys it removed against `SIDECAR`, `SECRET` and `STATE`, with each key's sidecar in the `SIDECAR` column rather than in the key. A sidecar with nothing stored gets a one-line note instead.
+- **`cleanup`** — removes any stored keys that don't belong to a known sidecar/provider, and tables them the same way, so each removed key states which sidecar it belonged to. A key stored with no namespace at all — which is what `cleanup` is for, since it removes exactly the keys no known sidecar claims — reads `<none>` in the `SIDECAR` column.
 
 Provider secrets are also resolved interactively on the first `agent run` when stdin is a TTY (they're required, so a missing one triggers a prompt); `agent secrets set <provider>` is the explicit, non-interactive alternative. That prompt carries the same repeated-paste guard `set` does. Telegram secrets are optional and are never prompted for interactively — `agent secrets set telegram` is the only way to set them, and so the only place the guard applies to them.
 

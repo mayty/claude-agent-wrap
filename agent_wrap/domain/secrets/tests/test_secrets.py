@@ -671,3 +671,93 @@ def test_check_decrypts_the_store_once(
     reporting_svc.check_secrets("litellm-bedrock")
 
     assert spy.call_count == 1
+
+
+def test_check_all_covers_every_known_sidecar(reporting_svc: SecretsService) -> None:
+    """The sweep's order is the table's print order, so it is the service's to state."""
+    assert list(reporting_svc.check_all_sidecars()) == ["litellm-bedrock", "telegram"]
+
+
+def test_check_all_reports_each_sidecars_own_presence(
+    reporting_svc: SecretsService, display_mock: Mock
+) -> None:
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": _SINGLE_SECRET}, display=display_mock)
+
+    reports = reporting_svc.check_all_sidecars()
+
+    assert reports["litellm-bedrock"].all_present is True
+    assert reports["litellm-bedrock"].entries["litellm-bedrock:api_key"] == SecretEntry(
+        present=True, length=len(_SINGLE_SECRET), hint="sk***ef"
+    )
+    assert reports["telegram"].all_present is False
+    assert reports["telegram"].entries["telegram:TelegramBotToken"] == SecretEntry(present=False)
+
+
+def test_check_all_keeps_keys_namespaced(reporting_svc: SecretsService) -> None:
+    """Splitting the namespace into two columns is the caller's; the service reports keys."""
+    assert set(reporting_svc.check_all_sidecars()["telegram"].entries) == {
+        "telegram:TelegramBotToken"
+    }
+
+
+def test_check_all_decrypts_the_store_once(
+    reporting_svc: SecretsService, mocker: pytest_mock.MockerFixture
+) -> None:
+    """Per-sidecar calls would re-derive the key and re-warn once per provider."""
+    spy = mocker.spy(store_mod.EncryptedFileStore, "read_all")
+
+    reporting_svc.check_all_sidecars()
+
+    assert spy.call_count == 1
+
+
+def test_check_all_marks_a_sidecar_that_requires_nothing(
+    reporting_svc: SecretsService, mocker: pytest_mock.MockerFixture
+) -> None:
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"litellm-bedrock": object()}
+    no_secrets: list[tuple[str, str]] = []
+    provider.get_provider.return_value.required_secrets.return_value = no_secrets
+    reporting_svc._provider_service = provider
+
+    reports = reporting_svc.check_all_sidecars()
+
+    assert reports["litellm-bedrock"].declares_none is True
+    assert reports["litellm-bedrock"].entries == {}
+    assert reports["litellm-bedrock"].all_present is True
+    assert "telegram" in reports
+
+
+def test_check_all_survives_an_unknown_provider(
+    mocker: pytest_mock.MockerFixture,
+    secrets_paths: tuple[Any, ...],  # noqa: ARG001
+    fixed_key: None,  # noqa: ARG001
+    display_mock: Mock,
+) -> None:
+    """A provider that cannot be resolved must not abort the sweep."""
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"broken": object()}
+    provider.get_provider.side_effect = ProviderNotFoundError("gone")
+    sidecar = mocker.Mock(spec=SidecarService)
+    sidecar.telegram_required_secrets.return_value = [("TelegramBotToken", "bot token")]
+    svc = SecretsService(
+        provider_service=provider, sidecar_service=sidecar, display_service=display_mock
+    )
+
+    reports = svc.check_all_sidecars()
+
+    assert reports["broken"].declares_none is True
+    assert reports["broken"].entries == {}
+    assert list(reports["telegram"].entries) == ["telegram:TelegramBotToken"]
+
+
+def test_check_all_does_not_rewrite_the_store(
+    reporting_svc: SecretsService, display_mock: Mock, secrets_paths: tuple[Any, ...]
+) -> None:
+    secrets_path, _keyfile = secrets_paths
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "v"}, display=display_mock)
+    before = secrets_path.read_bytes()
+
+    reporting_svc.check_all_sidecars()
+
+    assert secrets_path.read_bytes() == before

@@ -5,11 +5,11 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
-## [0.12.0](releases/0.12.0.md) — 2026-09-21
+## [0.12.0](releases/0.12.0.md) — 2026-09-22
 
 **Breaking:** Docker Engine 25.0 or newer is now required. `agent secrets` offers to undo a
-secret that you pasted twice, `agent secrets check` reports each secret's length and a
-masked hint, and `agent secrets` prints its results as a table. A `startup.sh` can now
+secret that you pasted twice; with no sidecar named, `agent secrets check` tables every one
+at once, giving each secret's length, a masked hint and its sidecar. A `startup.sh` can now
 create the network that `agent-run-args` names, and a shared sidecar no longer holds a
 project's network open against `docker compose down`. Auto mode no longer shows a
 classifier notice on DashScope or DeepSeek.

@@ -124,19 +124,9 @@ class SecretsService:
         except ProviderNotFoundError, SystemExit:
             return []
 
-    def check_secrets(self, sidecar_name: str) -> SecretsCheckReport:
-        """
-        Verify all required secrets for *sidecar_name* are present.
-
-        Returns each namespaced key's presence, its length and a masked hint, together with
-        the overall verdict, so a caller renders the rows rather than deciding pass/fail
-        itself. The length and the hint are what make a doubled paste visible.
-
-        Decrypts the store once for every key rather than reading per key, which would
-        re-derive the master key and re-emit any decryption warning once per secret.
-        """
-        required = self.get_required_secrets(sidecar_name)
-        stored = EncryptedFileStore.read_all(display=self._display)
+    def _build_check_report(
+        self, sidecar_name: str, required: list[tuple[str, str]], stored: dict[str, str]
+    ) -> SecretsCheckReport:
         entries: dict[str, SecretEntry] = {}
         for key, _desc in required:
             namespaced = f"{sidecar_name}:{key}"
@@ -151,6 +141,18 @@ class SecretsService:
             all_present=all(entry.present for entry in entries.values()),
             declares_none=not required,
         )
+
+    def check_secrets(self, sidecar_name: str) -> SecretsCheckReport:
+        required = self.get_required_secrets(sidecar_name)
+        stored = EncryptedFileStore.read_all(display=self._display)
+        return self._build_check_report(sidecar_name, required, stored)
+
+    def check_all_sidecars(self) -> dict[str, SecretsCheckReport]:
+        stored = EncryptedFileStore.read_all(display=self._display)
+        return {
+            name: self._build_check_report(name, self._get_required_secrets_safe(name), stored)
+            for name in self.known_sidecars()
+        }
 
     def missing_keys_by_sidecar(self) -> dict[str, list[str]]:
         """
