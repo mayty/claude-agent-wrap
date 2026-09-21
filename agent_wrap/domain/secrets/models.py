@@ -4,6 +4,19 @@
 from typing import NamedTuple
 
 
+class SecretEntry(NamedTuple):
+    """
+    One secret's presence and, when it is present, enough of it to recognize by eye.
+
+    ``length`` and ``hint`` are what tell a doubled paste from a correct value without
+    printing the secret; both stay at their defaults for an absent key.
+    """
+
+    present: bool
+    length: int = 0
+    hint: str = ""
+
+
 class SecretsCheckReport(NamedTuple):
     """
     The presence of every secret a sidecar requires, plus the overall verdict.
@@ -13,8 +26,8 @@ class SecretsCheckReport(NamedTuple):
     meaningful "all OK".
     """
 
-    #: Namespaced key -> whether it is present in the store, in declaration order.
-    entries: dict[str, bool]
+    #: Namespaced key -> what is known about it, in declaration order.
+    entries: dict[str, SecretEntry]
     #: Whether every required secret is present. True when none are required.
     all_present: bool
     #: Whether the sidecar requires no secrets at all.
