@@ -196,52 +196,6 @@ def test_ensure_network_create_failure_is_fatal(
     assert "failed to create docker network" in _last_error(sidecar)
 
 
-def test_attach_to_network_refuses_a_network_that_does_not_exist(
-    sidecar: _Probe, mocker: pytest_mock.MockFixture
-) -> None:
-    """It came from agent-run-args, so creating an empty one would hide the typo."""
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=False)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    with pytest.raises(SystemExit):
-        sidecar._attach_to_network("missing-net")
-    assert mock_docker.call_args_list == []
-    assert "does not exist" in _last_error(sidecar)
-
-
-def test_attach_to_network_is_a_no_op_when_already_connected(
-    sidecar: _Probe, mocker: pytest_mock.MockFixture
-) -> None:
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=True)
-    mocker.patch.object(_Probe, "_is_on_network", autospec=True, return_value=True)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    sidecar._attach_to_network("custom-net")
-    assert mock_docker.call_args_list == []
-
-
-def test_attach_to_network_connects(sidecar: _Probe, mocker: pytest_mock.MockFixture) -> None:
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=True)
-    mocker.patch.object(_Probe, "_is_on_network", autospec=True, return_value=False)
-    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
-    sidecar._attach_to_network("custom-net")
-    assert mock_docker.call_args.args == (
-        "network",
-        "connect",
-        "custom-net",
-        "agent-wrap-probe",
-    )
-
-
-def test_attach_to_network_connect_failure_is_fatal(
-    sidecar: _Probe, mocker: pytest_mock.MockFixture
-) -> None:
-    mocker.patch(_NETWORK_EXISTS, autospec=True, return_value=True)
-    mocker.patch.object(_Probe, "_is_on_network", autospec=True, return_value=False)
-    mocker.patch(_DOCKER, autospec=True, return_value=("", 1))
-    with pytest.raises(SystemExit):
-        sidecar._attach_to_network("custom-net")
-    assert "failed to attach" in _last_error(sidecar)
-
-
 def test_ensure_image_skips_the_pull_when_it_is_present(
     sidecar: _Probe, mocker: pytest_mock.MockFixture
 ) -> None:

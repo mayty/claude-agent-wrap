@@ -197,6 +197,9 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
             # Explore tracks the session's running model, not CLAUDE_CODE_SUBAGENT_MODEL.
             "CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP": "1",
             "CLAUDE_CODE_EFFORT_LEVEL": "max",
+            # The sidecar is a gateway, so the server's auto-mode classifier checks never reach the
+            # session; opt out instead of stopping the first checked action on the ineligibility notice.
+            "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
         }
 
     @override

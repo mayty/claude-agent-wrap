@@ -64,6 +64,7 @@ def test_dashscope_get_agent_env(dashscope: DashscopeProvider):
     assert env["ANTHROPIC_BASE_URL"] == "http://proxy:4000"
     assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "qwen3.6-flash"
     assert env["CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP"] == "1"
+    assert env["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
 
 
 def test_dashscope_secret_description(dashscope: DashscopeProvider):

@@ -31,7 +31,7 @@ from agent_wrap.domain.sidecars.models import (
 from agent_wrap.domain.sidecars.telegram import TelegramSidecar
 from agent_wrap.domain.sidecars.tracker import SidecarTracker
 from agent_wrap.lib.docker_utils import (
-    daemon_reachable,
+    docker_server_version,
     inspect_containers,
     list_container_names,
 )
@@ -134,7 +134,7 @@ class SidecarService:
         """
         Every agent container and sidecar Docker currently reports as running.
 
-        Gated on ``daemon_reachable`` first: ``list_container_names`` returns [] both for
+        Gated on ``docker_server_version`` first: ``list_container_names`` returns [] both for
         "nothing matched" and "docker is unavailable", and a caller that refuses to act
         while something is live must not confuse the two. An unreachable daemon then
         reads as nothing running -- a host whose Docker is down has no agent to protect,
@@ -143,7 +143,7 @@ class SidecarService:
         Asks Docker rather than the flock registry, so it also sees an agent whose
         registration is already cleared while its container is still shutting down.
         """
-        if not daemon_reachable():
+        if docker_server_version() is None:
             return LiveContainers(agents=[], sidecars=[])
         return LiveContainers(
             agents=[c for c in self.list_agent_containers(tool_dir) if c.status == RUNNING_STATUS],

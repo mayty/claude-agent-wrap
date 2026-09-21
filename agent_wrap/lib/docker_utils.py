@@ -71,20 +71,23 @@ def is_rootless() -> bool:
     return "rootless" in stdout.lower()
 
 
-def daemon_reachable() -> bool:
+@cache
+def docker_server_version() -> str | None:
     """
-    Tells "no containers match" apart from "docker is down", which look identical in a
-    listing's empty output.
+    None means the daemon is unreachable, which is how callers test for liveness too.
+
+    Left unparsed -- Rancher Desktop's ``26.1.4-rd`` is no PEP 440 version but a live
+    daemon. Cached, so a test mocking ``docker_run`` must call ``cache_clear()``.
     """
-    _, rc = docker_run("version", "--format", "{{.Server.Version}}", timeout=10)
-    return rc == 0
+    stdout, rc = docker_run("version", "--format", "{{.Server.Version}}", timeout=10)
+    return stdout.strip() if rc == 0 else None
 
 
 def list_container_names(*filters: str) -> list[str]:
     """
     Includes stopped containers (``-a``). Returns [] both when nothing matches and when
     docker is unavailable -- indistinguishable on purpose, so callers that care use
-    :func:`daemon_reachable`.
+    :func:`docker_server_version`.
     """
     args = ["ps", "-a", "--format", "{{.Names}}"]
     for expr in filters:

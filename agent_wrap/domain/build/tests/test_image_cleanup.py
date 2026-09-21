@@ -58,7 +58,9 @@ def build_svc(mocker: pytest_mock.MockFixture) -> BuildService:
 def docker_up(mocker: pytest_mock.MockFixture) -> None:
     """Make the sweep believe the Docker daemon answers."""
     mocker.patch(
-        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=True
+        "agent_wrap.domain.build.service.docker_server_version",
+        autospec=True,
+        return_value="27.0.3",
     )
 
 
@@ -151,7 +153,7 @@ def test_image_cleanup_scope_is_empty_when_the_daemon_is_unreachable(
 ) -> None:
     """Nothing is provably outdated when nothing can be asked — and no docker call is made."""
     mocker.patch(
-        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
+        "agent_wrap.domain.build.service.docker_server_version", autospec=True, return_value=None
     )
     listed = mocker.patch("agent_wrap.domain.build.service.list_images", autospec=True)
 

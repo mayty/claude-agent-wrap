@@ -185,29 +185,20 @@ class Sidecar(ABC):
         return stdout.strip() if rc == 0 else ""
 
     def _ensure_network(self) -> None:
+        """
+        Create the sidecar network if it is missing.
+
+        A sidecar joins this network and no other. When a project declares its own
+        network in agent-run-args, it is the *agent* that joins both -- an agent
+        container is ``--rm``, so its endpoints are released when it exits, whereas a
+        sidecar outlives the run and would hold the project's network open against
+        ``docker compose down``.
+        """
         if network_exists(self.network_name):
             return
         _, rc = docker_run("network", "create", self.network_name)
         if rc != 0:
             msg = f"failed to create docker network {self.network_name}"
-            raise self._fatal(msg)
-
-    def _attach_to_network(self, network: str) -> None:
-        """
-        Connect this container to a network the agent asked for, not one we created.
-
-        A missing network is the caller's mistake rather than something to create: the
-        name came from agent-run-args, and creating an empty network of that name would
-        leave the agent talking to nothing.
-        """
-        if not network_exists(network):
-            msg = f"network '{network}' (from agent-run-args) does not exist"
-            raise self._fatal(msg)
-        if self._is_on_network(network):
-            return
-        _, rc = docker_run("network", "connect", network, self.container_name)
-        if rc != 0:
-            msg = f"failed to attach {self.container_name} to network '{network}'"
             raise self._fatal(msg)
 
     def _ensure_image(self) -> None:

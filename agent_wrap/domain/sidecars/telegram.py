@@ -123,10 +123,6 @@ class TelegramSidecar(Sidecar):
         if not self._auth_token:
             self._warn("/register returned no auth_token; notifications will be unavailable")
 
-        # Attach sidecar to agent's custom network if needed
-        if agent_network and agent_network not in ("host", "none", self.config.network_name):
-            self._attach_to_network(agent_network)
-
         return self._build_connectivity_args(agent_in_host_netns=agent_in_host_netns)
 
     @override

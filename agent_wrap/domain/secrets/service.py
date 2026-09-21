@@ -5,9 +5,10 @@ import sys
 from typing import TYPE_CHECKING
 
 from agent_wrap.constants import TELEGRAM_SIDECAR_NAME
-from agent_wrap.domain.secrets.models import SecretsCheckReport, SecretsSetResult
+from agent_wrap.domain.secrets.models import SecretEntry, SecretsCheckReport, SecretsSetResult
 from agent_wrap.domain.secrets.store import EncryptedFileStore
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
+from agent_wrap.lib.text import mask_value, repetition_count
 
 if TYPE_CHECKING:
     from agent_wrap.domain.display.service import DisplayService
@@ -25,6 +26,31 @@ class SecretsService:
         self._provider_service = provider_service
         self._sidecar_service = sidecar_service
         self._display = display_service
+
+    def _prompt_secret_checked(self, description: str) -> str:
+        """
+        Prompt for a secret, offering to undo a paste that repeated itself.
+
+        A value pasted twice into the prompt is indistinguishable from a correct one until
+        the upstream API rejects it, so the repetition is reported at entry. Declining — and
+        an interrupt, which ``prompt_confirm`` cannot tell apart from one — keeps the value
+        exactly as typed, so a wrong guess here never silently discards input.
+        """
+        entered = self._display.prompt_secret(description)
+        repeats = repetition_count(entered)
+        if repeats == 1:
+            return entered
+
+        unit = entered[: len(entered) // repeats]
+        self._display.alert(
+            f"The value you entered is {repeats} copies of the same "
+            f"{len(unit)}-character string, which is what a repeated paste looks like.\n"
+            f"  as entered:   {len(entered):>4d} chars  {mask_value(entered)}\n"
+            f"  deduplicated: {len(unit):>4d} chars  {mask_value(unit)}"
+        )
+        if self._display.prompt_confirm("Store the deduplicated value? [y/N]"):
+            return unit
+        return entered
 
     def read(self, key: str, description: str, *, prompt_on_missing: bool = False) -> str:
         """
@@ -45,13 +71,13 @@ class SecretsService:
         if not prompt_on_missing:
             raise SecretNotFoundError(key, description)
 
-        entered = self._display.prompt_secret(description)
+        entered = self._prompt_secret_checked(description)
         data[key] = entered
         EncryptedFileStore.write_all(data, display=self._display)
         return entered
 
     def _write(self, key: str, description: str) -> None:
-        entered = self._display.prompt_secret(description)
+        entered = self._prompt_secret_checked(description)
         data = EncryptedFileStore.read_all(display=self._display)
         data[key] = entered
         EncryptedFileStore.write_all(data, display=self._display)
@@ -98,27 +124,35 @@ class SecretsService:
         except ProviderNotFoundError, SystemExit:
             return []
 
-    def check_secrets(self, sidecar_name: str) -> SecretsCheckReport:
-        """
-        Verify all required secrets for *sidecar_name* are present.
-
-        Returns each namespaced key's presence together with the overall verdict, so a
-        caller renders the rows rather than deciding pass/fail itself.
-        """
-        required = self.get_required_secrets(sidecar_name)
-        entries: dict[str, bool] = {}
-        for key, desc in required:
+    def _build_check_report(
+        self, sidecar_name: str, required: list[tuple[str, str]], stored: dict[str, str]
+    ) -> SecretsCheckReport:
+        entries: dict[str, SecretEntry] = {}
+        for key, _desc in required:
             namespaced = f"{sidecar_name}:{key}"
-            try:
-                self.read(namespaced, desc, prompt_on_missing=False)
-                entries[namespaced] = True
-            except SecretNotFoundError:
-                entries[namespaced] = False
+            value = stored.get(namespaced)
+            entries[namespaced] = (
+                SecretEntry(present=False)
+                if value is None
+                else SecretEntry(present=True, length=len(value), hint=mask_value(value))
+            )
         return SecretsCheckReport(
             entries=entries,
-            all_present=all(entries.values()),
+            all_present=all(entry.present for entry in entries.values()),
             declares_none=not required,
         )
+
+    def check_secrets(self, sidecar_name: str) -> SecretsCheckReport:
+        required = self.get_required_secrets(sidecar_name)
+        stored = EncryptedFileStore.read_all(display=self._display)
+        return self._build_check_report(sidecar_name, required, stored)
+
+    def check_all_sidecars(self) -> dict[str, SecretsCheckReport]:
+        stored = EncryptedFileStore.read_all(display=self._display)
+        return {
+            name: self._build_check_report(name, self._get_required_secrets_safe(name), stored)
+            for name in self.known_sidecars()
+        }
 
     def missing_keys_by_sidecar(self) -> dict[str, list[str]]:
         """
@@ -134,8 +168,8 @@ class SecretsService:
         sweep: per-sidecar calls would re-derive the key and re-emit any decryption
         warning once per provider.
 
-        Only key *names* are returned, never values — the same thing
-        ``agent secrets check`` prints.
+        Only key *names* are returned, never values — less than ``agent secrets check``
+        reports, which also gives each present secret's length and a masked hint.
         """
         stored = EncryptedFileStore.read_all(display=self._display)
         result: dict[str, list[str]] = {}

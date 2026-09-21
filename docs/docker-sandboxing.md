@@ -122,8 +122,38 @@ The project Dockerfile supports a few wrapper-specific comment directives in add
   ```
   Mounts declared here get their host side prepared before launch — see
   [Mounts declared by the project Dockerfile](#mounts-declared-by-the-project-dockerfile) below.
+  A `--network` declared here is *additive*, not a replacement — see
+  [Networks](#networks) below.
 - **`# agent-enable-startup: <value>`** — runs `.claude-agent-wrap/startup.sh` before launch (default off). See [Startup script](#startup-script) below. **Only honored in `.claude-agent-wrap/Dockerfile`** — in a deprecated `Dockerfile.agent` it is an error, not a silent skip.
 - **`EXPOSE <port>`** — any standard `EXPOSE` directives cause the wrapper to publish those ports on `127.0.0.1`. A protocol suffix, if present, is stripped (`EXPOSE 8080/tcp` is published as `127.0.0.1:8080`).
+
+## Networks
+
+The agent container is always placed on the wrapper's own sidecar network,
+`agent-wrap-net`. That is how it resolves its LiteLLM and Telegram sidecars, which answer
+to their container names over Docker's embedded DNS.
+
+A `--network myproj-net` in `agent-run-args` is therefore **additive**: the agent joins that
+network *and* `agent-wrap-net`, and `docker run` receives both flags. This is what requires
+Docker Engine 25.0 or newer — see [Requirements](getting-started.md#requirements).
+
+The wrapper never connects a *sidecar* to a network your project declared. Sidecars are
+host-global singletons shared by every project on that provider, and they outlive any one
+run; attaching one would hold your network open — `docker compose down` would report
+"network has active endpoints" until the last agent on that provider exited. The agent
+container runs `--rm`, so putting *it* on both networks releases everything when it exits.
+
+Two spellings opt out, because neither can be combined with another network: under
+`--network host` (or `AGENT_USE_HOST_NETWORK` on WSL) the agent shares the host's network
+namespace and reaches its sidecars through `--add-host` instead, and `--network none` is
+left alone.
+
+`--network bridge` is refused outright. Docker permits a container on both its default
+bridge and a user-defined network, and the agent would still reach its sidecar over
+`agent-wrap-net` — but the default bridge resolves no container names, so whatever you
+meant to reach on it is unreachable by name anyway, and a container on both can lose its
+external network access ([moby/moby#30302](https://github.com/moby/moby/issues/30302)).
+Create a user-defined network instead.
 
 ## Startup script
 
