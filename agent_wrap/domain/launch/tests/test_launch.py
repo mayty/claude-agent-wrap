@@ -78,6 +78,22 @@ def launch_svc(mocker: pytest_mock.MockFixture) -> LaunchService:
     )
 
 
+@pytest.fixture(autouse=True)
+def supported_docker(mocker: pytest_mock.MockFixture) -> Mock:
+    """
+    Stub the launch-time Docker version gate, which otherwise shells out to the daemon.
+
+    Autouse because the gate sits ahead of every other step in ``launch()``: without it
+    each test's first act is a real ``docker version``, which both slows the suite and
+    breaks the cases asserting that nothing has run yet.
+    """
+    return mocker.patch(
+        "agent_wrap.domain.launch.service.docker_utils.docker_server_version",
+        autospec=True,
+        return_value="25.0",
+    )
+
+
 def test_resolve_secrets_optional_missing_skips(
     mocker: pytest_mock.MockFixture, launch_svc: LaunchService
 ) -> None:
@@ -725,6 +741,49 @@ def test_host_network_wsl_agent_network_specified(
     assert ports == ["-p", "8080:8080"]
 
 
+def test_sidecar_net_args_joins_the_sidecar_network(launch_svc: LaunchService) -> None:
+    assert launch_svc._sidecar_net_args(use_host_net=False, agent_network=None) == [
+        "--network",
+        "agent-wrap-net",
+    ]
+
+
+def test_sidecar_net_args_is_additive_to_a_project_network(launch_svc: LaunchService) -> None:
+    """Both flags reach `docker run`: the project's network plus the sidecar's."""
+    assert launch_svc._sidecar_net_args(use_host_net=False, agent_network="myproj-net") == [
+        "--network",
+        "agent-wrap-net",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("use_host_net", "agent_network"),
+    [(True, None), (False, "host"), (False, "none")],
+)
+def test_sidecar_net_args_empty_when_a_network_cannot_be_joined(
+    launch_svc: LaunchService,
+    use_host_net: bool,  # noqa: FBT001
+    agent_network: str | None,
+) -> None:
+    assert (
+        launch_svc._sidecar_net_args(use_host_net=use_host_net, agent_network=agent_network) == []
+    )
+
+
+def test_reject_unsupported_network_refuses_the_default_bridge(
+    launch_svc: LaunchService,
+) -> None:
+    with pytest.raises(DockerfileDirectiveError, match="resolves no container names"):
+        launch_svc._reject_unsupported_network("bridge")
+
+
+@pytest.mark.parametrize("agent_network", [None, "myproj-net", "host", "none"])
+def test_reject_unsupported_network_allows_everything_else(
+    launch_svc: LaunchService, agent_network: str | None
+) -> None:
+    launch_svc._reject_unsupported_network(agent_network)
+
+
 def _stub_provider(mocker: pytest_mock.MockFixture, launch_svc: LaunchService) -> Mock:
     """Point launch_svc's provider service at a provider declaring one sidecar."""
     provider = mocker.Mock(spec=Provider)
@@ -1005,11 +1064,6 @@ def test_sweep_collects_dead_and_aged_instance(
 ) -> None:
     stale = _make_instance_dir(tmp_path, "agent-dead", age_seconds=INSTANCE_SWEEP_GRACE_SECONDS * 2)
     mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
-        autospec=True,
-        return_value=True,
-    )
-    mocker.patch(
         "agent_wrap.domain.launch.service.docker_utils.list_container_names",
         autospec=True,
         return_value=["claude-agent-live"],
@@ -1030,11 +1084,6 @@ def test_sweep_keeps_running_agents_state(
 ) -> None:
     """A long-running agent's directory is old, so only liveness protects it."""
     live = _make_instance_dir(tmp_path, "agent-live", age_seconds=INSTANCE_SWEEP_GRACE_SECONDS * 2)
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
-        autospec=True,
-        return_value=True,
-    )
     mocker.patch(
         "agent_wrap.domain.launch.service.docker_utils.list_container_names",
         autospec=True,
@@ -1057,11 +1106,6 @@ def test_sweep_keeps_young_instance_without_container(
     """A concurrent launcher has its directory before `docker run` starts its container."""
     starting = _make_instance_dir(tmp_path, "agent-starting")
     mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
-        autospec=True,
-        return_value=True,
-    )
-    mocker.patch(
         "agent_wrap.domain.launch.service.docker_utils.list_container_names",
         autospec=True,
         return_value=[],
@@ -1078,15 +1122,14 @@ def test_sweep_keeps_young_instance_without_container(
 
 
 def test_sweep_skipped_when_docker_unreachable(
-    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    launch_svc: LaunchService,
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    supported_docker: Mock,
 ) -> None:
     """An empty container list means "docker is down" as often as "nothing runs"."""
     stale = _make_instance_dir(tmp_path, "agent-dead", age_seconds=INSTANCE_SWEEP_GRACE_SECONDS * 2)
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
-        autospec=True,
-        return_value=False,
-    )
+    supported_docker.return_value = None
     listing = mocker.patch(
         "agent_wrap.domain.launch.service.docker_utils.list_container_names",
         autospec=True,
@@ -1100,17 +1143,11 @@ def test_sweep_skipped_when_docker_unreachable(
 
 
 def test_sweep_tolerates_absent_instances_dir(
-    launch_svc: LaunchService, tmp_path: Path, mocker: pytest_mock.MockFixture
+    launch_svc: LaunchService, tmp_path: Path, supported_docker: Mock
 ) -> None:
-    reachable = mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
-        autospec=True,
-        return_value=True,
-    )
-
     launch_svc._sweep_stale_instance_state(tmp_path)
 
-    reachable.assert_not_called()
+    supported_docker.assert_not_called()
 
 
 def test_prepare_config_precreates_every_project_mount_source(
@@ -1118,6 +1155,7 @@ def test_prepare_config_precreates_every_project_mount_source(
     mocker: pytest_mock.MockFixture,
     launch_svc: LaunchService,
     projects_repository: ProjectsRepository,
+    supported_docker: Mock,
 ) -> None:
     """
     Every host-side mount source must exist, as the right kind of node, before docker run.
@@ -1131,11 +1169,7 @@ def test_prepare_config_precreates_every_project_mount_source(
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     mocker.patch.object(Path, "cwd", return_value=project_dir)
-    mocker.patch(
-        "agent_wrap.domain.launch.service.docker_utils.daemon_reachable",
-        autospec=True,
-        return_value=False,
-    )
+    supported_docker.return_value = None  # skips the instance sweep, which this ignores
     launch_svc._config = ConfigService(
         display_service=mocker.Mock(spec=DisplayService),
         projects_repository=projects_repository,
@@ -1362,6 +1396,103 @@ def test_launch_aborts_when_startup_script_fails(
     run.assert_not_called()
     # Teardown still runs for every sidecar this launch declared.
     launch_svc._sidecar_service.create_tracker.return_value.clear_running.assert_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_refuses_a_docker_daemon_below_the_floor(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    supported_docker: Mock,
+) -> None:
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=None)
+    supported_docker.return_value = "24.0.7"
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    assert "24.0.7 is too old" in launch_svc._display.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+    # Ahead of the image work, so an old daemon is not reported after a full build.
+    launch_svc._build_service.resolve_image.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_proceeds_when_the_docker_version_is_unreadable(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    supported_docker: Mock,
+) -> None:
+    """A daemon that is down belongs to ensure_images, which says so far better."""
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=None)
+    supported_docker.return_value = None
+    # Stop launch() just past the image phase, which is all this needs to observe.
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
+
+    launch_svc.launch(use_base=False, claude_args=[])
+
+    launch_svc._build_service.resolve_image.assert_called_once()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_proceeds_on_a_version_that_is_not_pep440(
+    tmp_path: Path,
+    mocker: pytest_mock.MockFixture,
+    launch_svc: LaunchService,
+    supported_docker: Mock,
+) -> None:
+    """Rancher Desktop reports `26.1.4-rd`: unknown, which is not the same as too old."""
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=None)
+    supported_docker.return_value = "26.1.4-rd"
+    _stub_provider(mocker, launch_svc).sidecar.side_effect = ProviderNotFoundError("stop here")
+
+    launch_svc.launch(use_base=False, claude_args=[])
+
+    launch_svc._build_service.resolve_image.assert_called_once()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_refuses_a_project_declaring_the_default_bridge(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=None)
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        extra_run_args=["--network", "bridge"]
+    )
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    rc = launch_svc.launch(use_base=False, claude_args=[])
+
+    assert rc == 1
+    assert "--network bridge is not supported" in launch_svc._display.error.call_args[0][0]  # pyrefly: ignore [missing-attribute]
+    run.assert_not_called()
+    # Before any sidecar work: a mistyped directive must not cost a sidecar cold start.
+    launch_svc._secrets.read.assert_not_called()  # pyrefly: ignore [missing-attribute]
+
+
+def test_launch_puts_the_agent_on_both_networks(
+    tmp_path: Path, mocker: pytest_mock.MockFixture, launch_svc: LaunchService
+) -> None:
+    """
+    The project's network does not displace the sidecar's; the agent joins both.
+
+    Needs Docker 25.0+, which is what :meth:`_docker_version_supported` enforces.
+    """
+    _stub_launch_up_to_prepare(tmp_path, mocker, launch_svc, startup_timeout=None)
+    launch_svc._build_service.parse_dockerfile_agent.return_value = DockerfileAgentInfo(  # pyrefly: ignore [missing-attribute]
+        extra_run_args=["--network", "myproj-net"]
+    )
+    provider = _stub_provider(mocker, launch_svc)
+    launch_svc._secrets.read.return_value = "secret-value"  # pyrefly: ignore [missing-attribute]
+    no_secrets: list[tuple[str, str]] = []
+    launch_svc._sidecar_service.telegram_required_secrets.return_value = no_secrets  # pyrefly: ignore [missing-attribute]
+    no_flags: list[str] = []
+    provider.sidecar.return_value.ensure.return_value = no_flags
+    run = mocker.patch("agent_wrap.domain.launch.service.subprocess.run", autospec=True)
+
+    launch_svc.launch(use_base=False, claude_args=[])
+
+    argv = run.call_args[0][0]
+    networks = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--network"]
+    assert networks == ["agent-wrap-net", "myproj-net"]
 
 
 def test_launch_reports_a_malformed_startup_directive(

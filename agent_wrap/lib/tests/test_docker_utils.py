@@ -8,8 +8,8 @@ import pytest
 
 from agent_wrap.lib.docker_utils import (
     ImageStamp,
-    daemon_reachable,
     docker_run,
+    docker_server_version,
     get_container_uid,
     get_tty_args,
     get_user_args,
@@ -35,11 +35,13 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def clear_rootless_cache() -> Iterator[None]:
-    """``is_rootless`` is cached, so drop it around every case that mocks docker."""
+def clear_docker_probe_caches() -> Iterator[None]:
+    """Both probes are cached, so drop them around every case that mocks docker."""
     is_rootless.cache_clear()
+    docker_server_version.cache_clear()
     yield
     is_rootless.cache_clear()
+    docker_server_version.cache_clear()
 
 
 def test_docker_run_returns_tuple(mocker: pytest_mock.MockFixture) -> None:
@@ -373,17 +375,40 @@ def test_host_network_build_args_env_falsey(
     assert host_network_build_args() == []
 
 
-def test_daemon_reachable_true(mocker: pytest_mock.MockFixture) -> None:
+def test_docker_server_version_reports_the_daemon(mocker: pytest_mock.MockFixture) -> None:
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "27.0.3\n"
+    mock_run.return_value.returncode = 0
+    assert docker_server_version() == "27.0.3"
+
+
+def test_docker_server_version_none_when_docker_absent(mocker: pytest_mock.MockFixture) -> None:
+    """None is also the liveness answer, so it must mean "docker is down" and nothing else."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.side_effect = FileNotFoundError()
+    assert docker_server_version() is None
+
+
+def test_docker_server_version_keeps_a_bespoke_build_string(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """Rancher Desktop's `26.1.4-rd` is no PEP 440 version, but that daemon is up."""
+    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
+    mock_run.return_value.stdout = "26.1.4-rd"
+    mock_run.return_value.returncode = 0
+    assert docker_server_version() == "26.1.4-rd"
+
+
+def test_docker_server_version_asks_the_daemon_once(mocker: pytest_mock.MockFixture) -> None:
+    """The cache is what keeps one launch from repeating this probe three times."""
     mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
     mock_run.return_value.stdout = "27.0.3"
     mock_run.return_value.returncode = 0
-    assert daemon_reachable() is True
 
+    assert docker_server_version() == "27.0.3"
+    assert docker_server_version() == "27.0.3"
 
-def test_daemon_reachable_false_when_docker_absent(mocker: pytest_mock.MockFixture) -> None:
-    mock_run = mocker.patch("agent_wrap.lib.docker_utils.subprocess.run")
-    mock_run.side_effect = FileNotFoundError()
-    assert daemon_reachable() is False
+    mock_run.assert_called_once()
 
 
 def test_list_container_names_parses_lines(mocker: pytest_mock.MockFixture) -> None:

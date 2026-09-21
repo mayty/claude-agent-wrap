@@ -5,6 +5,13 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.12.0](releases/0.12.0.md) — 2026-09-21
+
+**Breaking:** Docker Engine 25.0 or newer is now required. The agent container joins the
+wrapper's sidecar network alongside any network the project declares, which fixes two
+bugs: a `startup.sh` can now create the network named in `agent-run-args`, and a shared
+sidecar no longer holds that network open against `docker compose down`.
+
 ## [0.11.0](releases/0.11.0.md) — 2026-09-18
 
 **Breaking:** Intel Macs are no longer supported, `agent` exits `2` on a usage error,

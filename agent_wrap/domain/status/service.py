@@ -120,7 +120,7 @@ class InspectService:
         Docker is probed once up front so "no containers" and "no daemon" stay
         distinguishable -- both produce empty listings otherwise.
         """
-        docker_up = docker_utils.daemon_reachable()
+        docker_up = docker_utils.docker_server_version() is not None
         docker = DockerStatus(available=docker_up, error="" if docker_up else DOCKER_UNREACHABLE)
 
         registry = self._sidecars.registry_state(TOOL_DIR)

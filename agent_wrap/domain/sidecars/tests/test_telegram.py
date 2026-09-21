@@ -311,7 +311,6 @@ def test_ensure_full_flow(mocker: pytest_mock.MockFixture) -> None:
     mock_start = mocker.patch.object(sc, "_start", autospec=True)
     mock_health = mocker.patch.object(sc, "_health_poll", autospec=True, return_value=True)
     mock_reg = mocker.patch.object(sc, "_register", autospec=True, return_value="tok-full")
-    mock_attach = mocker.patch.object(sc, "_attach_to_network", autospec=True)
     mocker.patch.object(
         sc, "_build_connectivity_args", autospec=True, return_value=["-e", "FOO=bar"]
     )
@@ -322,7 +321,6 @@ def test_ensure_full_flow(mocker: pytest_mock.MockFixture) -> None:
     mock_start.assert_called_once()
     mock_health.assert_called_once()
     mock_reg.assert_called_once()
-    mock_attach.assert_not_called()  # no custom network
     assert result == ["-e", "FOO=bar"]
     assert sc._auth_token == "tok-full"
 
@@ -334,7 +332,6 @@ def test_ensure_already_running(mocker: pytest_mock.MockFixture) -> None:
     mock_start = mocker.patch.object(sc, "_start", autospec=True)
     mock_health = mocker.patch.object(sc, "_health_poll", autospec=True)
     mock_reg = mocker.patch.object(sc, "_register", autospec=True, return_value="tok-hot")
-    mocker.patch.object(sc, "_attach_to_network", autospec=True)
     mocker.patch.object(sc, "_build_connectivity_args", autospec=True, return_value=["-e", "X=1"])
 
     result = sc.ensure(use_host_net=False, agent_network=None, secrets=_SECRETS)
@@ -401,29 +398,31 @@ def test_ensure_health_fail_reaps_even_if_log_stream_raises(
     assert rm_calls[0].args == ("rm", "agent-wrap-telegram")
 
 
-def test_ensure_with_custom_agent_network(mocker: pytest_mock.MockFixture) -> None:
+def test_ensure_leaves_a_custom_agent_network_untouched(
+    mocker: pytest_mock.MockFixture,
+) -> None:
+    """
+    A project's network is the agent's to join, never the sidecar's.
+
+    The sidecar outlives the run, so connecting it would hold that network open against
+    a ``docker compose down`` long after the agent that asked for it exited. Nothing
+    here may so much as look the network up — a missing one must not fail the launch,
+    since the startup script that creates it has not run yet at this point.
+    """
     sc = _sidecar()
     mocker.patch.object(sc, "_ensure_network", autospec=True)
     mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
     mocker.patch.object(sc, "_register", autospec=True, return_value="tok-custom")
-    mock_attach = mocker.patch.object(sc, "_attach_to_network", autospec=True)
     mocker.patch.object(sc, "_build_connectivity_args", autospec=True, return_value=["-e", "Z=1"])
+    mock_exists = mocker.patch(
+        "agent_wrap.domain.sidecars.base.network_exists", autospec=True, return_value=False
+    )
+    mock_docker = mocker.patch(_DOCKER, autospec=True, return_value=("", 0))
 
     sc.ensure(use_host_net=False, agent_network="custom-bridge", secrets=_SECRETS)
 
-    mock_attach.assert_called_once_with("custom-bridge")
-
-
-def test_ensure_skips_attach_for_agent_wrap_net(mocker: pytest_mock.MockFixture) -> None:
-    sc = _sidecar()
-    mocker.patch.object(sc, "_ensure_network", autospec=True)
-    mocker.patch.object(sc, "_is_running", autospec=True, return_value=True)
-    mocker.patch.object(sc, "_register", autospec=True, return_value="tok")
-    mock_attach = mocker.patch.object(sc, "_attach_to_network", autospec=True)
-    mocker.patch.object(sc, "_build_connectivity_args", autospec=True, return_value=[])
-
-    sc.ensure(use_host_net=False, agent_network="agent-wrap-net", secrets=_SECRETS)
-    mock_attach.assert_not_called()
+    mock_exists.assert_not_called()
+    assert [c for c in mock_docker.call_args_list if "network" in c.args[:1]] == []
 
 
 def test_release_stops_container(mocker: pytest_mock.MockFixture) -> None:

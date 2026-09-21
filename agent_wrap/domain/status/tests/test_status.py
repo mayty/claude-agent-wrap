@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     import pytest_mock
 
-_DOCKER_PROBE = "agent_wrap.domain.status.service.docker_utils.daemon_reachable"
+_DOCKER_PROBE = "agent_wrap.domain.status.service.docker_utils.docker_server_version"
 _IMAGE_EXISTS = "agent_wrap.domain.status.service.docker_utils.image_exists"
 _IMAGE_CLAUDE_VERSION = "agent_wrap.domain.status.service.docker_utils.image_claude_version"
 _LATEST_CLAUDE_VERSION = "agent_wrap.domain.status.service.docker_utils.latest_claude_version"
@@ -95,7 +95,7 @@ def docker_probes(mocker: pytest_mock.MockFixture) -> dict[str, Mock]:
     is rejected by ``mock`` (it cannot spec a Mock).
     """
     return {
-        "reachable": mocker.patch(_DOCKER_PROBE, autospec=True, return_value=True),
+        "reachable": mocker.patch(_DOCKER_PROBE, autospec=True, return_value="27.0.3"),
         "image_exists": mocker.patch(_IMAGE_EXISTS, autospec=True, return_value=True),
         "image_claude_version": mocker.patch(
             _IMAGE_CLAUDE_VERSION, autospec=True, return_value="2.0.50"
@@ -263,7 +263,7 @@ def test_queued_launches_come_from_the_registry(
 def test_docker_unavailable_empties_container_lists(
     service: InspectService, docker_probes: dict[str, Mock]
 ) -> None:
-    docker_probes["reachable"].return_value = False
+    docker_probes["reachable"].return_value = None
     report = service.build_report()
     assert report.docker.available is False
     assert report.docker.error
@@ -275,7 +275,7 @@ def test_docker_unavailable_keeps_filesystem_sections(
     service: InspectService, docker_probes: dict[str, Mock]
 ) -> None:
     """The sections that do not need docker are the whole point of degrading."""
-    docker_probes["reachable"].return_value = False
+    docker_probes["reachable"].return_value = None
     report = service.build_report()
     assert report.viewer.running is True
     assert report.wrapper.commit == "7e8ef2f"
@@ -286,7 +286,7 @@ def test_docker_unavailable_keeps_filesystem_sections(
 def test_docker_unavailable_skips_container_discovery(
     service: InspectService, sidecar_mock: Mock, docker_probes: dict[str, Mock]
 ) -> None:
-    docker_probes["reachable"].return_value = False
+    docker_probes["reachable"].return_value = None
     service.build_report()
     sidecar_mock.list_sidecar_containers.assert_not_called()
     sidecar_mock.list_agent_containers.assert_not_called()
@@ -522,7 +522,7 @@ def test_report_reports_no_staleness_when_docker_is_down(
     service: InspectService, build_mock: Mock, docker_probes: dict[str, Mock]
 ) -> None:
     """An unreachable daemon cannot be asked, and must not be reported as an answer."""
-    docker_probes["reachable"].return_value = False
+    docker_probes["reachable"].return_value = None
 
     report = service.build_report()
 
@@ -769,7 +769,7 @@ def test_stale_image_sweep_reports_an_empty_verdict_when_nothing_is_stale(
 def test_stale_image_sweep_is_skipped_when_docker_is_down(
     service: InspectService, build_mock: Mock, docker_probes: dict[str, Mock]
 ) -> None:
-    docker_probes["reachable"].return_value = False
+    docker_probes["reachable"].return_value = None
     report = service.build_report()
     build_mock.stale_project_images.assert_not_called()
     assert report.stale_images is None
@@ -812,7 +812,7 @@ def test_an_absent_project_image_does_not_gate_the_base_probes(
 def test_docker_unavailable_submits_no_probes(
     service: InspectService, docker_probes: dict[str, Mock]
 ) -> None:
-    docker_probes["reachable"].return_value = False
+    docker_probes["reachable"].return_value = None
     report = service.build_report()
     docker_probes["image_exists"].assert_not_called()
     docker_probes["image_claude_version"].assert_not_called()

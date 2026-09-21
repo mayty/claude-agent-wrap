@@ -5,6 +5,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Final
 
+from packaging.version import Version
+
 from agent_wrap.lib.daytime import local_utc_offset_hours, utc_offset_hours_for_tz
 from agent_wrap.lib.utils import is_truthy_env
 
@@ -312,6 +314,11 @@ NO_HEALTHCHECK = "none"
 # Joined by every sidecar and agent, which is what gives the agent container DNS resolution
 # for the sidecar's name. Docker's default bridge has no embedded DNS.
 SIDECAR_NETWORK_NAME = "agent-wrap-net"
+
+# Docker 25.0 is the first release accepting more than one --network on `docker run`
+# (moby/moby#45906). The agent needs two whenever a project declares its own network in
+# agent-run-args: that one, plus SIDECAR_NETWORK_NAME to reach its sidecar.
+MIN_DOCKER_VERSION = Version("25.0")
 
 DEFAULT_PROVIDER_NAME = "litellm-bedrock"
 
