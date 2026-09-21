@@ -32,6 +32,7 @@ Agent container (injected by `get_agent_env`):
 - `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `CLAUDE_CODE_SUBAGENT_MODEL` — `deepseek-flash[1m]`
 - `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP` — `1` — disables the built-in `Explore` agent's Opus cap, so `Explore` tracks the session's running model (`deepseek-flash` here) instead of the `deepseek-v4-pro` Opus tier. The cap misfires for any non-Anthropic model name (it substring-matches `haiku`/`sonnet`/`opus`); note this tracks the session model, not `CLAUDE_CODE_SUBAGENT_MODEL`. This is an undocumented internal flag, verified present in Claude Code 2.1.277.
 - `CLAUDE_CODE_EFFORT_LEVEL` — `max`
+- `CLAUDE_CODE_AUTO_MODE_SERVER` — `0` — tells Claude Code not to ask for the server-side auto-mode classifier checks. The sidecar is a gateway, so those checks never reach the session, and Claude Code stops the first checked action to show its ineligibility notice ([auto mode classifier request charges](https://code.claude.com/docs/en/auto-mode-classifier-billing)). The opt-out does not change how auto mode classifies; it always uses Claude Code's own classifier requests, which are billed as before. Not set on the launcher's behalf for every provider — Bedrock and `litellm-anthropic-sub` must keep asking for the server's checks. Verified present in Claude Code 2.1.278; the CLI documents the flag as temporary.
 
 Sidecar container (injected by `get_sidecar_env`):
 

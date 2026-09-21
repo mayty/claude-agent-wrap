@@ -258,3 +258,4 @@ def test_deepseek_get_agent_env(deepseek: DeepSeekProvider):
     assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-flash[1m]"
     assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "deepseek-flash[1m]"
     assert env["CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP"] == "1"
+    assert env["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
