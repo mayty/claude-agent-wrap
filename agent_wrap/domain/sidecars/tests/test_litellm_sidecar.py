@@ -83,7 +83,7 @@ def test_connectivity_host_sidecar_host_agent(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
     sc._port = 48620
-    result = sc._build_connectivity_args("host", agent_in_host_netns=True, agent_network=None)
+    result = sc._build_connectivity_args("host", agent_in_host_netns=True)
     assert "--add-host" in result
     assert "agent-wrap-litellm-test:127.0.0.1" in result
 
@@ -92,7 +92,7 @@ def test_connectivity_host_sidecar_bridge_agent(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
     sc._port = 48620
-    result = sc._build_connectivity_args("host", agent_in_host_netns=False, agent_network=None)
+    result = sc._build_connectivity_args("host", agent_in_host_netns=False)
     assert "agent-wrap-litellm-test:host-gateway" in result
 
 
@@ -103,7 +103,7 @@ def test_connectivity_bridge_sidecar_host_netns_agent(
     sc._master_key = "sk-test-abc"
     sc._port = 48620
     mocker.patch.object(sc, "_sidecar_ip_on_network", return_value="172.18.0.2")
-    result = sc._build_connectivity_args("bridge", agent_in_host_netns=True, agent_network=None)
+    result = sc._build_connectivity_args("bridge", agent_in_host_netns=True)
     assert "agent-wrap-litellm-test:172.18.0.2" in result
 
 
@@ -115,24 +115,16 @@ def test_connectivity_bridge_sidecar_host_netns_no_ip_raises(
     sc._port = 48620
     mocker.patch.object(sc, "_sidecar_ip_on_network", return_value="")
     with pytest.raises(SystemExit):
-        sc._build_connectivity_args("bridge", agent_in_host_netns=True, agent_network=None)
+        sc._build_connectivity_args("bridge", agent_in_host_netns=True)
     assert "no IP" in _last_error(sc)
 
 
-def test_connectivity_bridge_sidecar_no_agent_network(tmp_path: Path) -> None:
+def test_connectivity_bridge_sidecar_emits_no_network_flag(tmp_path: Path) -> None:
+    """The runner owns ``--network`` for the agent; a sidecar only contributes env."""
     sc = _sidecar(tmp_path)
     sc._master_key = "sk-test-abc"
     sc._port = 48620
-    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network=None)
-    assert "--network" in result
-    assert "agent-wrap-net" in result
-
-
-def test_connectivity_bridge_sidecar_custom_agent_network(tmp_path: Path) -> None:
-    sc = _sidecar(tmp_path)
-    sc._master_key = "sk-test-abc"
-    sc._port = 48620
-    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False)
     assert "--network" not in result
     assert "-e" in result
 
@@ -145,7 +137,7 @@ def test_connectivity_injects_log_prefix_header(
     sc._port = 48620
     cwd = Path("/some/project")
     mocker.patch("agent_wrap.domain.sidecars.litellm.Path.cwd", return_value=cwd)
-    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False)
     expected = f"ANTHROPIC_CUSTOM_HEADERS=x-agent-wrap-log-prefix: {project_path_hash(cwd)}"
     assert expected in result
 
@@ -163,7 +155,7 @@ def test_connectivity_merges_existing_custom_header(
     sc._port = 48620
     cwd = Path("/some/project")
     mocker.patch("agent_wrap.domain.sidecars.litellm.Path.cwd", return_value=cwd)
-    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    result = sc._build_connectivity_args("bridge", agent_in_host_netns=False)
     value = f"x-foo: bar\nx-agent-wrap-log-prefix: {project_path_hash(cwd)}"
     assert f"ANTHROPIC_CUSTOM_HEADERS={value}" in result
 
@@ -250,13 +242,6 @@ def test_ensure_health_fail_raises(tmp_path: Path, mocker: pytest_mock.MockFixtu
     logs_calls = [c for c in mock_docker.call_args_list if "logs" in c.args[:1]]
     assert len(logs_calls) == 1
     assert logs_calls[0].kwargs.get("capture") is False
-
-
-def test_ensure_bridge_not_supported(tmp_path: Path) -> None:
-    sc = _sidecar(tmp_path)
-    with pytest.raises(SystemExit):
-        sc.ensure(use_host_net=False, agent_network="bridge")
-    assert "bridge is not supported" in _last_error(sc)
 
 
 def test_ensure_sidecar_migration_restart(tmp_path: Path, mocker: pytest_mock.MockFixture) -> None:
@@ -564,5 +549,5 @@ def test_base_url_carries_the_resolved_port(tmp_path: Path) -> None:
     sc = _sidecar(tmp_path, get_agent_env=capture)
     sc._master_key = "sk-test-abc"
     sc._port = 48624
-    sc._build_connectivity_args("bridge", agent_in_host_netns=False, agent_network="mynet")
+    sc._build_connectivity_args("bridge", agent_in_host_netns=False)
     assert captured["base_url"] == "http://agent-wrap-litellm-test:48624"

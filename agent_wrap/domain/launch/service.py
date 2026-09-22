@@ -10,12 +10,15 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from packaging.version import InvalidVersion, Version
+
 from agent_wrap.constants import (
     AGENT_LAUNCHES_DIR,
     AGENT_WRAP_MOUNT,
     AUTOSTART_LOGS_ENV,
     GLOBAL_CONFIG_DIR,
     INSTANCE_ID_LABEL,
+    MIN_DOCKER_VERSION,
     OPS_DIR,
     ROLE_LABEL,
     ROLE_VALUE,
@@ -141,6 +144,9 @@ class LaunchService:
         if update_code is not None:
             return update_code
 
+        if not self._docker_version_supported():
+            return 1
+
         try:
             resolved = self._build_service.resolve_image(use_base=use_base)
         except SystemExit as e:
@@ -154,8 +160,8 @@ class LaunchService:
         if build_rc != 0:
             return build_rc
 
-        # Both failures here mean "the project Dockerfile asks for something we cannot
-        # give", and both abort before any sidecar work has started.
+        # Every failure here means "the project Dockerfile asks for something we cannot
+        # give", and all of them abort before any sidecar work has started.
         try:
             agent_user, port_args, extra_run_args, startup_timeout = (
                 self._parse_dockerfile_directives(resolved)
@@ -163,11 +169,12 @@ class LaunchService:
             if startup_timeout is None and not use_base:
                 self._startup.warn_if_unused(Path.cwd(), is_legacy=resolved.is_legacy)
             self._config.prepare_declared_mounts(extra_run_args, Path.cwd())
+            agent_network = self._extract_network(extra_run_args)
+            self._reject_unsupported_network(agent_network)
         except (DockerfileDirectiveError, HostMountError) as e:
             self._display.error(str(e))
             return 1
 
-        agent_network = self._extract_network(extra_run_args)
         use_host_net, host_net_args, port_args = self._resolve_host_network(
             agent_network, port_args
         )
@@ -223,6 +230,7 @@ class LaunchService:
                 *self._build_agent_labels(instance_id),
                 *self._build_wslg_args(),
                 *provider_run_args,
+                *self._sidecar_net_args(use_host_net=use_host_net, agent_network=agent_network),
                 *port_args,
                 *host_net_args,
                 *extra_run_args,
@@ -248,6 +256,55 @@ class LaunchService:
             elif arg.startswith(("--network=", "--net=")):
                 return arg.split("=", 1)[1]
         return None
+
+    def _reject_unsupported_network(self, agent_network: str | None) -> None:
+        """
+        Refuse Docker's default bridge as the project's declared network.
+
+        Combining it with the sidecar network is legal -- the daemon excludes only
+        ``host``, ``none`` and ``container:`` -- and the agent would still resolve its
+        sidecar over ``agent-wrap-net``. It is refused for what the *project* loses: the
+        default bridge resolves no container names, so whatever the agent was meant to
+        reach there is unreachable by name anyway, and a container on both it and a
+        user-defined network can lose its external network access (moby/moby#30302).
+
+        Raises:
+            DockerfileDirectiveError: If the project declared ``--network bridge``. It is
+                a directive the wrapper cannot honor, so it travels the same path as the
+                rest of them -- including ``agent run --base``, which parses no
+                directives and so can never reach this.
+
+        """
+        if agent_network != "bridge":
+            return
+        msg = (
+            "--network bridge is not supported.\n"
+            "Docker's default bridge resolves no container names, and combining it with "
+            "the wrapper's sidecar network can cost the agent its external network "
+            "access (moby/moby#30302).\n"
+            "Use a user-defined network (`docker network create <name>`), or drop "
+            "--network from agent-run-args to use agent-wrap-net alone."
+        )
+        raise DockerfileDirectiveError(msg)
+
+    def _sidecar_net_args(self, *, use_host_net: bool, agent_network: str | None) -> list[str]:
+        """
+        Put the agent on the sidecar network, alongside whatever the project declared.
+
+        This is the agent's DNS path to its sidecars, which answer to their container
+        names. It lives here rather than in a sidecar because it is a property of the
+        launch: the Telegram sidecar returns no network flags of its own, so deriving the
+        flag from the LiteLLM sidecar's mode would strand Telegram whenever LiteLLM was
+        first started in host mode.
+
+        Nothing is emitted when the agent shares the host's network namespace -- there
+        ``--network host`` is the whole story, and sidecars hand back ``--add-host``
+        instead. ``--network none`` is likewise left alone: joining a network would
+        contradict it.
+        """
+        if use_host_net or agent_network in ("host", "none"):
+            return []
+        return ["--network", SIDECAR_NETWORK_NAME]
 
     def _maybe_autostart_logs(self, provider: Provider, *, headless: bool) -> None:
         """
@@ -364,6 +421,31 @@ class LaunchService:
         if outcome is UpdateCheck.HANDLED:
             return 0
         return None
+
+    def _docker_version_supported(self) -> bool:
+        """
+        Refuse a daemon too old to put the agent on two networks at once.
+
+        Only a version that parses and is below the floor stops the launch: a daemon that
+        is down belongs to ``ensure_images``, and a non-PEP-440 build string (Rancher
+        Desktop's ``26.1.4-rd``) is not evidence of age.
+        """
+        reported = docker_utils.docker_server_version()
+        if reported is None:
+            return True
+        try:
+            version = Version(reported)
+        except InvalidVersion:
+            return True
+        if version >= MIN_DOCKER_VERSION:
+            return True
+        self._display.error(
+            f"Docker {version} is too old — the wrapper needs Docker Engine "
+            f"{MIN_DOCKER_VERSION} or newer. The agent joins its sidecar's network "
+            f"alongside any network the project declares, and accepting more than one "
+            f"--network on `docker run` landed in Docker 25.0."
+        )
+        return False
 
     def _is_headless(self, claude_args: list[str]) -> bool:
         """Report whether Claude Code is launched in a mode that won't use the sidecar."""
@@ -524,7 +606,7 @@ class LaunchService:
         never read as "every agent is gone".
         """
         instances_dir = cwd / ".claude" / INSTANCE_DIR_NAME
-        if not instances_dir.is_dir() or not docker_utils.daemon_reachable():
+        if not instances_dir.is_dir() or docker_utils.docker_server_version() is None:
             return
 
         names = docker_utils.list_container_names(f"label={ROLE_LABEL}={ROLE_VALUE}")

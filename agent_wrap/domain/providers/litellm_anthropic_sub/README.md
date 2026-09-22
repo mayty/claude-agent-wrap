@@ -183,7 +183,8 @@ this provider deliberately leaves off, and it also disables the feature-flag eva
 ## Credentials
 
 There is no encrypted secret to set for this provider — `agent secrets check
-litellm-anthropic-sub` reports "declares no secrets". Instead, authenticate once per
+litellm-anthropic-sub` reports "declares no secrets", and a bare `agent secrets check`
+names it on its `Declares no secrets:` line. Instead, authenticate once per
 machine with a one-time in-container `/login` (the paste-the-code fallback works
 without a browser). The resulting OAuth credential is written to
 `.claude_config/.claude/.credentials.json`, which is mounted into every project's

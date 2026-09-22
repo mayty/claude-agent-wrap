@@ -107,15 +107,6 @@ class LiteLLMSidecar(Sidecar):
         agent_network: str | None,
         secrets: dict[str, str] | None = None,
     ) -> list[str]:
-        if agent_network == "bridge":
-            msg = (
-                "--network bridge is not supported "
-                "(Docker's default bridge has no embedded DNS).\n"
-                "Use a user-defined network (`docker network create <name>`) "
-                "or remove --network from agent-run-args to use agent-wrap-net."
-            )
-            raise self._fatal(msg)
-
         agent_in_host_netns = use_host_net or agent_network == "host"
 
         # Runs under the runner's shared lock (held across the whole launch), so the
@@ -126,17 +117,7 @@ class LiteLLMSidecar(Sidecar):
             secrets=secrets or {},
         )
 
-        # Attach sidecar to agent's custom network if needed
-        if (
-            sidecar_mode != "host"
-            and agent_network
-            and agent_network not in ("host", "none", self.network_name)
-        ):
-            self._attach_to_network(agent_network)
-
-        return self._build_connectivity_args(
-            sidecar_mode, agent_in_host_netns=agent_in_host_netns, agent_network=agent_network
-        )
+        return self._build_connectivity_args(sidecar_mode, agent_in_host_netns=agent_in_host_netns)
 
     def _ensure_sidecar(self, *, use_host_net: bool, secrets: dict[str, str]) -> str:
         # Migration: sidecar from before agent-wrap-net refactor
@@ -186,7 +167,6 @@ class LiteLLMSidecar(Sidecar):
         sidecar_mode: str,
         *,
         agent_in_host_netns: bool,
-        agent_network: str | None,
     ) -> list[str]:
         base_url = f"http://{self.container_name}:{self.port}"
         agent_env = dict(self.config.get_agent_env(self._master_key, base_url))
@@ -219,8 +199,8 @@ class LiteLLMSidecar(Sidecar):
                 raise self._fatal(msg)
             return [*env_args, "--add-host", f"{self.container_name}:{sidecar_ip}"]
 
-        if not agent_network:
-            return [*env_args, "--network", self.network_name]
+        # No --network here: the runner puts the agent on the sidecar network itself, so
+        # that the Telegram sidecar is reachable too even when this one is in host mode.
         return [*env_args]
 
     @override

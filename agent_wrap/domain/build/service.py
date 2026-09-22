@@ -68,7 +68,7 @@ from agent_wrap.domain.build.models import (
 from agent_wrap.exceptions import DockerfileDirectiveError
 from agent_wrap.lib.docker_utils import (
     ImageStamp,
-    daemon_reachable,
+    docker_server_version,
     host_network_build_args,
     image_stamp,
     inspect_images,
@@ -370,7 +370,7 @@ class BuildService:
         that, both would build the base, the loser's tag would overwrite the winner's,
         and every project image stamped against the winner would be stale again at once.
         """
-        if not daemon_reachable():
+        if docker_server_version() is None:
             self._display.error(
                 "the Docker daemon is not reachable, so the agent images cannot be "
                 "checked or built. Start Docker and try again."
@@ -515,7 +515,7 @@ class BuildService:
         Strictly read-only: ``agent inspect`` calls it, and a report that changed the
         state it describes would be worse than no report.
         """
-        if not daemon_reachable():
+        if docker_server_version() is None:
             return ImageStaleness(base="", project="")
         base_stamp = image_stamp(BASE_IMAGE_NAME)
         base_reason = self._base_reason(base_stamp, force=BuildForce.NONE, is_target=False)
@@ -546,7 +546,7 @@ class BuildService:
         * one whose directory or Dockerfile cannot be read. Inside an agent container
           that is every project but the mounted one.
         """
-        if not daemon_reachable():
+        if docker_server_version() is None:
             return []  # an unreachable daemon is not evidence that anything is stale
         verdicts, base_stamp = self._sweep_project_reasons(project_dirs)
         rows: list[StaleProjectImage] = []
@@ -640,7 +640,7 @@ class BuildService:
         from it, so ``docker rmi`` would merely untag it -- reclaiming nothing, creating a
         fresh untagged image, and leaving the next launch a cold-scaffold rebuild.
         """
-        if not daemon_reachable():
+        if docker_server_version() is None:
             # Nothing is provably outdated when nothing can be asked. This is also what
             # makes the command harmless inside an agent container, which mounts no socket.
             return ImageCleanupScope(images=[], unattributable=0)

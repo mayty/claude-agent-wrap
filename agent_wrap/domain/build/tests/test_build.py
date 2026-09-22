@@ -93,7 +93,9 @@ NEW_BASE_ID = "sha256:bbb"
 def docker_up(mocker: pytest_mock.MockFixture) -> None:
     """Make the build path believe the Docker daemon answers."""
     mocker.patch(
-        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=True
+        "agent_wrap.domain.build.service.docker_server_version",
+        autospec=True,
+        return_value="27.0.3",
     )
 
 
@@ -188,7 +190,7 @@ def test_ensure_images_refuses_when_docker_is_down(
 ) -> None:
     """A build against a dead daemon would fail with docker's error, not a useful one."""
     mocker.patch(
-        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
+        "agent_wrap.domain.build.service.docker_server_version", autospec=True, return_value=None
     )
     mock_run = mocker.patch("agent_wrap.domain.build.service.subprocess.run")
 
@@ -473,7 +475,7 @@ def test_stale_summary_is_silent_when_docker_is_down(
 ) -> None:
     """An unreachable daemon is not evidence that anything is stale."""
     mocker.patch(
-        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
+        "agent_wrap.domain.build.service.docker_server_version", autospec=True, return_value=None
     )
 
     assert build_svc.stale_summary(project_resolved) == ImageStaleness(base="", project="")
@@ -1118,7 +1120,7 @@ def test_stale_project_images_is_silent_when_docker_is_down(
 ) -> None:
     """An unreachable daemon is not evidence that anything is stale."""
     mocker.patch(
-        "agent_wrap.domain.build.service.daemon_reachable", autospec=True, return_value=False
+        "agent_wrap.domain.build.service.docker_server_version", autospec=True, return_value=None
     )
     stamps = _stamps(mocker, STALE_BASE, FOREIGN_PROJECT)
 

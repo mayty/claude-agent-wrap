@@ -1,9 +1,31 @@
 # This file has been edited with the assistance of an AI tool.
 """``agent secrets check|set|clear <sidecar>`` and ``agent secrets cleanup``."""
 
+from typing import TYPE_CHECKING
+
 import click
 
+from agent_wrap.cli.secrets.constants import (
+    NO_SIDECAR,
+    SECRETS_CHECK_TABLE,
+    SECRETS_CHECK_TITLE,
+    SECRETS_CLEANUP_TITLE,
+    SECRETS_CLEAR_TITLE,
+    SECRETS_REMOVED_TABLE,
+    STATE_MISSING,
+    STATE_OK,
+    STATE_REMOVED,
+)
 from agent_wrap.containers import services
+from agent_wrap.domain.display.constants import Style
+from agent_wrap.domain.display.models import RowItem
+
+if TYPE_CHECKING:
+    from rich.console import Group
+
+    from agent_wrap.domain.display.models import RowItemOrDivider
+    from agent_wrap.domain.display.service import DisplayService
+    from agent_wrap.domain.secrets.models import SecretsCheckReport
 
 
 def complete_sidecar(
@@ -22,40 +44,118 @@ def secrets_group() -> None:
     """> Manage sidecar secrets"""
 
 
+class _SecretsReport:
+    """What `agent secrets` prints once the store has answered."""
+
+    @staticmethod
+    def _sidecar_and_key(namespaced: str) -> tuple[str, str]:
+        sidecar, sep, key = namespaced.partition(":")
+        return (sidecar, key) if sep else (NO_SIDECAR, namespaced)
+
+    @staticmethod
+    def check_table(reports: dict[str, SecretsCheckReport], dsp: DisplayService) -> Group:
+        """
+        Render one row per required secret, in declaration order within each sidecar.
+
+        An absent key leaves LENGTH and HINT empty rather than showing a zero and an empty
+        mask. A secret stored as the empty string is present, at length 0 with a ``***``
+        hint, and the two readings must not render alike.
+        """
+        body: list[RowItemOrDivider] = []
+        for report in reports.values():
+            for namespaced, entry in report.entries.items():
+                sidecar, key = _SecretsReport._sidecar_and_key(namespaced)
+                cells = (
+                    [sidecar, key, STATE_OK, str(entry.length), entry.hint]
+                    if entry.present
+                    else [sidecar, key, STATE_MISSING, "", ""]
+                )
+                body.append(
+                    RowItem(
+                        cells=cells,
+                        style=Style.BOLD_GREEN if entry.present else Style.DIM,
+                        prefix_len=0,
+                    )
+                )
+        return dsp.render_table(SECRETS_CHECK_TITLE, SECRETS_CHECK_TABLE, body)
+
+    @staticmethod
+    def removed_table(title: str, removed: list[str], dsp: DisplayService) -> Group:
+        body: list[RowItemOrDivider] = [
+            RowItem(
+                cells=[*_SecretsReport._sidecar_and_key(key), STATE_REMOVED],
+                style=Style.BOLD_YELLOW,
+                prefix_len=0,
+            )
+            for key in removed
+        ]
+        return dsp.render_table(title, SECRETS_REMOVED_TABLE, body)
+
+
+class _SecretsChecks:
+    @staticmethod
+    def one_sidecar(dsp: DisplayService, sidecar: str) -> int:
+        report = services.secrets_service.check_secrets(sidecar)
+        if report.declares_none:
+            dsp.info(f"Sidecar '{sidecar}' declares no secrets.")
+            return 0
+
+        dsp.show(_SecretsReport.check_table({sidecar: report}, dsp))
+        if report.all_present:
+            return 0
+
+        missing = sum(1 for entry in report.entries.values() if not entry.present)
+        dsp.error(
+            f"{missing} of {len(report.entries)} secrets missing for "
+            f"'{sidecar}'\nRun 'agent secrets set {sidecar}' to set them."
+        )
+        return 1
+
+    @staticmethod
+    def every_sidecar(dsp: DisplayService) -> int:
+        """Skip the table when no sidecar has rows: a header over nothing reads as broken."""
+        reports = services.secrets_service.check_all_sidecars()
+        if any(report.entries for report in reports.values()):
+            dsp.show(_SecretsReport.check_table(reports, dsp))
+
+        silent = [name for name, report in reports.items() if report.declares_none]
+        if silent:
+            dsp.info(f"Declares no secrets: {', '.join(silent)}.")
+
+        failing = {
+            name: sum(1 for entry in report.entries.values() if not entry.present)
+            for name, report in reports.items()
+            if not report.all_present
+        }
+        if not failing:
+            return 0
+
+        missing, sidecars = sum(failing.values()), len(failing)
+        dsp.error(
+            f"{missing} secret{'' if missing == 1 else 's'} missing across "
+            f"{sidecars} sidecar{'' if sidecars == 1 else 's'}: {', '.join(failing)}\n"
+            f"Run 'agent secrets set <sidecar>' to set them."
+        )
+        return 1
+
+
 @secrets_group.command("check")
-@click.argument("sidecar", shell_complete=complete_sidecar)
+@click.argument("sidecar", required=False, shell_complete=complete_sidecar)
 @click.pass_context
-def secrets_check(ctx: click.Context, sidecar: str) -> None:
+def secrets_check(ctx: click.Context, sidecar: str | None) -> None:
     """
     Report which of a sidecar's secrets are present
 
-    Report which of SIDECAR's required secrets are present, without revealing their
-    values.
+    Print a table of SIDECAR's required secrets: the key, whether it is present, and the
+    length and a masked hint of each present one. The value itself is never printed.
+    Omit SIDECAR to table every sidecar the wrapper knows about at once.
     """
     dsp = services.display_service
-    report = services.secrets_service.check_secrets(sidecar)
-    if report.declares_none:
-        dsp.info(f"Sidecar '{sidecar}' declares no secrets.")
-        ctx.exit(0)
-
-    # The whole report goes to stdout so the columns stay aligned and the rows stay
-    # in declaration order; a severity tag on the MISSING rows alone would indent
-    # them past the OK rows, and splitting the two across streams reorders them
-    # under a pipe. The verdict is what carries the severity.
-    width = max(map(len, report.entries))
-    for namespaced, present in report.entries.items():
-        if present:
-            dsp.success(f"{namespaced:{width}s}  OK")
-        else:
-            dsp.info(f"{namespaced:{width}s}  MISSING")
-    if not report.all_present:
-        missing = [key for key, present in report.entries.items() if not present]
-        dsp.error(
-            f"{len(missing)} of {len(report.entries)} secrets missing for "
-            f"'{sidecar}'\nRun 'agent secrets set {sidecar}' to set them."
-        )
-        ctx.exit(1)
-    ctx.exit(0)
+    ctx.exit(
+        _SecretsChecks.one_sidecar(dsp, sidecar)
+        if sidecar is not None
+        else _SecretsChecks.every_sidecar(dsp)
+    )
 
 
 @secrets_group.command("set")
@@ -88,10 +188,11 @@ def secrets_clear(ctx: click.Context, sidecar: str) -> None:
     """
     dsp = services.display_service
     removed = services.secrets_service.clear_secrets(sidecar)
-    for key in removed:
-        dsp.info(f"  {key:45s}  REMOVED")
     if not removed:
         dsp.info(f"No secrets found for sidecar '{sidecar}'.")
+        ctx.exit(0)
+    title = SECRETS_CLEAR_TITLE.format(sidecar=sidecar, count=len(removed))
+    dsp.show(_SecretsReport.removed_table(title, removed, dsp))
     ctx.exit(0)
 
 
@@ -105,8 +206,9 @@ def secrets_cleanup(ctx: click.Context) -> None:
     """
     dsp = services.display_service
     removed = services.secrets_service.cleanup_secrets()
-    for key in removed:
-        dsp.info(f"  {key:45s}  REMOVED (unknown)")
     if not removed:
         dsp.info("No unknown keys found.")
+        ctx.exit(0)
+    title = SECRETS_CLEANUP_TITLE.format(count=len(removed))
+    dsp.show(_SecretsReport.removed_table(title, removed, dsp))
     ctx.exit(0)

@@ -19,12 +19,17 @@ import pytest
 
 import agent_wrap.domain.secrets.store as store_mod
 from agent_wrap.domain.providers.service import ProviderService
+from agent_wrap.domain.secrets.models import SecretEntry
 from agent_wrap.domain.secrets.service import SecretsService
 from agent_wrap.domain.secrets.store import EncryptedFileStore, KeyDerivation
 from agent_wrap.domain.sidecars.service import SidecarService
 from agent_wrap.exceptions import ProviderNotFoundError, SecretNotFoundError
 
 _FIXED_KEY = b"0" * 32  # stable key for reproducible tests
+
+#: A plausible credential and the same one pasted twice, which is what the guard undoes.
+_SINGLE_SECRET = "sk-1234567890abcdef"
+_DOUBLED_SECRET = _SINGLE_SECRET * 2
 
 #: What both pinned payloads below encrypt, under ``_FIXED_KEY``. 110 bytes of JSON:
 #: three full 32-byte CTR blocks plus a short tail, so the superseded reader's block
@@ -525,3 +530,234 @@ def test_missing_keys_survives_unknown_provider(
     result = svc.missing_keys_by_sidecar()
 
     assert result == {"broken": [], "telegram": []}
+
+
+def test_prompt_does_not_confirm_a_non_repeated_secret(
+    svc: SecretsService, display_mock: Mock
+) -> None:
+    display_mock.prompt_secret.return_value = "sk-live-unique-value"
+
+    svc._write("ns:key", "desc")
+
+    assert EncryptedFileStore.read_all(display=display_mock)["ns:key"] == "sk-live-unique-value"
+    display_mock.prompt_confirm.assert_not_called()
+
+
+def test_prompt_does_not_confirm_an_empty_entry(svc: SecretsService, display_mock: Mock) -> None:
+    """The empty string has no repeating unit to offer."""
+    display_mock.prompt_secret.return_value = ""
+
+    svc._write("ns:key", "desc")
+
+    display_mock.prompt_confirm.assert_not_called()
+
+
+def test_write_stores_the_deduplicated_unit_when_accepted(
+    svc: SecretsService, display_mock: Mock
+) -> None:
+    display_mock.prompt_secret.return_value = _DOUBLED_SECRET
+    display_mock.prompt_confirm.return_value = True
+
+    svc._write("ns:key", "desc")
+
+    assert EncryptedFileStore.read_all(display=display_mock)["ns:key"] == _SINGLE_SECRET
+
+
+def test_write_stores_the_value_as_entered_when_declined(
+    svc: SecretsService, display_mock: Mock
+) -> None:
+    display_mock.prompt_secret.return_value = _DOUBLED_SECRET
+    display_mock.prompt_confirm.return_value = False
+
+    svc._write("ns:key", "desc")
+
+    assert EncryptedFileStore.read_all(display=display_mock)["ns:key"] == _DOUBLED_SECRET
+
+
+def test_read_stores_the_deduplicated_unit_when_accepted(
+    svc: SecretsService, display_mock: Mock
+) -> None:
+    """The first-launch prompt goes through the same guard as 'agent secrets set'."""
+    display_mock.prompt_secret.return_value = _DOUBLED_SECRET
+    display_mock.prompt_confirm.return_value = True
+
+    result = svc.read("ns:new", "desc", prompt_on_missing=True)
+
+    assert result == _SINGLE_SECRET
+    assert EncryptedFileStore.read_all(display=display_mock)["ns:new"] == _SINGLE_SECRET
+
+
+def test_dedup_confirmation_states_both_lengths_without_the_value(
+    svc: SecretsService, display_mock: Mock
+) -> None:
+    """The caution must be readable over someone's shoulder without leaking the secret."""
+    display_mock.prompt_secret.return_value = _DOUBLED_SECRET
+    display_mock.prompt_confirm.return_value = False
+
+    svc._write("ns:key", "desc")
+
+    caution = display_mock.alert.call_args[0][0]
+    assert _SINGLE_SECRET not in caution
+    assert f"{len(_DOUBLED_SECRET)} chars" in caution
+    assert f"{len(_SINGLE_SECRET)} chars" in caution
+    assert "2 copies" in caution
+
+
+def test_check_reports_length_and_hint_for_a_present_key(
+    reporting_svc: SecretsService, display_mock: Mock
+) -> None:
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": _SINGLE_SECRET}, display=display_mock)
+
+    report = reporting_svc.check_secrets("litellm-bedrock")
+
+    entry = report.entries["litellm-bedrock:api_key"]
+    assert entry.present is True
+    assert entry.length == len(_SINGLE_SECRET)
+    assert entry.hint == "sk***ef"
+    assert report.all_present is True
+
+
+def test_check_reports_an_absent_key_as_not_present(reporting_svc: SecretsService) -> None:
+    """A NamedTuple is always truthy, so the verdict must read the field, not the entry."""
+    report = reporting_svc.check_secrets("litellm-bedrock")
+
+    entry = report.entries["litellm-bedrock:api_key"]
+    assert entry.present is False
+    assert entry.length == 0
+    assert entry.hint == ""
+    assert report.all_present is False
+
+
+def test_check_reports_an_empty_stored_value_as_present(
+    reporting_svc: SecretsService, display_mock: Mock
+) -> None:
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": ""}, display=display_mock)
+
+    report = reporting_svc.check_secrets("litellm-bedrock")
+
+    assert report.entries["litellm-bedrock:api_key"] == SecretEntry(
+        present=True, length=0, hint="***"
+    )
+
+
+def test_check_declares_none_for_a_sidecar_requiring_nothing(
+    reporting_svc: SecretsService, mocker: pytest_mock.MockerFixture
+) -> None:
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"litellm-bedrock": object()}
+    no_secrets: list[tuple[str, str]] = []
+    provider.get_provider.return_value.required_secrets.return_value = no_secrets
+    reporting_svc._provider_service = provider
+
+    report = reporting_svc.check_secrets("litellm-bedrock")
+
+    assert report.declares_none is True
+    assert report.entries == {}
+
+
+def test_check_decrypts_the_store_once(
+    reporting_svc: SecretsService, mocker: pytest_mock.MockerFixture
+) -> None:
+    """Reading per key would re-derive the master key and re-warn once per secret."""
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"litellm-bedrock": object()}
+    provider.get_provider.return_value.required_secrets.return_value = [
+        ("api_key", "API key"),
+        ("region", "region"),
+    ]
+    reporting_svc._provider_service = provider
+    spy = mocker.spy(store_mod.EncryptedFileStore, "read_all")
+
+    reporting_svc.check_secrets("litellm-bedrock")
+
+    assert spy.call_count == 1
+
+
+def test_check_all_covers_every_known_sidecar(reporting_svc: SecretsService) -> None:
+    """The sweep's order is the table's print order, so it is the service's to state."""
+    assert list(reporting_svc.check_all_sidecars()) == ["litellm-bedrock", "telegram"]
+
+
+def test_check_all_reports_each_sidecars_own_presence(
+    reporting_svc: SecretsService, display_mock: Mock
+) -> None:
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": _SINGLE_SECRET}, display=display_mock)
+
+    reports = reporting_svc.check_all_sidecars()
+
+    assert reports["litellm-bedrock"].all_present is True
+    assert reports["litellm-bedrock"].entries["litellm-bedrock:api_key"] == SecretEntry(
+        present=True, length=len(_SINGLE_SECRET), hint="sk***ef"
+    )
+    assert reports["telegram"].all_present is False
+    assert reports["telegram"].entries["telegram:TelegramBotToken"] == SecretEntry(present=False)
+
+
+def test_check_all_keeps_keys_namespaced(reporting_svc: SecretsService) -> None:
+    """Splitting the namespace into two columns is the caller's; the service reports keys."""
+    assert set(reporting_svc.check_all_sidecars()["telegram"].entries) == {
+        "telegram:TelegramBotToken"
+    }
+
+
+def test_check_all_decrypts_the_store_once(
+    reporting_svc: SecretsService, mocker: pytest_mock.MockerFixture
+) -> None:
+    """Per-sidecar calls would re-derive the key and re-warn once per provider."""
+    spy = mocker.spy(store_mod.EncryptedFileStore, "read_all")
+
+    reporting_svc.check_all_sidecars()
+
+    assert spy.call_count == 1
+
+
+def test_check_all_marks_a_sidecar_that_requires_nothing(
+    reporting_svc: SecretsService, mocker: pytest_mock.MockerFixture
+) -> None:
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"litellm-bedrock": object()}
+    no_secrets: list[tuple[str, str]] = []
+    provider.get_provider.return_value.required_secrets.return_value = no_secrets
+    reporting_svc._provider_service = provider
+
+    reports = reporting_svc.check_all_sidecars()
+
+    assert reports["litellm-bedrock"].declares_none is True
+    assert reports["litellm-bedrock"].entries == {}
+    assert reports["litellm-bedrock"].all_present is True
+    assert "telegram" in reports
+
+
+def test_check_all_survives_an_unknown_provider(
+    mocker: pytest_mock.MockerFixture,
+    secrets_paths: tuple[Any, ...],  # noqa: ARG001
+    fixed_key: None,  # noqa: ARG001
+    display_mock: Mock,
+) -> None:
+    """A provider that cannot be resolved must not abort the sweep."""
+    provider = mocker.Mock(spec=ProviderService)
+    provider.discover_providers.return_value = {"broken": object()}
+    provider.get_provider.side_effect = ProviderNotFoundError("gone")
+    sidecar = mocker.Mock(spec=SidecarService)
+    sidecar.telegram_required_secrets.return_value = [("TelegramBotToken", "bot token")]
+    svc = SecretsService(
+        provider_service=provider, sidecar_service=sidecar, display_service=display_mock
+    )
+
+    reports = svc.check_all_sidecars()
+
+    assert reports["broken"].declares_none is True
+    assert reports["broken"].entries == {}
+    assert list(reports["telegram"].entries) == ["telegram:TelegramBotToken"]
+
+
+def test_check_all_does_not_rewrite_the_store(
+    reporting_svc: SecretsService, display_mock: Mock, secrets_paths: tuple[Any, ...]
+) -> None:
+    secrets_path, _keyfile = secrets_paths
+    EncryptedFileStore.write_all({"litellm-bedrock:api_key": "v"}, display=display_mock)
+    before = secrets_path.read_bytes()
+
+    reporting_svc.check_all_sidecars()
+
+    assert secrets_path.read_bytes() == before

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 _LIST = "agent_wrap.domain.sidecars.service.list_container_names"
 _INSPECT = "agent_wrap.domain.sidecars.service.inspect_containers"
-_REACHABLE = "agent_wrap.domain.sidecars.service.daemon_reachable"
+_REACHABLE = "agent_wrap.domain.sidecars.service.docker_server_version"
 
 _ENV = json.dumps(["AGENT_WRAP_SIDECAR_PORT=48620", "AGENT_WRAP_PROVIDER=litellm-bedrock"])
 _NETWORKS = json.dumps({"agent-wrap-net": {}})
@@ -179,7 +179,7 @@ def test_live_containers_reports_both_kinds(
     service: SidecarService, mocker: pytest_mock.MockFixture, tmp_path: Path
 ) -> None:
     """The update gate needs one answer covering agents and the sidecars they hold."""
-    mocker.patch(_REACHABLE, autospec=True, return_value=True)
+    mocker.patch(_REACHABLE, autospec=True, return_value="27.0.3")
     mocker.patch(_LIST, autospec=True, return_value=["ignored"])
     mocker.patch(
         _INSPECT,
@@ -198,7 +198,7 @@ def test_live_containers_drops_everything_not_running(
     service: SidecarService, mocker: pytest_mock.MockFixture, tmp_path: Path
 ) -> None:
     """A stopped corpse -- the Telegram sidecar keeps one -- is not work in progress."""
-    mocker.patch(_REACHABLE, autospec=True, return_value=True)
+    mocker.patch(_REACHABLE, autospec=True, return_value="27.0.3")
     mocker.patch(_LIST, autospec=True, return_value=["ignored"])
     mocker.patch(
         _INSPECT,
@@ -217,7 +217,7 @@ def test_live_containers_reports_nothing_when_docker_is_unreachable(
     service: SidecarService, mocker: pytest_mock.MockFixture, tmp_path: Path
 ) -> None:
     """An empty listing from a dead daemon must not be mistaken for a surveyed host."""
-    mocker.patch(_REACHABLE, autospec=True, return_value=False)
+    mocker.patch(_REACHABLE, autospec=True, return_value=None)
     listing = mocker.patch(_LIST, autospec=True, return_value=[])
     live = service.live_containers(tmp_path)
     assert live.agents == []

@@ -4,7 +4,7 @@
 ## Requirements
 
 - A supported host: Linux on `x86_64` or `aarch64` (glibc; musl is not supported), or macOS on Apple Silicon. WSL2 counts as Linux. Intel Macs are not supported — one of the wrapper's dependencies publishes no `x86_64` macOS wheel. `bin/agent-bootstrap` stops on anything else and names the reason before it downloads anything.
-- Docker
+- Docker Engine 25.0 or newer. The agent container joins the wrapper's sidecar network alongside any network the project declares in `agent-run-args`, and accepting more than one `--network` on `docker run` landed in 25.0. `agent run` checks the daemon's version and stops with this reason if it is older.
 - `git` — to clone the wrapper, and for `agent update` to fast-forward it later.
 - `curl` and `tar` — used once, by `bin/agent-bootstrap`, to fetch the CPython the wrapper runs on. **No system Python is needed:** the wrapper provisions its own pinned interpreter and never falls back to the host's `python3`, so it does not matter which Python (if any) your distro ships.
 - Network access to PyPI on that same first run, for the wrapper's own third-party dependencies. On an air-gapped host, point pip at a local wheelhouse with its standard environment variables — `PIP_NO_INDEX=1` and `PIP_FIND_LINKS=/path/to/wheels`. The bootstrap reads neither; pip does, so no wrapper configuration is involved. The interpreter has an equivalent escape hatch in `AGENT_PYTHON_TARBALL`.
