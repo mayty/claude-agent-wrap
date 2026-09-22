@@ -769,13 +769,13 @@ def test_apply_refuses_while_containers_are_live(  # noqa: PLR0913
     assert "agent-wrap-litellm-anthropic" in message
 
 
-def test_check_updates_refuses_before_prompting_while_containers_are_live(
+def test_check_updates_refuses_an_accepted_update_while_containers_are_live(
     mocker: pytest_mock.MockFixture,
     display_mock: Mock,
     update_svc: UpdateService,
     sidecar_mock: Mock,
 ) -> None:
-    """Nobody should be asked to confirm an update that is already refused."""
+    """Saying yes to an update a live fleet forbids is what earns the refusal."""
     sidecar_mock.live_containers.return_value = LiveContainers(
         agents=[_agent_container("claude-agent-7f3")], sidecars=[]
     )
@@ -784,11 +784,37 @@ def test_check_updates_refuses_before_prompting_while_containers_are_live(
         autospec=True,
         return_value=("main", 2, "origin/main"),
     )
+    display_mock.prompt_confirm.return_value = True
     mock_apply = mocker.patch.object(UpdateService, "apply", autospec=True)
 
     assert update_svc.check_updates() is UpdateCheck.BLOCKED
-    display_mock.prompt_confirm.assert_not_called()
+    display_mock.prompt_confirm.assert_called_once()
     mock_apply.assert_not_called()
+    assert "claude-agent-7f3" in display_mock.error.call_args.args[0]
+
+
+def test_check_updates_lets_a_declined_update_launch_while_containers_are_live(
+    mocker: pytest_mock.MockFixture,
+    display_mock: Mock,
+    update_svc: UpdateService,
+    sidecar_mock: Mock,
+) -> None:
+    """A fleet blocks the update, never the launch of someone who did not ask for one."""
+    sidecar_mock.live_containers.return_value = LiveContainers(
+        agents=[_agent_container("claude-agent-7f3")], sidecars=[]
+    )
+    mocker.patch(
+        "agent_wrap.domain.updates.service._GitOps.get_behind_count",
+        autospec=True,
+        return_value=("main", 2, "origin/main"),
+    )
+    display_mock.prompt_confirm.return_value = False
+    mock_apply = mocker.patch.object(UpdateService, "apply", autospec=True)
+
+    assert update_svc.check_updates() is UpdateCheck.PROCEED
+    mock_apply.assert_not_called()
+    display_mock.error.assert_not_called()
+    sidecar_mock.live_containers.assert_not_called()
 
 
 def test_apply_survives_a_failing_bootstrap(

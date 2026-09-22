@@ -32,7 +32,7 @@ class UpdateCheck(Enum):
     PROCEED = auto()
     #: An update ran; the caller's command is now stale and must not run. Exit 0.
     HANDLED = auto()
-    #: Containers are live, so the update was refused outright. Exit 1.
+    #: The update was accepted, then refused because containers are live. Exit 1.
     BLOCKED = auto()
 
 

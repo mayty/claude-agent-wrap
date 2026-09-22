@@ -5,6 +5,12 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.12.1](releases/0.12.1.md) — 2026-09-22
+
+A running agent or sidecar no longer makes `agent run` and `agent rebuild` exit `1` over an
+available update. The refusal now follows the `y/N` prompt, so declining the update launches
+or builds as usual.
+
 ## [0.12.0](releases/0.12.0.md) — 2026-09-22
 
 **Breaking:** Docker Engine 25.0 or newer is now required. `agent secrets` offers to undo a

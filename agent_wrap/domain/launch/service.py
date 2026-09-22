@@ -409,9 +409,10 @@ class LaunchService:
 
         A headless launch skips it entirely: nobody is there to answer the prompt, and
         an update applied under a script would swap the wrapper mid-pipeline. When the
-        check refuses because containers are live, the launch is refused with it —
-        starting one more agent against a checkout that is due to be replaced only
-        makes the fleet harder to drain.
+        check refuses an *accepted* update because containers are live, the launch is
+        refused with it — starting one more agent against a checkout that is due to be
+        replaced only makes the fleet harder to drain. Declining the update leaves the
+        launch alone, fleet or no fleet.
         """
         if headless:
             return None
