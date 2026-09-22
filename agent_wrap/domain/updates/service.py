@@ -303,8 +303,9 @@ class UpdateService:
         Check for upstream updates and, with the user's consent, apply one.
 
         Best-effort: any error (no network, detached HEAD, non-git dir, fetch failure)
-        yields ``PROCEED`` so the caller's original command runs. ``BLOCKED`` is the one
-        outcome that is not best-effort — see :meth:`_blocked_by_live_containers`.
+        yields ``PROCEED`` so the caller's original command runs, and so does declining the
+        prompt. ``BLOCKED`` is the one outcome that is not best-effort, and it is reachable
+        only once the update has been accepted — see :meth:`_blocked_by_live_containers`.
 
         The env opt-out is read before anything else, so setting it means the caller
         neither prompts nor consults Docker. That is deliberate: it is the switch for a
@@ -324,13 +325,13 @@ class UpdateService:
         else:
             self._display.warning(f"agent-wrap is {behind} commit(s) behind origin/{branch}.")
 
-        # Before the prompt, not after: there is no point asking someone to confirm an
-        # update that cannot run, and the refusal names what they have to stop.
-        if self._blocked_by_live_containers():
-            return UpdateCheck.BLOCKED
-
         if not self._display.prompt_confirm("Update agent-wrap now? [y/N]"):
             return UpdateCheck.PROCEED
+
+        # After the prompt, not before: someone who declines came here to launch, not to
+        # update, so a fleet that is up must not cost them that launch.
+        if self._blocked_by_live_containers():
+            return UpdateCheck.BLOCKED
 
         self.apply(target_ref)
         return UpdateCheck.HANDLED
