@@ -15,7 +15,7 @@ RUN apt-get update \
 
 # uv is a developer tool only: bin/agent-bootstrap without --dev uses pip against the
 # exported constraints, so the end-user path never needs it.
-ARG UV_VERSION=0.12.9
+ARG UV_VERSION=0.12.18
 RUN curl -fsSL -o /tmp/uv.tar.gz \
         "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
     && tar -xzf /tmp/uv.tar.gz -C /usr/local/bin --strip-components=1 \

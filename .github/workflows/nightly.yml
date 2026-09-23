@@ -1,0 +1,57 @@
+# This file has been created with the assistance of an AI tool.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # GitHub fires a schedule only from the default branch, so the branches under test are
+  # enumerated here and each one checked out explicitly. Every release/* on the remote is
+  # included, merged or not: a stale branch fails until it is deleted.
+  branches:
+    runs-on: ubuntu-latest
+    outputs:
+      refs: ${{ steps.list.outputs.refs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: list
+        run: |
+          refs='"master"'
+          for ref in $(git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/release/*'); do
+            refs="$refs,\"$ref\""
+          done
+          echo "refs=[$refs]" >> "$GITHUB_OUTPUT"
+
+  # The tests against live third-party pages, which `make check` deselects: they catch
+  # a pricing page whose layout the scraper no longer understands, which no commit here
+  # would ever cause.
+  live:
+    needs: branches
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(needs.branches.outputs.refs) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.18"
+
+      - name: Provision the dev environment
+        run: make install
+
+      - name: Run live tests
+        run: make test-live
