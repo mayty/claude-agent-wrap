@@ -60,8 +60,13 @@ python_functions = ["test_*"]
 addopts = [
     "--tb=short",
     "--strict-markers",
+    # A `-m` on the command line comes later and wins, which is how `make test-live`
+    # selects exactly what this excludes.
+    "-m", "not live",
 ]
-markers = []
+markers = [
+    "live: hits the real network; deselected by default, run with `make test-live`",
+]
 
 # ---------------------------------------------------------------------------
 # ruff (linter + formatter)

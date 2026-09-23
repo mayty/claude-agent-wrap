@@ -1,6 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for the litellm-bedrock provider."""
 
+import html
 import json
 import time
 from pathlib import Path
@@ -151,6 +152,70 @@ def test_scrape_model_keys_reads_markup_the_page_embedded_as_json() -> None:
     page = "<table>" + _row("Claude Fable 5", [f"F_{k}" for k in _FIVE_COLUMN_KEYS]) + "</table>"
     escaped = page.replace("<", "\\u003c").replace(">", "\\u003e")
     assert _BedrockPricing.scrape_model_keys(escaped) == _BedrockPricing.scrape_model_keys(page)
+
+
+def test_scrape_model_keys_reads_the_markup_attribute() -> None:
+    """
+    The live layout: tables inside ``data-pricing-markup``, beside ``&quot;``-laden JSON.
+
+    Decoding entities over the raw page ends ``data-tokens`` early and loses every row.
+    """
+    fragment = (
+        "<h2>Geo and In-region Cross-region Inference</h2><table>"
+        + _row("Claude Opus 5.5", [f"G_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    page = (
+        '<div data-tokens="[&quot;a&quot;,&quot;b&quot;]" '
+        f'data-pricing-markup="{html.escape(fragment)}"></div>'
+    )
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-opus-5-5"]
+    assert price_keys == [f"G_{k}" for k in _FIVE_COLUMN_KEYS]
+
+
+def test_scrape_model_keys_reads_version_before_family() -> None:
+    """The geo table writes "Claude 4.5 Haiku"; it is the same model, and geo still wins."""
+    page = (
+        "<h2>Global Cross-region Inference</h2><table>"
+        + _row("Claude Haiku 4.5", [f"L_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table><h2>Geo and In-region Cross-region Inference</h2><table>"
+        + _row("Claude 4.5 Haiku", [f"G_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-haiku-4-5"]
+    assert price_keys[0] == "G_IN"
+
+
+@pytest.mark.parametrize("name", ["Claude Sonnet 4.6 - Long Context", "Claude Mythos Preview**"])
+def test_scrape_model_keys_skips_a_row_that_is_not_a_plain_model(name: str) -> None:
+    page = (
+        "<table>"
+        + _row(name, [f"X_{k}" for k in _FIVE_COLUMN_KEYS])
+        + _row("Claude Sonnet 4.6", [f"S_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    keys = _BedrockPricing.scrape_model_keys(page)
+    assert list(keys) == ["claude-sonnet-4-6"]
+    assert keys["claude-sonnet-4-6"][1][0] == "S_IN"
+
+
+def test_scrape_model_keys_allows_a_footnoted_name() -> None:
+    page = "<table>" + _row("Claude Mythos 5**", list(_FIVE_COLUMN_KEYS)) + "</table>"
+    assert "claude-mythos-5" in _BedrockPricing.scrape_model_keys(page)
+
+
+def test_scrape_model_keys_accepts_the_unhyphenated_heading() -> None:
+    page = (
+        "<h2>Geo and In-region Cross-region Inference</h2>"
+        "<h2>Global Cross region Inference</h2><table>"
+        + _row("Claude Opus 4.8", [f"L_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table><h2>Geo and In-region Cross-region Inference</h2><table>"
+        + _row("Claude Opus 4.8", [f"G_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    # Were the unhyphenated heading ignored, both rows would sit in geo and the first win.
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-opus-4-8"]
+    assert price_keys[0] == "G_IN"
 
 
 def test_build_pricing_table_resolves_fable_row():
