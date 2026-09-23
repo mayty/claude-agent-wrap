@@ -42,8 +42,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
-    "ruff>=0.16.5",
-    "pyrefly>=1.2.0",
+    "ruff>=0.16.7",
+    "pyrefly>=1.3.1",
     "tomlkit>=0.15.1",
     # dockerfile-parse and psutil ship no py.typed; every other runtime dependency does.
     "types-dockerfile-parse>=2.0.0.20260508",
