@@ -1,7 +1,7 @@
 # This file has been edited with the assistance of an AI tool.
 # agent-wrap QA targets.
 
-.PHONY: install test lint lintcheck format format-check typecheck markdown-check arch-check cli-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check projects-db
+.PHONY: install test test-live lint lintcheck format format-check typecheck markdown-check arch-check cli-check check-executables python-check carveout-check uv-check constraints-check dump-prod-constraints available-upgrades upgrade-deps check projects-db
 
 # Every target runs on the venv bin/agent-bootstrap provisioned, never on the host's
 # python3; a `python3` fallback here would quietly undo owning the interpreter.
@@ -57,6 +57,12 @@ install:
 
 test:
 	$(PYTHON) -m pytest --cov=agent_wrap
+
+# The tests against real third-party pages, which `test` deselects. Not part of `check`:
+# they fail offline and whenever a page changes, neither of which a local change causes.
+# The nightly workflow runs them.
+test-live:
+	$(PYTHON) -m pytest -m live
 
 lint:
 	$(PYTHON) -m ruff check --fix --unsafe-fixes .

@@ -27,7 +27,7 @@ jobs:
       # Full history, because it is the only way to get the tags: markdown-check
       # resolves every release note's pinned links against the tree at their tag, and
       # the default shallow fetch brings down none of them.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -35,9 +35,9 @@ jobs:
         run: ./bin/agent-bootstrap
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.2.0
         with:
-          version: "0.12.9"
+          version: "0.12.18"
 
       - name: Provision the dev environment
         run: make install
@@ -55,15 +55,15 @@ jobs:
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Provision the pinned CPython and its dependencies
         run: ./bin/agent-bootstrap
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.2.0
         with:
-          version: "0.12.9"
+          version: "0.12.18"
 
       - name: Provision the dev environment
         run: make install

@@ -32,11 +32,7 @@ from agent_wrap.domain.logs.normalize import enrich_with_costs, extract_record_f
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
 
-    from agent_wrap.domain.logs.models import (
-        CombinedSessionMeta,
-        NormalizedRecord,
-        NormalizedRecordBase,
-    )
+    from agent_wrap.domain.logs.models import CombinedSessionMeta, NormalizedRecord
     from agent_wrap.domain.pricing.service import PricingService
 
     # TYPE_CHECKING-only, so this is not the cross-domain runtime import EA001 forbids.
@@ -221,7 +217,7 @@ class SessionStream:
         _data, _agent_id, reply, usage, _finish = extract_record_fields(
             cast("LogRecord", {"response": raw_response})
         )
-        normalized: NormalizedRecordBase = {
+        normalized: NormalizedRecord = {
             "timing": {
                 "start": _seconds(row.started_at_us),
                 "completionStart": _seconds(row.first_token_at_us),
@@ -247,13 +243,11 @@ class SessionStream:
         # is what `agent stats` already does -- the two agreeing matters more than a
         # fraction of a cent, and correcting the tier is its own change.
         enriched = enrich_with_costs(normalized, raw_response, session.key.provider, self._pricing)
-        return {
-            **normalized,
-            "context_tokens": enriched["context_tokens"],
-            "output_tokens": enriched["output_tokens"],
-            "cache_percent": enriched["cache_percent"],
-            "cost": enriched["cost"],
-        }
+        normalized["context_tokens"] = enriched["context_tokens"]
+        normalized["output_tokens"] = enriched["output_tokens"]
+        normalized["cache_percent"] = enriched["cache_percent"]
+        normalized["cost"] = enriched["cost"]
+        return normalized
 
 
 def _blob_line(ref: str, value_json: str) -> str:

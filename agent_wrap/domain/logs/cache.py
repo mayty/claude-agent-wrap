@@ -382,7 +382,7 @@ class LogsCache:
                     "last_ts": max_last_ts,
                 }
             )
-        out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)  # pyrefly: ignore [implicit-any-lambda]
+        out.sort(key=lambda p: p["last_ts"] or 0, reverse=True)
         return out
 
     def _recompute_projects_fp_from_cache(self) -> Fingerprint:
