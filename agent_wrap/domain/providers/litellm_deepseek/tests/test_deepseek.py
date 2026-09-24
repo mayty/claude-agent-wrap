@@ -57,7 +57,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
     cache_path = _fresh_cache(tmp_path)
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
 
-    prices = _DeepSeekPricing.load_prices(cache_path)
+    prices = _DeepSeekPricing.load_prices(cache_path, Mock(spec=DisplayService), "litellm-deepseek")
 
     assert prices == {"deepseek-v4-pro": {"in": 1.0}}
     http_get.assert_not_called()
@@ -69,7 +69,9 @@ def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.return_value = _PAGE_HTML.encode()
 
-    prices = _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=True)
+    prices = _DeepSeekPricing.load_prices(
+        cache_path, Mock(spec=DisplayService), "litellm-deepseek", refresh_pricing_data=True
+    )
 
     # Peak (not off-peak) values parsed from the mocked page.
     assert prices["deepseek-v4-pro"]["in"] == 7.0
@@ -113,7 +115,9 @@ def test_load_prices_persists_peak_hours(tmp_path: Path, mocker: pytest_mock.Moc
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.return_value = _PAGE_HTML.encode()
 
-    _DeepSeekPricing.load_prices(cache_path, refresh_pricing_data=True)
+    _DeepSeekPricing.load_prices(
+        cache_path, Mock(spec=DisplayService), "litellm-deepseek", refresh_pricing_data=True
+    )
 
     doc = json.loads(cache_path.read_text(encoding="utf-8"))
     assert doc["peak_hours"] == [1, 2, 3, 6, 7, 8, 9]

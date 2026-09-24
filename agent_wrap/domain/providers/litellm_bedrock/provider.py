@@ -1,7 +1,6 @@
 # This file has been edited with the assistance of an AI tool.
 """LiteLLM Bedrock provider — routes Claude Code through AWS Bedrock."""
 
-import html
 import json
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
@@ -17,6 +16,7 @@ from agent_wrap.domain.providers.litellm_bedrock.constants import (
     MODEL_KEY_RE,
     MODEL_NAME_RE,
     PRICING_DATA_URL,
+    PRICING_MARKUP_ATTR,
     PRICING_PAGE_URL,
     PRICING_SCHEMAS,
     SECTION_HEADING_RE,
@@ -27,6 +27,7 @@ from agent_wrap.domain.providers.pricing import PricingCache
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.providers.models import PriceTable
 
 
@@ -42,7 +43,11 @@ class _BedrockPricing:
         is simply whichever one came before it -- the tier a price belongs to, which no
         amount of looking at the row alone can tell.
         """
-        src = html.unescape(page_html)
+        page = BeautifulSoup(page_html, HTML_PARSER)
+        fragments = [
+            str(el[PRICING_MARKUP_ATTR]) for el in page.select(f"[{PRICING_MARKUP_ATTR}]")
+        ] or [page_html]
+        src = "".join(fragments)
         for escaped, literal in JSON_ESCAPED_MARKUP:
             src = src.replace(escaped, literal)
 
@@ -54,7 +59,10 @@ class _BedrockPricing:
                 if SECTION_HEADING_RE.match(text):
                     section = GEO_SECTION if text.lower().startswith("geo") else GLOBAL_SECTION
                 continue
-            nm = MODEL_NAME_RE.search(text)
+            name_cell = node.find("td")
+            if name_cell is None:
+                continue
+            nm = MODEL_NAME_RE.match(name_cell.get_text(" ", strip=True))
             if not nm:
                 continue
             keys = MODEL_KEY_RE.findall(text)
@@ -62,7 +70,9 @@ class _BedrockPricing:
             if schema is None:
                 continue
             tier_rank = SECTION_RANK[section]
-            canonical = f"claude-{nm.group(1).lower()}-{nm.group(2).replace('.', '-')}"
+            family = nm.group("family") or nm.group("family_last")
+            version = nm.group("version") or nm.group("version_first")
+            canonical = f"claude-{family.lower()}-{version.replace('.', '-')}"
             prev = out.get(canonical)
             if prev is None or tier_rank > prev[0]:
                 out[canonical] = (tier_rank, schema, keys)
@@ -105,9 +115,17 @@ class _BedrockPricing:
         return prices, {"region": DEFAULT_REGION_LABEL}
 
     @staticmethod
-    def load_prices(cache_path: Path, *, refresh_pricing_data: bool = False) -> PriceTable:
+    def load_prices(
+        cache_path: Path,
+        display: DisplayService,
+        provider: str,
+        *,
+        refresh_pricing_data: bool = False,
+    ) -> PriceTable:
         return PricingCache.load(
             cache_path,
+            display,
+            provider,
             refresh=refresh_pricing_data,
             scrape=_BedrockPricing.scrape,
             # A document from a different region is fresh and useless at once: every
@@ -139,5 +157,8 @@ class BedrockProvider(Provider):
     @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> PriceTable:
         return _BedrockPricing.load_prices(
-            self._pricing_cache_path(), refresh_pricing_data=refresh_pricing_data
+            self._pricing_cache_path(),
+            self._display,
+            self.name,
+            refresh_pricing_data=refresh_pricing_data,
         )

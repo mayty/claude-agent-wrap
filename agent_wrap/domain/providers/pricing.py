@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
     from pathlib import Path
 
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.pricing.models import TokenUsage
     from agent_wrap.domain.providers.models import PriceTable, Tier
 
@@ -141,8 +142,10 @@ class PricingCache:
         return response.content
 
     @staticmethod
-    def load(
+    def load(  # noqa: PLR0913 -- three of the six are keyword-only
         cache_path: Path,
+        display: DisplayService,
+        provider: str,
         *,
         refresh: bool,
         scrape: Callable[[], tuple[PriceTable, dict[str, Any]]],
@@ -173,12 +176,18 @@ class PricingCache:
         if not refresh and fresh_enough:
             return stale()
 
+        def fall_back(reason: str) -> PriceTable:
+            prices = stale()
+            outcome = "using stale cached prices" if prices else "costs will be reported as unknown"
+            display.error(f"{provider}: {reason}; {outcome}")
+            return prices
+
         try:
             prices, extra = scrape()
-        except httpx2.HTTPError, OSError, json.JSONDecodeError:
-            return stale()
+        except (httpx2.HTTPError, OSError, json.JSONDecodeError) as exc:
+            return fall_back(f"fetching pricing failed ({exc})")
         if not prices:
-            return stale()
+            return fall_back("no prices found on the pricing page, its layout may have changed")
 
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)

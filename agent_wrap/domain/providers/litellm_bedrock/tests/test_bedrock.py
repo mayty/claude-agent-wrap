@@ -1,12 +1,14 @@
 # This file has been edited with the assistance of an AI tool.
 """Tests for the litellm-bedrock provider."""
 
+import html
 import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
+import httpx2
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
@@ -153,6 +155,70 @@ def test_scrape_model_keys_reads_markup_the_page_embedded_as_json() -> None:
     assert _BedrockPricing.scrape_model_keys(escaped) == _BedrockPricing.scrape_model_keys(page)
 
 
+def test_scrape_model_keys_reads_the_markup_attribute() -> None:
+    """
+    The live layout: tables inside ``data-pricing-markup``, beside ``&quot;``-laden JSON.
+
+    Decoding entities over the raw page ends ``data-tokens`` early and loses every row.
+    """
+    fragment = (
+        "<h2>Geo and In-region Cross-region Inference</h2><table>"
+        + _row("Claude Opus 5.5", [f"G_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    page = (
+        '<div data-tokens="[&quot;a&quot;,&quot;b&quot;]" '
+        f'data-pricing-markup="{html.escape(fragment)}"></div>'
+    )
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-opus-5-5"]
+    assert price_keys == [f"G_{k}" for k in _FIVE_COLUMN_KEYS]
+
+
+def test_scrape_model_keys_reads_version_before_family() -> None:
+    """The geo table writes "Claude 4.5 Haiku"; it is the same model, and geo still wins."""
+    page = (
+        "<h2>Global Cross-region Inference</h2><table>"
+        + _row("Claude Haiku 4.5", [f"L_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table><h2>Geo and In-region Cross-region Inference</h2><table>"
+        + _row("Claude 4.5 Haiku", [f"G_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-haiku-4-5"]
+    assert price_keys[0] == "G_IN"
+
+
+@pytest.mark.parametrize("name", ["Claude Sonnet 4.6 - Long Context", "Claude Mythos Preview**"])
+def test_scrape_model_keys_skips_a_row_that_is_not_a_plain_model(name: str) -> None:
+    page = (
+        "<table>"
+        + _row(name, [f"X_{k}" for k in _FIVE_COLUMN_KEYS])
+        + _row("Claude Sonnet 4.6", [f"S_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    keys = _BedrockPricing.scrape_model_keys(page)
+    assert list(keys) == ["claude-sonnet-4-6"]
+    assert keys["claude-sonnet-4-6"][1][0] == "S_IN"
+
+
+def test_scrape_model_keys_allows_a_footnoted_name() -> None:
+    page = "<table>" + _row("Claude Mythos 5**", list(_FIVE_COLUMN_KEYS)) + "</table>"
+    assert "claude-mythos-5" in _BedrockPricing.scrape_model_keys(page)
+
+
+def test_scrape_model_keys_accepts_the_unhyphenated_heading() -> None:
+    page = (
+        "<h2>Geo and In-region Cross-region Inference</h2>"
+        "<h2>Global Cross region Inference</h2><table>"
+        + _row("Claude Opus 4.8", [f"L_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table><h2>Geo and In-region Cross-region Inference</h2><table>"
+        + _row("Claude Opus 4.8", [f"G_{k}" for k in _FIVE_COLUMN_KEYS])
+        + "</table>"
+    )
+    # Were the unhyphenated heading ignored, both rows would sit in geo and the first win.
+    _, price_keys = _BedrockPricing.scrape_model_keys(page)["claude-opus-4-8"]
+    assert price_keys[0] == "G_IN"
+
+
 def test_build_pricing_table_resolves_fable_row():
     data_json = {
         "regions": {
@@ -219,7 +285,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
     cache_path = _fresh_cache(tmp_path)
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
 
-    prices = _BedrockPricing.load_prices(cache_path)
+    prices = _BedrockPricing.load_prices(cache_path, Mock(spec=DisplayService), "litellm-bedrock")
 
     assert prices == {"claude-sonnet-4-5": {"in": 1.0}}
     http_get.assert_not_called()
@@ -231,12 +297,56 @@ def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.side_effect = [_PAGE_HTML.encode(), _price_data_json()]
 
-    prices = _BedrockPricing.load_prices(cache_path, refresh_pricing_data=True)
+    display = Mock(spec=DisplayService)
+
+    prices = _BedrockPricing.load_prices(
+        cache_path, display, "litellm-bedrock", refresh_pricing_data=True
+    )
 
     # Freshly built from the mocked page, not the cached placeholder row.
     assert prices["claude-opus-4-8"]["in"] == 3.0
     assert "claude-sonnet-4-5" not in prices
     assert http_get.call_count == 2
+    display.error.assert_not_called()
+
+
+def test_load_prices_reports_fetch_failure_and_serves_stale_cache(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+):
+    cache_path = _fresh_cache(tmp_path)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
+    http_get.side_effect = httpx2.ConnectError("connection refused")
+    display = Mock(spec=DisplayService)
+
+    prices = _BedrockPricing.load_prices(
+        cache_path, display, "litellm-bedrock", refresh_pricing_data=True
+    )
+
+    assert prices == {"claude-sonnet-4-5": {"in": 1.0}}
+    display.error.assert_called_once()
+    message = display.error.call_args.args[0]
+    assert message.startswith("litellm-bedrock: fetching pricing failed")
+    assert "connection refused" in message
+    assert "stale cached prices" in message
+
+
+def test_load_prices_reports_unparseable_page_without_cache(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+):
+    """A page the scraper finds nothing on is an error, not a provider that costs nothing."""
+    cache_path = tmp_path / "pricing.json"
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
+    http_get.side_effect = [b"<html>redesigned</html>", _price_data_json()]
+    display = Mock(spec=DisplayService)
+
+    prices = _BedrockPricing.load_prices(cache_path, display, "litellm-bedrock")
+
+    assert prices == {}
+    assert not cache_path.exists()
+    display.error.assert_called_once()
+    message = display.error.call_args.args[0]
+    assert "no prices found" in message
+    assert "costs will be reported as unknown" in message
 
 
 def test_bedrock_config_routes_every_model_through_the_bedrock_wildcard():

@@ -23,6 +23,7 @@ from agent_wrap.domain.providers.pricing import PricingCache
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from agent_wrap.domain.display.service import DisplayService
     from agent_wrap.domain.pricing.models import TokenUsage
     from agent_wrap.domain.providers.models import PriceTable
 
@@ -150,9 +151,19 @@ class _DeepSeekPricing:
         return prices, extra
 
     @staticmethod
-    def load_prices(cache_path: Path, *, refresh_pricing_data: bool = False) -> PriceTable:
+    def load_prices(
+        cache_path: Path,
+        display: DisplayService,
+        provider: str,
+        *,
+        refresh_pricing_data: bool = False,
+    ) -> PriceTable:
         return PricingCache.load(
-            cache_path, refresh=refresh_pricing_data, scrape=_DeepSeekPricing.scrape
+            cache_path,
+            display,
+            provider,
+            refresh=refresh_pricing_data,
+            scrape=_DeepSeekPricing.scrape,
         )
 
     @staticmethod
@@ -205,7 +216,10 @@ class DeepSeekProvider(MasterKeyApprovalMixin, Provider):
     @override
     def _get_pricing(self, *, refresh_pricing_data: bool = False) -> PriceTable:
         return _DeepSeekPricing.load_prices(
-            self._pricing_cache_path(), refresh_pricing_data=refresh_pricing_data
+            self._pricing_cache_path(),
+            self._display,
+            self.name,
+            refresh_pricing_data=refresh_pricing_data,
         )
 
     @override

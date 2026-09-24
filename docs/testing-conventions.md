@@ -92,6 +92,17 @@ How tests are organized, mocked, and written in this project. All code contribut
 - Parametrize argument names must be consistent across the decorator and
   function signature (per Ruff PT006).
 
+## Live tests
+
+- A test that reaches a real third-party service (a scraped pricing page) is marked
+  `live` — `pytestmark = pytest.mark.live` — and lives in its own `test_*_live.py`.
+- `make test` and `make check` deselect them; `make test-live` runs only them, and the
+  nightly workflow (`.github/workflows/nightly.yml`) runs that on `master` and every
+  `release/*` branch.
+- Assert invariants, not current values: a price change must not fail a live test, a
+  parser that no longer understands the page must. No skip guard for being offline —
+  the failure is the signal.
+
 ## Subtests
 
 - Prefer `@pytest.mark.parametrize` over subtests whenever possible. Use

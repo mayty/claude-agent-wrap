@@ -5,6 +5,11 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.12.2](releases/0.12.2.md) — 2026-09-23
+
+`agent stats` shows Bedrock costs again. AWS changed its pricing page, and the wrapper had
+stopped reading prices from it.
+
 ## [0.12.1](releases/0.12.1.md) — 2026-09-22
 
 A running agent or sidecar no longer makes `agent run` and `agent rebuild` exit `1` over an
