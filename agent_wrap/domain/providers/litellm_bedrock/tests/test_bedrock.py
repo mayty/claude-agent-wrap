@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
+import httpx2
 import pytest
 
 from agent_wrap.domain.display.service import DisplayService
@@ -284,7 +285,7 @@ def test_load_prices_serves_fresh_cache_without_fetching(
     cache_path = _fresh_cache(tmp_path)
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
 
-    prices = _BedrockPricing.load_prices(cache_path)
+    prices = _BedrockPricing.load_prices(cache_path, Mock(spec=DisplayService), "litellm-bedrock")
 
     assert prices == {"claude-sonnet-4-5": {"in": 1.0}}
     http_get.assert_not_called()
@@ -296,12 +297,56 @@ def test_load_prices_force_refetches_fresh_cache(tmp_path: Path, mocker: pytest_
     http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
     http_get.side_effect = [_PAGE_HTML.encode(), _price_data_json()]
 
-    prices = _BedrockPricing.load_prices(cache_path, refresh_pricing_data=True)
+    display = Mock(spec=DisplayService)
+
+    prices = _BedrockPricing.load_prices(
+        cache_path, display, "litellm-bedrock", refresh_pricing_data=True
+    )
 
     # Freshly built from the mocked page, not the cached placeholder row.
     assert prices["claude-opus-4-8"]["in"] == 3.0
     assert "claude-sonnet-4-5" not in prices
     assert http_get.call_count == 2
+    display.error.assert_not_called()
+
+
+def test_load_prices_reports_fetch_failure_and_serves_stale_cache(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+):
+    cache_path = _fresh_cache(tmp_path)
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
+    http_get.side_effect = httpx2.ConnectError("connection refused")
+    display = Mock(spec=DisplayService)
+
+    prices = _BedrockPricing.load_prices(
+        cache_path, display, "litellm-bedrock", refresh_pricing_data=True
+    )
+
+    assert prices == {"claude-sonnet-4-5": {"in": 1.0}}
+    display.error.assert_called_once()
+    message = display.error.call_args.args[0]
+    assert message.startswith("litellm-bedrock: fetching pricing failed")
+    assert "connection refused" in message
+    assert "stale cached prices" in message
+
+
+def test_load_prices_reports_unparseable_page_without_cache(
+    tmp_path: Path, mocker: pytest_mock.MockFixture
+):
+    """A page the scraper finds nothing on is an error, not a provider that costs nothing."""
+    cache_path = tmp_path / "pricing.json"
+    http_get = mocker.patch.object(PricingCache, "http_get", autospec=True)
+    http_get.side_effect = [b"<html>redesigned</html>", _price_data_json()]
+    display = Mock(spec=DisplayService)
+
+    prices = _BedrockPricing.load_prices(cache_path, display, "litellm-bedrock")
+
+    assert prices == {}
+    assert not cache_path.exists()
+    display.error.assert_called_once()
+    message = display.error.call_args.args[0]
+    assert "no prices found" in message
+    assert "costs will be reported as unknown" in message
 
 
 def test_bedrock_config_routes_every_model_through_the_bedrock_wildcard():
