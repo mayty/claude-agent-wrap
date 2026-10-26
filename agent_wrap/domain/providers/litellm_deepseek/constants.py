@@ -4,7 +4,7 @@
 import re
 
 #: Official DeepSeek pricing page URL.
-PRICING_PAGE_URL = "https://api-docs.deepseek.com/quick_start/pricing"
+PRICING_PAGE_URL = "https://api-docs.deepseek.com/quick_start/pricing/"
 
 #: Minimum number of model entries expected in the pricing table.
 MIN_MODEL_COUNT = 2
