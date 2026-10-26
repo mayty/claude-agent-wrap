@@ -5,6 +5,11 @@ Full release notes live per version under [`releases/`](releases/). Each entry b
 links to the complete notes for that release, newest first. New notes should follow
 the [release notes style guide](releases/styleguide.md).
 
+## [0.12.3](releases/0.12.3.md) — 2026-10-26
+
+DeepSeek pricing scraping is fixed. DeepSeek changed how its pricing page handles a trailing
+slash, and the wrapper now scrapes the trailing-slash URL.
+
 ## [0.12.2](releases/0.12.2.md) — 2026-09-23
 
 `agent stats` shows Bedrock costs again. AWS changed its pricing page, and the wrapper had
